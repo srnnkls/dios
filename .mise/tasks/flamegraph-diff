@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+#MISE description="Differential profile from two folded-stack files (positive delta = regressed)"
+#MISE tools={"cargo:inferno"="0.12.7"}
+set -euo pipefail
+
+[ $# -ge 2 ] || { echo "usage: mise run flamegraph-diff <before.folded> <after.folded> [out.svg]"; exit 2; }
+before=$1
+after=$2
+out_svg=${3:-target/flamegraph/diff.svg}
+
+mkdir -p "$(dirname "$out_svg")"
+inferno-diff-folded "$before" "$after" >"${out_svg%.svg}.folded"
+inferno-flamegraph <"${out_svg%.svg}.folded" >"$out_svg"
+
+awk '{
+  after = $NF
+  before = $(NF - 1)
+  sub(/ [0-9]+ [0-9]+$/, "")
+  n = split($0, frames, ";")
+  delta[frames[n]] += after - before
+}
+END {
+  for (frame in delta)
+    if (delta[frame] != 0) printf "%+10d  %s\n", delta[frame], frame
+}' "${out_svg%.svg}.folded" >"${out_svg%.svg}.deltas.txt"
+
+echo "== top regressions (self-time samples gained) =="
+sort -rn "${out_svg%.svg}.deltas.txt" | head -15
+echo
+echo "== top improvements (self-time samples lost) =="
+sort -n "${out_svg%.svg}.deltas.txt" | head -15
+echo
+echo "folded diff: ${out_svg%.svg}.folded"
+echo "svg:         $out_svg"

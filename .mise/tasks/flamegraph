@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+#MISE description="Profile a bench/example/bin: folded stacks + top-N self-time table + SVG"
+#MISE tools={"cargo:inferno"="0.12.7","cargo:rustfilt"="0.2.1","jq"="latest"}
+set -euo pipefail
+
+usage() {
+  echo "usage: mise run flamegraph <cargo target args> [-- <run args>]"
+  echo "  mise run flamegraph --bench smoke -- --bench --profile-time 10"
+  echo "  mise run flamegraph --example replay"
+  echo "  mise run flamegraph --bin dios"
+  exit 2
+}
+[ $# -ge 1 ] || usage
+
+build_args=()
+run_args=()
+seen_separator=0
+for arg in "$@"; do
+  if [ "$seen_separator" = 1 ]; then
+    run_args+=("$arg")
+  elif [ "$arg" = "--" ]; then
+    seen_separator=1
+  else
+    build_args+=("$arg")
+  fi
+done
+
+out_dir="target/flamegraph"
+mkdir -p "$out_dir"
+
+binary=$(
+  cargo build --profile profiling --features bench --message-format=json "${build_args[@]}" |
+    jq -r 'select(.reason == "compiler-artifact") | select(.executable != null) | .executable' |
+    tail -1
+)
+[ -n "$binary" ] || { echo "no executable produced for: ${build_args[*]}"; exit 1; }
+
+if [ "$(uname)" = "Darwin" ]; then
+  "$binary" "${run_args[@]}" &
+  target_pid=$!
+  /usr/bin/sample "$target_pid" 3600 1 -mayDie -f "$out_dir/sample.txt" >/dev/null
+  wait "$target_pid"
+  inferno-collapse-sample "$out_dir/sample.txt" | rustfilt >"$out_dir/profile.folded"
+else
+  perf record -o "$out_dir/perf.data" --call-graph dwarf,16384 \
+    -- "$binary" "${run_args[@]}"
+  perf script -i "$out_dir/perf.data" | inferno-collapse-perf >"$out_dir/profile.folded"
+fi
+
+inferno-flamegraph <"$out_dir/profile.folded" >"$out_dir/flamegraph.svg"
+
+awk '{
+  count = $NF
+  sub(/ [0-9]+$/, "")
+  n = split($0, frames, ";")
+  self[frames[n]] += count
+  total += count
+}
+END {
+  for (frame in self)
+    printf "%10d %6.2f%%  %s\n", self[frame], 100 * self[frame] / total, frame
+}' "$out_dir/profile.folded" | sort -rn | head -40 >"$out_dir/top_self.txt"
+
+echo "== top self-time frames =="
+cat "$out_dir/top_self.txt"
+echo
+echo "folded stacks: $out_dir/profile.folded"
+echo "svg:           $out_dir/flamegraph.svg"

@@ -1,0 +1,34 @@
+[tools]
+rust = { version = "1.96.0", profile = "default" }   # pinned; default profile ships clippy+rustfmt (mise's rustup default is minimal)
+hk = { version = "1.47.0", postinstall = "hk install --mise", depends = ["pkl"] }
+pkl = "0.31.0"
+actionlint = "1.7.12"
+
+[tasks.build]
+run = "cargo build"
+
+[tasks.test]
+run = "cargo test --features bench"
+
+[tasks.fmt]
+run = "cargo fmt"
+
+[tasks.lint]
+description = "clippy (pedantic, warnings as errors) + rustfmt check"
+run = ["cargo clippy --all-targets --features bench -- -D warnings", "cargo fmt --check"]
+
+[tasks.doc]
+description = "rustdoc with warnings as errors"
+env = { RUSTDOCFLAGS = "-D warnings" }
+run = "cargo doc --no-deps --features bench"
+
+[tasks.check]
+depends = ["lint", "test", "doc"]
+
+[tasks.bench]
+description = "Criterion micro-benches + paired gate benches"
+run = "cargo bench --features bench"
+
+[tasks.gate]
+description = "Assert a bench plan threshold against a paired samples CSV"
+run = "cargo bench --features bench --bench compare --"

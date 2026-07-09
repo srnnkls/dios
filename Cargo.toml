@@ -1,0 +1,59 @@
+[package]
+name = "dios"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Completion-based async direct-IO driver and userspace frame pool"
+license = "MIT"
+publish = false
+
+[features]
+bench = []
+
+[dev-dependencies]
+criterion = "0.8"
+
+[[bench]]
+name = "smoke"
+harness = false
+
+[[bench]]
+name = "paired_smoke"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "compare"
+harness = false
+required-features = ["bench"]
+
+[lints.rust]
+elided_lifetimes_in_paths = "warn"
+trivial_numeric_casts = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
+unnameable_types = "warn"
+unreachable_pub = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+unused_qualifications = "warn"
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+dbg_macro = "warn"
+mem_forget = "warn"
+multiple_unsafe_ops_per_block = "deny"
+todo = "deny"
+unimplemented = "deny"
+undocumented_unsafe_blocks = "deny"
+unnecessary_safety_comment = "warn"
+unnecessary_safety_doc = "warn"
+unwrap_used = "warn"
+
+[profile.bench]
+debug = true
+
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = false
