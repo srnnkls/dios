@@ -1,0 +1,85 @@
+external:
+  blocked_by: [sira-read-perf, sira-read-concurrency]
+  note: fully sequential — no batch dispatches until both parents are done
+
+phases:
+  - id: crate-core
+    name: Crate core
+    tasks:
+      - id: T001
+        files: [Cargo.toml, src/lib.rs]
+        depends_on: []
+      - id: T002
+        files: [src/driver.rs, src/completion.rs]
+        depends_on: [T001]
+      - id: T003
+        files: [src/backend/eager.rs, src/open.rs]
+        depends_on: [T002]
+      - id: T004
+        files: [src/backend/uring.rs]
+        depends_on: [T002]
+      - id: T005
+        files: [tests/zero_alloc.rs, tests/faults.rs]
+        depends_on: [T003, T004]
+
+  - id: pool
+    name: Buffer pool
+    tasks:
+      - id: T006
+        files: [src/pool/frames.rs, src/pool/table.rs, src/pool/write_arena.rs]
+        depends_on: [T003]
+      - id: T007
+        files: [src/pool/epoch.rs, tests/guard_compile_fail.rs]
+        depends_on: [T006]
+      - id: T008
+        files: [src/pool/miss.rs, benches/overlap.rs]
+        depends_on: [T007, T004]
+      - id: T009
+        files: [tests/loom_pool.rs, tests/zero_alloc.rs]
+        depends_on: [T007]
+
+  - id: sira-wiring
+    name: sira integration (sira repository, dios as dependency)
+    tasks:
+      - id: T010
+        files: [sira/src/block_source.rs, sira/src/segment/cursor.rs, sira/src/columnar.rs]
+        depends_on: []
+      - id: T011
+        files: [sira/src/block_source.rs, sira/src/storage.rs]
+        depends_on: [T010, T008]
+      - id: T012
+        files: [sira/src/segment/writer.rs, sira/src/segment/footer.rs, sira/src/segment/header.rs, sira/src/write_buffer.rs]
+        depends_on: [T003, T006]
+      - id: T013
+        files: [sira/src/manifest.rs, sira/src/journal.rs]
+        depends_on: [T012, T004]
+      - id: T014
+        files: [sira/benches/, scopes/draft/dios-v1/resources/measurements.md]
+        depends_on: [T011, T013]
+
+  - id: nmnm-readiness
+    name: nmnm API fit
+    tasks:
+      - id: T015
+        files: [examples/gateway_contract.rs, scopes/draft/dios-v1/resources/extraction.md]
+        depends_on: [T008]
+
+batches:
+  - batch: 1
+    tasks: [T001, T010]
+  - batch: 2
+    tasks: [T002]
+  - batch: 3
+    tasks: [T003, T004]
+  - batch: 4
+    tasks: [T005, T006]
+  - batch: 5
+    tasks: [T007, T012]
+  - batch: 6
+    tasks: [T008, T009, T013]
+  - batch: 7
+    tasks: [T011, T015]
+  - batch: 8
+    tasks: [T014]
+
+actions: []

@@ -1,0 +1,266 @@
+metadata:
+  issue_type: Feature
+  created: 2026-07-07
+  questions_used: 5
+  questions_limit: 5
+  approach: "Completion reactor (TigerBeetle-shaped) + registered frame pool; platform-split defaults (pool on Linux, mmap on macOS)"
+  source: scope
+  depth: guided
+
+ambiguity_scan:
+  scope:
+    status: clear
+    gaps: []
+  behavior:
+    status: clear
+    gaps: []
+  data_model:
+    status: partial
+    gaps:
+      [frame granule default pending block-size + max-value measurement (T006)]
+  constraints:
+    status: clear
+    gaps: []
+  edge_cases:
+    status: clear
+    gaps: []
+  integration:
+    status: partial
+    gaps: [Linux bench environment unresolved (open question)]
+  terminology:
+    status: clear
+    gaps: []
+
+taxonomy_coverage:
+  scope:
+    status: covered
+    source: C001, C002, C005
+  behavior:
+    status: covered
+    source: C002, C006 (approach)
+  data_model:
+    status: covered
+    source: scope.md Data Model; granule default fixed in T006
+  constraints:
+    status: covered
+    source: C004 + user directive (zero hot-path allocation)
+  edge_cases:
+    status: covered
+    source: design.md INV-1..8, DIO-G7
+  integration:
+    status: covered
+    source: C003, C005; nmnm contract from session research
+  terminology:
+    status: covered
+    source: scope.md Data Model / API Contract
+
+clarification_log:
+  - id: C001
+    area: scope
+    question: "Pool as backend behind seam with mmap default, or pool becomes default?"
+    answer: "Pool becomes default (Linux); later amended by user: mmap stays default on macOS (AD-2)"
+    impact_uncertainty: high
+    integration: scope.md AD-2, DIO-R3
+  - id: C002
+    area: behavior
+    question: "Write path in scope?"
+    answer: "Full — reads, writes, journal through the crate"
+    impact_uncertainty: high
+    integration: scope.md AD-3, DIO-R4
+  - id: C003
+    area: constraints
+    question: "macOS backend: sync-inline vs blocking thread pool?"
+    answer: "Blocking thread pool"
+    impact_uncertainty: medium
+    integration: scope.md Tech Decisions (Darwin backend)
+  - id: C004
+    area: constraints
+    question: "Performance gates?"
+    answer: "Strict parity (interpreted as parity-within-95%-CI to stay falsifiable; flagged to user)"
+    impact_uncertainty: high
+    integration: scope.md DIO-G1
+  - id: C005
+    area: integration
+    question: "Sequencing vs read-perf/read-concurrency worktrees?"
+    answer: "Fully sequential — nothing starts until both are done"
+    impact_uncertainty: high
+    integration: frontmatter blocked_by, dependencies.yaml external
+  - id: C006
+    area: behavior
+    question: "API shape (guided approach selection)?"
+    answer: "Completion reactor — no futures, no async runtime deps"
+    impact_uncertainty: high
+    integration: scope.md AD-1, API Contract
+  - id: C007
+    area: constraints
+    question: "Revisit C003 after AD-2 platform split: thread pool vs eager-inline portable backend?"
+    answer: "Eager-inline (TigerBeetle darwin shape): submit enqueues, poll executes syscall on calling thread outside the lock — supersedes C003's thread pool"
+    impact_uncertainty: medium
+    integration: scope.md AD-7, Tech Decisions, T003; design.md alternatives
+  - id: C008
+    area: scope
+    question: "Is the macOS read path mmap-only, or is the pool a supported fallback?"
+    answer: "Both backends work on both platforms behind config; platform split is defaults only (Linux=pool, macOS=mmap). Pool-on-macOS is supported + full-suite tested; advisory pool-vs-mmap measurement in T011 informs any future default flip"
+    impact_uncertainty: high
+    integration: scope.md AD-2, DIO-R3, T011, Non-Goals
+
+markers:
+  - id: M001
+    area: data_model
+    description: "GRANULE default value — fixed in T006 by block-size distribution measurement with max value size as input (AD-6)"
+    doc_ref: "scope.md#open-questions"
+    status: open
+    resolution: null
+  - id: M004
+    area: scope
+    description: "Value-log (WiscKey) escalation scope if the AD-6 cap binds"
+    doc_ref: "scope.md#ad-6-hard-value-size-cap"
+    status: open
+    resolution: null
+  - id: M002
+    area: constraints
+    description: "Linux bench host must be validated before T014 (Phase 3 entry gate)"
+    doc_ref: "scope.md#constraints"
+    status: resolved
+    resolution: "Host identified: AMD Threadripper 3970X Linux box. T014 entry validation remains: kernel >= 5.15, NVMe + O_DIRECT-capable fs probe, CCX-pinned protocol documented in resources/measurements.md"
+  - id: M003
+    area: constraints
+    description: "If DIO-G1 strict parity fails after memoization lever, Linux default flip blocked — decision returns to scope owner"
+    doc_ref: "scope.md#constraints"
+    status: open
+    resolution: null
+
+clarification_sessions:
+  - id: S002
+    timestamp: 2026-07-07
+    source: review_gate_round_1
+    reviewers: [claude-opus, claude-sonnet, codex-gpt5.5, gemini-3.5-flash]
+    findings_folded:
+      - "critical (gemini, opus): blocks > GRANULE unhandled -> AD-5: GRANULE is a hard writer-enforced block-size bound; multi-frame assembly rejected in design.md"
+      - "high (codex, gemini): sector-padding format underspecified + old-segment O_DIRECT compat -> AD-5 vNext spec requirements + version-routed mmap backend for pre-vNext, compaction migrates (superseded by S003: backward compat dropped)"
+      - "high (codex, gemini): unaligned journal/manifest writes vs O_DIRECT -> AD-3: O_DIRECT segment data plane only; metadata buffered+fsync through reactor"
+      - "high (codex, gemini, opus): parity gate ambiguous + measured at wrong layer -> DIO-G1 pinned: block-fetch layer, decoded cache bypassed, one-sided 95% CI upper bound <= 1.00, >= 30 interleaved reps, explicit blocked-flip failure consequence"
+      - "high (opus): merge-path self-deadlock -> INV-9 watermark invariant, open-fail below watermark, Busy unreachable within watermark"
+      - "high (opus): ring topology unspecified -> AD-4 shared ring + submit mutex, poll-caller epoch advance, per-worker-ring escalation recorded"
+      - "high (codex): no pool error channel -> Get::{Hit,Pending,Busy}, ReadyResult::Err with singleflight error fanout"
+      - "high (codex): EBR not testably specified -> design.md EBR algorithm section (two-advance reclamation, stalled-reader, shutdown) + loom cases"
+      - "high (sonnet): block_storage.rs name collision -> seam renamed BlockSource (sira/src/block_source.rs); existing segment/block_storage.rs noted unchanged"
+      - "high (sonnet): DIO-G6 no owning task -> full sweep folded into T014 + AC row added"
+      - "high (sonnet): DIO-G2 had no acceptance-criteria row -> AC row added"
+      - "medium folds: waiter-interest drop naming (T015/API), T012 deps += T006 and content split format-vs-backend, O_DIRECT-unavailable policy (buffered pool, never silent mmap), granule measurement moved to T006, PageId.granule_idx rename, DIO-G3 tolerance 2.0x p50, phase-vs-batch note, dio-no-sira-dep CI check (T005), INV-7 per-residency CRC semantics note + re-read test, barrier attribution corrected to commit path"
+  - id: S003
+    timestamp: 2026-07-07
+    source: review_gate_round_2
+    reviewers: [claude-opus, claude-sonnet, codex-gpt5.5, gemini-3.5-flash]
+    findings_folded:
+      - "critical (opus DIO2-1): AD-5 granule bound unsatisfiable vs writer.rs:97-99 oversize-own-block semantics -> AD-6 hard value-size cap (ValueTooLarge at write path, INV-10); grounded by gestalt store measurement (max value 758B over 36,423 rows); value-log escalation recorded"
+      - "critical (gemini): no write-allocation API -> WriteArena registered staging buffers (DIO-R2b), separate from read pool, outside watermark (also closes opus DIO2-2 frame-accounting ambiguity)"
+      - "high (codex): CRC layering contradiction (pool-below-CRC vs CRC-on-completion) -> pool is CRC-agnostic raw-granule cache; per-block verify stays in segment::block_storage above the seam; INV-7 reduced to immutability; per-fetch semantics unchanged"
+      - "high (gemini): submit_write FrameIdx-only unusable for metadata -> blocking metadata wrappers write_all_blocking/fsync_blocking (AD-3)"
+      - "high (opus DIO2-3): watermark under-bounded by open-time fan-out -> static max merge fan-out f(ln_runs[20]+levels), compaction counted as reader, registration slots capped (INV-9)"
+      - "medium folds: EBR publish-before-validate guard-create ordering + loom interleave case (opus DIO2-5), TLS-destructor thread deregistration (gemini), INV-3 never-blocks narrowed to kernel/queue waits (codex), validation.yaml T012->T006 refs (codex/gemini/opus DIO2-4), dependencies.yaml files arrays synced T001/T006/T009/T012/T014/T015 (sonnet R2-01), DIO-G2 AC-row bullet added reconciling blocking_found (sonnet R2-02)"
+  - id: S004
+    timestamp: 2026-07-07
+    source: review_gate_round_3
+    reviewers: [claude-opus, claude-sonnet, codex-gpt5.5, gemini-3.5-flash]
+    findings_folded:
+      - "high (sonnet, opus, codex — same residual): AD-5 heading + Data Model bullet retained version-routing language -> AD-5 retitled, bullet rewritten to open-time rejection; rg sweep confirms no residual outside audit trail"
+      - "high (codex): submit_write took read-pool FrameIdx despite separate WriteArena -> typed buffer identity ReadFrameIdx vs WriteSlotIdx; registered sets disjoint by type"
+      - "medium folds: register_reader -> Result<ReaderCtx, RegistrationExhausted> typed registration-time error, get() takes &ReaderCtx (gemini); WriteArena::alloc_wait park/wake instead of spin (gemini); macOS F_NOCACHE-write vs mmap-read coherency gotcha — map only after finalize+F_FULLFSYNC+manifest publish (gemini); WriteArena wording registered(Linux)/aligned(darwin) (opus low); ValueTooLarge AC reworded to before-block-formation, grounded at block.rs:40 (opus low); S002 superseded-by-S003 annotation (opus low)"
+      - "owner decisions this round: hard value-size cap accepted (breaking OK); backward compatibility dropped entirely — store open trips on non-current format version, old stores rebuild (AD-5 simplified, version routing removed)"
+
+complexity_tracking:
+  - violation: "Second read backend + owned residency layer duplicates what the kernel page cache provides"
+    justification: "Scheduled misses (nmnm residency contract) and explicit eviction are unobtainable via mmap; platform split confines the duplication to Linux"
+    alternative_rejected: "mmap+block-cache endpoint (design.md alternative 1) — page faults unschedulable"
+
+gates:
+  simplicity:
+    status: n/a
+    reason: "Feature"
+  anti_abstraction:
+    status: n/a
+    reason: "Feature"
+  integration_first:
+    status: n/a
+    reason: "Feature"
+
+deferred:
+  - area: data_model
+    question: "Frame granule default (block-size distribution + max-value input, T006)"
+  - area: integration
+    question: "Linux bench environment (box vs CI runner) for DIO-G1..G3 — Phase 3 entry gate"
+
+design_context:
+  design_opted_in: true
+  alternatives_described: true
+  alternative_descriptions:
+    - "mmap + block cache (status quo direction; remains macOS read path)"
+    - "futures + owned buffers (monoio BufResult shape)"
+    - "runtime-allocated read views (glommio ReadResult)"
+    - "sync-inline darwin backend (TigerBeetle literal port) — became the selected eager-inline portable backend via C007/AD-7"
+  source: session research 2026-07-07 (TigerBeetle io analysis, nmnm design map, sira architecture map, local monoio/glommio API inspection)
+
+readiness:
+  high_priority_areas_covered: true
+  success_criteria_measurable: true
+  scope_boundaries_clear: true
+  integration_points_identified: true
+  edge_cases_addressed: true
+
+loqui_check:
+  present: false
+  language: rust
+  status: pending
+  violations: []
+  adherence_notes: |
+    Consult /loqui rust guidelines at implementation time; no code in scope yet.
+
+review_config:
+  reasoning_effort: high
+  reviewers: [opus, sonnet, gpt, gemini]
+
+review_gate:
+  status: passed
+  rounds: 4
+  reviewers: [claude-opus, claude-sonnet, codex-gpt5.5, gemini-3.5-flash]
+  reviewed_at: 2026-07-07
+  blocking_found: 18
+  blocking_resolved: 18
+  deferred_nits: []
+  note: rounds 1-3 full 2x2 (S002-S004); round 4 targeted opus confirmation of the six S004 folds — verdict pass, no new critical/high
+  post_gate_revisions:
+    - id: R1
+      date: 2026-07-07
+      decisions: [C007 eager-inline portable backend, C008 cross-platform pool with platform-split defaults]
+      touched: [scope.md AD-2/AD-4/AD-7/DIO-R3/Tech Decisions/AC/Non-Goals, design.md alternatives/INV-3/notes/tests, tasks.yaml T003/T011, dependencies.yaml T003]
+      confirmation: passed-after-fold
+      findings:
+        - "high (opus): alloc_wait park/wake self-waits on eager backend (only poll produces completions) -> alloc_wait pumps the driver on eager; liveness test row added"
+        - "low (opus): macOS coherency gotcha generalized to mmap-or-pool reads; design_context sync-inline entry annotated as selected via C007/AD-7"
+    - id: R2
+      date: 2026-07-07
+      decisions: [terminology only — Reactor renamed Driver throughout (the API is proactor-shaped by Schmidt taxonomy: submit ops, demultiplex completions; 'reactor' denotes readiness demultiplexing, which the crate does not do)]
+      touched: [scope.md, design.md, tasks.yaml, dependencies.yaml — mechanical rename incl. dio/src/driver.rs]
+      confirmation: not required (no semantic change; rg-verified zero residuals)
+    - id: R3
+      date: 2026-07-08
+      decisions: [crate extracted up front — `dios` is a standalone crate in its own repository (this one), no longer a sira workspace member; sira consumes it as a dependency; sira-wiring phase (T010-T014) executes in the sira repository (~/projects/sira); scope renamed sira-direct-io -> dios-v1]
+      touched: [scope.md intro/Context/Constraints/Tech Decisions/DIO-R1/Dependency Graph/Verification, design.md alternatives/complexity/notes, tasks.yaml T001/T005/T012/T013 + crate paths de-prefixed, dependencies.yaml paths + phase names]
+      confirmation: not required (repo split + rename; the T005 dio-no-sira-dep CI assertion becomes structural — separate repository — with no other semantic change to invariants or gates)
+    - id: R4
+      date: 2026-07-08
+      decisions: [two codex findings from the AGENTS.md review (.reviews/agents-md/codex-gpt5.5.yaml) carried into the scope, which owns the content after the AGENTS.md slim-down]
+      touched: [scope.md Constraints/AD-7/Tech Decisions/Data Model, design.md INV-4, tasks.yaml T003/T004]
+      confirmation: not required (probe refinement + explicit statement of existing intent; no gate numbers changed)
+      findings:
+        - "medium (codex): per-filesystem O_DIRECT probe under-detects — Linux alignment constraints are file/device-specific -> probe per opened file/device via statx(STATX_DIOALIGN) (kernel >= 6.1; TigerBeetle-style write probe pre-6.1), probed alignment encoded in the open handle's constructor so misalignment is rejected before an op is issued"
+        - "high (codex): frames-registered-with-the-ring wording made the eager backend violate the architecture -> stated explicitly: eager uses the same preallocated, non-moving frame slab unregistered; ring registration is uring-only; INV-4 quiesce-before-free holds on both backends"
+
+notes: |
+  User decisions deliberately exceed the assistant's recommendations on three
+  axes (pool-as-default, full write plane, strict parity); recorded as informed
+  choices. Strict parity is encoded as parity-within-95%-CI on the pinned
+  1/5-scale bench to remain falsifiable. The scope corrects a copy-semantics
+  conflation in sira-read-hotpath/resources/mmap-soundness.md (per-miss copy
+  applies to buffered pread only, not O_DIRECT); that doc was not edited.
