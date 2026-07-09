@@ -69,6 +69,19 @@ path states so; its gate: the pinned regression benches stay green.
 - Bench code is first-class: pinned host, governor, and cache-drop
   protocol; reviewed and kept green.
 
+## Bench Host
+
+The Linux perf gates run on the Threadripper 3970X box, ssh host
+`nix` (NixOS, kernel 6.6.64, NVMe Samsung 970 PRO). `mise run remote
+-- <command>` syncs the tree there and runs the command through mise
+(e.g. `mise run remote -- mise run test`); the remote `target/`
+persists across runs. For ad-hoc ssh, the box's login shell is
+nushell — route commands through `bash -ls` (the login env carries
+`NIX_LD`, required to exec mise-installed toolchains; a stdin script
+bypasses nushell parsing). Box tooling (mise, gcc, fio) is declared in
+its `/etc/nixos/configuration.nix`; the project toolchain comes from
+`mise.toml`, same as everywhere else.
+
 ## Rust
 
 - Edition 2024, MSRV pinned (`cfg_select!` needs 1.95+). Clippy

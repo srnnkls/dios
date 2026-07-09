@@ -122,7 +122,7 @@ markers:
     description: "Linux bench host must be validated before T014 (Phase 3 entry gate)"
     doc_ref: "scope.md#constraints"
     status: resolved
-    resolution: "Host identified: AMD Threadripper 3970X Linux box. T014 entry validation remains: kernel >= 5.15, NVMe + O_DIRECT-capable fs probe, CCX-pinned protocol documented in resources/measurements.md"
+    resolution: "Host identified and wired: AMD Threadripper 3970X, ssh host `nix` (NixOS, kernel 6.6.64 — clears the uring floor, STATX_DIOALIGN, and the AD-4 escalation flags), reached via the `mise run remote` task; mise/gcc/fio declared in its NixOS config, project toolchain from mise.toml; remote cargo test verified green 2026-07-10. T014 entry validation remains: bench dir on the NVMe with O_DIRECT-capable fs (probe green), CCX-pinned protocol + governor + cache-drop documented in resources/measurements.md"
   - id: M003
     area: constraints
     description: "If DIO-G1 strict parity fails after memoization lever, Linux default flip blocked — decision returns to scope owner"

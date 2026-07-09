@@ -280,12 +280,18 @@ scope.
   outstanding miss plus up to two grace periods of Evicting limbo, since
   each miss admits at most one eviction.
 - Linux bench host: AMD Threadripper 3970X box (32c/64t Zen 2, 4 CCDs /
-  8 CCXs, 16MB L3 per CCX). T014 entry gate: validate kernel ≥ 5.15,
-  NVMe with a real O_DIRECT-supporting fs (probe green; not tmpfs), and
-  document the protocol in resources/measurements.md — benches pinned to
-  a fixed CCX set (cross-CCX placement skews DIO-G2), performance
-  governor, cache-drop method. DIO-G1..G3 run only on this host; the
-  Darwin dev machine cannot falsify them.
+  8 CCXs, 16MB L3 per CCX), ssh host `nix` — NixOS, kernel 6.6.64
+  (clears the ≥ 5.15 uring floor, the ≥ 6.1 `statx(STATX_DIOALIGN)`
+  probe, and the AD-4 escalation's `SINGLE_ISSUER`/`DEFER_TASKRUN`
+  flags), NVMe Samsung 970 PRO, fio installed for the DIO-G3 device
+  floor. Reached via `mise run remote -- <command>` (syncs the tree,
+  runs through mise; see AGENTS.md Bench Host). Remaining T014 entry
+  validation: bench directory on the NVMe with a real
+  O_DIRECT-supporting fs (probe green; not tmpfs), and the protocol
+  documented in resources/measurements.md — benches pinned to a fixed
+  CCX set (cross-CCX placement skews DIO-G2), performance governor,
+  cache-drop method. DIO-G1..G3/G8 run only on this host; the Darwin
+  dev machine cannot falsify them.
 - Linux kernel ≥ 5.15 for the io_uring backend (registered buffers,
   EXT_ARG); the portable eager backend (AD-7) is the fallback elsewhere.
 - O_DIRECT support and required alignment probed per opened file/device
