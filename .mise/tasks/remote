@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+#MISE description="Sync the tree to the Linux bench box and run a command there"
+set -euo pipefail
+
+usage() {
+  echo "usage: mise run remote -- <command...>"
+  echo "  mise run remote -- mise run test"
+  echo "  mise run remote -- mise run bench"
+  echo "  mise run remote -- uname -r"
+  exit 2
+}
+[ $# -ge 1 ] || usage
+
+host=${DIOS_REMOTE_HOST:-nix}
+dir=${DIOS_REMOTE_DIR:-build/dios}
+
+ssh "$host" bash -s <<EOF
+mkdir -p "$dir"
+EOF
+rsync -az --delete --exclude=/target "${MISE_PROJECT_ROOT:?}/" "$host:$dir/"
+
+# The remote login shell is nushell and the box is NixOS: `bash -ls` gives
+# a bash that loads the login env (NIX_LD, required to exec mise-installed
+# toolchains) and reads the script from stdin, bypassing nushell parsing.
+printf -v cmd '%q ' "$@"
+exec ssh "$host" bash -ls <<EOF
+set -euo pipefail
+export PATH="\$HOME/.local/bin:\$PATH"
+cd "$dir"
+mise trust --quiet
+mise install --quiet
+exec mise exec -- $cmd
+EOF
