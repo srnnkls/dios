@@ -1,6 +1,6 @@
 scope: dios-v1
 code: DIO
-next_id: 16
+next_id: 17
 tasks:
   - id: T001
     content: Scaffold the `dios` crate (skeleton, cfg backend selection, error types, alignment newtypes)
@@ -9,7 +9,7 @@ tasks:
     files: [Cargo.toml, src/lib.rs]
     depends_on: []
   - id: T002
-    content: Driver surface — op kinds, CompletionSlab, submit/poll contract (SubmitErr::Full backpressure; submit never waits on kernel/queue), blocking metadata wrappers (write_all_blocking/fsync_blocking), EAGAIN/EINTR/short-read semantics; mock backend with seeded deterministic completion REORDERING (DST seam — crash/ordering tests run adversarial schedules on any platform)
+    content: Driver surface — op kinds, CompletionSlab, submit/poll contract (SubmitErr::Full backpressure; submit never waits on kernel/queue; poll_wait kernel wait outside the AD-4 mutex), resource-lease contract (INV-11 — generational FileHandle with by-value close deferred past drain, OpToken issued by submit never caller-chosen, submit_write consumes WriteSlot freed at completion drain), blocking metadata wrappers (write_all_blocking/fsync_blocking), EAGAIN/EINTR/short-read semantics; mock backend with seeded deterministic completion REORDERING (DST seam — crash/ordering tests run adversarial schedules on any platform)
     status: pending
     phase: crate-core
     files: [src/driver.rs, src/completion.rs]
@@ -27,19 +27,19 @@ tasks:
     files: [src/backend/uring.rs]
     depends_on: [T002]
   - id: T005
-    content: Alloc-count harness + fault-injection tests (short read, EAGAIN, EINVAL alignment, fd exhaustion, drop-with-in-flight quiesce); no-sira-dependency (DIO-R1) is structural — separate repository
+    content: Alloc-count harness + fault-injection tests (short read, EAGAIN, EINVAL alignment, fd exhaustion, drop-with-in-flight quiesce, close-with-in-flight deferred close, stale-generation FileId rejection, submit-while-poller-parked); no-sira-dependency (DIO-R1) is structural — separate repository
     status: pending
     phase: crate-core
     files: [tests/zero_alloc.rs, tests/faults.rs]
     depends_on: [T003, T004]
   - id: T006
-    content: Frame pool — preallocated aligned frames, open-addressed PageTable, CLOCK eviction, frame state machine, WriteArena staging buffers; watermark from static max merge fan-out (ln_runs + levels, compaction counted as a reader) + open-fail below watermark (INV-9); fix GRANULE default from block-size distribution measurement with max value size as input (AD-6, incl. padding-fragmentation cost)
+    content: Frame pool — preallocated aligned frames, open-addressed PageTable (fixed capacity 2× frames rounded to a power of two; advisory lock-free probes with authoritative re-probe under the AD-4 lock, backward-shift delete, no tombstones), CLOCK eviction (check-then-set reference bit on hit; per-ReaderCtx hit/eviction counters aggregated at poll — no shared RMW on the warm path), frame state machine, WriteArena staging buffers; watermark from static max merge fan-out (ln_runs + levels, compaction counted as a reader) + open-fail below watermark (INV-9); fix GRANULE default from block-size distribution measurement with max value size as input (AD-6, incl. padding-fragmentation cost)
     status: pending
     phase: pool
     files: [src/pool/frames.rs, src/pool/table.rs, src/pool/write_arena.rs]
-    depends_on: [T003]
+    depends_on: [T003, T016]
   - id: T007
-    content: Epoch pin guards per design.md EBR spec — FrameGuard, registration slots capped at max_concurrent_readers with TLS-destructor deregistration, publish-before-validate guard create, poll-boundary epoch advance, two-advance reclamation, compile-fail borrow test
+    content: Epoch pin guards per design.md EBR spec — FrameGuard, ReaderCtx<'pool> (!Send + !Sync, per-thread epoch slot), registration slots capped at max_concurrent_readers with TLS-destructor deregistration, publish-before-validate guard create, poll-boundary epoch advance, two-advance reclamation, compile-fail tests (guard borrow escape; ReaderCtx cross-thread/outlives-pool)
     status: pending
     phase: pool
     files: [src/pool/epoch.rs, tests/guard_compile_fail.rs]
@@ -57,7 +57,7 @@ tasks:
     files: [tests/loom_pool.rs, tests/zero_alloc.rs]
     depends_on: [T007]
   - id: T010
-    content: BlockSource seam in sira — abstract block fetch at load_into and load_key_block/decoded_column behind sira/src/block_source.rs, mmap backend behind it, no behavior change. NOTE existing sira/src/segment/block_storage.rs is unrelated CRC logic and stays put
+    content: BlockSource seam in sira — abstract block fetch at load_into and load_key_block/decoded_column behind sira/src/block_source.rs, mmap backend behind it, no behavior change. The seam indirection sits on the hottest read path, so the task's bench plan re-runs RC-R1..R3 at T010 completion — regression surfaces here, not at the T014 sweep. NOTE existing sira/src/segment/block_storage.rs is unrelated CRC logic and stays put
     status: pending
     phase: sira-wiring
     files: [sira/src/segment/cursor.rs, sira/src/columnar.rs, sira/src/block_source.rs]
@@ -75,28 +75,34 @@ tasks:
     files: [sira/src/segment/writer.rs, sira/src/segment/footer.rs, sira/src/segment/header.rs, sira/src/write_buffer.rs]
     depends_on: [T003, T006]
   - id: T013
-    content: Write plane — CommitFs impl over dios (segments O_DIRECT via WriteArena; manifest/CURRENT/journal via blocking metadata wrappers per AD-3), barrier semantics preserved, crash suite green both platforms incl. corrupt-after-eviction re-read through BlockSource
+    content: Write plane — CommitFs impl over dios (segments O_DIRECT via WriteArena; manifest/CURRENT/journal via blocking metadata wrappers per AD-3), barrier semantics preserved, pre-dios RealFs retained as the DIO-G8 baseline arm + write-plane A/B bench (segment flush wall, journal micro-commit latency) landed, crash suite green both platforms incl. corrupt-after-eviction re-read through BlockSource
     status: pending
     phase: sira-wiring
     files: [sira/src/manifest.rs, sira/src/journal.rs]
     depends_on: [T012, T004]
   - id: T014
-    content: Linux gates — validate bench host first (Phase 3 entry gate; O_DIRECT probe green, protocol documented), then strict parity (CI-upper-bound <= 1.00, block-fetch layer, decoded cache bypassed), RC-R2 scaling, overlap gate, and the FULL regression sweep on both platforms (DIO-G6 - poison oracles, laziness pins, routing contract, RC-R1..R3)
+    content: Linux gates — validate bench host first (Phase 3 entry gate; O_DIRECT probe green, protocol documented, fio QD64 random-read device floor recorded for the DIO-G3 lever), then strict parity (non-inferiority CI-upper-bound <= 1.02, block-fetch layer, decoded cache bypassed), RC-R2 scaling, overlap gate, write-plane A/B vs the RealFs baseline arm (DIO-G8), the scan-workload observation (sweep > pool size interleaved with point-gets; per-ReaderCtx hit/eviction counters recorded in measurements.md — S3-FIFO escalation evidence), and the FULL regression sweep on both platforms (DIO-G6 - poison oracles, laziness pins, routing contract, RC-R1..R3)
     status: pending
     phase: sira-wiring
     files: [sira/benches/, scopes/draft/dios-v1/resources/measurements.md]
     depends_on: [T011, T013]
   - id: T015
-    content: nmnm-readiness — compile-tested Gateway-contract example (submit -> resident borrow, waiter-interest drop on pending tokens) + extraction checklist; checklist names the Send-able per-WorkItem residency lease (coarse refcount pin at Ready transition, released at item completion) required because FrameGuard is !Send and nmnm's executor steals items across threads
+    content: nmnm-readiness — compile-tested Gateway-contract example extending the T016 spike to the full pool API (submit -> resident borrow, waiter-interest drop on pending tokens) + extraction checklist; checklist names the Send-able per-WorkItem residency lease (coarse refcount pin at Ready transition, released at item completion) required because FrameGuard is !Send and nmnm's executor steals items across threads
     status: pending
     phase: nmnm-readiness
     files: [examples/gateway_contract.rs, scopes/draft/dios-v1/resources/extraction.md]
     depends_on: [T008]
+  - id: T016
+    content: API-fit spike — minimal stub pool (fixed frame array + map, no CLOCK/EBR/singleflight) over the T002 mock driver; drive the nmnm Gateway loop shape (get -> Pending -> worker takes other ready work -> poll -> ready borrow, waiter-interest drop) and sira's k-way-merge suspend shape; falsifies the Get/Pending/ready API before the real pool is built — gates T006
+    status: pending
+    phase: crate-core
+    files: [examples/api_fit_spike.rs]
+    depends_on: [T002]
 
 meta:
   created: 2026-07-07
-  last_updated: 2026-07-08
-  progress: 0/15
+  last_updated: 2026-07-10
+  progress: 0/16
   blocked_by: [sira-read-perf, sira-read-concurrency]
 
 phases:

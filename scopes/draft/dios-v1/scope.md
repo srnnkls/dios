@@ -146,12 +146,53 @@ journal's one-barrier-per-micro-commit behavior carry over intact.
 thread may `poll()`, holding the same lock to drain the CQ; the poll
 caller advances the reclamation epoch. Warm hits never touch the ring or
 the lock — only misses and write-plane ops contend, and the profiled
-workload is warm-dominated. If DIO-G2 (8t scaling) fails on submit-lock
-contention, the recorded escalation is per-worker rings with the frame
-arena registered in each ring (io_uring permits registering the same
-buffers in multiple rings). The eager backend (AD-7) shares the
+workload is warm-dominated. The eager backend (AD-7) shares the
 submit/drain lock discipline but executes the syscall outside the lock,
-re-acquiring only to push the completion.
+re-acquiring only to push the completion. Lock boundary (INV-3): the
+mutex covers SQE fill and CQ drain only — `poll_wait`'s kernel wait
+(EXT_ARG) happens outside it, so a parked poller never makes `submit`
+wait.
+
+**Escalation (recorded; per-worker rings are the designated end-state
+topology if shared-ring contention ever shows):**
+
+- Trigger: DIO-G2 fails and the profile attributes the failure to the
+  submit mutex (hold time or handoff), not to device saturation or
+  cross-CCX placement. If the profile shows handoff cost rather than
+  serialization itself, flat combining under the existing topology is
+  the cheaper first lever — no API or invariant change.
+- Topology: one ring per registered IO thread (readers, writer,
+  compaction), each opened with `IORING_SETUP_SINGLE_ISSUER` +
+  `IORING_SETUP_DEFER_TASKRUN` (kernel ≥ 6.0/6.1, probed at open; plain
+  per-worker rings on older kernels) — strictly one issuer per ring,
+  the kernel's intended fast path. No thread ever touches another
+  thread's SQ/CQ, so ring serialization disappears rather than moving
+  into the kernel's shared-ring `uring_lock`.
+- The frame arena is registered in every ring. Locked-memory accounting
+  is per registration — N rings account the arena N times (the exact
+  limit interface is kernel-version dependent, RLIMIT_MEMLOCK in the
+  common case) — so headroom is probed at open with a typed error.
+- What stays shared: the pool control plane (page table, singleflight,
+  CLOCK hand, evict queue, epoch advance) keeps its mutex, but with
+  every syscall outside it the critical sections shrink to pure memory
+  operations; a worker draining its own CQ re-acquires it only to
+  publish frame transitions and advance the epoch.
+- Cross-thread readiness is already ring-agnostic: `ready(token)` reads
+  the frame state machine, never a CQ, so a singleflight miss submitted
+  on worker A's ring readies waiters on B and C without them seeing A's
+  completions. The CompletionSlab stays pool-global (`user_data` slot
+  indexes are ring-agnostic); per-ring SQ/CQ depths derive from the
+  slab bound.
+- Progress rule: readiness is published only when the originating
+  worker drains its own CQ, so a worker with in-flight ops must pump
+  its ring — on every pool call and before parking — until its
+  in-flight count reaches zero, and thread deregistration (the TLS
+  destructor path) drains the ring to zero in-flight before the slot
+  is released. An issuer that submits and never polls again would
+  otherwise strand every waiter on its ops.
+- INV-1..11 are unchanged by construction — they constrain frame state
+  and slab slots, never ring count. Enacting the escalation is an owner
+  decision recorded in validation.yaml, gated by a DIO-G2 re-run.
 
 #### AD-7: Portable backend — eager-inline execution
 
@@ -210,7 +251,10 @@ scope.
   pool-frame fetch against mmap fetch, both feeding CRC+decode), on the
   pinned 1/5-scale bench, ≥ 30 interleaved repetitions; PASS iff the
   upper bound of the one-sided 95% CI of the wall-time ratio pool/mmap
-  is ≤ 1.00. Full scale reported honestly. If the gate fails after the
+  is ≤ 1.02 — a one-sided non-inferiority bound with a 2% margin: true
+  parity passes, any real regression ≥ 2% fails (an upper bound of 1.00
+  would demand measured superiority and reject true parity ~95% of the
+  time). Full scale reported honestly. If the gate fails after the
   per-worker last-frame memoization lever, the Linux default flip is
   BLOCKED and the decision (relax the gate vs keep mmap default) returns
   to the scope owner — it is not relaxed silently.
@@ -225,8 +269,16 @@ scope.
   the pool). Enforced at store open: a configuration below the watermark
   fails open, it does not deadlock at runtime. Reader-thread
   registration slots equal `max_concurrent_readers`; registering beyond
-  capacity fails at registration, which is what makes `Busy` impossible
-  for a reader operating within the declared watermark.
+  capacity fails at registration. Within the watermark, `Busy` is
+  bounded, retriable backpressure — never deadlock: `get()` runs one
+  bounded reclaim attempt (drain completions, advance the epoch if
+  possible, reclaim expired Evicting frames, one more CLOCK sweep)
+  before returning `Busy`, so it is reachable only under reclamation
+  lag or a stalled reader, always retriable via `poll()`; recovery is
+  pinned by DIO-G7 and a Busy-rate counter keeps frequency observable.
+  `miss_headroom ≥ 3 × max_inflight_reads`: one InFlight frame per
+  outstanding miss plus up to two grace periods of Evicting limbo, since
+  each miss admits at most one eviction.
 - Linux bench host: AMD Threadripper 3970X box (32c/64t Zen 2, 4 CCDs /
   8 CCXs, 16MB L3 per CCX). T014 entry gate: validate kernel ≥ 5.15,
   NVMe with a real O_DIRECT-supporting fs (probe green; not tmpfs), and
@@ -243,7 +295,9 @@ scope.
   issued. If unsupported (tmpfs, some CI): pool stays the default
   backend with buffered reads and a logged warning; DIO-G1..G3 results
   are valid only with O_DIRECT active; sira never silently falls back
-  to mmap on Linux.
+  to mmap on Linux. Buffered-fallback performance is explicitly
+  non-gating — the path exists for correctness where O_DIRECT is
+  unavailable, not as a performance target.
 - No new default dependencies beyond the `io-uring` binding crate
   (Linux-only, no runtime); no tokio/monoio/glommio. `dios` has no
   dependency on `sira` (structural — separate repository).
@@ -263,7 +317,7 @@ scope.
 | io_uring binding | `io-uring` crate (tokio-rs, runtime-free) | Raw SQE/CQE control for registered buffers + EXT_ARG without an executor |
 | Kernel writes into | Registered frames (`IORING_REGISTER_BUFFERS`, `READ_FIXED`) on uring; eager uses the same preallocated slab unregistered | Frames outlive the ring by construction — solves drop-safety structurally, removes per-op buffer accounting |
 | Pin discipline | Epoch-based read guards; frame reuse deferred to grace period at `poll()` boundaries (algorithm specified in design.md) | No per-frame refcount write on warm hits (hot-page contention — the RavenDB objection); quiescence is natural in a poll-driven driver |
-| Eviction | CLOCK (second chance) v1 | Zero-alloc, no ordering structure to maintain; S3-FIFO escalation only if Linux benches show scan-pollution |
+| Eviction | CLOCK (second chance) v1; a hit sets the reference bit check-then-set (Relaxed load; Relaxed store only when clear) | Zero-alloc, no ordering structure to maintain; steady-state hot frames keep the bit set so repeat hits stay read-only — the first-touch store is the only per-frame write and rides in the DIO-G1 bench; S3-FIFO escalation only if the T014 scan-workload observation (sweep > pool size interleaved with point-gets, per-ReaderCtx hit/eviction counters) shows scan-pollution |
 | Miss dedup | Singleflight per PageId; on error, ALL waiters receive the error and the frame returns to Free | Concurrent misses on one page coalesce into one submitted read |
 | Durability ops | Explicit fsync/fdatasync ops, no O_DSYNC default | Preserves commit-path barrier accounting and journal barrier-per-commit semantics |
 | Metadata IO | Buffered writes + fsync through the driver (manifest, CURRENT, journal) | Small unaligned writes are incompatible with O_DIRECT; crash semantics preserved exactly (AD-3) |
@@ -274,10 +328,10 @@ scope.
 
 | Entity | Purpose | Key Fields |
 |--------|---------|------------|
-| `PageId` | Stable address of an aligned file extent | `file: FileId`, `granule_idx: u32` |
-| `Frame` | Preallocated, sector-aligned buffer slot; ring-registered on uring, unregistered on eager | `data: [u8; GRANULE]` (aligned 4096), `state: Free\|InFlight\|Resident\|Evicting`, `page: PageId`, clock bit |
-| `PageTable` | PageId → frame lookup | open-addressed, fixed capacity = frame count, no rehash on hot path |
-| `CompletionSlab` | Op slots at fixed capacity from open — `frame_count + write_slots + metadata_headroom` bounds in-flight ops, so no growth path exists (a lazily-growing slab is amortized-zero, not zero); `user_data` = slot index | op kind, fd, offset, frame index, waker/callback token |
+| `PageId` | Stable address of an aligned file extent | `file: FileId` (generational — stale generation rejected at submit, INV-11), `granule_idx: u32` |
+| `Frame` | Preallocated, sector-aligned buffer slot; ring-registered on uring, unregistered on eager | `data: [u8; GRANULE]` (aligned 4096), `state: Free\|InFlight\|Resident\|Evicting`, `page: PageId`, clock bit (set check-then-set on hit) |
+| `PageTable` | PageId → frame lookup | open-addressed, fixed capacity = 2× frame count rounded up to a power of two (≤ 50% occupancy at full pool, bounding negative-probe length); lock-free probes are advisory — the miss path re-probes authoritatively under the AD-4 lock before submitting, guard-create recheck catches stale hits; insert/delete only under the lock, delete by backward-shift (no tombstones); no rehash ever |
+| `CompletionSlab` | Op slots at fixed capacity from open — `frame_count + write_slots + metadata_headroom` bounds in-flight ops, so no growth path exists (a lazily-growing slab is amortized-zero, not zero); slots acquired at submit (issuing an `OpToken` = slot + generation, generation bumped at reclaim so a reused slot never aliases a stale token) and reclaimed at completion drain — never caller-chosen (INV-11); `user_data` = slot index | op kind, fd, offset, frame index, waker/callback token |
 | `FrameGuard<'pool>` | Epoch-pinned read access, `Deref<Target=[u8]>`, `!Send` | frame index, epoch ticket |
 | `WriteArena` / `WriteSlot` | Granule-aligned write staging — registered O_DIRECT (Linux) / aligned F_NOCACHE (darwin) — for segment writer and compaction; separate from the read pool, outside the watermark | slot count (config), `DerefMut` slots |
 | `Driver` | cfg-selected backend | `Uring` (Linux) / `Eager` (portable, AD-7) |
@@ -339,13 +393,17 @@ deliverable, reviewed before implementation):
 
 - DIO-G1 strict parity (Linux): block-fetch-layer warm point-get via
   pool vs mmap, decoded-block cache bypassed; PASS iff upper bound of
-  the one-sided 95% CI of the ratio ≤ 1.00 (protocol in Constraints).
+  the one-sided 95% CI of the ratio ≤ 1.02 (non-inferiority, 2% margin;
+  protocol in Constraints).
 - DIO-G2 scaling (Linux): non-inverse threaded reads per RC-R2
   methodology (8t ≥ 2x 1t throughput target inherited), under the AD-4
   ring topology.
 - DIO-G3 overlap (Linux): 64 concurrent cold point-gets on distinct
   blocks complete within 2.0x the p50 single-miss latency (not 64x) —
-  demonstrates scheduled misses.
+  demonstrates scheduled misses. Escalation lever: T014 records the fio
+  QD64 random-read wall on the same host/file as the device floor; if
+  the gate fails, it re-forms as ≤ 1.2x that floor — owner-signed,
+  recorded, never silent.
 - DIO-G4 zero-alloc: alloc-count harness shows 0 allocations on warm get,
   miss submit, and completion drain after warmup, both backends.
 - DIO-G5 crash safety: existing crash suite (CommitFs fault shims, torn
@@ -360,6 +418,22 @@ deliverable, reviewed before implementation):
 - DIO-G7 backpressure: `get()` beyond the declared watermark yields
   `Busy` without deadlock and without blocking submit; a pool sized
   below the watermark fails at open (deadlock-freedom constraint).
+- DIO-G8 write-plane non-inferiority (Linux): segment flush wall time
+  and journal micro-commit latency through the new write plane
+  (WriteArena O_DIRECT data + buffered/fsync metadata) vs the pre-dios
+  `CommitFs`/`RealFs` baseline — the old impl is retained behind the
+  bench as the baseline arm — interleaved A/B on the pinned host, ≥ 30
+  reps; PASS iff the one-sided 95% CI upper bound of each ratio
+  (new/old) is ≤ 1.02. O_DIRECT forgoes page-cache write-behind, so
+  this is the gate that catches a flush regression the read gates
+  cannot see. Escalation levers, in order: WriteArena batch depth
+  (stage multiple granules per submit-await window); if the segment
+  arm still fails, the segment-data O_DIRECT default is BLOCKED
+  (buffered segment writes through the driver stay the default,
+  O_DIRECT config-selectable) and the decision returns to the scope
+  owner. The journal arm has no lever beyond wrapper thinning — the
+  syscall sequence is identical by design (AD-3), so its regression
+  blocks outright.
 
 ## Acceptance Criteria
 
@@ -367,7 +441,8 @@ deliverable, reviewed before implementation):
   bypassed,
   when the pinned block-fetch bench runs pool vs mmap interleaved ≥ 30
   reps,
-  then the one-sided 95% CI upper bound of the ratio is ≤ 1.00 (DIO-G1).
+  then the one-sided 95% CI upper bound of the ratio is ≤ 1.02
+  (non-inferiority margin, DIO-G1).
 
 - [ ] Given the RC-R2 threaded bench (shared Arc, 8 threads) on Linux,
   when reads run on the pool backend,
@@ -408,6 +483,13 @@ deliverable, reviewed before implementation):
   then it is rejected with `ValueTooLarge` before the oversize block is
   formed (AD-6, DIO-R4).
 
+- [ ] Given the pinned Linux host with the pre-dios `RealFs` baseline
+  arm available,
+  when segment flush and journal micro-commit run interleaved A/B
+  through the new write plane ≥ 30 reps,
+  then the one-sided 95% CI upper bound of each ratio is ≤ 1.02
+  (DIO-G8).
+
 - [ ] Given a pool sized below the declared watermark,
   when the store opens,
   then open fails with a configuration error (DIO-G7); and given a
@@ -421,20 +503,39 @@ deliverable, reviewed before implementation):
 Crate surface to pin during T002/T006 (signatures indicative):
 
 ```rust
-// driver — no allocation after init; Completion slots live in the slab
+// driver — no allocation after init; op state lives in the CompletionSlab
 pub struct Driver(backend::Impl);           // cfg: Uring | Eager (portable)
-pub struct OpSlot(u32);                      // index into CompletionSlab
-pub struct ReadFrameIdx(u32);                // read-pool residency frame
-pub struct WriteSlotIdx(u32);                // WriteArena staging slot
+pub struct FileHandle { /* fd index + generation */ }  // driver-owned; !Copy
+pub struct OpToken(u64);                     // slab slot + generation, issued by submit, echoed
+                                             // in the completion — a reused slot never aliases a
+                                             // stale token (ABA-safe)
+pub struct ReadFrameIdx(u32);                // read-pool frame; reuse governed by the pool's frame state machine (INV-1)
 impl Driver {
-    pub fn submit_read(&self, fd: Fd, frame: ReadFrameIdx, off: u64, slot: OpSlot) -> Result<(), SubmitErr>;
-    pub fn submit_write(&self, fd: Fd, buf: WriteSlotIdx, off: u64, slot: OpSlot) -> Result<(), SubmitErr>;
-    pub fn submit_fsync(&self, fd: Fd, barrier: SyncMode, slot: OpSlot) -> Result<(), SubmitErr>;
-    pub fn poll(&self, out: &mut CompletionBatch) -> usize;   // never blocks
+    pub fn open(&self, path: &Path, how: OpenHow) -> Result<FileHandle, IoError>;  // probes O_DIRECT support + alignment (per Constraints)
+    pub fn close(&self, fd: FileHandle);     // consumes; close(2) deferred until the fd's in-flight
+                                             // ops drain; close errors are non-actionable by design —
+                                             // durability rides the explicit fsync barriers (AD-3), a
+                                             // close(2) failure after the barrier cannot un-persist
+                                             // acknowledged data. Operating failures (EIO-class) are
+                                             // logged, never surfaced; only EBADF asserts — a
+                                             // double-close is a driver state bug, not an operating error
+    pub fn submit_read(&self, fd: &FileHandle, frame: ReadFrameIdx, off: u64) -> Result<OpToken, SubmitErr>;
+    pub fn submit_write<'a>(&self, fd: &FileHandle, buf: WriteSlot<'a>, off: u64) -> Result<OpToken, (SubmitErr, WriteSlot<'a>)>;
+    pub fn submit_fsync(&self, fd: &FileHandle, barrier: SyncMode) -> Result<OpToken, SubmitErr>;
+    pub fn poll(&self, out: &mut CompletionBatch) -> usize;
     pub fn poll_wait(&self, out: &mut CompletionBatch, timeout: Duration) -> usize;
 }
+// poll never sleeps awaiting events — uring: non-blocking CQ drain; eager:
+// executes queued syscalls inline on the calling thread (AD-7). poll_wait's
+// kernel wait happens OUTSIDE the AD-4 mutex (lock boundary stated in AD-4).
+// resource leases (INV-11): an op can never reference a closed fd
+// (&FileHandle at submit + by-value close with deferred close(2)), a reused
+// op slot (OpToken is issued by submit and reclaimed at completion drain —
+// never caller-chosen), or a reused write buffer (submit_write consumes the
+// WriteSlot; the arena slot returns to Free only when the write's completion
+// is drained; the Err arm hands the slot back to the caller).
 // the kernel writes only into ReadFrameIdx buffers and reads only from
-// WriteSlotIdx buffers — the two registered sets are disjoint by type
+// WriteSlot buffers — the two registered sets are disjoint by type
 // SubmitErr::Full = SQ/queue full after one flush-retry — backpressure, never a block
 
 // pool — warm hit: page-table probe + epoch pin, zero syscalls/allocs
@@ -442,13 +543,18 @@ pub struct Pool { /* frames, page table, driver */ }
 pub enum Get<'p> {
     Hit(FrameGuard<'p>),
     Pending(PendingToken),   // miss submitted (or joined via singleflight)
-    Busy,                    // no evictable frame — only possible beyond the watermark
+    Busy,                    // no evictable frame after get()'s bounded reclaim attempt —
+                             // within the watermark only under reclaim lag or a stalled
+                             // reader (INV-9); retriable via poll()
 }
+pub struct ReaderCtx<'pool>;                  // per-thread epoch slot: !Send + !Sync, cannot
+                                              // outlive the pool — the EBR restrictions are in
+                                              // the type, not a usage rule
 impl Pool {
-    pub fn register_reader(&self) -> Result<ReaderCtx, RegistrationExhausted>;
-    pub fn get(&self, r: &ReaderCtx, page: PageId) -> Get<'_>;
+    pub fn register_reader(&self) -> Result<ReaderCtx<'_>, RegistrationExhausted>;
+    pub fn get(&self, r: &ReaderCtx<'_>, page: PageId) -> Get<'_>;
     pub fn poll(&self) -> usize;              // drain + ready pending tokens + advance epoch
-    pub fn ready(&self, r: &ReaderCtx, t: PendingToken) -> ReadyResult<'_>;
+    pub fn ready(&self, r: &ReaderCtx<'_>, t: PendingToken) -> ReadyResult<'_>;
 }
 // reader-slot exhaustion is a typed registration-time error, never a
 // mid-read failure
@@ -464,6 +570,8 @@ pub struct FrameGuard<'p>;                    // Deref<Target = [u8]>, !Send
 // write plane — O_DIRECT staging separate from the read pool
 pub struct WriteArena { /* registered, granule-aligned staging buffers */ }
 pub struct WriteSlot<'a>;                     // DerefMut<Target = [u8]>, granule-aligned
+// dropped unsubmitted → slot freed; consumed by submit_write → slot freed
+// only at completion drain (INV-11)
 impl WriteArena {
     pub fn alloc(&self) -> Option<WriteSlot<'_>>;         // None = exhausted
     pub fn alloc_wait(&self, timeout: Duration) -> Option<WriteSlot<'_>>;
@@ -479,26 +587,35 @@ impl Driver {
 }
 ```
 
-Semantics: `EAGAIN`/`EINTR` resubmitted internally (TigerBeetle
-`linux.zig:599-604` behavior); short reads resliced and resubmitted by
-the pool up to the extent length, not the caller; alignment EINVAL is a
-programming error surfaced loudly. "Never blocks" for `submit_*` means
+Semantics: `EINTR` resubmitted internally on every op; `EAGAIN`
+resubmitted on reads (XFS can EAGAIN a blocking file read under
+io_uring — TigerBeetle `linux.zig:599-604`) but surfaced as an error on
+writes (TigerBeetle returns WouldBlock there, `linux.zig:737-741`);
+unlike TigerBeetle, both resubmit paths carry a fixed retry bound set at
+init. Short reads resliced and resubmitted by the pool up to the extent
+length, not the caller; alignment EINVAL is a programming error surfaced
+loudly. "Never blocks" for `submit_*` means
 no waiting on kernel completion or queue space — the AD-4 submit mutex
 is a bounded SQE-fill critical section, not an IO wait; the blocking
 wrappers are the explicit exception, used only on the metadata plane.
 Kernel ops always drain; dropping a `PendingToken` drops waiter interest
 only (the read completes, frame becomes Resident); `Pool::drop`
-quiesces.
+quiesces. File close is deferred, never racy: `close` consumes the
+`FileHandle` immediately and the driver issues close(2) once the fd's
+in-flight count reaches zero — on the eager backend this is what makes
+queued-but-unexecuted ops safe against fd-number recycling. The pool
+addresses files by generational `FileId` (inside `PageId`); a stale
+generation is rejected at miss submit, before an op is issued.
 
 ## Dependency Graph
 
 > Machine-readable: [dependencies.yaml](dependencies.yaml)
 
 ```
-Phase 1 (crate core)      T001 scaffold → T002 driver surface → {T003 eager, T004 uring} → T005 harness
-Phase 2 (pool)            T006 frames/table/CLOCK/granule → T007 epoch guards → {T008 miss+overlap, T009 zero-alloc+loom}
+Phase 1 (crate core)      T001 scaffold → T002 driver surface → {T003 eager, T004 uring, T016 API-fit spike} → T005 harness
+Phase 2 (pool)            T006 frames/table/CLOCK/granule (gated by T016) → T007 epoch guards → {T008 miss+overlap, T009 zero-alloc+loom}
 Phase 3 (sira wiring)     T010 BlockSource seam → T011 read routing; T012 vNext format → T013 write plane → T014 gates
-Phase 4 (nmnm-readiness)  T015 contract example + extraction checklist
+Phase 4 (nmnm-readiness)  T015 contract example (extends the T016 spike) + extraction checklist
 ```
 
 Phase labels group by concern, not sequencing: T010 (seam refactor, no
@@ -529,7 +646,10 @@ repository against `dios` as a dependency.
 - Alloc-count harness in `tests/zero_alloc.rs` (DIO-G4).
 - Linux bench host (Phase 3 entry gate): pinned parity/scaling/overlap
   benches (DIO-G1..G3) against the mmap baseline landed by
-  sira-read-perf/-concurrency, protocol per Constraints.
+  sira-read-perf/-concurrency, the write-plane A/B (DIO-G8) against the
+  retained `RealFs` baseline arm, and the scan-workload observation
+  (hit/eviction counters into resources/measurements.md — the S3-FIFO
+  escalation's evidence), protocol per Constraints.
 - Full sira suite on both platforms — explicit full-sweep step in T014
   (DIO-G6); crash suite through the new write plane incl.
   re-read-after-eviction CRC case (DIO-G5).
@@ -560,6 +680,8 @@ repository against `dios` as a dependency.
   self-impose sector alignment on darwin anyway.
 - Registered buffers are per-ring, but the same arena may be registered
   in multiple rings — keeps the per-worker-ring escalation (AD-4) open.
+  Locked-memory accounting is per registration: N rings account the
+  arena N times — probe headroom before enacting the escalation.
 - The mmap-soundness.md "per-miss copy" claim does not apply to
   O_DIRECT variants; do not cite it against this design (see Context).
 - EBR reader-thread slots must deregister via TLS destructor/RAII on

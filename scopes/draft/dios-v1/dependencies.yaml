@@ -21,13 +21,16 @@ phases:
       - id: T005
         files: [tests/zero_alloc.rs, tests/faults.rs]
         depends_on: [T003, T004]
+      - id: T016
+        files: [examples/api_fit_spike.rs]
+        depends_on: [T002]
 
   - id: pool
     name: Buffer pool
     tasks:
       - id: T006
         files: [src/pool/frames.rs, src/pool/table.rs, src/pool/write_arena.rs]
-        depends_on: [T003]
+        depends_on: [T003, T016]
       - id: T007
         files: [src/pool/epoch.rs, tests/guard_compile_fail.rs]
         depends_on: [T006]
@@ -70,7 +73,7 @@ batches:
   - batch: 2
     tasks: [T002]
   - batch: 3
-    tasks: [T003, T004]
+    tasks: [T003, T004, T016]
   - batch: 4
     tasks: [T005, T006]
   - batch: 5

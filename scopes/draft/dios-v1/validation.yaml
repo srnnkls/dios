@@ -168,6 +168,30 @@ clarification_sessions:
       - "high (codex): submit_write took read-pool FrameIdx despite separate WriteArena -> typed buffer identity ReadFrameIdx vs WriteSlotIdx; registered sets disjoint by type"
       - "medium folds: register_reader -> Result<ReaderCtx, RegistrationExhausted> typed registration-time error, get() takes &ReaderCtx (gemini); WriteArena::alloc_wait park/wake instead of spin (gemini); macOS F_NOCACHE-write vs mmap-read coherency gotcha — map only after finalize+F_FULLFSYNC+manifest publish (gemini); WriteArena wording registered(Linux)/aligned(darwin) (opus low); ValueTooLarge AC reworded to before-block-formation, grounded at block.rs:40 (opus low); S002 superseded-by-S003 annotation (opus low)"
       - "owner decisions this round: hard value-size cap accepted (breaking OK); backward compatibility dropped entirely — store open trips on non-current format version, old stores rebuild (AD-5 simplified, version routing removed)"
+  - id: S005
+    timestamp: 2026-07-10
+    source: external_review_post_gate
+    reviewers: [external]
+    findings_folded:
+      - "critical (external 1): resource lifetimes not encoded in the driver API — fd/op-slot/write-buffer close-or-reuse while an op references them, worst on eager where the syscall runs later at poll -> lease contract (INV-11): driver-owned generational FileHandle (by-value close, close(2) deferred past drain), OpToken issued by submit (slots never caller-chosen), submit_write consumes WriteSlot (arena slot freed at completion drain); T002/T005 updated, fault-test rows added"
+      - "high (external 2): CLOCK contradicted the no-per-frame-write warm hit — nothing ever set the reference bit, so eviction was round-robin -> check-then-set reference bit on hit (Relaxed; store only when clear), steady-state hot frames stay read-only; first-touch store rides in DIO-G1; eviction-order test row"
+      - "high (external 3): PageTable specified at 100% load factor (capacity = frame count) -> capacity 2x frames rounded to a power of two (<= 50% occupancy at full pool); concurrency protocol specified: advisory lock-free probes, authoritative re-probe under the AD-4 lock on miss, insert/backward-shift-delete under the lock, no tombstones, no rehash; negative-probe test row"
+      - "high (external 4): poll() 'never blocks' contradicted AD-7 eager inline syscalls; poll_wait lock discipline unspecified -> per-backend poll semantics in the API contract; lock boundary in AD-4/INV-3 (mutex covers SQE fill + CQ drain only, poll_wait parks outside); submit-while-poller-parked test"
+      - "high (external 5): INV-9 Busy-impossible claim unprovable under EBR lag (two-epoch Evicting limbo, InFlight frames, unspecified miss_headroom; contradicted the stalled-readers-surface-as-Busy note) -> owner decision: get() runs one bounded reclaim attempt then returns Busy; INV-9 downgraded to bounded retriable backpressure within the watermark; miss_headroom >= 3x max_inflight_reads derivation; Busy-rate counter"
+      - "medium (external 6): consumer fit validated too late (T015 after driver and pool) -> T016 API-fit spike (stub pool over the T002 mock driver, Gateway loop + k-way-merge suspend shapes) gates T006; T015 extends the spike"
+      - "medium (external 7): DIO-G1 CI-upper-bound <= 1.00 is a superiority test rejecting true parity ~95% of the time; DIO-G3 2.0x bound device-dependent with no escalation lever -> owner decisions: DIO-G1 re-formed as equivalence bound <= 1.02; DIO-G3 lever recorded (T014 records fio QD64 device floor; on failure the gate re-forms as <= 1.2x floor, owner-signed)"
+  - id: S006
+    timestamp: 2026-07-10
+    source: external_review_post_gate
+    reviewers: [external]
+    findings_folded:
+      - "verdict: S005 folds materially resolve all seven prior findings; architecture defensible; residuals are type-state and document-consistency tightening before T002 pins the API"
+      - "medium (external): validation.yaml R5 flow scalar invalid under strict YAML 1.1 parsers (colon in a plain scalar in flow context; flow-sequence commas also split entries semantically) -> R5 rewritten as quoted block sequences; all three yaml files verified against a strict parser"
+      - "medium (external): submit_write could not hand the consumed WriteSlot back on failure with Result<OpToken, SubmitErr> -> signature carries it: Result<OpToken, (SubmitErr, WriteSlot)>"
+      - "medium (external): ReaderCtx EBR restrictions unencoded (only FrameGuard was !Send) -> ReaderCtx<'pool> is !Send + !Sync and pool-lifetime-bound; compile-fail test row + T007 updated"
+      - "medium (external): deferred close had no error channel -> documented non-actionable: durability is owned by explicit fsync barriers (AD-3), a close(2) failure after the barrier cannot un-persist acknowledged data; logged + debug-asserted, never surfaced"
+      - "medium (external): OpToken(u32) ABA-unsafe on slab-slot reuse -> OpToken packs slot + generation (u64), generation bumped at reclaim"
+      - "low (external): DIO-G1 mislabeled as an equivalence bound -> relabeled one-sided non-inferiority, 2% margin (scope.md Constraints/gate/AC, design.md problem + test tables, notes)"
 
 complexity_tracking:
   - violation: "Second read backend + owned residency layer duplicates what the kernel page cache provides"
@@ -256,11 +280,60 @@ review_gate:
       findings:
         - "medium (codex): per-filesystem O_DIRECT probe under-detects — Linux alignment constraints are file/device-specific -> probe per opened file/device via statx(STATX_DIOALIGN) (kernel >= 6.1; TigerBeetle-style write probe pre-6.1), probed alignment encoded in the open handle's constructor so misalignment is rejected before an op is issued"
         - "high (codex): frames-registered-with-the-ring wording made the eager backend violate the architecture -> stated explicitly: eager uses the same preallocated, non-moving frame slab unregistered; ring registration is uring-only; INV-4 quiesce-before-free holds on both backends"
+    - id: R5
+      date: 2026-07-10
+      decisions:
+        - "external post-gate review folded (S005): resource-lease API contract (INV-11); CLOCK check-then-set reference bit; PageTable 2x sizing + concurrency protocol; poll/poll_wait lock boundary (AD-4/INV-3); INV-9 downgraded to bounded retriable backpressure with miss_headroom formula; T016 API-fit spike gating T006; DIO-G1 re-formed as one-sided non-inferiority bound <= 1.02; DIO-G3 device-floor escalation lever; EAGAIN semantics corrected against TigerBeetle source (resubmit on reads only, surfaced on writes, linux.zig:737-741) + fixed retry bound where TigerBeetle retries unbounded"
+      touched:
+        - "scope.md API Contract/Constraints/AD-4/Data Model/Tech Decisions/DIO-G1/DIO-G3/AC/Dependency Graph"
+        - "design.md warm-hit cost/EBR/INV-3/INV-9/INV-11/test table/notes/problem table"
+        - "tasks.yaml T002/T005/T006/T014/T015/T016"
+        - "dependencies.yaml"
+      confirmation: "gate-number and invariant changes owner-decided 2026-07-10 (three explicit selections); re-reviewed 2026-07-10 (S006) — all seven findings materially resolved, residuals folded"
+    - id: R6
+      date: 2026-07-10
+      decisions:
+        - "external re-review residuals folded (S006): submit_write error arm returns the WriteSlot; ReaderCtx<'pool> !Send + !Sync; deferred-close errors documented non-actionable (fsync barriers own durability, AD-3); OpToken = slot + generation (ABA-safe); DIO-G1 relabeled one-sided non-inferiority with 2% margin; validation.yaml made strict-YAML-valid"
+      touched:
+        - "scope.md API Contract/Constraints/DIO-G1/AC/Data Model"
+        - "design.md EBR registration/problem table/test table"
+        - "tasks.yaml T007"
+        - "validation.yaml R5 rewrite + notes"
+      confirmation: "no gate numbers or invariants changed — type-state and terminology tightening only"
+    - id: R7
+      date: 2026-07-10
+      decisions:
+        - "AD-4 escalation specified in detail (owner-directed): per-worker rings designated the end-state topology — one SINGLE_ISSUER + DEFER_TASKRUN ring per IO thread (probed, kernel >= 6.0/6.1, plain rings older), frame arena registered per ring with locked-memory headroom probe (accounting is per registration, N rings = N accountings), pool control-plane mutex retained but syscall-free, cross-thread readiness via the frame state machine (ring-agnostic, CompletionSlab stays global), flat combining recorded as the cheaper intermediate lever when the profile shows handoff cost; trigger remains a DIO-G2 failure attributed to the submit mutex by profile; enacting stays an owner decision gated by a DIO-G2 re-run"
+      touched:
+        - "scope.md AD-4 escalation block + Gotchas registered-buffers bullet"
+        - "design.md ring-topology note"
+      confirmation: "no gate numbers or invariants changed; escalation elaboration only"
+    - id: R8
+      date: 2026-07-10
+      decisions:
+        - "external follow-ups folded: per-worker-ring escalation gains an explicit progress rule (originating worker pumps its CQ on every pool call and before parking until in-flight reaches zero; thread deregistration drains its ring before releasing the slot — an issuer that never polls again would strand its waiters); deferred-close failure handling corrected to the operating-errors-are-values rule — EIO-class failures logged only, EBADF asserts as a driver state bug (was: logged + debug-asserted)"
+      touched:
+        - "scope.md AD-4 escalation block + API contract close comment"
+      confirmation: "reviewer verdict carried: no blocker remains in the primary v1 design; scope cleared to pin the driver API (T002) and proceed through the T016 spike"
+    - id: R9
+      date: 2026-07-10
+      decisions:
+        - "gate-coverage audit folded (owner-directed): DIO-G8 write-plane non-inferiority gate added — segment flush wall + journal micro-commit latency, new plane vs pre-dios RealFs retained as the baseline arm, pinned host, >= 30 interleaved reps, each ratio CI upper bound <= 1.02; levers in order: WriteArena batch depth, then segment-data O_DIRECT default BLOCKED (buffered stays default, O_DIRECT config-selectable) returning to owner; journal arm blocks outright (identical syscall sequence by AD-3)"
+        - "S3-FIFO escalation trigger made falsifiable: T014 scan-workload observation defined (sweep > pool size interleaved with point-gets; per-ReaderCtx hit/eviction counters — no shared RMW on the warm path — recorded in measurements.md)"
+        - "Linux buffered-fallback performance recorded explicitly non-gating: correctness path where O_DIRECT is unavailable, not a performance target"
+        - "T010 bench plan pinned to re-run RC-R1..R3 at seam completion — the hottest-path indirection is checked when introduced, not first at the T014 sweep"
+      touched:
+        - "scope.md DIO-G8 + AC row/Constraints O_DIRECT bullet/Tech Decisions eviction row/Verification"
+        - "design.md test table"
+        - "tasks.yaml T006/T010/T013/T014"
+      confirmation: "adds one gate (owner-directed); no existing gate numbers changed"
 
 notes: |
   User decisions deliberately exceed the assistant's recommendations on three
   axes (pool-as-default, full write plane, strict parity); recorded as informed
-  choices. Strict parity is encoded as parity-within-95%-CI on the pinned
-  1/5-scale bench to remain falsifiable. The scope corrects a copy-semantics
+  choices. Strict parity is encoded as a one-sided non-inferiority bound (95%
+  CI upper bound of the ratio <= 1.02) on the pinned 1/5-scale bench — S005
+  corrected the original <= 1.00 form, which was a superiority test; S006
+  fixed the interim "equivalence" label. The scope corrects a copy-semantics
   conflation in sira-read-hotpath/resources/mmap-soundness.md (per-miss copy
   applies to buffered pread only, not O_DIRECT); that doc was not edited.
