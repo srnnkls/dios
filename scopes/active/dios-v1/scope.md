@@ -1,6 +1,6 @@
 ---
 created: 2026-07-07
-status: draft
+status: active
 issue_type: Feature
 parent: sira-read-concurrency
 blocked_by: [sira-read-perf, sira-read-concurrency]

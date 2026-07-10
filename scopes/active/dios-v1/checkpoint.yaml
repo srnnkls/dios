@@ -1,0 +1,25 @@
+checkpoint:
+  scope_name: dios-v1
+  scope_path: ./scopes/active/dios-v1
+  branch: feat/dios-v1
+  timestamp: 2026-07-10
+  last_batch: 1
+  last_commit: 022c638
+  tasks:
+    done: [T001]
+    pending: [T002, T003, T004, T016, T005, T006, T007, T008, T009, T015]
+    deferred_external:
+      tasks: [T010, T011, T012, T013, T014]
+      reason: >-
+        sira-wiring phase executes in ~/projects/sira; blocked until
+        sira-read-perf exit gate RP007 lands (owner decision this session:
+        dios-repo phases proceed, sira wiring deferred).
+  next_batch:
+    number: 2
+    tasks: [T002]
+  deferred_issues:
+    - "non_exhaustive on SubmitError -> T002 owns the variant set"
+    - "Backend enum public probe -> T002 revisits when Driver gains its constructor; must never become runtime routing (AD-1)"
+  review_config:
+    reasoning_effort: high
+    reviewers: [opus, sonnet, gpt, gemini]

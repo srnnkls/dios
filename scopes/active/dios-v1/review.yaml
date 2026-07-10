@@ -1,0 +1,88 @@
+batch_reviews:
+  - batch: 1
+    timestamp: 2026-07-10
+    commit: 022c638
+    tasks: [T001]
+    test_review:
+      rounds: 2
+      round_1:
+        reviewers: [claude-opus, claude-sonnet, codex-gpt5.6-sol, gemini-3.5-flash]
+        findings: 4
+        summary: >-
+          Pre-gate self-check removed a GRANULE==4096 const test (pre-decided
+          open question M001; granule is per-store config). Gate round 1
+          flagged four trivial-assertion findings: discarded to_string() in
+          the SubmitErr test, dyn-Error erasure hiding the typed Unaligned
+          contract, trait-conformance-only IoError test, is_some()-only
+          alignment parse loop. One gemini finding rejected: hardcoded 512
+          floor in Alignment::new (statx probe owns the floor; the
+          memory-align axis can be small).
+      round_2:
+        reviewers: [claude-opus, codex-gpt5.6-sol, gemini-3.5-flash]
+        findings: 0
+        outcome: clean
+    reviewers:
+      - id: general-claude-opus
+        status: success
+        gates: { correctness: pass, security: pass, performance: pass }
+      - id: general-codex-gpt5.6-sol
+        status: success
+        gates: { correctness: pass, security: pass, performance: pass }
+      - id: general-gemini-3.5-flash
+        status: success
+        gates: { correctness: pass, security: pass, performance: fail }
+      - id: architecture-claude-opus
+        status: success
+        gates: { architecture: pass }
+      - id: architecture-codex-gpt5.6-sol
+        status: success
+        gates: { architecture: fail }
+      - id: architecture-gemini-3.5-flash
+        status: success
+        gates: { architecture: fail }
+      - id: compliance-claude-sonnet
+        status: success
+        gates: { style: pass }
+      - id: compliance-codex-gpt5.6-sol
+        status: success
+        gates: { style: fail }
+      - id: compliance-gemini-3.5-flash
+        status: success
+        gates: { style: fail }
+    synthesized:
+      gates:
+        correctness: pass
+        security: pass
+        performance: fail-then-fixed
+        architecture: fail-then-fixed
+        style: fail-then-fixed
+      critical_issues: 0
+      high_issues: 2
+      medium_issues: 7
+    fix_pass:
+      dispatched: true
+      resolved:
+        - "HIGH backend seam absent + Driver publicly constructible (codex+gemini arch, codex compliance; opus advisory) -> src/backend.rs cfg_select! Impl seam, platform-gated eager/uring stubs, Driver(backend::Impl) non-constructible, BACKEND const derived from Impl::KIND, Backend enum documented diagnostic-only per AD-1"
+        - "HIGH Unaligned raw pub fields admit impossible values (codex compliance) -> private offset_bytes: u64 + alignment: Alignment, constructed only by Alignment::check, read-only accessors"
+        - "MED runtime-division alignment check (gemini general) -> bitmask form, power-of-two debug_assert retained"
+        - "MED IoError source()/Display duplication (gemini general) -> source() override removed"
+        - "MED SubmitErr/align abbreviations (codex+gemini compliance) -> SubmitError, module alignment"
+        - "MED missing Debug on Driver (claude compliance) -> derived on Driver and stubs"
+        - "MED declaration-restating rustdoc (codex+gemini compliance) -> trimmed to why/contract-only"
+        - "MED test names described compilation not behavior (codex compliance) -> *_selects_* renames, assertions unchanged"
+        - "LOW Alignment ordering derives (gemini compliance) -> PartialOrd/Ord added on Alignment only"
+      verification: >-
+        verified 3/3 (claude-opus, codex-gpt5.6-sol, gemini-3.5-flash);
+        Linux bench host `mise run remote -- mise run test` green 7/7 incl.
+        linux_selects_the_uring_backend (uring cfg path compiles + selects);
+        cosmetic residue (submit_err test fn name) renamed post-verification
+    outcome: approved
+issues:
+  critical: []
+  high: []
+  medium: []
+deferred_issues:
+  - "non_exhaustive on SubmitError deferred to T002, which owns the submit-error variant set (stale-generation rejection likely adds a variant)"
+  - "Alignment(1) admissibility accepted by design: the statx(STATX_DIOALIGN) probe owns the floor; the type owns power-of-two-ness only (claude general medium)"
+  - "assertion density in alignment.rs noted advisory (claude general medium); postcondition asserts optional for scaffold-sized functions"
+  - "public Backend enum coupling (codex arch medium) accepted as diagnostic probe; T002 revisits when Driver gains its real constructor"

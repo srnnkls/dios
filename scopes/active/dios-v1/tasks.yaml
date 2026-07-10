@@ -4,7 +4,7 @@ next_id: 17
 tasks:
   - id: T001
     content: Scaffold the `dios` crate (skeleton, cfg backend selection, error types, alignment newtypes)
-    status: pending
+    status: done
     phase: crate-core
     files: [Cargo.toml, src/lib.rs]
     depends_on: []
@@ -102,7 +102,7 @@ tasks:
 meta:
   created: 2026-07-07
   last_updated: 2026-07-10
-  progress: 0/16
+  progress: 1/16
   blocked_by: [sira-read-perf, sira-read-concurrency]
 
 phases:
