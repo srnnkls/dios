@@ -17,11 +17,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use crate::alignment::Alignment;
 use crate::backend;
 use crate::completion::{Completion, CompletionBatch};
 use crate::error::{IoError, SubmitError};
 
-const MAX_FILES: u32 = 64;
+pub(crate) const MAX_FILES: u32 = 64;
 const EINTR: i32 = 4;
 const EBADF: i32 = 9;
 const EMFILE: i32 = 24;
@@ -46,21 +47,200 @@ pub enum Backend {
     Uring,
 }
 
-/// The public driver over the cfg-selected backend. Its real submit/poll surface
-/// arrives with the eager and uring backends (T003/T004); it already composes
-/// the same driver core the mock uses, so the two cannot structurally drift.
+/// The public driver over the cfg-selected backend, composing the same driver
+/// core the mock uses so the two cannot structurally drift.
 #[derive(Debug)]
-pub struct Driver(
-    #[expect(
-        dead_code,
-        reason = "the submit/poll surface that reads the composed core arrives with the eager and uring backends (T003/T004)"
-    )]
-    DriverCore<backend::Impl>,
-);
+pub struct Driver(DriverCore<backend::Impl>);
+
+/// Builds a [`Driver`] with every capacity fixed up front. The eager slab is a
+/// plain preallocation and there is no ring to open, so the build is infallible.
+#[derive(Debug, Clone, Copy)]
+pub struct DriverBuilder {
+    queue_capacity: u32,
+    frames: u32,
+    frame_bytes: u32,
+    retry_bound: u32,
+}
+
+impl Default for DriverBuilder {
+    fn default() -> Self {
+        Self {
+            queue_capacity: 1,
+            frames: 1,
+            frame_bytes: 4096,
+            retry_bound: 0,
+        }
+    }
+}
+
+impl DriverBuilder {
+    #[must_use]
+    pub fn queue_capacity(mut self, queue_capacity: u32) -> Self {
+        self.queue_capacity = queue_capacity;
+        self
+    }
+
+    #[must_use]
+    pub fn frames(mut self, frames: u32) -> Self {
+        self.frames = frames;
+        self
+    }
+
+    #[must_use]
+    pub fn frame_bytes(mut self, frame_bytes: u32) -> Self {
+        self.frame_bytes = frame_bytes;
+        self
+    }
+
+    #[must_use]
+    pub fn retry_bound(mut self, retry_bound: u32) -> Self {
+        self.retry_bound = retry_bound;
+        self
+    }
+
+    /// # Panics
+    ///
+    /// If any capacity is zero — capacities are fixed and positive at init.
+    #[must_use]
+    pub fn build(self) -> Driver {
+        assert!(self.queue_capacity > 0, "queue capacity must be positive");
+        assert!(self.frames > 0, "frame count must be positive");
+        assert!(self.frame_bytes > 0, "frame size must be positive");
+        let executor = backend::Impl::new(self.frames, self.frame_bytes);
+        let shared = Shared::new(
+            CompletionSlab::with_capacity(self.queue_capacity),
+            self.queue_capacity,
+        );
+        Driver(DriverCore::new(
+            shared,
+            executor,
+            self.frames,
+            self.retry_bound,
+        ))
+    }
+}
 
 impl Driver {
     /// The backend selected for the target platform.
     pub const BACKEND: Backend = backend::Impl::KIND;
+
+    #[must_use]
+    pub fn builder() -> DriverBuilder {
+        DriverBuilder::default()
+    }
+
+    /// Opens an existing file read-write, probing the direct-IO mode `how`
+    /// requests; the outcome rides in the handle's [`FileHandle::io_mode`] as an
+    /// observable enum (scope Constraints). No create mode in v1.
+    ///
+    /// # Errors
+    ///
+    /// The open syscall's operating failure (`ENOENT`, `EACCES`, …), or `EMFILE`
+    /// when the fixed fd table is exhausted.
+    pub fn open(&self, path: &Path, how: OpenHow) -> Result<FileHandle, IoError> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)?;
+        let io_mode = crate::open::probe(&file, how.io_request());
+        let id = self.0.reserve_file()?;
+        self.0.executor().register_file(id.slot(), file);
+        Ok(FileHandle::from_parts(id, io_mode))
+    }
+
+    /// Enqueues a read into `frame` at `offset`; the eager backend performs the
+    /// pread inline at [`Driver::poll`] (AD-7).
+    ///
+    /// # Errors
+    ///
+    /// [`SubmitError::StaleHandle`] for a stale fd, [`SubmitError::Full`] at
+    /// capacity.
+    ///
+    /// # Panics
+    ///
+    /// If `fd` was minted by a different driver, if `frame` is out of range, or a
+    /// direct handle receives a misaligned `offset` — each rejected before the op
+    /// is issued.
+    pub fn submit_read(
+        &self,
+        fd: &FileHandle,
+        frame: ReadFrameIdx,
+        offset: u64,
+    ) -> Result<OpToken, SubmitError> {
+        self.0.submit_read(fd, frame, offset)
+    }
+
+    /// Enqueues an fsync barrier; the eager backend runs it inline at
+    /// [`Driver::poll`].
+    ///
+    /// # Errors
+    ///
+    /// [`SubmitError::StaleHandle`] for a stale fd, [`SubmitError::Full`] at
+    /// capacity.
+    ///
+    /// # Panics
+    ///
+    /// If `fd` was minted by a different driver.
+    pub fn submit_fsync(&self, fd: &FileHandle, mode: SyncMode) -> Result<OpToken, SubmitError> {
+        self.0.submit_fsync(fd, mode)
+    }
+
+    /// Executes queued ops inline on the calling thread (AD-7) and drains their
+    /// completions into `out`, returning the count.
+    ///
+    /// # Panics
+    ///
+    /// If `out` has zero capacity.
+    pub fn poll(&self, out: &mut CompletionBatch) -> usize {
+        self.0.poll(out)
+    }
+
+    /// Blocking metadata-plane write (AD-3): loops past short transfers until the
+    /// whole buffer lands, retrying `EINTR` up to the init-time bound.
+    ///
+    /// # Errors
+    ///
+    /// `EBADF` on a stale/closed handle, or the write syscall's operating failure.
+    ///
+    /// # Panics
+    ///
+    /// If `fd` was minted by a different driver, or the buffer length exceeds
+    /// `u32::MAX`.
+    pub fn write_all_blocking(
+        &self,
+        fd: &FileHandle,
+        buf: &[u8],
+        offset: u64,
+    ) -> Result<(), IoError> {
+        self.0.write_all_blocking(fd, buf, offset)
+    }
+
+    /// Blocking metadata-plane fsync barrier (`F_FULLFSYNC` on darwin).
+    ///
+    /// # Errors
+    ///
+    /// `EBADF` on a stale/closed handle, or the fsync syscall's operating failure.
+    ///
+    /// # Panics
+    ///
+    /// If `fd` was minted by a different driver.
+    pub fn fsync_blocking(&self, fd: &FileHandle, mode: SyncMode) -> Result<(), IoError> {
+        self.0.fsync_blocking(fd, mode)
+    }
+
+    /// Copies a drained read's frame bytes out of the eager slab into `out`,
+    /// returning the byte count.
+    ///
+    /// Provisional pre-T007 read-observation seam, subsumed by [`FrameGuard`](crate::FrameGuard)
+    /// once the pool's epoch pins land.
+    ///
+    /// # Panics
+    ///
+    /// If `frame` is out of range for the configured frame count.
+    #[doc(hidden)]
+    pub fn copy_frame(&self, frame: ReadFrameIdx, out: &mut [u8]) -> usize {
+        self.0.executor().copy_frame(frame, out)
+    }
 }
 
 /// The three op kinds the driver issues; echoed in each completion.
@@ -105,10 +285,13 @@ pub enum SyncMode {
     Full,
 }
 
-/// How a file is opened. `read_write` is the only access mode v1 issues.
+/// How a file is opened. `read_write` is the only access mode v1 issues; the
+/// [`IoRequest`](crate::open::IoRequest) selects the buffered or direct-IO data
+/// plane, probed at [`Driver::open`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct OpenHow {
     access: Access,
+    io_request: crate::open::IoRequest,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -121,8 +304,30 @@ impl OpenHow {
     pub fn read_write() -> Self {
         Self {
             access: Access::ReadWrite,
+            io_request: crate::open::IoRequest::Buffered,
         }
     }
+
+    /// Requests direct IO (`O_DIRECT` on Linux, `F_NOCACHE` on darwin). The probe
+    /// reports the outcome as [`IoMode`]; a filesystem without direct support
+    /// falls back to [`IoMode::Buffered`] (scope Constraints).
+    #[must_use]
+    pub fn direct(mut self) -> Self {
+        self.io_request = crate::open::IoRequest::Direct;
+        self
+    }
+
+    pub(crate) fn io_request(self) -> crate::open::IoRequest {
+        self.io_request
+    }
+}
+
+/// How a file's data plane transfers: direct with a probed sector [`Alignment`],
+/// or buffered through the page cache. An observable enum, never a silent bool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IoMode {
+    Direct(Alignment),
+    Buffered,
 }
 
 /// A generational file identity: the originating driver's instance id, an
@@ -181,16 +386,30 @@ impl FileId {
 #[derive(Debug)]
 pub struct FileHandle {
     id: FileId,
+    io_mode: IoMode,
 }
 
 impl FileHandle {
     pub(crate) fn from_id(id: FileId) -> Self {
-        Self { id }
+        Self {
+            id,
+            io_mode: IoMode::Buffered,
+        }
+    }
+
+    pub(crate) fn from_parts(id: FileId, io_mode: IoMode) -> Self {
+        Self { id, io_mode }
     }
 
     #[must_use]
     pub fn file_id(&self) -> FileId {
         self.id
+    }
+
+    /// The direct/buffered mode probed for this file at open (scope Constraints).
+    #[must_use]
+    pub fn io_mode(&self) -> IoMode {
+        self.io_mode
     }
 }
 
@@ -386,8 +605,9 @@ pub(crate) enum Attempt {
 /// synchronises its own injected state internally. All methods take `&self`.
 pub(crate) trait Executor {
     /// One attempt at the op named by `kind`; `clean_bytes` is the transfer a
-    /// fault-free op reports. Runs in the execute phase, no submit lock held.
-    fn attempt(&self, kind: OpKind, clean_bytes: u32) -> Attempt;
+    /// fault-free op reports and `context` carries the file, offset, and target
+    /// resource. Runs in the execute phase, no submit lock held.
+    fn attempt(&self, kind: OpKind, clean_bytes: u32, context: OpContext<'_>) -> Attempt;
 
     /// The transfer byte count a clean `kind` op reports.
     fn clean_bytes(&self, kind: OpKind) -> u32;
@@ -396,13 +616,32 @@ pub(crate) trait Executor {
     /// the current queue length (seeded reordering in the mock; a real backend
     /// appends at `ready_len`).
     fn schedule(&self, ready_len: usize) -> usize;
+
+    /// Releases the backend state an fd slot holds, called once the core advances
+    /// it `Closing → Closed` in publish (its last in-flight op drained). Eager
+    /// drops the retained `File`, closing the descriptor and freeing the slot for
+    /// reuse; the mock keeps no per-file state and no-ops.
+    fn retire_file(&self, slot: u32);
 }
 
 #[derive(Debug)]
 pub(crate) struct OpEntry {
     kind: OpKind,
     fd: FileId,
+    offset: u64,
+    frame: ReadFrameIdx,
     lease: Option<WriteLease>,
+}
+
+/// Per-op parameters the execute phase hands a backend: which file, at what
+/// offset, into (reads) or out of (writes) which resource. The mock ignores it
+/// and replays injected faults; the eager backend performs the real syscall.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct OpContext<'buf> {
+    pub(crate) fd: FileId,
+    pub(crate) offset: u64,
+    pub(crate) frame: ReadFrameIdx,
+    pub(crate) write_buf: &'buf [u8],
 }
 
 /// State guarded by the submit mutex: the op slab, the fd table, and the
@@ -478,14 +717,12 @@ impl<E> DriverCore<E> {
         }
     }
 
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "close consumes the handle by value so it cannot be reused (INV-11)"
-    )]
-    pub(crate) fn close(&self, fd: FileHandle) {
-        self.assert_own(fd.file_id());
+    pub(crate) fn reserve_file(&self) -> Result<FileId, IoError> {
         let mut shared = self.lock();
-        shared.files.close(fd.file_id());
+        shared
+            .files
+            .open(self.id)
+            .ok_or_else(|| IoError::from_raw(EMFILE))
     }
 
     pub(crate) fn is_closed(&self, id: FileId) -> bool {
@@ -495,19 +732,48 @@ impl<E> DriverCore<E> {
 }
 
 impl<E: Executor> DriverCore<E> {
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "close consumes the handle by value so it cannot be reused (INV-11)"
+    )]
+    pub(crate) fn close(&self, fd: FileHandle) {
+        let id = fd.file_id();
+        self.assert_own(id);
+        let retire_due = {
+            let mut shared = self.lock();
+            shared.files.close(id)
+        };
+        if retire_due {
+            self.retire(id);
+        }
+    }
+
+    fn retire(&self, fd: FileId) {
+        self.executor.retire_file(fd.slot());
+        self.lock().files.finish_retire(fd);
+    }
+
     pub(crate) fn submit_read(
         &self,
         fd: &FileHandle,
         frame: ReadFrameIdx,
         offset: u64,
     ) -> Result<OpToken, SubmitError> {
-        let _ = offset;
         assert!(frame.get() < self.frames, "read frame index out of range");
+        if let IoMode::Direct(alignment) = fd.io_mode() {
+            assert!(
+                alignment.check(offset).is_ok(),
+                "offset {offset} is not aligned to {} bytes",
+                alignment.get()
+            );
+        }
         let mut shared = self.lock();
         let slot = self.admit(&mut shared, fd.file_id())?;
         let entry = OpEntry {
             kind: OpKind::Read,
             fd: fd.file_id(),
+            offset,
+            frame,
             lease: None,
         };
         Ok(self.commit(&mut shared, slot, entry))
@@ -519,13 +785,14 @@ impl<E: Executor> DriverCore<E> {
         buf: WriteSlot<'arena>,
         offset: u64,
     ) -> Result<OpToken, (SubmitError, WriteSlot<'arena>)> {
-        let _ = offset;
         let mut shared = self.lock();
         match self.admit(&mut shared, fd.file_id()) {
             Ok(slot) => {
                 let entry = OpEntry {
                     kind: OpKind::Write,
                     fd: fd.file_id(),
+                    offset,
+                    frame: ReadFrameIdx::new(0),
                     lease: Some(buf.into_lease()),
                 };
                 Ok(self.commit(&mut shared, slot, entry))
@@ -545,6 +812,8 @@ impl<E: Executor> DriverCore<E> {
         let entry = OpEntry {
             kind: OpKind::Fsync,
             fd: fd.file_id(),
+            offset: 0,
+            frame: ReadFrameIdx::new(0),
             lease: None,
         };
         Ok(self.commit(&mut shared, slot, entry))
@@ -585,11 +854,17 @@ impl<E: Executor> DriverCore<E> {
         out.reset();
         let mut drained = 0usize;
         while drained < out.capacity() {
-            let Some((slot, kind)) = self.prepare_next() else {
+            let Some((slot, kind, fd, offset, frame)) = self.prepare_next() else {
                 break;
             };
             let clean_bytes = self.executor.clean_bytes(kind);
-            let outcome = self.execute(kind, clean_bytes);
+            let context = OpContext {
+                fd,
+                offset,
+                frame,
+                write_buf: &[],
+            };
+            let outcome = self.execute(kind, clean_bytes, context);
             self.publish(slot, outcome, out);
             drained += 1;
         }
@@ -613,21 +888,21 @@ impl<E: Executor> DriverCore<E> {
 
     /// Prepare (locked): take the next ready slot and read its op kind. The slab
     /// slot stays occupied — it is reclaimed only in [`DriverCore::publish`].
-    fn prepare_next(&self) -> Option<(u32, OpKind)> {
+    fn prepare_next(&self) -> Option<(u32, OpKind, FileId, u64, ReadFrameIdx)> {
         let mut shared = self.lock();
         let slot = shared.ready.pop_front()?;
-        let kind = shared.slab.peek(slot).kind;
-        Some((slot, kind))
+        let entry = shared.slab.peek(slot);
+        Some((slot, entry.kind, entry.fd, entry.offset, entry.frame))
     }
 
     /// Execute (submit mutex *not* held): the retry policy and its fixed bound
     /// over the backend's simulated or real syscall. `EINTR` resubmits on every
     /// op, `EAGAIN` resubmits on reads but surfaces on writes and fsync.
-    fn execute(&self, kind: OpKind, clean_bytes: u32) -> Result<u32, i32> {
+    fn execute(&self, kind: OpKind, clean_bytes: u32, context: OpContext<'_>) -> Result<u32, i32> {
         let retry_would_block = matches!(kind, OpKind::Read);
         let mut retries = 0u32;
         loop {
-            match self.executor.attempt(kind, clean_bytes) {
+            match self.executor.attempt(kind, clean_bytes, context) {
                 Attempt::Done(bytes) => return Ok(bytes),
                 Attempt::Failed(errno) => return Err(errno),
                 Attempt::Interrupted => {
@@ -653,14 +928,20 @@ impl<E: Executor> DriverCore<E> {
     /// done, drop the in-flight count (progressing a deferred close), release the
     /// write lease, and emit the completion.
     fn publish(&self, slot: u32, outcome: Result<u32, i32>, out: &mut CompletionBatch) {
-        let mut shared = self.lock();
-        let (token, entry) = shared.slab.reclaim(slot);
-        shared.files.on_complete(entry.fd);
-        if let Some(lease) = entry.lease {
-            lease.release();
+        let retiring = {
+            let mut shared = self.lock();
+            let (token, entry) = shared.slab.reclaim(slot);
+            let retire_due = shared.files.on_complete(entry.fd);
+            if let Some(lease) = entry.lease {
+                lease.release();
+            }
+            let result = outcome.map_err(IoError::from_raw);
+            out.push(Completion::new(token, entry.kind, result));
+            retire_due.then_some(entry.fd)
+        };
+        if let Some(fd) = retiring {
+            self.retire(fd);
         }
-        let result = outcome.map_err(IoError::from_raw);
-        out.push(Completion::new(token, entry.kind, result));
     }
 
     pub(crate) fn write_all_blocking(
@@ -669,7 +950,6 @@ impl<E: Executor> DriverCore<E> {
         buf: &[u8],
         offset: u64,
     ) -> Result<(), IoError> {
-        let _ = offset;
         let total = u32::try_from(buf.len()).expect("metadata write length within u32 bound");
         self.assert_own(fd.file_id());
         {
@@ -681,7 +961,13 @@ impl<E: Executor> DriverCore<E> {
         let mut written = 0u32;
         while written < total {
             let remaining = total - written;
-            match self.execute(OpKind::Write, remaining) {
+            let context = OpContext {
+                fd: fd.file_id(),
+                offset: offset + u64::from(written),
+                frame: ReadFrameIdx::new(0),
+                write_buf: &buf[written as usize..],
+            };
+            match self.execute(OpKind::Write, remaining, context) {
                 Ok(bytes) => {
                     assert!(
                         bytes <= remaining,
@@ -705,7 +991,13 @@ impl<E: Executor> DriverCore<E> {
                 return Err(IoError::from_raw(EBADF));
             }
         }
-        match self.execute(OpKind::Fsync, 0) {
+        let context = OpContext {
+            fd: fd.file_id(),
+            offset: 0,
+            frame: ReadFrameIdx::new(0),
+            write_buf: &[],
+        };
+        match self.execute(OpKind::Fsync, 0, context) {
             Ok(_) => Ok(()),
             Err(errno) => Err(IoError::from_raw(errno)),
         }
@@ -780,7 +1072,7 @@ impl FileTable {
         slot.inflight += 1;
     }
 
-    fn on_complete(&mut self, id: FileId) {
+    fn on_complete(&mut self, id: FileId) -> bool {
         let slot = &mut self.slots[id.slot() as usize];
         debug_assert_eq!(
             slot.generation,
@@ -789,12 +1081,30 @@ impl FileTable {
         );
         debug_assert!(slot.inflight > 0, "completion without a matching submit");
         slot.inflight -= 1;
-        if slot.inflight == 0 && matches!(slot.state, FileState::Closing) {
-            slot.state = FileState::Closed;
-        }
+        slot.inflight == 0 && matches!(slot.state, FileState::Closing)
     }
 
-    fn close(&mut self, id: FileId) {
+    /// A slot reaches `Closed` only here, after the backend retired its file: an
+    /// `open` landing between `close`/`on_complete` and this point sees `Closing`,
+    /// skips the slot, and so cannot register into an eager file entry the retire
+    /// has not yet cleared.
+    fn finish_retire(&mut self, id: FileId) {
+        let slot = &mut self.slots[id.slot() as usize];
+        debug_assert_eq!(
+            slot.generation,
+            id.generation(),
+            "retire of a stale fd generation"
+        );
+        assert_eq!(
+            slot.state,
+            FileState::Closing,
+            "finish_retire expects a slot left Closing by close/on_complete"
+        );
+        assert_eq!(slot.inflight, 0, "finish_retire with ops still in flight");
+        slot.state = FileState::Closed;
+    }
+
+    fn close(&mut self, id: FileId) -> bool {
         let slot = &mut self.slots[id.slot() as usize];
         assert_eq!(
             slot.generation,
@@ -806,10 +1116,61 @@ impl FileTable {
             FileState::Open,
             "double close of an fd is a driver state bug (EBADF)"
         );
-        if slot.inflight == 0 {
-            slot.state = FileState::Closed;
-        } else {
-            slot.state = FileState::Closing;
-        }
+        slot.state = FileState::Closing;
+        slot.inflight == 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_retiring_slot_is_not_reused_until_its_file_is_retired() {
+        let mut files = FileTable::new();
+        let driver = 7;
+        let id = files.open(driver).expect("first slot opens");
+
+        files.on_submit(id);
+        assert!(
+            !files.close(id),
+            "a close with an op in flight is not retire-due yet"
+        );
+
+        assert!(
+            files.on_complete(id),
+            "the last drain under Closing makes the retire due"
+        );
+        assert!(
+            !files.is_closed(id),
+            "the slot stays Closing until finish_retire"
+        );
+
+        let reopened = files.open(driver).expect("a fresh slot is available");
+        assert!(
+            !reopened.aliases_slot(&id),
+            "a retiring slot is never reused before its file is retired"
+        );
+
+        files.finish_retire(id);
+        assert!(
+            files.is_closed(id),
+            "finish_retire completes the deferred close"
+        );
+    }
+
+    #[test]
+    fn a_zero_inflight_close_retires_through_finish_retire_not_a_direct_flip() {
+        let mut files = FileTable::new();
+        let id = files.open(3).expect("first slot opens");
+
+        assert!(files.close(id), "closing an idle fd is retire-due at once");
+        assert!(
+            !files.is_closed(id),
+            "an idle close still awaits finish_retire before Closed"
+        );
+
+        files.finish_retire(id);
+        assert!(files.is_closed(id), "finish_retire flips it Closed");
     }
 }

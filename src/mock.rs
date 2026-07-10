@@ -14,8 +14,8 @@ use std::time::Duration;
 
 use crate::completion::CompletionBatch;
 use crate::driver::{
-    Attempt, CompletionSlab, DriverCore, Executor, FileHandle, FileId, OpKind, OpToken, OpenHow,
-    ReadFrameIdx, Shared, SyncMode, WriteArena, WriteSlot,
+    Attempt, CompletionSlab, DriverCore, Executor, FileHandle, FileId, OpContext, OpKind, OpToken,
+    OpenHow, ReadFrameIdx, Shared, SyncMode, WriteArena, WriteSlot,
 };
 use crate::error::{IoError, SubmitError};
 
@@ -129,6 +129,10 @@ impl MockDriver {
 
     /// Consumes the handle; the deferred close(2) is observable once the fd's
     /// in-flight ops drain (INV-11).
+    ///
+    /// # Panics
+    ///
+    /// If `fd` was minted by a different driver.
     pub fn close(&self, fd: FileHandle) {
         self.0.close(fd);
     }
@@ -140,7 +144,8 @@ impl MockDriver {
     ///
     /// # Panics
     ///
-    /// If `frame` is out of range for the configured frame count.
+    /// If `fd` was minted by a different driver, or `frame` is out of range for
+    /// the configured frame count.
     pub fn submit_read(
         &self,
         fd: &FileHandle,
@@ -155,6 +160,10 @@ impl MockDriver {
     /// The tuple hands the unconsumed [`WriteSlot`] back on rejection:
     /// [`SubmitError::StaleHandle`] for a stale fd, [`SubmitError::Full`] at
     /// capacity.
+    ///
+    /// # Panics
+    ///
+    /// If `fd` was minted by a different driver.
     pub fn submit_write<'arena>(
         &self,
         fd: &FileHandle,
@@ -168,6 +177,10 @@ impl MockDriver {
     ///
     /// [`SubmitError::StaleHandle`] for a stale fd, [`SubmitError::Full`] at
     /// capacity.
+    ///
+    /// # Panics
+    ///
+    /// If `fd` was minted by a different driver.
     pub fn submit_fsync(&self, fd: &FileHandle, mode: SyncMode) -> Result<OpToken, SubmitError> {
         self.0.submit_fsync(fd, mode)
     }
@@ -198,7 +211,8 @@ impl MockDriver {
     ///
     /// # Panics
     ///
-    /// If the buffer length exceeds `u32::MAX`.
+    /// If `fd` was minted by a different driver, or the buffer length exceeds
+    /// `u32::MAX`.
     pub fn write_all_blocking(
         &self,
         fd: &FileHandle,
@@ -213,6 +227,10 @@ impl MockDriver {
     /// # Errors
     ///
     /// `EBADF` on a stale/closed handle, or an injected operating failure.
+    ///
+    /// # Panics
+    ///
+    /// If `fd` was minted by a different driver.
     pub fn fsync_blocking(&self, fd: &FileHandle, mode: SyncMode) -> Result<(), IoError> {
         self.0.fsync_blocking(fd, mode)
     }
@@ -223,6 +241,10 @@ impl MockDriver {
     }
 
     /// Whether the fd named by `id` has issued its deferred close(2).
+    ///
+    /// # Panics
+    ///
+    /// If `id` was minted by a different driver.
     #[must_use]
     pub fn is_closed(&self, id: FileId) -> bool {
         self.0.is_closed(id)
@@ -278,7 +300,7 @@ impl MockExecutor {
 }
 
 impl Executor for MockExecutor {
-    fn attempt(&self, _kind: OpKind, clean_bytes: u32) -> Attempt {
+    fn attempt(&self, _kind: OpKind, clean_bytes: u32, _context: OpContext<'_>) -> Attempt {
         match self.lock().injected.pop_front() {
             None => Attempt::Done(clean_bytes),
             Some(Injected::Io(errno)) => Attempt::Failed(errno),
@@ -298,6 +320,8 @@ impl Executor for MockExecutor {
     fn schedule(&self, ready_len: usize) -> usize {
         rng_below(&mut self.lock().rng, ready_len + 1)
     }
+
+    fn retire_file(&self, _slot: u32) {}
 }
 
 fn rng_below(state: &mut u64, bound: usize) -> usize {

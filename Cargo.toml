@@ -18,6 +18,10 @@ criterion = "0.8"
 name = "driver"
 required-features = ["mock"]
 
+[[example]]
+name = "api_fit_spike"
+required-features = ["mock"]
+
 [[bench]]
 name = "smoke"
 harness = false

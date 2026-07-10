@@ -4,7 +4,11 @@ checkpoint:
   branch: feat/dios-v1
   timestamp: 2026-07-10
   last_batch: 2
-  last_commit: 8706fb0
+  last_commit: 1cef8c3
+  pending_gate: >-
+    remote Linux suite unverified for the batch-2 round-2 diff (ssh-agent
+    empty); run `mise run remote -- mise run test` green before the
+    batch-3 commit. T004 (uring) Phase A also blocked on the same auth.
   tasks:
     done: [T001, T002]
     pending: [T003, T004, T016, T005, T006, T007, T008, T009, T015]
@@ -21,6 +25,8 @@ checkpoint:
   deferred_issues:
     - "non_exhaustive on SubmitError -> T002 owns the variant set"
     - "Backend enum public probe -> T002 revisits when Driver gains its constructor; must never become runtime routing (AD-1)"
+    - "public Driver::close (scope API contract) -> T005 wires it with its close/quiesce fault tests; the core close + retire discipline already exists"
+    - "concurrent close+reopen slot-reuse coverage -> T005 (or the batch-3 fix's DriverCore unit test if it landed); single-threaded suites cannot exercise the retire race"
   review_config:
     reasoning_effort: high
     reviewers: [opus, sonnet, gpt, gemini]

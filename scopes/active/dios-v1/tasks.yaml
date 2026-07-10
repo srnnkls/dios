@@ -16,12 +16,12 @@ tasks:
     depends_on: [T001]
   - id: T003
     content: Portable eager backend (AD-7) — submit enqueues into bounded queue, poll executes pread/pwrite/fsync on the calling thread outside the lock, F_NOCACHE + F_FULLFSYNC/F_BARRIERFSYNC on darwin, direct-IO open probe with buffered fallback (Linux — statx STATX_DIOALIGN per opened file, write-probe fallback pre-6.1, probed alignment encoded in the open handle); eager uses the same preallocated frame slab unregistered — ring registration is uring-only
-    status: pending
+    status: done
     phase: crate-core
     files: [src/backend/eager.rs, src/open.rs]
     depends_on: [T002]
   - id: T004
-    content: io_uring backend — registered buffers + READ_FIXED, EXT_ARG poll_wait, SQ-full flush-retry-once, shared ring + submit mutex (AD-4), O_DIRECT probe with buffered fallback (kernel >= 5.15; support + alignment per opened file via statx STATX_DIOALIGN, per Constraints)
+    content: io_uring backend — registered buffers + READ_FIXED, EXT_ARG poll_wait, SQ-full flush-retry-once, shared ring + submit mutex (AD-4), O_DIRECT probe with buffered fallback (kernel >= 5.15; support + alignment per opened file via statx STATX_DIOALIGN, per Constraints). The Executor/poll seam landed by T003 is eager-shaped, so T004 RESTRUCTURES the execute phase into batched SQE-fill at prepare plus reap at poll/poll_wait with the EXT_ARG kernel wait outside the AD-4 mutex rather than implementing attempt(). register_file must retain the File and register its fd where the current stub drops it, and the probe result must be applied to that retained fd by opening with O_DIRECT per the probe since the fallback probe fd is separate today.
     status: pending
     phase: crate-core
     files: [src/backend/uring.rs]
@@ -33,7 +33,7 @@ tasks:
     files: [tests/zero_alloc.rs, tests/faults.rs]
     depends_on: [T003, T004]
   - id: T006
-    content: Frame pool — preallocated aligned frames, open-addressed PageTable (fixed capacity 2× frames rounded to a power of two; advisory lock-free probes with authoritative re-probe under the AD-4 lock, backward-shift delete, no tombstones), CLOCK eviction (check-then-set reference bit on hit; per-ReaderCtx hit/eviction counters aggregated at poll — no shared RMW on the warm path), frame state machine, WriteArena staging buffers; watermark from static max merge fan-out (ln_runs + levels, compaction counted as a reader) + open-fail below watermark (INV-9); fix GRANULE default from block-size distribution measurement with max value size as input (AD-6, incl. padding-fragmentation cost)
+    content: Frame pool — preallocated aligned frames, open-addressed PageTable (fixed capacity 2× frames rounded to a power of two; advisory lock-free probes with authoritative re-probe under the AD-4 lock, backward-shift delete, no tombstones), CLOCK eviction (check-then-set reference bit on hit; per-ReaderCtx hit/eviction counters aggregated at poll — no shared RMW on the warm path), frame state machine, WriteArena staging buffers; watermark from static max merge fan-out (ln_runs + levels, compaction counted as a reader) + open-fail below watermark (INV-9); fix GRANULE default from block-size distribution measurement with max value size as input (AD-6, incl. padding-fragmentation cost). OpContext.write_buf is empty on the async poll path, so T006 threads the WriteLease bytes through prepare/execute when wiring the data plane, and frame-arena ownership relocates from the eager backend to the pool's registered arena.
     status: pending
     phase: pool
     files: [src/pool/frames.rs, src/pool/table.rs, src/pool/write_arena.rs]
@@ -94,7 +94,7 @@ tasks:
     depends_on: [T008]
   - id: T016
     content: API-fit spike — minimal stub pool (fixed frame array + map, no CLOCK/EBR/singleflight) over the T002 mock driver; drive the nmnm Gateway loop shape (get -> Pending -> worker takes other ready work -> poll -> ready borrow, waiter-interest drop) and sira's k-way-merge suspend shape; falsifies the Get/Pending/ready API before the real pool is built — gates T006
-    status: pending
+    status: done
     phase: crate-core
     files: [examples/api_fit_spike.rs]
     depends_on: [T002]
@@ -102,7 +102,7 @@ tasks:
 meta:
   created: 2026-07-07
   last_updated: 2026-07-10
-  progress: 2/16
+  progress: 4/16
   blocked_by: [sira-read-perf, sira-read-concurrency]
 
 phases:

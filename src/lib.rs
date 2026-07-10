@@ -12,6 +12,8 @@ mod backend;
 mod completion;
 mod driver;
 mod error;
+mod open;
+mod pool;
 
 #[cfg(feature = "mock")]
 pub mod mock;
@@ -22,7 +24,8 @@ pub mod bench;
 pub use alignment::{Alignment, Unaligned};
 pub use completion::{Completion, CompletionBatch};
 pub use driver::{
-    Backend, Driver, FileHandle, FileId, OpKind, OpToken, OpenHow, ReadFrameIdx, SyncMode,
-    WriteArena, WriteSlot,
+    Backend, Driver, DriverBuilder, FileHandle, FileId, IoMode, OpKind, OpToken, OpenHow,
+    ReadFrameIdx, SyncMode, WriteArena, WriteSlot,
 };
 pub use error::{IoError, SubmitError};
+pub use pool::{FrameGuard, Get, PageId, PendingToken, ReaderCtx, ReadyResult};

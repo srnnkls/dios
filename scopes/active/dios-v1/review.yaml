@@ -177,6 +177,107 @@ batch_reviews:
         green on host nix. MUST run `mise run remote -- mise run test`
         green before the batch-3 commit.
     outcome: approved
+  - batch: 3
+    timestamp: 2026-07-10
+    commit: pending
+    tasks: [T003, T016]
+    test_review:
+      rounds: 2
+      round_1:
+        reviewers: [claude-opus, claude-sonnet, codex-gpt5.6-sol (stalled), gemini-3.5-flash]
+        findings: 8
+        summary: >-
+          eager.rs: Linux misalignment arm contradicted the ruled panic
+          contract AND could only exercise T004's uring backend (cfg_select) —
+          re-scoped probe-only; buffered arm was constructor-trivial; wall
+          clock assert dropped; matcher tightened to "is not aligned".
+          Owner ruling recorded: misalignment on a direct handle is a
+          programmer error and crashes (scope semantics paragraph wins over
+          the task-text "typed error" wording). spike: PageId gained the
+          Data-Model FileId dimension; guards.len tautology removed; crate
+          root export path pinned by explicit use. Rejected: builder/
+          copy_frame/io_mode over-pin claims; 512 floor; 1s timing flake
+          (superseded by dropping the assert).
+      round_2:
+        reviewers: [claude-opus, codex-gpt5.6-sol (stalled), gemini-3.5-flash]
+        findings: 0
+        outcome: clean
+    reviewers:
+      - id: general-claude-opus
+        status: success
+        gates: { correctness: pass, security: pass, performance: pass }
+      - id: general-codex-gpt5.6-sol
+        status: empty-report
+        gates: {}
+      - id: general-gemini-3.5-flash
+        status: success
+        gates: { correctness: pass, security: pass, performance: pass }
+      - id: architecture-claude-opus
+        status: success
+        gates: { architecture: pass }
+      - id: architecture-codex-gpt5.6-sol
+        status: success
+        gates: { architecture: fail }
+      - id: architecture-gemini-3.5-flash
+        status: success
+        gates: { architecture: pass-with-caveats }
+      - id: compliance-claude-sonnet
+        status: success
+        gates: { style: fail }
+      - id: compliance-codex-gpt5.6-sol
+        status: success
+        gates: { style: fail }
+      - id: compliance-gemini-3.5-flash
+        status: success
+        gates: { style: fail }
+    synthesized:
+      gates:
+        correctness: pass
+        security: pass
+        performance: pass
+        architecture: fail-then-fixed
+        style: fail-then-fixed
+      critical_issues: 0
+      high_issues: 4
+      medium_issues: 10
+    verified_by_reviewers: >-
+      opus-general independently verified the statx struct offsets
+      (stx_dio_offset_align at 156, mask 0x2000), the fcntl variadic FFI,
+      lock ordering (syscall strictly outside the submit lock, no nesting),
+      publish-only slot reclaim through the OpContext extension, and the
+      side-effect-free write-probe fallback.
+    fix_pass:
+      dispatched: true
+      items: >-
+        eager file-retire seam on Closing->Closed (known future panic + fd
+        leak); pool provisional constructors sealed (#[doc(hidden)],
+        Default removed — INV-9 forgeability); direct bool -> enum;
+        assertion density on probe/frame/transfer paths; map_transfer
+        saturation -> assert; # Panics completeness; statx/O_DIRECT
+        source-attribution comments; judged renames (OpContext, spike fns;
+        fd/buf/inflight kept as contract/core vocabulary); WHAT-comment trim
+        keeping nmnm/sira consumer references (sonnet's garbled-text high
+        REJECTED — those are the consumer system names).
+      task_preconditions_recorded:
+        - "T004: restructures execute into batched SQE-fill/reap + EXT_ARG wait outside the AD-4 mutex (does NOT implement attempt()); register_file retains the File; probe result applied to the retained fd (O_DIRECT open)"
+        - "T006: threads WriteLease bytes through prepare/execute (write_buf currently empty on the poll path); frame-arena ownership relocates from the eager backend to the pool"
+      verification: >-
+        round 1: opus/codex/gemini unanimously found the retire seam RACY
+        (publish flipped Closing->Closed under the lock before the
+        out-of-lock retire_file; codex additionally found the zero-inflight
+        close path never retired at all). Round 2 fixed both via two-phase
+        retire (slot stays Closing across the out-of-lock retire_file;
+        finish_retire is the sole Closed writer, shared helper for both
+        paths) with RED/GREEN-evidenced FileTable unit tests. Re-verified:
+        opus verified/safe (exactly-once retire-due proof, lock-order
+        trace), gemini verified/safe, codex retire_paths safe (its
+        residuals: public close -> T005 deferral stands; end-to-end
+        retire-count observation -> T005's close-with-in-flight fault row).
+      remote_gate: >-
+        PENDING — same ssh-agent blocker as batch 2; Linux suite (incl. the
+        probe-only linux test and uring-stub compile) unverified for
+        batches 2-3. MUST be green before the batch-4 commit.
+    outcome: approved
 issues:
   critical: []
   high: []
