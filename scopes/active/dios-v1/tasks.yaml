@@ -52,7 +52,7 @@ tasks:
     depends_on: [T007, T004]
   - id: T009
     content: Pool concurrency proofs — loom frame-state + EBR grace-period tests, zero-alloc gates on get/submit/poll, backpressure test (watermark-sized pool, all spare frames pinned). Also owns the CLOCK store-elision proof deferred from T006's test gate — a repeat hit on an already-set reference bit performs NO store (the DIO-G1 hot-path invariant); T006's unit test pins only the return-value contract, which an always-store impl satisfies. Batch-5 obligations — the loom suite must model the AD-4 lock/single-caller discipline advance()/advance_epoch() depend on (bare-store races are spurious otherwise) and explicitly exercise the publish/advance/evict store-buffer interleaving that the begin_pin SeqCst fence closes; the zero-alloc gate must include a close-during-drain case (deferred retire on the reap path). Also owns folding the InFlight->Free abort edge into FrameState::advance's legal table: the batch-6 adjudication wanted it folded, but the frozen batch-4 transition-matrix test (tests/pool.rs) pins that edge as must-panic — T009's tester amends the matrix to admit the abort edge, then the implementer routes abort_inflight through advance (the current documented bypass is sound but splits the legal-edge set)
-    status: pending
+    status: done
     phase: pool
     files: [tests/loom_pool.rs, tests/zero_alloc.rs]
     depends_on: [T007, T008]
@@ -81,14 +81,14 @@ tasks:
     files: [sira/src/manifest.rs, sira/src/journal.rs]
     depends_on: [T012, T004]
   - id: T014
-    content: Linux gates — validate bench host first (Phase 3 entry gate; O_DIRECT probe green, protocol documented, fio QD64 random-read device floor recorded for the DIO-G3 lever), then strict parity (non-inferiority CI-upper-bound <= 1.02, block-fetch layer, decoded cache bypassed), RC-R2 scaling, overlap gate, write-plane A/B vs the RealFs baseline arm (DIO-G8), the scan-workload observation (sweep > pool size interleaved with point-gets; per-ReaderCtx hit/eviction counters recorded in measurements.md — S3-FIFO escalation evidence), and the FULL regression sweep on both platforms (DIO-G6 - poison oracles, laziness pins, routing contract, RC-R1..R3). BLOCKER carried from batch 6 (general review adjudication e): real-backend ring arena unification — the pool's Arc<Frames> becomes the uring registered fixed buffers (share_frames is a no-op on the real Driver today, so Pool<Driver> read routing is inert); when it lands, RingExecutor::push_read needs a destination-buffer-offset parameter and PoolBackend::submit_read for Driver must honor the reslice len — the current full-granule re-read would clobber the filled prefix and over-read past the extent bound (scope.md:601). The same unification eliminates the double allocation (PoolBuilder::build currently allocates both the pool Arc<Frames> and the Driver's private FrameSlab) and threads the frame-write offset through the seam; the parity/overlap gates CANNOT run until Pool<Driver>'s real read path fills the pool's own frames (batch-6 architecture review)
+    content: Linux gates — validate bench host first (Phase 3 entry gate; O_DIRECT probe green, protocol documented, fio QD64 random-read device floor recorded for the DIO-G3 lever), then strict parity (non-inferiority CI-upper-bound <= 1.02, block-fetch layer, decoded cache bypassed), RC-R2 scaling, overlap gate, write-plane A/B vs the RealFs baseline arm (DIO-G8), the scan-workload observation (sweep > pool size interleaved with point-gets; per-ReaderCtx hit/eviction counters recorded in measurements.md — S3-FIFO escalation evidence), and the FULL regression sweep on both platforms (DIO-G6 - poison oracles, laziness pins, routing contract, RC-R1..R3). BLOCKER carried from batch 6 (general review adjudication e): real-backend ring arena unification — the pool's Arc<Frames> becomes the uring registered fixed buffers (share_frames is a no-op on the real Driver today, so Pool<Driver> read routing is inert); when it lands, RingExecutor::push_read needs a destination-buffer-offset parameter and PoolBackend::submit_read for Driver must honor the reslice len — the current full-granule re-read would clobber the filled prefix and over-read past the extent bound (scope.md:601). The same unification eliminates the double allocation (PoolBuilder::build currently allocates both the pool Arc<Frames> and the Driver's private FrameSlab) and threads the frame-write offset through the seam; the parity/overlap gates CANNOT run until Pool<Driver>'s real read path fills the pool's own frames (batch-6 architecture review). TWO batch-7 additions: (a) the poll path and the quiescent-reader FIRST-pin warm-hit path gained a SeqCst fence in batch 7 (the loom-found grace-protocol fix) — all pre-batch-7 baselines are stale and the DIO-G1 parity + overlap characterization runs against fenced code; (b) touching begin_pin/advance_epoch/FrameState::advance/the PageTable seqlock requires updating src/pool/loom_model.rs and re-running the loom suite (the model holds real components but composes them itself — it drifts silently otherwise)
     status: pending
     phase: sira-wiring
     files: [sira/benches/, scopes/draft/dios-v1/resources/measurements.md]
     depends_on: [T011, T013]
   - id: T015
     content: nmnm-readiness — compile-tested Gateway-contract example extending the T016 spike to the full pool API (submit -> resident borrow, waiter-interest drop on pending tokens) + extraction checklist; checklist names the Send-able per-WorkItem residency lease (coarse refcount pin at Ready transition, released at item completion) required because FrameGuard is !Send and nmnm's executor steals items across threads
-    status: pending
+    status: done
     phase: nmnm-readiness
     files: [examples/gateway_contract.rs, scopes/draft/dios-v1/resources/extraction.md]
     depends_on: [T008]
@@ -102,7 +102,7 @@ tasks:
 meta:
   created: 2026-07-07
   last_updated: 2026-07-10
-  progress: 9/16
+  progress: 11/16
   blocked_by: [sira-read-perf, sira-read-concurrency]
 
 phases:

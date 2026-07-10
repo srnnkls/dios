@@ -4,28 +4,31 @@ checkpoint:
   branch: feat/dios-v1
   worktree: /Users/srnnkls/projects/dios/.worktrees/feat-dios-v1
   timestamp: 2026-07-10
-  last_batch: 6
-  last_commit: cfe0013
+  last_batch: 7
+  last_commit: 550536f
   pending_gate: >-
     ONE owed gate: bench host nix has been network-unreachable since
-    mid-batch-5; batches 5 AND 6 committed on the arm64 container gate
-    per the owner decision (standing_decisions + review.yaml
-    container_gate/remote_gate entries). Run `mise run remote -- mise
-    run lint` and `-- mise run test` once against HEAD when the box
-    returns.
+    mid-batch-5; batches 5, 6 AND 7 committed on the arm64 container
+    gate per the owner decision. When the box returns: `mise run remote
+    -- mise run lint` + `-- mise run test` once against HEAD, plus the
+    loom suite (RUSTFLAGS='--cfg loom' cargo test --features bench,mock
+    --test loom_pool), AND note the batch-7 SeqCst fences mean all
+    pre-batch-7 warm-hit/poll baselines are stale — T014's
+    characterization runs against fenced code.
 
   commits:
     - { batch: 1, sha: 8706fb0, tasks: [T001], note: "scaffold — backend seam, error values, Alignment newtype" }
     - { batch: 2, sha: 1cef8c3, tasks: [T002], note: "DriverCore<E: Executor> (locked-prepare/unlocked-execute/locked-publish), generational FileTable, INV-11 leases, seeded DST mock, 24 contract tests" }
     - { batch: 3, sha: 56e66d7, tasks: [T003, T016], note: "eager executor (real syscalls at poll), src/open.rs direct-IO probe (darwin F_NOCACHE / linux statx), Driver public surface, two-phase retire (finish_retire = sole Closed-writer), pool contract types + api_fit_spike" }
     - { batch: 4, sha: 6ba8ae0, tasks: [T006], note: "frame pool core: Frames/PageTable(backward-shift)/Clock/WriteArena(unified)/Pool builder + INV-9 watermark; GRANULE_DEFAULT=4096 resolves M001; benches/plans/pool_warm_path.md" }
-    - { batch: 6, sha: pending-amend, tasks: [T005, T008], note: "ring fault seam (MockRingDriver over the real reap path, cfg-lift, EAGAIN/EINTR resubmit to retry_bound, is_closed(FileId), quiesce+Drop, on_op_finalized) + pool miss path (Pool<D> composition, seqlock PageTable replacing the Mutex, MissTable singleflight, reslice, lock-free CLOCK reference bits, fill/abort seams, arena sharing for eager/mock, overlap bench+plan; ring arena = T014 blocker)" }
+    - { batch: 7, sha: 550536f, tasks: [T009, T015], note: "concurrency proofs: cfg(loom) sync alias across all pool primitives + alias_guard regression test, dios::loom_model delegating harness (4 models), THE LOOM-FOUND PRODUCTION FENCE FIX (advance_epoch SeqCst — the EBR grace protocol was one-sided; design.md corrected), clock_reference_stores observation seam, (InFlight,Free) advance fold, zero-alloc pool gates + two-directional store-elision proof; nmnm-readiness: gateway_contract example + filled extraction.md naming the Send-able residency lease" }
+    - { batch: 6, sha: a0451f9, tasks: [T005, T008], note: "ring fault seam (MockRingDriver over the real reap path, cfg-lift, EAGAIN/EINTR resubmit to retry_bound, is_closed(FileId), quiesce+Drop, on_op_finalized) + pool miss path (Pool<D> composition, seqlock PageTable replacing the Mutex, MissTable singleflight, reslice, lock-free CLOCK reference bits, fill/abort seams, arena sharing for eager/mock, overlap bench+plan; ring arena = T014 blocker)" }
     - { batch: 5, sha: cfe0013, tasks: [T004, T007], note: "io_uring backend (batched SQE fill / non-sleeping reap, EXT_ARG poll_wait, registered buffers+files, EagerExecutor/RingExecutor split, O_DIRECT-on-retained-fd, arch-conditional O_DIRECT) + EBR epoch guards (five doc(hidden) Pool seams, SeqCst publish fence, CAS slots + RAII deregister, guard-lifetime tie, unsafe fill seam) + docker interim gate task" }
 
   tasks:
-    done: [T001, T002, T003, T016, T006, T004, T007, T005, T008]
+    done: [T001, T002, T003, T016, T006, T004, T007, T005, T008, T009, T015]
     in_progress: []
-    pending: [T009, T015]
+    pending: []
     deferred_external:
       tasks: [T010, T011, T012, T013, T014]
       reason: >-
@@ -36,6 +39,39 @@ checkpoint:
         integrate into sira later. Do not start T010 or merge sira
         branches without the user initiating it.
 
+  batch_7_state:
+    position: >-
+      A.5 GATE CLEARED after TWO rounds (trail in review.yaml batch-7;
+      final states: loom_pool RED 1x E0432 on dios::loom_model under
+      --cfg loom with FOUR models; zero_alloc pool gates RED 3x E0599
+      on Pool::clock_reference_stores incl. the two-directional
+      store-elision proof; matrix RED 25+1 on the InFlight->Free fold;
+      gateway_contract + extraction.md skeleton pass). Tests FROZEN.
+      Both round-2 tester deviations adjudicated correct (before-resolve
+      baseline; the Busy triple per the batch-6 item-13 record). PHASE B
+      DISPATCHED in parallel (disjoint surfaces): T009 implementer —
+      the cfg(loom) sync-alias retrofit across ALL pool concurrency
+      primitives (the hard deliverable and the precondition for loom
+      seeing anything), dios::loom_model as GENUINE DELEGATION (Phase C
+      runs gestalt callees on its ops — a bespoke reimplementation
+      fails), clock_reference_stores co-located with the bit store,
+      the (InFlight,Free) advance fold + abort_inflight routed through
+      it, and the loom suite run to completion (a model failure = loom
+      found a real production bug; investigate, don't relax). T015
+      implementer — fill every extraction.md obligation grounded in the
+      real code (lease semantics at Ready, reclamation gate, honest
+      RMW-cost note, later-scope API surface, ordered steps,
+      cross-reference table). T015 tester — the NEW-1 doctest-B
+      attribution comment fix. RESUME AT: collect the three reports,
+      verify GREEN (local + container; loom under RUSTFLAGS='--cfg
+      loom'), Phase C six reviewers WITH THE FOUR STRUCTURAL AUDITS
+      MANDATORY (delegation-via-callees; sync-alias retrofit actually
+      used by production modules; Guard::generation live-read; counter
+      co-location), synthesis, fix pass, records, commit "Tasks: T009,
+      T015 / Batch: 7/7". THEN: the scope-level final review (execute.md
+      Step 8 — fetch + rebase onto origin/main first; the branch has
+      NEVER been pushed), the batch-5/6/7 bench-host re-run when the box
+      returns, and the /scope done prompt. NO auto-PR.
   batch_6_state:
     position: >-
       A.5 GATE CLEARED after FIVE rounds (full trail in review.yaml
@@ -232,6 +268,8 @@ checkpoint:
       so amend is safe.
 
   standing_decisions:
+    - "loom keep-in-sync (batch 7): src/pool/loom_model.rs holds REAL production components — any change to begin_pin/advance_epoch/FrameState::advance/the PageTable seqlock updates the model and re-runs the loom suite (RUSTFLAGS=--cfg loom); the sync-alias grep-guard test enforces the crate::sync routing with a documented reference_stores exemption"
+    - "advance_epoch witness-token hardening (arch ARCH-4) noted OPTIONAL and deferred — single-writer discipline is call-site convention; both callers hold the Control lock"
     - "Docker interim runtime (OWNER 2026-07-10): while the bench host is down, `mise run docker '<command>'` (arm64 Linux container, OrbStack, seccomp=unconfined, ext4 volume) is the Linux FUNCTIONAL gate; perf gates stay pinned to the Threadripper host; one bench-host lint+test re-run is owed when it returns. Rosetta/amd64 containers cannot run io_uring (ENOSYS, verified)"
     - "O_DIRECT is arch-conditional (x86_64 0x4000, aarch64 0x10000) with a compile_error! guard for other linux arches — latent portability bug found by the container probe, fixed at src/open.rs (single shared const) + tests/uring.rs"
     - "Misalignment on a Direct handle is a PROGRAMMER ERROR: panics with 'is not aligned' wording (owner ruling; scope semantics paragraph beats T003 task-text)"

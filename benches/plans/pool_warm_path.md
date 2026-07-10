@@ -33,3 +33,11 @@ stays unpinned until that lock-free table lands, so this gate never bakes in a
 lock the design forbids on the warm path. The gate itself is asserted by the
 shared compare harness (`mise run gate`), not in-bench; the DIO-G1 no-RMW /
 zero-alloc proof is owned by T009/T014.
+
+Batch-7 fence note: T009 added the poll-side half of the store-buffer pair — a
+`SeqCst` fence in `advance_epoch` per poll pass — after the grace-period loom
+model falsified the fence-free advance scan; the quiescent-reader first-pin fence
+above is the other half. Any pre-batch-7 warm-path baseline is stale, so the
+first post-batch-7 run re-establishes the pin and the T014 characterization runs
+against the fenced code. Nested/repeat pins skip the fence, so it does not touch
+the steady-state warm-hit cost.

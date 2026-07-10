@@ -9,9 +9,9 @@ use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::pool::SECTOR_BYTES;
+use crate::sync::{AtomicBool, Ordering};
 
 const SECTOR: usize = SECTOR_BYTES as usize;
 

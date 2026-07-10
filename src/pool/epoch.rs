@@ -11,9 +11,9 @@
 use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::ops::Deref;
-use std::sync::atomic::{self, AtomicBool, AtomicU64, Ordering};
 
 use crate::driver::ReadFrameIdx;
+use crate::sync::{AtomicBool, AtomicU64, Ordering, fence};
 
 /// A reader publishes this sentinel as its `local_epoch` while it holds no guard;
 /// the advance check reads it as "no constraint on the global epoch".
@@ -99,7 +99,7 @@ impl ReaderSlot {
             // twice, and reclaims a frame this guard still derefs. The SeqCst fence
             // pairs with the poll-side `permits_advance` scan (crossbeam-epoch pins
             // the same way). The interleaving proof is the T009 loom model.
-            atomic::fence(Ordering::SeqCst);
+            fence(Ordering::SeqCst);
         }
         first
     }
@@ -121,7 +121,7 @@ impl ReaderSlot {
 
     /// Drops one live guard; the reader goes quiescent on its last guard so a
     /// published epoch never outlives the guards that justified it.
-    fn release_guard(&self) {
+    pub(crate) fn release_guard(&self) {
         let count = self.guard_count();
         assert!(count > 0, "a released guard was previously committed");
         let remaining = count - 1;
@@ -146,6 +146,30 @@ impl ReaderSlot {
         );
         local == QUIESCENT || local == global_epoch
     }
+}
+
+/// Advances `global_epoch` by one iff every reader permits, returning the epoch in
+/// force after the attempt. Run single-writer under the AD-4 control lock; a reader
+/// pinned at the current epoch blocks the advance and thereby stalls reclamation of
+/// a frame under its live guard (INV-1).
+pub(crate) fn advance_epoch(global_epoch: &AtomicU64, slots: &[ReaderSlot]) -> u64 {
+    let epoch = global_epoch.load(Ordering::Acquire);
+    // Symmetric half of the store-buffer litmus `begin_pin` opens: a reader
+    // publishes `local_epoch` then `SeqCst`-fences before reading residency, so the
+    // poller must `SeqCst`-fence before reading `local_epoch` or it can observe a
+    // stale QUIESCENT and advance past a live guard (crossbeam-epoch fences its
+    // collector the same way). Proven by the T009 grace-period loom model.
+    fence(Ordering::SeqCst);
+    let permitted = slots.iter().all(|slot| slot.permits_advance(epoch));
+    if permitted {
+        global_epoch.store(epoch + 1, Ordering::Release);
+    }
+    let advanced = global_epoch.load(Ordering::Acquire);
+    debug_assert!(
+        advanced == epoch || advanced == epoch + 1,
+        "a single advance pass moves the epoch by at most one"
+    );
+    advanced
 }
 
 /// The fixed-capacity ring of frames awaiting reclamation, each tagged with the

@@ -4,19 +4,19 @@
 
 use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicU8, Ordering};
 
 use crate::driver::ReadFrameIdx;
 use crate::pool::SECTOR_BYTES;
+use crate::sync::{AtomicU8, Ordering};
 
 const SECTOR: usize = SECTOR_BYTES as usize;
 
-/// Residency of one frame. [`FrameState::advance`] admits only the cycle
-/// `Free → InFlight → Resident → Evicting → Free` (INV-1) and panics on any other
-/// edge. The single exception is the miss-abort edge `InFlight → Free`, taken by
-/// [`Frames::abort_inflight`] (NOT through `advance`) for a faulted or
-/// EOF-terminated read whose frame was never published `Resident` nor mapped, so
-/// no guard borrows it and the reclamation stages do not apply.
+/// Residency of one frame. [`FrameState::advance`] admits the residency cycle
+/// `Free → InFlight → Resident → Evicting → Free` (INV-1) plus the miss-abort edge
+/// `InFlight → Free`, and panics on any other edge. [`Frames::abort_inflight`]
+/// takes the abort edge for a faulted or EOF-terminated read whose frame was never
+/// published `Resident` nor mapped, so no guard borrows it and the reclamation
+/// stages do not apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameState {
     Free,
@@ -30,14 +30,18 @@ impl FrameState {
     ///
     /// # Panics
     ///
-    /// If `self → to` is not one of the four legal edges of the residency cycle
-    /// — the frame state machine admits no other transition (INV-1).
+    /// If `self → to` is not a legal edge of the residency cycle or the miss-abort
+    /// edge `InFlight → Free` — the frame state machine admits no other transition
+    /// (INV-1).
     #[must_use]
     pub fn advance(self, to: FrameState) -> FrameState {
         let legal = matches!(
             (self, to),
             (FrameState::Free, FrameState::InFlight)
-                | (FrameState::InFlight, FrameState::Resident)
+                | (
+                    FrameState::InFlight,
+                    FrameState::Resident | FrameState::Free
+                )
                 | (FrameState::Resident, FrameState::Evicting)
                 | (FrameState::Evicting, FrameState::Free)
         );
@@ -234,7 +238,7 @@ impl Frames {
             FrameState::InFlight,
             "only an unpublished InFlight frame aborts back to Free"
         );
-        self.states[index].store(FrameState::Free.to_tag(), Ordering::Relaxed);
+        self.advance(frame, FrameState::Free);
     }
 
     fn checked_index(&self, frame: ReadFrameIdx) -> usize {

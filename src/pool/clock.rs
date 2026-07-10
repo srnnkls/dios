@@ -4,15 +4,18 @@
 //! invariant. Eviction sweeps a deterministic hand, clearing set bits (spending
 //! their second chance) until it lands on a clear one.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-
 use crate::driver::ReadFrameIdx;
+use crate::sync::{AtomicBool, AtomicU32, Ordering};
 
 #[derive(Debug)]
 pub struct Clock {
     reference_bits: Box<[AtomicBool]>,
     count: u32,
     hand: AtomicU32,
+    // Diagnostics-only counter no loom proof reads: it deliberately bypasses
+    // `crate::sync` (aliasing it would cost loom state for nothing) and is fully
+    // qualified so the sync-alias regression guard allowlists it by name (ARCH-3).
+    reference_stores: std::sync::atomic::AtomicU64,
 }
 
 impl Clock {
@@ -33,6 +36,7 @@ impl Clock {
             reference_bits: bits.into_boxed_slice(),
             count: frame_count,
             hand: AtomicU32::new(0),
+            reference_stores: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -49,8 +53,17 @@ impl Clock {
             false
         } else {
             bit.store(true, Ordering::Relaxed);
+            self.reference_stores.fetch_add(1, Ordering::Relaxed);
             true
         }
+    }
+
+    /// Cumulative count of clear→set reference-bit stores; a repeat hit on a set
+    /// bit leaves it unchanged (DIO-G1 store-elision observation seam).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn reference_stores(&self) -> u64 {
+        self.reference_stores.load(Ordering::Relaxed)
     }
 
     /// Whether `frame`'s reference bit is set.

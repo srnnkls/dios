@@ -9,10 +9,9 @@
 //! correctness of the seqlock is pinned by the T006 table tests and the T008 miss
 //! path; the concurrent read/write interleaving proof is T009 loom.
 
-use std::sync::atomic::{self, AtomicBool, AtomicU32, AtomicU64, Ordering};
-
 use crate::driver::{FileId, ReadFrameIdx};
 use crate::pool::PageId;
+use crate::sync::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence, spin_loop};
 
 /// Under the AD-4 single-writer discipline a read that never observes a stable
 /// even version is a stuck writer — a bug to crash on, not to spin on forever.
@@ -49,7 +48,7 @@ impl Cell {
             "a seqlock write begins from an even, unlocked version (single writer)"
         );
         self.seq.store(version + 1, Ordering::Relaxed);
-        atomic::fence(Ordering::Release);
+        fence(Ordering::Release);
         match entry {
             Some((page, frame)) => {
                 let file = page.file();
@@ -71,7 +70,7 @@ impl Cell {
         for _ in 0..SEQLOCK_READ_SPINS_MAX {
             let before = self.seq.load(Ordering::Acquire);
             if before & 1 != 0 {
-                std::hint::spin_loop();
+                spin_loop();
                 continue;
             }
             let occupied = self.occupied.load(Ordering::Relaxed);
@@ -84,7 +83,7 @@ impl Cell {
                 let page = PageId::new(file, self.granule_idx.load(Ordering::Relaxed));
                 (page, ReadFrameIdx::new(self.frame.load(Ordering::Relaxed)))
             });
-            atomic::fence(Ordering::Acquire);
+            fence(Ordering::Acquire);
             if self.seq.load(Ordering::Relaxed) == before {
                 return snapshot;
             }

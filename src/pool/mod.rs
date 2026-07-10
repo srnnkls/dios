@@ -9,21 +9,25 @@
 //! [`Mutex`]. The miss singleflight and the backend seam live in [`miss`].
 
 use std::cell::Cell;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::Arc;
 
 use crate::completion::CompletionBatch;
 use crate::driver::{Driver, FileHandle, FileId, MAX_FILES, OpKind, OpToken, ReadFrameIdx};
 use crate::error::{IoError, SubmitError};
+use crate::sync::{AtomicU64, Mutex, MutexGuard, Ordering};
 
+#[cfg(test)]
+mod alias_guard;
 mod clock;
 mod epoch;
 mod frames;
+#[cfg(loom)]
+pub mod loom_model;
 mod miss;
 mod table;
 pub(crate) mod write_arena;
 
-use epoch::{EvictQueue, ReaderSlot};
+use epoch::{EvictQueue, ReaderSlot, advance_epoch};
 use miss::{MissOutcome, MissTable};
 
 pub use clock::Clock;
@@ -425,8 +429,16 @@ impl<D: PoolBackend> Pool<D> {
         &self.driver
     }
 
+    #[cfg(not(loom))]
     fn control(&self) -> MutexGuard<'_, Control> {
-        self.control.lock().unwrap_or_else(PoisonError::into_inner)
+        self.control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[cfg(loom)]
+    fn control(&self) -> MutexGuard<'_, Control> {
+        self.control.lock().expect("loom mutex is never poisoned")
     }
 
     /// Claims a reader registration slot.
@@ -728,16 +740,19 @@ impl<D: PoolBackend> Pool<D> {
     }
 
     fn advance_and_reclaim(&self, control: &mut Control) -> usize {
-        let epoch = self.global_epoch.load(Ordering::Acquire);
-        let permitted = self.slots.iter().all(|slot| slot.permits_advance(epoch));
-        if permitted {
-            self.global_epoch.store(epoch + 1, Ordering::Release);
-        }
-        let global_epoch = self.global_epoch.load(Ordering::Acquire);
+        let global_epoch = advance_epoch(&self.global_epoch, &self.slots);
         let frames = &self.frames;
         control.evict_queue.drain_matured(global_epoch, |frame| {
             frames.advance(frame, FrameState::Free);
         })
+    }
+
+    /// Cumulative clear→set CLOCK reference-bit stores across every `get()` hit
+    /// path — the DIO-G1 store-elision observation seam (T009 zero-alloc gate).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn clock_reference_stores(&self) -> u64 {
+        self.clock.reference_stores()
     }
 }
 

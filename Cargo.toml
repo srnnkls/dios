@@ -30,6 +30,10 @@ required-features = ["mock"]
 name = "api_fit_spike"
 required-features = ["mock"]
 
+[[example]]
+name = "gateway_contract"
+required-features = ["mock"]
+
 [[bench]]
 name = "smoke"
 harness = false
@@ -82,3 +86,9 @@ strip = false
 
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = "0.7"
+
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
+[target.'cfg(loom)'.dev-dependencies]
+loom = "0.7"

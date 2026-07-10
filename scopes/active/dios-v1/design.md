@@ -125,19 +125,28 @@ State per pool: `global_epoch: AtomicU64`; per registered reader thread a
   deregister via TLS destructor/RAII on thread exit — a dead thread's
   stale epoch must not stall reclamation.
 - Guard create: reader publishes `local_epoch = global_epoch` (Acquire
-  load, Release store) BEFORE validating the frame — then re-checks the
-  frame is still Resident and table-mapped; on observing Evicting or a
-  removed mapping, abandon and take the miss path. Nested guards share
-  the published epoch (per-thread guard count).
+  load, Release store), then a `SeqCst` fence before validating residency,
+  BEFORE validating the frame — then re-checks the frame is still Resident
+  and table-mapped; on observing Evicting or a removed mapping, abandon and
+  take the miss path. Nested guards share the published epoch (per-thread
+  guard count). The fence is not optional: the Acquire/Release-only variant
+  was falsified by the T009 grace-period loom model — the publish store
+  else sits in the store buffer past the residency read, the poller's scan
+  reads a stale `u64::MAX`, and a frame is reclaimed under the live guard
+  (store-buffer hazard; one half of the Dekker pair with the advance scan).
 - Guard drop: when a thread's live-guard count reaches 0 it stores
   `local_epoch = u64::MAX`.
 - Evict: CLOCK selects a Resident, unpinned-by-CLOCK frame → state
   Evicting, pushed to `evict_queue` tagged with the current global epoch.
   The PageTable entry is removed at this point, so no new guard can be
   created for the old contents.
-- Epoch advance (poll caller only, under the AD-4 lock): if every
-  registered `local_epoch` is either `u64::MAX` or `== global_epoch`,
-  increment `global_epoch`.
+- Epoch advance (poll caller only, under the AD-4 lock): a `SeqCst` fence
+  before the `local_epoch` scan, then if every registered `local_epoch` is
+  either `u64::MAX` or `== global_epoch`, increment `global_epoch`. This
+  fence is the other half of the guard-create pair — the Acquire-load-only
+  scan was falsified by the T009 grace-period loom model (store-buffer
+  hazard: the scan could read a stale `u64::MAX` for a reader that had
+  already published, and advance twice past a live guard).
 - Reclaim (same poll pass): a queued frame with `tagged_epoch + 2 <=
   global_epoch` transitions Evicting → Free. Two advances guarantee every
   guard that could have observed the old contents has dropped.
@@ -158,11 +167,14 @@ State per pool: `global_epoch: AtomicU64`; per registered reader thread a
   release block-and-drain), then quiesces in-flight ops, deregisters
   buffers, tears down.
 
-Warm-hit cost: one Acquire load + one Release store on guard create, one
-store on last-guard drop, and the CLOCK reference bit set check-then-set
-(Relaxed load; Relaxed store only when the bit is clear). Steady-state
-hot frames keep the bit set, so repeat hits write nothing per-frame — no
-RMW ever. This is the answer to hot-page contention (index/bloom
+Warm-hit cost: one Acquire load + one Release store + one `SeqCst` fence
+on the FIRST guard create (a nested or repeat pin under a live guard skips
+the publish and the fence — it only bumps the per-thread count), one store
+on last-guard drop, and the CLOCK reference bit set check-then-set (Relaxed
+load; Relaxed store only when the bit is clear). Steady-state hot frames
+keep the bit set, so repeat hits write nothing per-frame — no RMW ever. The
+matching poll-side cost is one `SeqCst` fence per poll pass (the epoch
+advance scan), off the warm-hit path. This is the answer to hot-page contention (index/bloom
 frames — the "B+tree root" objection from the RavenDB mmap rebuttal);
 the first-touch bit store rides in the DIO-G1 parity bench.
 

@@ -3,7 +3,7 @@
     not(feature = "mock"),
     expect(
         dead_code,
-        reason = "the shared driver core is exercised through the mock backend (feature = \"mock\") until the eager and uring backends land (T003/T004)"
+        reason = "parts of the shared driver core (DST seams, observation surfaces) are reachable only through the mock backend, so a mock-less build sees them as dead"
     )
 )]
 
@@ -14,6 +14,11 @@ mod driver;
 mod error;
 mod open;
 mod pool;
+mod sync;
+
+#[cfg(loom)]
+#[doc(hidden)]
+pub use pool::loom_model;
 
 #[cfg(feature = "mock")]
 #[doc(hidden)]

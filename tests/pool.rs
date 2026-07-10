@@ -109,7 +109,10 @@ fn frame_state_transition_matrix_permits_exactly_the_legal_edges() {
         matches!(
             (from, to),
             (FrameState::Free, FrameState::InFlight)
-                | (FrameState::InFlight, FrameState::Resident)
+                | (
+                    FrameState::InFlight,
+                    FrameState::Resident | FrameState::Free
+                )
                 | (FrameState::Resident, FrameState::Evicting)
                 | (FrameState::Evicting, FrameState::Free)
         )

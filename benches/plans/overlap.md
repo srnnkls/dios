@@ -21,3 +21,9 @@ the ratio runs near 64× — the numbers here are ADVISORY, proving only
 that the bench compiles, drives the composed pool, and writes samples the
 compare harness can gate. The gate is asserted by `mise run gate`, never
 in-bench, so the advisory container run never fails the build.
+
+Batch-7 fence note: the poll path gained a `SeqCst` fence in `advance_epoch`
+(one per poll pass) in batch 7, closing the store-buffer hazard the T009
+grace-period loom model falsified. Every `poll` in the drain loop here carries
+it, so any pre-batch-7 overlap baseline is stale — the binding T014 run
+characterizes the fenced code.

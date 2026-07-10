@@ -928,11 +928,212 @@ batch_reviews:
     outcome: >-
       approved — committed on the container gate per the owner decision
       (bench-host re-run owed on its return)
+  - batch: 7
+    timestamp: 2026-07-10
+    commit: pending
+    tasks: [T009, T015]
+    test_review:
+      rounds: in-progress
+      phase_a: >-
+        T009 tester: tests/loom_pool.rs (three cfg(loom) models — EBR
+        grace period pinning the begin_pin SeqCst store-buffer window,
+        reclaim-after-drop dual, seqlock torn-read exclusion) over a
+        bounded #[doc(hidden)] loom_model seam whose contract REQUIRES
+        delegation to the production atomics/lock/fence/seqlock via a
+        crate cfg(loom) sync alias (anti-tautology clause: a bespoke
+        reimplementation must fail review — flagged as the primary gate
+        adjudication); tests/zero_alloc.rs extended (close-during-drain
+        retire gate GREEN both backends as an honest gate over the
+        batch-5 scratch; five pool gates compile-RED solely on the
+        Pool::clock_reference_stores observation seam — the CLOCK
+        store-elision proof runs through the REAL get() path per the
+        batch-6 lesson); tests/pool.rs one surgical amendment folding
+        (InFlight,Free) legal per the batch-6 adjudication (RED 25+1);
+        Cargo.toml cfg(loom) dev-dep (normal build verified unaffected)
+        + the gateway_contract example registration. T015 tester:
+        examples/gateway_contract.rs GREEN-at-birth (six contract fns
+        over the real Pool<MockDriver>: parked-item non-blocking
+        progress, waiter-interest drop, multi-inflight no-clobber,
+        error fanout to a cancelled+live pair, the residency-lease
+        Ready-transition stand-in, require_send steal-boundary proofs)
+        + scopes/draft/dios-v1/resources/extraction.md as a deliberate
+        RED skeleton with Fill obligations. Orchestrator re-verified
+        every state (matrix 25+1; pool gates E0599-only; loom E0432-only
+        under --cfg loom; driver zero_alloc 4/4; examples skip cleanly
+        without mock; fmt clean).
+      round_1:
+        reviewers: [claude-opus, claude-sonnet, gemini-3.5-flash]
+        codex: stalled twice, skipped (persistent all session)
+        primary_adjudication: >-
+          The loom_model bounded-delegation architecture is APPROVED as
+          the standard loom deployment (opus verified no cfg(loom) sync
+          alias exists in src/ today — the production retrofit is a
+          hard T009 implementer deliverable and the precondition for
+          loom seeing anything; gemini concurred with the same
+          vacuous-over-std-atomics analysis). The anti-tautology clause
+          is enforceable ONLY structurally — three named Phase C
+          audits: (1) gestalt callees on PoolModel ops must land in the
+          production begin_pin/advance_epoch/FrameState::advance/
+          seqlock functions, not module-local helpers; (2) the
+          production frame-state/EBR/seqlock modules must import the
+          crate cfg(loom) sync alias, not std::sync::atomic; (3)
+          Guard::generation must re-read LIVE frame content (a pin-time
+          copy makes the grace proof vacuous). Plus: the
+          clock_reference_stores counter must be bumped co-located with
+          the atomic bit.store (else the gate mirrors T006's
+          return-value contract).
+        verdicts: opus pass-all (with the audits + gaps), sonnet
+          re-dispatch zero_alloc only, gemini re-dispatch zero_alloc
+          only
+        adjudications: >-
+          ACCEPTED (Critical, sonnet+gemini convergent): the
+          store-elision gate is vacuous for an always-elide impl — add
+          the first-touch baseline assertion (exactly one store on the
+          first warm hit) alongside the repeat-delta-zero. ACCEPTED
+          (Important, opus): 4th loom model for nested pins under race
+          (inner dropped first; frame not reclaimed until the OUTER
+          drops) — a premature u64::MAX publish on a non-last drop is
+          an INV-1 violation no current model discriminates and T007's
+          single-threaded tests cannot catch the race. ACCEPTED
+          (minors, opus): Busy gate also asserts pinned frames stay
+          Resident; extraction.md dangling nmnm cross-reference fixed;
+          gateway_contract cites the owning !Send proofs by name.
+          RECORDED DEFERRAL (opus): dead-thread slot deregistration
+          racing epoch advance — out of the bounded 1-slot seam by
+          construction, stated in the loom_pool.rs header as an
+          adjudicated boundary. NOTED for Phase B: peak_guards stays a
+          watermark-sizing input, not a runtime cap (the Busy gate
+          depends on it); sonnet independently traced the tag+1-reclaim
+          wrong impl through model 1 and confirmed discrimination.
+      round_2:
+        reviewers: [claude-opus, gemini-3.5-flash]
+        codex: stalled twice, skipped
+        verdicts: >-
+          BOTH clean — all five amendments resolved with the RED
+          signatures reconfirmed exactly (3x E0599 on
+          clock_reference_stores; 1x E0432 on loom_model with four
+          models compiling past the import; matrix 25+1; driver
+          zero_alloc 4/4; normal build unaffected). BOTH tester
+          deviations adjudicated CORRECT with traced evidence: (A) the
+          before-resolve baseline is REQUIRED — batch-6 routed CLOCK
+          referencing through pin()/ready()/drain_completions, so an
+          after-resolve baseline would false-fail a correct impl; the
+          window pins exactly one clear->set and discriminates both
+          wrong impls; (B) the Busy triple over stays-Resident matches
+          design.md:134-143 and the recorded batch-6 item-13
+          adjudication — the round-1 minor had re-proposed the exact
+          over-strong oracle batch 6 corrected. One non-blocking NEW-1
+          minor rides into the fix queue: a gateway_contract comment
+          mis-types the doctest-B anchor (it pins ReaderCtx !Send, not
+          FrameGuard). The four Phase C structural audits verified
+          present in the file headers.
+      gate: cleared -> Phase B (two rounds; tests FROZEN)
+    phase_b: >-
+      T009: src/sync.rs cfg(loom) alias + full pool routing;
+      dios::loom_model delegating to production primitives; the loom
+      run FOUND A REAL PRODUCTION BUG — the EBR grace protocol's fence
+      was one-sided (begin_pin fenced, the poll-side scan did not);
+      fixed with fence(SeqCst) in the extracted advance_epoch, which
+      backs the shipping poll path; all four models green both
+      platforms (~7s, default bounds); clock_reference_stores
+      co-located with the bit store; (InFlight,Free) folded into
+      advance with abort_inflight routed through it (matrix 26/26).
+      T015: extraction.md filled (13 boxes checked, 2 with named
+      owners, citations line-verified). Unmask fixes: zero_alloc
+      similar_names rename; NEW-1 doctest attribution. All gates green
+      both platforms incl. the loom suite in the container.
+    phase_c:
+      reviewers: >-
+        general opus APPROVED (all four structural audits PASS with
+        evidence: delegation map verified op-by-op; instrumentation
+        grep with two adjudicated-sound std exceptions; Guard live-read;
+        counter co-location; the fence fix verified as the symmetric SB
+        half on the shipping path, off the DIO-G1 warm path; the
+        nested-pin model shortcut adjudicated sound and non-masking —
+        production is strictly more conservative). architecture opus
+        APPROVED-WITH-FOLLOWUPS (ARCH-1/2 REQUIRED doc-sync: design.md
+        still described the falsified fence-free algorithm — the
+        highest-priority follow-up; warm-hit budget + bench-plan fence
+        notes; ARCH-3 alias enforcement gap + two bypasses; ARCH-4
+        witness token optional-deferred; ARCH-5 keep-in-sync recording;
+        ARCH-6 two extraction.md sentences; ARCH-7 status sync).
+        compliance sonnet CHANGES_REQUESTED (loom_model op assertions
+        0.22/fn; extraction.md promissory phrasing x5; advance_epoch
+        postcondition minor; fence comment + doc(hidden) + cfg
+        discipline + Cargo.toml + unsafe accuracy all PASS). gemini ok
+        all three roles (concurring, incl. the T014 fence bench note);
+        codex stalled all three (all-session pattern; >=1 external per
+        role satisfied via gemini). First arch+compliance dispatches
+        died on a transient permission-classifier outage — re-dispatched
+        fresh.
+      anomaly: >-
+        extraction.md was observed shrinking 247 -> 144 lines mid-review
+        (compliance session). Current content is coherent, passed the
+        arch citation audit, and matches the T015 implementer's filled
+        version; integrity confirmation requested from the implementer
+        in its fix pass. Tracked-file modifications match the expected
+        batch surface exactly; no other unexplained changes.
+      adjudications: >-
+        ACCEPTED: write_arena.rs routed through the alias + the
+        grep-guard test with a documented reference_stores exemption
+        (reconciling general's sound-exception ruling with arch's
+        enforcement demand); design.md EBR + warm-hit corrections per
+        the arch prescription (REQUIRED); bench-plan fence notes;
+        loom_model op assertions + advance_epoch postcondition;
+        nested-pin docstring strengthening; extraction.md phrasing
+        rewrite + two ARCH-6 sentences. RECORDED: T014 fence
+        recharacterization + loom keep-in-sync (tasks.yaml + standing
+        decision); witness-token deferred note.
+    fix_pass:
+      applied: >-
+        ALL items. T009: write_arena routed through the alias;
+        reference_stores exemption documented at site + in sync.rs's
+        invariant list; src/pool/alias_guard.rs regression-guard test
+        (cfg(test), default suite, per-file+per-line allowlist —
+        verified to fail on a real bypass before the fix); design.md
+        EBR corrections landed (guard-create fence + falsification
+        note; epoch-advance fence + note; warm-hit budget with the
+        first-pin fence and nested/repeat skip); bench-plan fence notes
+        (pool_warm_path + overlap: baselines stale, T014 runs fenced
+        code); loom_model op assertions + advance_epoch
+        unchanged-or-+1 postcondition; nested-pin docstring. T015:
+        extraction.md promissory phrasing eliminated, owner tags
+        folded, ARCH-6a/6b sentences added; integrity check resolved
+        the mid-review rewrite as a style-only flattening of bold
+        lead-ins (semantics/citations intact — consistent with a
+        user-side formatting hook), adopted as the base.
+      verification: >-
+        opus ALL-VERIFIED with line-traceable evidence (every design.md
+        fence claim traced to its epoch.rs line; the scanner logic
+        exercised against a hypothetical table.rs bypass; the
+        advance_epoch postcondition confirmed sound under the
+        single-writer lock). One minor non-blocking note DEFERRED: the
+        alias scanner's literal match misses grouped
+        `use std::sync::{atomic::.., Mutex}` imports — the forms the
+        codebase uses are caught; harden opportunistically.
+        Orchestrator gates on the final tree: local 16 targets + loom
+        4/4 (7.74s) + clippy -D warnings + fmt; container 16 targets +
+        clippy + fmt + loom 4/4 (7.32s), own runs.
+      remote_gate: >-
+        Bench host STILL unreachable — batch 7 commits on the container
+        gate per the standing owner decision; the owed bench-host
+        re-run now covers batches 5-7 AND must re-characterize warm-hit
+        parity against the fenced code (pre-fence baselines stale).
+      external_verification: gemini ALL-VERIFIED (codex stalled, its
+        all-session pattern; >=1 external ok satisfied)
+    outcome: >-
+      approved — committed on the container gate per the owner decision
+      (bench-host re-run for batches 5-7 owed on its return)
 issues:
   critical: []
   high: []
   medium: []
 deferred_issues:
+  - "user_data/fd_slot newtype at the RingExecutor seam: the batch-5 'consider' deferral rode into T005 and was DROPPED there — CLOSED as adjudicated at scope-final review: the seam is a doc(hidden) crate-internal trait, the no-bare-integers rule binds public APIs, and the observable mock surface never exposes them; newtype opportunistically if the seam is ever reshaped"
+  - "alias_guard grouped-import blind spot: the literal scanner misses `use std::sync::{atomic::.., Mutex}` forms; the fully-qualified and plain forms the codebase uses are caught — harden opportunistically (batch-7 fix verification)"
+  - "advance_epoch witness-token hardening (batch-7 arch ARCH-4): single-writer discipline is call-site convention under the Control lock; a &Control witness parameter would make it type-enforced — optional"
+  - "fence-stale baselines: the batch-7 SeqCst fences (advance_epoch per poll pass; first-pin publish) invalidate all pre-batch-7 warm-hit/poll baselines — T014 characterizes fenced code (also in tasks.yaml T014 + checkpoint pending_gate)"
+  - "lib.rs crate-wide expect(dead_code) reason updated at scope-final review to name the true cause (mock-only reachability), the T003/T004 wording having gone stale"
   - "non_exhaustive on SubmitError deferred to T002, which owns the submit-error variant set (stale-generation rejection likely adds a variant)"
   - "Alignment(1) admissibility accepted by design: the statx(STATX_DIOALIGN) probe owns the floor; the type owns power-of-two-ness only (claude general medium)"
   - "assertion density in alignment.rs noted advisory (claude general medium); postcondition asserts optional for scaffold-sized functions"
