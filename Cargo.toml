@@ -53,6 +53,16 @@ name = "overlap"
 harness = false
 required-features = ["bench", "mock"]
 
+[[bench]]
+name = "mmap_warm_path"
+harness = false
+required-features = ["bench", "mock"]
+
+[[bench]]
+name = "ring_read_bracket"
+harness = false
+required-features = ["bench"]
+
 [lints.rust]
 elided_lifetimes_in_paths = "warn"
 trivial_numeric_casts = "warn"

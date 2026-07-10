@@ -104,11 +104,68 @@ validation, fence-stale baselines), and none can be legitimately
 answered before the sira integration provides the real read path and
 the pinned-host protocol runs.
 
+## Baseline comparisons (added post-scope, user-directed)
+
+All ratios are candidate/base geomean with the one-sided 95% CI upper
+bound from the shared compare harness; the ring arm asserts every CQE
+landed a full granule (an error or short read fails the bench rather
+than skewing the ratio).
+
+### mmap_warm_path — pool warm hit vs bare mmap read (sanity gate ≤ 3.0; the binding 1.02 DIO-G1 parity gate is T014's, at the block-fetch layer in sira)
+
+| Env | Ratio geomean | CI95 upper | Gate |
+|-----|---------------|------------|------|
+| `mac` | 1.582 | 1.617 | PASS |
+| `vm` | 1.480 | 1.499 | PASS |
+| `nix` | 1.909 | 1.937 | PASS |
+
+Both arms scan the identical 4 KiB granule; the arms differ only in
+residency machinery (bare pointer arithmetic vs seqlock probe + epoch
+publish + first-pin SeqCst fence + CLOCK check — the guard drops each
+iteration, so every hit pays the fenced first-pin cost). The ~1.5–1.9×
+pure-access overhead is the parity headroom DIO-G1's CRC+decode
+amortization has to absorb; at a ~70 ns scan the absolute overhead is
+tens of nanoseconds per hit.
+
+### ring_read_bracket — driver-level ring read vs blocking pread, QD1 O_DIRECT (gate ≤ 1.25)
+
+| Env | Ratio geomean | CI95 upper | Gate |
+|-----|---------------|------------|------|
+| `nix` | 0.932 | 0.935 | PASS — the ring is ~7% FASTER than pread |
+| `vm` | 1.081 | 1.106 | PASS (advisory — virtio storage) |
+
+On real NVMe the registered-buffer/fixed-file ring path beats the
+classic blocking syscall even at queue depth 1 with zero overlap in
+play; on the VM's virtualized storage the ring is ~8% slower, which is
+the virtio per-op cost registered buffers cannot skip — a good example
+of why `vm` stays advisory. No macOS arm (the ring is Linux-only).
+
+### fio device bracket (nix, file-based O_DIRECT 4K randread — the DIO-G3 lever floor/ceiling)
+
+| Arm | IOPS | Bandwidth | Mean latency |
+|-----|------|-----------|--------------|
+| io_uring QD64 (ceiling) | ~269,000 | ~1.03 GiB/s | 237.6 µs (queued) |
+| psync QD1 (floor) | ~15,900 | ~62 MiB/s | 62.5 µs |
+
+The QD1 device latency (~62 µs) dominates both arms of the ring
+bracket above, which is why its ratio sits near 1.0; the QD64 ceiling
+is the number T014's overlap gate measures the real ring against.
+
+### Rejected baselines (assessed, not benched)
+
+A tigerbeetle extract would measure Zig-vs-Rust codegen more than
+design (the structural comparison lives in design.md); monoio/compio/
+tokio-uring/glommio force incompatible workload shapes through their
+owned-buffer and executor models and would enter as heavyweight
+dependencies — a one-off monoio credibility number in an external
+scratch crate remains an open offer, not a pinned baseline.
+
 ---
 
 ## T014 sections (placeholders — filled under the pinned host protocol)
 
-- fio QD64 random-read device floor (DIO-G3 lever): _pending_
+- fio QD64 random-read device floor (DIO-G3 lever): recorded above
+  (as-is protocol; T014 re-runs under governor/pinning/cache-drop)
 - DIO-G1 parity run (block-fetch layer, decoded cache bypassed): _pending_
 - RC-R2 scaling: _pending_
 - overlap gate on the real ring: _pending_
