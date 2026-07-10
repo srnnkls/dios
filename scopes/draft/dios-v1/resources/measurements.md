@@ -160,15 +160,43 @@ Three qualifiers give the number its real weight:
   QD64 — 17× device throughput unlocked purely by overlap a page
   fault can never express — plus explicit eviction (no kernel-reclaim
   TLB shootdowns under memory pressure) and errors as values.
-- OPEN HYPOTHESIS (unmeasured): under TLB pressure the pool could win
-  outright. This bench's 64-page working set is mmap's best case; at
-  a large working set, file-backed 4 KiB mmap burns one TLB entry per
-  page while the pool's frames are one contiguous allocation that
-  could be hugepage-backed (one entry per 2 MiB). A `mmap_warm_path`
-  variant with a working set in the hundreds of MiB would test it;
-  hugepage-backing the frame arena is a small, self-contained change
-  if the numbers justify it. Running that variant — and any arena
-  change it motivates — is an owner decision, not scheduled work.
+- TLB-pressure hypothesis: MEASURED — see mmap_tlb_pressure below.
+  The compression mechanism is confirmed on bare metal, the pool wins
+  outright under virtualization, and crossing 1.0 on bare metal now
+  hinges on the hugepage-arena follow-on (an open owner decision).
+
+### mmap_tlb_pressure — the same pair at a 256 MiB working set (65,536 pages; sanity gate ≤ 3.0)
+
+| Env | Ratio geomean | CI95 upper | THP state | vs 64-page ratio |
+|-----|---------------|------------|-----------|------------------|
+| `nix` | 1.378 | 1.391 | madvise (arena not madvise'd → 4 KiB both arms) | 1.909 → 1.378 |
+| `mac` | 1.922 | 2.030 | no knob (16 KiB pages, opaque superpages) | 1.582 → 1.922 |
+| `vm` | 0.260 | 0.267 | madvise | 1.480 → 0.260 — the pool WINS 3.8× |
+
+Three regimes, one mechanism. On bare metal (`nix`) both arms sit on
+4 KiB pages, so TLB misses inflate both arms equally in absolute
+terms and the pool's fixed software overhead compresses relatively:
++91% at 64 pages becomes +38% at 65,536 (arithmetic: ~30 ns of pool
+machinery over a base that grew from ~33 ns to ~80 ns per hit as
+page walks joined the bill). The pool cannot cross 1.0 there while
+its own arena is also 4 KiB-paged — that is precisely what
+`madvise(MADV_HUGEPAGE)` on the arena would change (one TLB entry
+per 2 MiB versus mmap's per-4 KiB; the host runs THP=madvise, so
+nothing gets hugepages without asking). On macOS the ratio stays
+flat — 16 KiB base pages quarter the TLB pressure and the OS offers
+no THP control, so the advisory arm shows nothing either way. In
+the container the pool wins outright: a guest TLB miss on a
+file-backed overlayfs mapping pays a two-dimensional page walk
+(guest plus host tables), so mmap's hardware residency check becomes
+the most expensive thing in the loop while the pool's software cost
+is unchanged — an advisory environment, but it is the regime any
+containerized/virtualized deployment actually runs in.
+
+OPEN FOLLOW-ON (owner decision): `madvise(MADV_HUGEPAGE)` on the
+frame arena at allocation — a small Linux-only change in the arena
+alloc path — to test whether bare-metal `nix` crosses 1.0. The
+measured trend says the remaining +38% is mostly page-walk cost the
+hugepage mapping would remove.
 
 ### ring_read_bracket — driver-level ring read vs blocking pread, QD1 O_DIRECT (gate ≤ 1.25)
 

@@ -59,6 +59,11 @@ harness = false
 required-features = ["bench", "mock"]
 
 [[bench]]
+name = "mmap_tlb_pressure"
+harness = false
+required-features = ["bench", "mock"]
+
+[[bench]]
 name = "ring_read_bracket"
 harness = false
 required-features = ["bench"]
