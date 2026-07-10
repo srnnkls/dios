@@ -5,7 +5,7 @@ checkpoint:
   worktree: /Users/srnnkls/projects/dios/.worktrees/feat-dios-v1
   timestamp: 2026-07-10
   last_batch: 7
-  last_commit: b1cbc3e
+  last_commit: 246cf9e
   pending_gate: >-
     CLEARED 2026-07-10 (box restored): against HEAD b1cbc3e — mise run
     remote lint exit 0 (clippy -D warnings + fmt on the real x86-64
