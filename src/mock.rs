@@ -8,14 +8,15 @@
 //! [`Backend`](crate::Backend) (AD-1); the mock is a distinct type.
 
 use std::collections::VecDeque;
+use std::fs::File;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use crate::completion::CompletionBatch;
 use crate::driver::{
-    Attempt, CompletionSlab, DriverCore, Executor, FileHandle, FileId, OpContext, OpKind, OpToken,
-    OpenHow, ReadFrameIdx, Shared, SyncMode,
+    Attempt, CompletionSlab, DriverCore, EagerExecutor, Executor, FileHandle, FileId, MAX_FILES,
+    OpContext, OpKind, OpToken, OpenHow, ReadFrameIdx, Shared, SyncMode,
 };
 use crate::error::{IoError, SubmitError};
 use crate::pool::write_arena::{WriteArena, WriteSlot};
@@ -95,7 +96,12 @@ impl MockDriverBuilder {
         assert!(self.queue_capacity > 0, "queue capacity must be positive");
         assert!(self.frames > 0, "frame count must be positive");
         assert!(self.frame_bytes > 0, "frame size must be positive");
-        let executor = MockExecutor::new(self.seed, self.frame_bytes, self.queue_capacity);
+        let executor = MockExecutor::new(
+            self.seed,
+            self.frames,
+            self.frame_bytes,
+            self.queue_capacity,
+        );
         let shared = Shared::new(
             CompletionSlab::with_capacity(self.queue_capacity),
             self.queue_capacity,
@@ -271,6 +277,7 @@ impl MockDriver {
 #[derive(Debug)]
 struct MockExecutor {
     state: Mutex<MockState>,
+    frames: u32,
     frame_bytes: u32,
 }
 
@@ -281,12 +288,13 @@ struct MockState {
 }
 
 impl MockExecutor {
-    fn new(seed: u64, frame_bytes: u32, injected_capacity: u32) -> Self {
+    fn new(seed: u64, frames: u32, frame_bytes: u32, injected_capacity: u32) -> Self {
         Self {
             state: Mutex::new(MockState {
                 injected: VecDeque::with_capacity(injected_capacity as usize),
                 rng: seed,
             }),
+            frames,
             frame_bytes,
         }
     }
@@ -300,8 +308,30 @@ impl MockExecutor {
     }
 }
 
-impl Executor for MockExecutor {
-    fn attempt(&self, _kind: OpKind, clean_bytes: u32, _context: OpContext<'_>) -> Attempt {
+impl EagerExecutor for MockExecutor {
+    fn attempt(&self, kind: OpKind, clean_bytes: u32, context: OpContext<'_>) -> Attempt {
+        debug_assert!(
+            context.fd.slot() < MAX_FILES,
+            "the driver admits ops only on live fd-table slots"
+        );
+        debug_assert!(
+            context.frame.get() < self.frames,
+            "an op's frame indexes within the configured pool"
+        );
+        match kind {
+            OpKind::Read => debug_assert!(
+                context.write_buf.is_empty(),
+                "a read attempt carries no write payload"
+            ),
+            OpKind::Fsync => {
+                debug_assert!(context.offset == 0, "an fsync attempt carries no offset");
+                debug_assert!(
+                    context.write_buf.is_empty(),
+                    "an fsync attempt carries no payload"
+                );
+            }
+            OpKind::Write => {}
+        }
         match self.lock().injected.pop_front() {
             None => Attempt::Done(clean_bytes),
             Some(Injected::Io(errno)) => Attempt::Failed(errno),
@@ -309,6 +339,12 @@ impl Executor for MockExecutor {
             Some(Injected::Eintr) => Attempt::Interrupted,
             Some(Injected::Eagain) => Attempt::WouldBlock,
         }
+    }
+}
+
+impl Executor for MockExecutor {
+    fn register_file(&self, _slot: u32, _file: File) -> Result<(), IoError> {
+        Ok(())
     }
 
     fn clean_bytes(&self, kind: OpKind) -> u32 {

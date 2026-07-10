@@ -25,6 +25,19 @@ run = "cargo doc --no-deps --features bench,mock"
 [tasks.check]
 depends = ["lint", "test", "doc"]
 
+[tasks.docker]
+description = "Run a command in the arm64 Linux container (interim functional gate while the bench host is down; io_uring needs seccomp=unconfined; target volume is ext4 so O_DIRECT works — perf gates stay on the bench host)"
+usage = 'arg "<command>"'
+run = """
+docker run --rm --security-opt seccomp=unconfined \
+  -v "$PWD":/src:ro \
+  -v dios-cargo-registry:/cargo -v dios-target-linux:/target \
+  -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target \
+  -e DIOS_CONTAINER_COMMAND="$usage_command" \
+  -w /src rust:1.96.0-slim-trixie \
+  bash -c 'rustup component add clippy rustfmt >/dev/null 2>&1; set -o pipefail; eval "$DIOS_CONTAINER_COMMAND"'
+"""
+
 [tasks.bench]
 description = "Criterion micro-benches + paired gate benches"
 run = "cargo bench --features bench"

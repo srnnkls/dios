@@ -4,23 +4,25 @@ checkpoint:
   branch: feat/dios-v1
   worktree: /Users/srnnkls/projects/dios/.worktrees/feat-dios-v1
   timestamp: 2026-07-10
-  last_batch: 4
-  last_commit: 6ba8ae0
+  last_batch: 5
+  last_commit: 6beae81
   pending_gate: >-
-    none for batches 1-4 — ssh restored 2026-07-10; full Linux suite green
-    on host nix for the committed tree. NOTE the batch-5 RED state below:
-    the untracked T007 test files intentionally break the full workspace
-    build until T007's implementer lands.
+    ONE owed gate: bench host nix went network-unreachable mid-batch-5;
+    the batch committed on the arm64 container gate per the owner
+    decision (see standing_decisions + review.yaml batch-5
+    container_gate). Run `mise run remote -- mise run lint` and
+    `-- mise run test` once against HEAD when the box returns.
 
   commits:
     - { batch: 1, sha: 8706fb0, tasks: [T001], note: "scaffold — backend seam, error values, Alignment newtype" }
     - { batch: 2, sha: 1cef8c3, tasks: [T002], note: "DriverCore<E: Executor> (locked-prepare/unlocked-execute/locked-publish), generational FileTable, INV-11 leases, seeded DST mock, 24 contract tests" }
     - { batch: 3, sha: 56e66d7, tasks: [T003, T016], note: "eager executor (real syscalls at poll), src/open.rs direct-IO probe (darwin F_NOCACHE / linux statx), Driver public surface, two-phase retire (finish_retire = sole Closed-writer), pool contract types + api_fit_spike" }
     - { batch: 4, sha: 6ba8ae0, tasks: [T006], note: "frame pool core: Frames/PageTable(backward-shift)/Clock/WriteArena(unified)/Pool builder + INV-9 watermark; GRANULE_DEFAULT=4096 resolves M001; benches/plans/pool_warm_path.md" }
+    - { batch: 5, sha: 60ffe58, tasks: [T004, T007], note: "io_uring backend (batched SQE fill / non-sleeping reap, EXT_ARG poll_wait, registered buffers+files, EagerExecutor/RingExecutor split, O_DIRECT-on-retained-fd, arch-conditional O_DIRECT) + EBR epoch guards (five doc(hidden) Pool seams, SeqCst publish fence, CAS slots + RAII deregister, guard-lifetime tie, unsafe fill seam) + docker interim gate task" }
 
   tasks:
-    done: [T001, T002, T003, T016, T006]
-    in_progress: [T004, T007]
+    done: [T001, T002, T003, T016, T006, T004, T007]
+    in_progress: []
     pending: [T005, T008, T009, T015]
     deferred_external:
       tasks: [T010, T011, T012, T013, T014]
@@ -34,16 +36,27 @@ checkpoint:
 
   batch_5_state:
     position: >-
-      Phase A COMPLETE for both tasks (tester reports received and
-      recorded below); orchestrator RED-verification of the test files and
-      Phase A.5 (test review gate) NOT yet run. RESUME AT: read the four
-      untracked test files, verify RED quality per operations/execute.md,
-      then dispatch the A.5 gate (opus+sonnet Tasks + one peer fan-out to
-      gpt,gemini) on all four files, then Phase B implementers in
-      parallel (T004 and T007 touch disjoint src files; both touch the
-      spike example — check before parallel Phase B: T007's implementer
-      must keep examples/api_fit_spike.rs compiling when sealing the
-      provisional constructors, T004 does not touch it).
+      COMPLETE AND COMMITTED. All phases ran (A, A.5 x4 rounds, B, C
+      with six reviewers, fix pass, three verification rounds — full
+      trail in review.yaml batch-5). Final verification: opus + gemini
+      verified all four late fixes (codex stalled persistently; >=1
+      external ok satisfied). Gates on the final tree: local darwin 10
+      targets + clippy + fmt clean; arm64 container (interim gate per
+      the owner decision above) clippy + fmt + 10/10 targets green,
+      proving the arch-conditional O_DIRECT end to end. RESUME AT:
+      base-drift preflight, then batch 6 Phase A — testers for T005
+      (fault injection + alloc harness; content now also carries the
+      mock RingExecutor seam decision, the EXT_ARG/INV-3/deferred-close
+      follow-up pins, and the user_data/fd_slot newtype consideration)
+      and T008 (miss path; packed atomic PageTable cell replacing the
+      T007 Mutex placeholder; arena-ownership redesign unifying pool
+      Frames with the backend FrameSlab; Pool-over-Driver composition;
+      OpContext.write_buf threading — note OpContext now lives on the
+      EagerExecutor seam, so the ring write path needs its own carrier;
+      the begin_pin SeqCst fence must survive the Mutex removal). When
+      the bench host returns: run `mise run remote -- mise run lint`
+      and `-- mise run test` once against HEAD (owed functional re-run,
+      recorded in review.yaml batch-5 container_gate).
     untracked_files:
       - "tests/uring.rs (T004 — crate-level cfg(target_os = linux)-gated; see report)"
       - "tests/epoch_guards.rs (T007 — compile-RED on 5 missing Pool seams)"
@@ -164,6 +177,8 @@ checkpoint:
       so amend is safe.
 
   standing_decisions:
+    - "Docker interim runtime (OWNER 2026-07-10): while the bench host is down, `mise run docker '<command>'` (arm64 Linux container, OrbStack, seccomp=unconfined, ext4 volume) is the Linux FUNCTIONAL gate; perf gates stay pinned to the Threadripper host; one bench-host lint+test re-run is owed when it returns. Rosetta/amd64 containers cannot run io_uring (ENOSYS, verified)"
+    - "O_DIRECT is arch-conditional (x86_64 0x4000, aarch64 0x10000) with a compile_error! guard for other linux arches — latent portability bug found by the container probe, fixed at src/open.rs (single shared const) + tests/uring.rs"
     - "Misalignment on a Direct handle is a PROGRAMMER ERROR: panics with 'is not aligned' wording (owner ruling; scope semantics paragraph beats T003 task-text)"
     - "GRANULE_DEFAULT = 4096 — M001 RESOLVED (marker + scope.md updated); derivation in src/pool/mod.rs rustdoc; T011/T014 re-validate on real encoded segments"
     - "SubmitError (not SubmitErr) / alignment module (not align): no-abbreviations rule beats indicative scope signatures; KEEP fd/buf/inflight/granule_idx/ReaderCtx as scope-contract vocabulary"

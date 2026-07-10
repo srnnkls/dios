@@ -8,7 +8,10 @@ use std::fs::File;
 use std::os::unix::fs::FileExt;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use crate::driver::{Attempt, Backend, Executor, MAX_FILES, OpContext, OpKind, ReadFrameIdx};
+use crate::driver::{
+    Attempt, Backend, EagerExecutor, Executor, MAX_FILES, OpContext, OpKind, ReadFrameIdx,
+};
+use crate::error::IoError;
 
 const EINTR: i32 = 4;
 const EAGAIN: i32 = 35;
@@ -30,7 +33,7 @@ struct EagerState {
 impl Eager {
     pub(crate) const KIND: Backend = Backend::Eager;
 
-    pub(crate) fn new(frames: u32, frame_bytes: u32) -> Self {
+    pub(crate) fn new(frames: u32, frame_bytes: u32, _queue_capacity: u32) -> Self {
         assert!(frames > 0, "frame count must be positive");
         assert!(frame_bytes > 0, "frame size must be positive");
         let slab_bytes = frames as usize * frame_bytes as usize;
@@ -47,19 +50,6 @@ impl Eager {
 
     fn lock(&self) -> MutexGuard<'_, EagerState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    pub(crate) fn register_file(&self, slot: u32, file: File) {
-        let mut state = self.lock();
-        assert!(
-            (slot as usize) < state.files.len(),
-            "fd slot within the file table"
-        );
-        assert!(
-            state.files[slot as usize].is_none(),
-            "fd slot reused before its prior file was retired"
-        );
-        state.files[slot as usize] = Some(file);
     }
 
     pub(crate) fn copy_frame(&self, frame: ReadFrameIdx, out: &mut [u8]) -> usize {
@@ -81,7 +71,7 @@ impl Eager {
     }
 }
 
-impl Executor for Eager {
+impl EagerExecutor for Eager {
     fn attempt(&self, kind: OpKind, clean_bytes: u32, context: OpContext<'_>) -> Attempt {
         let mut guard = self.lock();
         let EagerState { files, slab } = &mut *guard;
@@ -118,6 +108,22 @@ impl Executor for Eager {
                 Err(error) => classify(&error),
             },
         }
+    }
+}
+
+impl Executor for Eager {
+    fn register_file(&self, slot: u32, file: File) -> Result<(), IoError> {
+        let mut state = self.lock();
+        assert!(
+            (slot as usize) < state.files.len(),
+            "fd slot within the file table"
+        );
+        assert!(
+            state.files[slot as usize].is_none(),
+            "fd slot reused before its prior file was retired"
+        );
+        state.files[slot as usize] = Some(file);
+        Ok(())
     }
 
     fn clean_bytes(&self, kind: OpKind) -> u32 {

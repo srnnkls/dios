@@ -4,6 +4,7 @@
 
 use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use crate::driver::ReadFrameIdx;
 use crate::pool::SECTOR_BYTES;
@@ -40,6 +41,25 @@ impl FrameState {
         assert!(legal, "illegal frame transition {self:?} -> {to:?}");
         to
     }
+
+    fn to_tag(self) -> u8 {
+        match self {
+            FrameState::Free => 0,
+            FrameState::InFlight => 1,
+            FrameState::Resident => 2,
+            FrameState::Evicting => 3,
+        }
+    }
+
+    fn from_tag(tag: u8) -> FrameState {
+        match tag {
+            0 => FrameState::Free,
+            1 => FrameState::InFlight,
+            2 => FrameState::Resident,
+            3 => FrameState::Evicting,
+            other => panic!("frame state tag {other} out of range"),
+        }
+    }
 }
 
 /// A fixed set of `count` granule-sized frames in one sector-aligned, non-moving
@@ -50,17 +70,20 @@ impl FrameState {
 pub struct Frames {
     base: NonNull<u8>,
     layout: Layout,
-    states: Box<[FrameState]>,
+    states: Box<[AtomicU8]>,
     count: u32,
     granule: u32,
 }
 
-// SAFETY: `base` addresses a heap allocation owned solely by this `Frames`; the
-// bytes are reached only through `&self`/`&mut self` slice views, so sharing the
-// arena across threads is no less sound than sharing any `Box<[u8]>`.
+// SAFETY: `base` addresses a heap allocation owned solely by this `Frames`. A
+// read borrow (`frame_bytes`) is handed out only for a Resident/Evicting frame
+// and a byte write (`fill`) targets only a Free frame; the residency state
+// machine keeps those two disjoint per frame, so no write ever aliases a live
+// shared borrow of the same granule. Sharing the arena is thus no less sound
+// than sharing any `Box<[u8]>` behind that discipline.
 unsafe impl Send for Frames {}
-// SAFETY: see the `Send` impl — all access is mediated by Rust's borrow rules
-// over `&self`.
+// SAFETY: see the `Send` impl — every frame's residency state lives in an
+// `AtomicU8` and its bytes are gated by that state machine.
 unsafe impl Sync for Frames {}
 
 impl Frames {
@@ -91,7 +114,9 @@ impl Frames {
         Self {
             base,
             layout,
-            states: vec![FrameState::Free; count as usize].into_boxed_slice(),
+            states: (0..count)
+                .map(|_| AtomicU8::new(FrameState::Free.to_tag()))
+                .collect(),
             count,
             granule,
         }
@@ -125,17 +150,47 @@ impl Frames {
     /// If `frame` is out of range for the configured count.
     #[must_use]
     pub fn state(&self, frame: ReadFrameIdx) -> FrameState {
-        self.states[self.checked_index(frame)]
+        FrameState::from_tag(self.states[self.checked_index(frame)].load(Ordering::Relaxed))
     }
 
-    /// Advances `frame` through the residency cycle, storing the new state.
+    /// Advances `frame` through the residency cycle, storing the new state. Takes
+    /// `&self` so the composed pool drives the state machine through a shared
+    /// borrow while guards hold read borrows of other frames' bytes. The load
+    /// then store is not one atomic RMW: callers serialize it under the pool's
+    /// AD-4 lock (poll) or single-writer discipline (miss completion), which T009
+    /// loom models; a bare interleave here would be a race.
     ///
     /// # Panics
     ///
     /// If `frame` is out of range, or the transition is illegal (INV-1).
-    pub fn advance(&mut self, frame: ReadFrameIdx, to: FrameState) {
+    pub fn advance(&self, frame: ReadFrameIdx, to: FrameState) {
         let index = self.checked_index(frame);
-        self.states[index] = self.states[index].advance(to);
+        let current = FrameState::from_tag(self.states[index].load(Ordering::Relaxed));
+        self.states[index].store(current.advance(to).to_tag(), Ordering::Relaxed);
+    }
+
+    /// Fills `frame`'s whole granule with `byte`, standing in for a read
+    /// completion writing the frame's contents.
+    ///
+    /// # Safety
+    ///
+    /// No live `frame_bytes` borrow of `frame`'s granule may exist, and no other
+    /// thread may touch it, for the duration of the write: `frame` must be
+    /// unmapped in the page table (pre-Resident in the miss-completion path), so
+    /// `pin` cannot have handed out a guard over these bytes. This raw seam is
+    /// superseded by T008's state-gated fill lease.
+    ///
+    /// # Panics
+    ///
+    /// If `frame` is out of range.
+    pub unsafe fn fill(&self, frame: ReadFrameIdx, byte: u8) {
+        let index = self.checked_index(frame);
+        let offset = index * self.granule as usize;
+        // SAFETY: `offset + granule <= span` because `index < count`.
+        let start = unsafe { self.base.as_ptr().add(offset) };
+        // SAFETY: the caller contract guarantees no live borrow of this granule,
+        // so the write aliases no shared reference.
+        unsafe { std::ptr::write_bytes(start, byte, self.granule as usize) };
     }
 
     fn checked_index(&self, frame: ReadFrameIdx) -> usize {

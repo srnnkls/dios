@@ -382,6 +382,298 @@ batch_reviews:
         batches 2-4 tree (65 tests incl. uring cfg paths and the pool
         suite).
     outcome: approved
+  - batch: 5
+    timestamp: 2026-07-10
+    commit: pending
+    tasks: [T004, T007]
+    test_review:
+      rounds: 4
+      gate: cleared -> Phase B (round 4 unanimous: opus, codex, gemini)
+      round_1:
+        reviewers: [claude-opus, claude-sonnet, gemini-3.5-flash]
+        codex: stalled twice, skipped by peer (known flakiness; gemini ok satisfies the >=1-external gate)
+        red_verification: >-
+          Orchestrator re-verified before dispatch: reader_registration
+          runtime-RED (2 fail on missing ReaderCtx Drop-release),
+          epoch_guards compile-RED with every error E0599 on exactly the
+          five provisional seams, guard_compile_fail GREEN 2/2,
+          uring RED 6/2 carried from the bench-host tester run. Epoch
+          oracles traced line-by-line against design.md EBR — no invention.
+        findings: 8
+        summary: >-
+          ACCEPTED: (1) gemini CRITICAL — no test pins that a nested pin at
+          an advanced global epoch must NOT republish local_epoch; a
+          republishing impl would prematurely reclaim the outer guard's
+          frame and the suite would pass (orchestrator traced both impls
+          against design.md — real gap; test added). (2) opus MEDIUM —
+          the poll-boundaries test never polls, so a per-pin-advance impl
+          passes; strengthened with a post-loop exactly-two-polls-to-Free
+          discrimination. (3) sonnet/opus — reader_registration dead
+          scaffolding (FILE_SEQ static + trivial init test + unused
+          Driver/OpenHow imports) deleted. (4) all three — doctest A's
+          any_file_id_for_doctest is an undeclared sixth seam keeping the
+          INV-6 compile_fail pin vacuous forever; rewritten to the
+          Driver::open(...).file_id() pattern. (5) sonnet/opus — uring
+          batched test renamed to drop the un-pinned "single poll" claim
+          (gate adjudicated rename over tighten: strict single-poll is
+          fragile against kernel CQE delivery). (6) sonnet LOW —
+          assert_ne(Free) tightened to assert_eq(Evicting) where the state
+          machine pins it exactly. REJECTED: epoch_guards
+          publish-before-validate naming (opus marked informational; the
+          interleaving proof is T009 loom, disclosed in the file header).
+          TRACKED HANDOFF (opus): compile_fail doctests A/C have zero
+          enforcing coverage until moved to src/pool/epoch.rs docs —
+          T007's implementer must re-verify each fails ONLY on the
+          intended lifetime error.
+      round_2:
+        reviewers: [claude-opus, codex-gpt5.6-sol, gemini-3.5-flash]
+        amendments_verdict: >-
+          UNANIMOUS resolved on all six round-1 amendments; opus and both
+          externals independently re-traced the nested-pin and
+          poll-boundary discrimination arithmetic against design.md.
+          Orchestrator ran owning-tester fmt-only passes first (9 diffs;
+          epoch_guards error set re-verified identical post-fmt).
+        findings: 5
+        summary: >-
+          codex fresh-eyes (absent round 1): ACCEPTED HIGH — doctest B's
+          `let _ = reader` in a move closure captures nothing under RFC
+          2229 disjoint capture, so post-move the compile_fail would
+          compile and fail for the wrong reason (orchestrator verified
+          empirically with an Rc/spawn snippet on edition 2024; fix =
+          drop(reader)). ACCEPTED HIGH — IoMode::Direct + successful read
+          does not prove the RETAINED fd carries O_DIRECT (a
+          separate-probe-fd impl passes — the exact T004 task defect);
+          pinned via /proc/self/fd readlink match + fdinfo flags 0o40000.
+          ACCEPTED MEDIUM — batched test now asserts Ok(FRAME_BYTES) per
+          completion, exactly N unique, and per-frame distinct payload.
+          gemini: ACCEPTED LOW x2 — doc-markdown backticks (io_uring,
+          EXT_ARG). REJECTED none; opus's fixed-temp-filename note in
+          doctest A recorded as harmless, no change.
+        fixes_applied: >-
+          Owning testers applied all five. guard_compile_fail doctest B
+          now drop(reader); file GREEN 2/2, fmt-clean. uring.rs gained
+          direct_read_retained_fd (/proc/self/fd readlink match, exactly
+          one) + direct_read_fd_flags (fdinfo octal parse) + O_DIRECT
+          0o40000 assertion; batched test asserts exactly N unique
+          completions, Ok(FRAME_BYTES) each, per-frame (f+1) payload via
+          a drain_results variant; module doc backticked. Remote RED
+          re-verified on host nix: 6 fail / 2 pass, direct-read failure
+          point moved to the retained-fd pin (zero fds target the path —
+          the stub drops the File, the defect the pin exists to catch);
+          the other five still fail at the stub unreachable.
+      round_3:
+        reviewers: [claude-opus, codex-gpt5.6-sol, gemini-3.5-flash]
+        verdicts: >-
+          opus clean (hand-verified the /proc helper logic: canonicalize
+          match, DIR-fd no-false-positive, octal parse, both
+          separate-probe-fd defect branches), gemini clean, codex
+          re-dispatch on ONE residual. ACCEPTED MEDIUM (codex): the
+          batched test never asserts drained.len() — a duplicate CQE in
+          the final poll yields len 7 with a still-equal 6-member token
+          set; fix is one assert_eq!(drained.len(), N) (orchestrator
+          grounded safety: DriverCore::poll resets the batch before
+          filling, driver.rs:757, so the length assert cannot spuriously
+          fire under the contract).
+        implementer_advisories: >-
+          (opus, non-blocking) Doctest B will co-occur a
+          pool-lifetime diagnostic alongside the intended E0277 at
+          seam-landing — "fails for the right reason" re-verification
+          should expect both. drain_results depends on poll's
+          fill-from-empty batch contract — T004's reap must keep
+          DriverCore's out.reset() semantics.
+      round_4:
+        reviewers: [claude-opus, codex-gpt5.6-sol, gemini-3.5-flash]
+        scope: single change — assert_eq!(drained.len(), N) at tests/uring.rs:251
+        verdicts: >-
+          UNANIMOUS resolved/clean. All three traced the N+1-duplicate
+          scenario (length assertion is the unique observer of the extra
+          entry, placed pre-dedup) and the no-spurious-fire argument
+          (DriverCore::poll out.reset() per call, driver.rs:757).
+          Tests FROZEN for Phase B.
+    reviewers:
+      - id: general-claude-opus
+        status: success
+        gates: { correctness: pass, security: pass, performance: pass }
+      - id: general-gemini-3.5-flash
+        status: success
+        gates: { correctness: pass, security: pass, performance: pass }
+      - id: general-codex-gpt5.6-sol
+        status: stalled-skipped
+      - id: architecture-claude-opus
+        status: success
+        gates: { architecture: pass-with-caveats }
+      - id: architecture-codex-gpt5.6-sol
+        status: success
+        gates: { architecture: fail }
+      - id: architecture-gemini-3.5-flash
+        status: stalled-skipped
+      - id: compliance-claude-sonnet
+        status: success
+        gates: { style: pass-with-recommendations }
+      - id: compliance-codex-gpt5.6-sol
+        status: success
+        gates: { style: fail }
+      - id: compliance-gemini-3.5-flash
+        status: success
+        gates: { style: pass-with-recommendations }
+    synthesized:
+      gates:
+        correctness: pass-after-fix
+        security: pass
+        performance: pass-after-fix
+        architecture: pass-with-caveats-after-fix
+        style: fail-then-fixed
+      critical_issues: 1
+      high_issues: 5
+      medium_issues: 10
+    verified_by_orchestrator: >-
+      codex's poll-blocking High confirmed against primary sources:
+      poll_ring calls submit_and_wait(filled, None) → io_uring_enter
+      min_complete=filled (src/driver.rs poll_ring + uring.rs
+      submit_and_wait read directly), while scope.md:534 pins "poll never
+      sleeps awaiting events — uring: non-blocking CQ drain". Knock-on
+      identified: the frozen drain helpers' 64-poll spin would flake
+      under a non-sleeping poll (64 userspace CQ peeks << NVMe latency)
+      — owning tester converts helpers to deadline-bounded loops.
+    adjudications:
+      - "ACCEPT (Critical-class contract): poll_ring → submit min_complete=0 + reap-ready; poll_wait keeps min 1 + EXT_ARG (codex arch; opus/gemini missed it)"
+      - "ACCEPT: EBR store-buffer fence — begin_pin publish needs fence(SeqCst); currently masked only by the Mutex<PageTable> barrier on x86-TSO which T008 removes (opus general EBR-1 + gemini general Critical, independent convergence). Fixed NOW, not deferred; T009 loom must model the SB interleaving"
+      - "ACCEPT: reap_ring retire Vec → fixed-capacity scratch (INV-2; opus arch A2 + sonnet + codex)"
+      - "ACCEPT: RingExecutor::reap dyn FnMut → generic F: FnMut (sonnet + codex)"
+      - "ACCEPT: EagerExecutor trait split — attempt()/OpContext out of shared Executor, uring drops the unreachable conformance, mock consumes OpContext fields so the PhantomData cfg wart dies (opus arch A1 + codex arch)"
+      - "ACCEPT: register_files_update + fcntl probe failures become Result-threaded operating errors per the values rule (codex compliance + sonnet cross-check flag)"
+      - "ACCEPT: assertion-density additions in epoch.rs transitions and uring push/reap/blocking paths (sonnet 0.83 + codex 0.39 census; gemini's 1.5 sampled only the already-asserted functions)"
+      - "ACCEPT: fill() SAFETY comment corrected (frame is unmapped/InFlight, not Free — opus arch A4); advance()/advance_epoch() AD-4-discipline docs (A5/EBR-2); submit_and_wait EBUSY/EAGAIN documented (opus URING-1); u32 clamp → expect; open.rs extern SAFETY comment; bench-plan asserted-in-bench wording; promissory-comment audit"
+      - "ACCEPT (records): T009 depends_on += T008 (codex arch — T009's zero-alloc gates need the miss path); T005 content += injectable mock ring/CQE seam decision (opus arch seam-fitness: ring path has no fault-injection seam); T009 content += close-during-drain zero-alloc case (opus A2)"
+      - "ACCEPT (adjudications upheld): metadata plane stays OFF the ring per AD-3/INV-5 — implementation right, frozen test message wording loose and non-binding (opus + gemini); SQ-full flush-retry-once structurally impossible, omission valid (opus + gemini traced the slab admission gate); EINTR partial reap safe (CQEs persist, slots stay occupied); Mutex placeholders transitional-accepted with the baseline-unpinned guard; PendingToken::new shim accepted (sealed at T008)"
+      - "REJECT: sq/cq/cqe/push_sqe naming (io_uring domain vocabulary, standing with fd/buf); single-caller prefix for ring_result/advance_epoch/claim_free_frame (design-vocabulary names beat the prefix convention); write_all_blocking loop bound (progress-bounded by buffer length); newtype user_data/fd_slot at the ring seam (deferred to T005's seam reshape); pin bench baseline SHAs now (contradicts the accepted don't-bake-the-Mutex guard)"
+    fix_pass:
+      dispatched: true
+      items: >-
+        T004 implementer: 12 items (non-sleeping poll, retire scratch,
+        generic reap sink, EagerExecutor split, EBUSY/EAGAIN doc,
+        Result-threaded registration + fcntl, u32 expect, extern SAFETY,
+        assertions, bench-plan wording, comment audit). T007 implementer:
+        5 items (SeqCst fence, fill SAFETY restate, AD-4 discipline docs,
+        epoch.rs assertions, wording audit). T004 owning tester:
+        deadline-bounded drain helpers (robust under both poll semantics,
+        no pin weakened).
+      applied: >-
+        ALL items landed. T004: ring enter split into submit()
+        (min_complete=0) + submit_and_wait(want, timeout) EXT_ARG —
+        poll no longer sleeps; retire scratch is [FileId; MAX_FILES] +
+        len drained post-lock; reap generic over F: FnMut; EagerExecutor
+        trait extracted (Executor keeps register_file/clean_bytes/
+        schedule/retire_file; uring's unreachable attempt and OpContext's
+        PhantomData cfg carrier deleted; mock attempt debug_asserts all
+        four fields); check_enter documents EBUSY-unreachable and treats
+        EAGAIN benign; register_file -> Result<(), IoError> through
+        Driver::open (retire_file keeps a documented expect — failed
+        slot-clear has no sound continuation); probe_direct_apply ->
+        Result with one cfg-gated #[expect(unnecessary_wraps, reason)]
+        on the non-linux uniform signature; capacity expects; extern-ABI
+        comment (plain — clippy rejects SAFETY on foreign modules);
+        density assertions; bench-plan wording. T007: fence(SeqCst)
+        after begin_pin's first-guard publish with the SB-hazard
+        pairing comment; fill() SAFETY restated on unmapped-frame;
+        AD-4 discipline documented at both RMW sites; paired assertions
+        across epoch transitions; ownership-statement wording, baseline
+        stays unpinned. Tester: drain helpers dual-bounded (5s deadline
+        + 1M cap + 50us idle backoff), pins untouched, remote 8/8.
+      gates_after_fix: >-
+        Local: 10 targets green (--features bench,mock), clippy
+        --all-targets -D warnings clean, fmt clean, examples clean.
+        Remote host nix: mise run lint exit 0, mise run test exit 0
+        (10 targets incl. uring 8/8 under the non-blocking poll).
+      verification: >-
+        Round 1 (opus + peer) both flaked on infrastructure (opus API
+        connection drop; both peer harnesses stalled twice) — retried
+        fresh. Round 2: opus 17/18 verified, ONE gap — fd-table slot
+        leaks Open-forever when uring register_files_update fails after
+        reserve_file (bounded but permanent consumption of the fixed
+        table; File itself does not leak) → narrow re-dispatch to the
+        T004 implementer. gemini: all 18 verified + independently the
+        same slot-leak edge. codex (fresh eyes): converged on the slot
+        leak, plus three ACCEPTED new findings — (CRITICAL) safe-API
+        aliased mutation: safe Frames::frame_bytes + safe fill(&self)
+        let purely safe code alias a live granule borrow with a raw
+        write (fix: fill becomes unsafe fn, sole call site discharges
+        the contract; T008's fill lease supersedes); (IMPORTANT)
+        FrameGuard's lifetime ties to the pool not the &ReaderCtx
+        borrow, so drop(reader)-with-live-guard compiles and the new
+        vacate assert panics + leaks the slot on a safe program (fix:
+        bind the guard lifetime to the &ReaderCtx borrow — illegal
+        state becomes a compile error, the assert becomes correctly
+        unreachable); (MEDIUM) mock attempt's offset != u64::MAX assert
+        invents an unsupported invariant and frame/write_buf are only
+        message-interpolated (fix: assert real driver-guaranteed
+        invariants). REJECTED/STALE from codex: pool_warm_path
+        "pinned SHA" row and the slot leak were already fixed in
+        flight (pre-fix tree); spike header staleness ACCEPTED (minor).
+      late_fixes_applied: >-
+        (1) Slot leak: Driver::open on register_file failure calls
+        abort_file -> FileTable::abort_open (asserts generation match,
+        state Open, inflight 0; Open->Free without resetting the
+        generation so the aborted id can never alias the next tenant).
+        (2) Frames::fill is an unsafe fn with a # Safety caller contract
+        (no live granule borrow; frame unmapped); the sole caller
+        insert_resident_frame discharges it under the table lock; T008's
+        fill lease supersedes the raw seam. (3) pin<'ctx>(&'ctx self,
+        reader: &'ctx ReaderCtx<'_>, ...) -> Option<FrameGuard<'ctx>> —
+        guard-outlives-reader is now a compile error (evidence: the hole
+        program fails E0505 against the rebuilt rlib where it previously
+        compiled and panicked vacate); doctest A re-verified
+        lifetime-only. (4) Mock asserts reshaped to driver-guaranteed
+        invariants only (fd slot bound, frame bound via threaded builder
+        value, Read/Fsync kind invariants; Write arm deliberately
+        assert-free); the invented offset != u64::MAX dropped. Bench-plan
+        Baseline row aligned with the unpinned-until-T008 Notes; spike
+        header refreshed. Local gates after all late fixes: 10 targets
+        green, clippy -D warnings (bench,mock) clean, fmt clean,
+        examples clean, doctests 3/3.
+      remote_gate: >-
+        BLOCKED — bench host nix unreachable at the network level
+        ("Network is unreachable", LAN address down; distinct from the
+        ssh-agent failure mode). Last green remote runs: mise run lint
+        exit 0 and mise run test exit 0 (uring 8/8 under the
+        non-blocking poll) BEFORE the late fixes; the late fixes touch
+        the open error branch, pool internals, and the mock only — the
+        ring hot path is unchanged — but the protocol requires a full
+        remote re-run before commit.
+      final_verification: >-
+        Round 3 (four late fixes): opus VERIFIED all four with
+        independent compilation evidence (E0505 repro of the closed
+        lifetime hole; abort-path assertion trace; alias-hole caller
+        census; mock asserts traced to submit-site guarantees) plus one
+        minor factual SAFETY-comment correction (false table-lock
+        clause, fixed and re-verified). gemini VERIFIED all four
+        (>=1 external ok satisfied). codex stalled twice in both
+        attempts (persistent harness flakiness all session; internet
+        confirmed fine) — recorded; phase NOT partial since gemini
+        reported ok.
+      container_gate: >-
+        OWNER DECISION 2026-07-10: with the bench host down, an arm64
+        Linux container (OrbStack Docker, kernel 7.0, seccomp=unconfined
+        for io_uring, ext4 named volume for O_DIRECT) stands in as the
+        interim Linux FUNCTIONAL gate — `mise run docker '<command>'`.
+        Probing it surfaced and fixed a real latent portability bug:
+        O_DIRECT was hardcoded to the x86-64 value (0x4000 — which is
+        O_DIRECTORY on arm) at src/open.rs x2 and tests/uring.rs; now
+        arch-conditional (aarch64 0x10000/0o200_000) with a
+        compile_error! guard for unsupported linux arches; the
+        implementer cross-checked both linux targets and the container
+        run proved the arm64 direct-IO path end to end (uring 8/8 incl.
+        the fdinfo O_DIRECT pin). Rosetta/amd64 was ruled out
+        empirically (io_uring_setup returns ENOSYS under Rosetta).
+        Container gate on the FINAL tree: clippy -D warnings
+        (bench,mock) clean, fmt clean, full suite 10/10 targets green.
+        OWED: one bench-host run (mise run remote -- mise run lint +
+        test) when the box returns; perf gates were never bound in
+        batch 5.
+    outcome: >-
+      approved — all review phases complete; committed with the
+      container gate standing in for the downed bench host per the
+      owner decision (bench-host functional re-run owed on its return)
 issues:
   critical: []
   high: []

@@ -4,9 +4,9 @@
 |-------|-------|
 | Metric & direction | wall-time ratio candidate/base of the warm-hit path (PageTable probe + CLOCK reference), lower is better |
 | Workload | uniform point lookups over a hot set that fits the pool: 64-frame pool, all pages resident, keys drawn uniformly at random from the resident set; 40 reps × 4096 iters |
-| Baseline | the current implementation at this plan's creation commit (pinned SHA), run as the interleaved A arm against the candidate B arm per the shared compare harness; the first run establishes the pin |
+| Baseline | the warm-hit path at the commit where T008's lock-free table lands — no SHA is pinned before then (the T007 `Mutex<PageTable>` is a substrate the design forbids on the warm path); once landed it runs as the interleaved A arm against the candidate B arm per the shared compare harness, and the first post-T008 run establishes the pin |
 | Reps | 40 (protocol minimum 30) |
-| Threshold | one-sided 95% CI upper bound of the ratio ≤ 1.10 (asserted in-bench) |
+| Threshold | one-sided 95% CI upper bound of the ratio ≤ 1.10 (asserted by the shared compare harness) |
 | Compare command | `mise run gate target/bench-samples/pool_warm_path.csv 1.10` |
 | Escalation lever | the S3-FIFO / table-tuning notes already in the scope (per-worker last-frame memoization, then S3-FIFO if the scan-workload counters justify it) |
 
@@ -20,3 +20,16 @@ is caught before the T014 sweep. The bench itself
 lands in T008 alongside the overlap bench; this plan fixes its metric,
 workload, and gate ahead of code. Runs on the pinned Linux host under the
 governor and cache-drop protocol the scope documents.
+
+T007 substrate note: the epoch pin path (`Pool::pin`) publishes one Acquire load
++ one Release store on the first guard, one store on the last-guard drop, plus a
+SeqCst fence after the publish store (store-buffer ordering vs. the poll-side
+scan), and no shared RMW per hit — a pin/drop with no poll never advances the
+epoch (pinned by
+`epoch_guards::the_global_epoch_advances_at_poll_boundaries_not_per_pin`). The
+`PageTable` lookup sits behind a `Mutex` as the T007 substrate; its lock-free
+packed-atomic replacement on the warm path is owned by T008. The baseline SHA
+stays unpinned until that lock-free table lands, so this gate never bakes in a
+lock the design forbids on the warm path. The gate itself is asserted by the
+shared compare harness (`mise run gate`), not in-bench; the DIO-G1 no-RMW /
+zero-alloc proof is owned by T009/T014.

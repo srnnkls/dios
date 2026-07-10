@@ -22,12 +22,12 @@ tasks:
     depends_on: [T002]
   - id: T004
     content: io_uring backend — registered buffers + READ_FIXED, EXT_ARG poll_wait, SQ-full flush-retry-once, shared ring + submit mutex (AD-4), O_DIRECT probe with buffered fallback (kernel >= 5.15; support + alignment per opened file via statx STATX_DIOALIGN, per Constraints). The Executor/poll seam landed by T003 is eager-shaped, so T004 RESTRUCTURES the execute phase into batched SQE-fill at prepare plus reap at poll/poll_wait with the EXT_ARG kernel wait outside the AD-4 mutex rather than implementing attempt(). register_file must retain the File and register its fd where the current stub drops it, and the probe result must be applied to that retained fd by opening with O_DIRECT per the probe since the fallback probe fd is separate today.
-    status: in_progress
+    status: done
     phase: crate-core
     files: [src/backend/uring.rs]
     depends_on: [T002]
   - id: T005
-    content: Alloc-count harness + fault-injection tests (short read, EAGAIN, EINVAL alignment, fd exhaustion, drop-with-in-flight quiesce, close-with-in-flight deferred close, stale-generation FileId rejection, submit-while-poller-parked); no-sira-dependency (DIO-R1) is structural — separate repository
+    content: Alloc-count harness + fault-injection tests (short read, EAGAIN, EINVAL alignment, fd exhaustion, drop-with-in-flight quiesce, close-with-in-flight deferred close, stale-generation FileId rejection, submit-while-poller-parked); no-sira-dependency (DIO-R1) is structural — separate repository. The ring path has no fault-injection seam (MockDriver drives only the eager-shaped poll): add an injectable mock RingExecutor feeding reap's sink with deterministic out-of-order/faulted CQEs, or record an explicit decision accepting real-IO-only ring fault coverage (batch-5 architecture review). Also owns the batch-5 follow-up ring pins: EXT_ARG-wait-outside-mutex, INV-3 submit-while-parked, deferred-close-through-the-ring on the now-forwarded Driver::poll_wait/close/is_closed. Consider newtyping user_data/fd_slot at the RingExecutor seam while reshaping it (deferred from batch 5)
     status: pending
     phase: crate-core
     files: [tests/zero_alloc.rs, tests/faults.rs]
@@ -40,7 +40,7 @@ tasks:
     depends_on: [T003, T016]
   - id: T007
     content: Epoch pin guards per design.md EBR spec — FrameGuard, ReaderCtx<'pool> (!Send + !Sync, per-thread epoch slot), registration slots capped at max_concurrent_readers with TLS-destructor deregistration, publish-before-validate guard create, poll-boundary epoch advance, two-advance reclamation, compile-fail tests (guard borrow escape; ReaderCtx cross-thread/outlives-pool). ReaderCtx gains a Drop that releases its registration slot (current cap counter never decrements; add a register->drop->re-register test) and consider CAS instead of fetch_add-rollback for the cap
-    status: in_progress
+    status: done
     phase: pool
     files: [src/pool/epoch.rs, tests/guard_compile_fail.rs]
     depends_on: [T006]
@@ -51,11 +51,11 @@ tasks:
     files: [src/pool/miss.rs, benches/overlap.rs]
     depends_on: [T007, T004]
   - id: T009
-    content: Pool concurrency proofs — loom frame-state + EBR grace-period tests, zero-alloc gates on get/submit/poll, backpressure test (watermark-sized pool, all spare frames pinned). Also owns the CLOCK store-elision proof deferred from T006's test gate — a repeat hit on an already-set reference bit performs NO store (the DIO-G1 hot-path invariant); T006's unit test pins only the return-value contract, which an always-store impl satisfies
+    content: Pool concurrency proofs — loom frame-state + EBR grace-period tests, zero-alloc gates on get/submit/poll, backpressure test (watermark-sized pool, all spare frames pinned). Also owns the CLOCK store-elision proof deferred from T006's test gate — a repeat hit on an already-set reference bit performs NO store (the DIO-G1 hot-path invariant); T006's unit test pins only the return-value contract, which an always-store impl satisfies. Batch-5 obligations — the loom suite must model the AD-4 lock/single-caller discipline advance()/advance_epoch() depend on (bare-store races are spurious otherwise) and explicitly exercise the publish/advance/evict store-buffer interleaving that the begin_pin SeqCst fence closes; the zero-alloc gate must include a close-during-drain case (deferred retire on the reap path)
     status: pending
     phase: pool
     files: [tests/loom_pool.rs, tests/zero_alloc.rs]
-    depends_on: [T007]
+    depends_on: [T007, T008]
   - id: T010
     content: BlockSource seam in sira — abstract block fetch at load_into and load_key_block/decoded_column behind sira/src/block_source.rs, mmap backend behind it, no behavior change. The seam indirection sits on the hottest read path, so the task's bench plan re-runs RC-R1..R3 at T010 completion — regression surfaces here, not at the T014 sweep. NOTE existing sira/src/segment/block_storage.rs is unrelated CRC logic and stays put
     status: pending
@@ -102,7 +102,7 @@ tasks:
 meta:
   created: 2026-07-07
   last_updated: 2026-07-10
-  progress: 5/16
+  progress: 7/16
   blocked_by: [sira-read-perf, sira-read-concurrency]
 
 phases:

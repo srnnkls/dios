@@ -5,20 +5,23 @@
 //! frames, page table, CLOCK, epoch guards, and singleflight land there. The
 //! API-fit spike (T016) pins this call surface through an in-example `StubPool`.
 
-use std::cell::{Cell, Ref};
-use std::marker::PhantomData;
-use std::ops::Deref;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::cell::Cell;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use crate::driver::FileId;
+use crate::driver::{FileId, ReadFrameIdx};
 use crate::error::IoError;
 
 mod clock;
+mod epoch;
 mod frames;
 mod table;
 pub(crate) mod write_arena;
 
+use epoch::{EvictQueue, ReaderSlot};
+
 pub use clock::Clock;
+pub use epoch::{FrameGuard, ReaderCtx};
 pub use frames::{FrameState, Frames};
 pub use table::PageTable;
 pub use write_arena::{WriteArena, WriteSlot};
@@ -103,56 +106,6 @@ impl PendingToken {
 
 impl Drop for PendingToken {
     fn drop(&mut self) {}
-}
-
-/// Per-reader epoch slot: `!Send` + `!Sync` and lifetime-bound to the pool, so
-/// the EBR restrictions live in the type rather than a usage rule. The epoch
-/// ticket this pins arrives with the pool's reclamation (T007); this shell only
-/// carries the pool lifetime and the thread-bound marker.
-#[derive(Debug)]
-pub struct ReaderCtx<'pool> {
-    _pool: PhantomData<&'pool ()>,
-    _thread_bound: PhantomData<*const ()>,
-}
-
-impl ReaderCtx<'_> {
-    /// Provisional minting shim for the T016 spike, sealed at T007 (readers are
-    /// minted only via the pool's `register_reader`).
-    #[doc(hidden)]
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            _pool: PhantomData,
-            _thread_bound: PhantomData,
-        }
-    }
-}
-
-/// Epoch-pinned read access to a resident frame: `Deref<Target = [u8]>` over the
-/// whole granule, `!Send` (the borrow is thread-bound). The epoch ticket backing
-/// arrives with the pool's EBR reclamation (T007); the spike borrows the frame
-/// bytes directly.
-#[derive(Debug)]
-pub struct FrameGuard<'pool> {
-    bytes: Ref<'pool, [u8]>,
-}
-
-impl<'pool> FrameGuard<'pool> {
-    /// Provisional minting shim for the T016 spike, sealed at T007 (guards are
-    /// minted only through the pool's epoch-pinned pin path).
-    #[doc(hidden)]
-    #[must_use]
-    pub fn new(bytes: Ref<'pool, [u8]>) -> Self {
-        Self { bytes }
-    }
-}
-
-impl Deref for FrameGuard<'_> {
-    type Target = [u8];
-
-    fn deref(&self) -> &[u8] {
-        &self.bytes
-    }
 }
 
 /// Why a pool configuration is rejected at build, before any frame is allocated
@@ -365,16 +318,20 @@ impl PoolBuilder {
     }
 }
 
-/// The userspace frame pool: preallocated frames, the page table, and CLOCK
-/// eviction, with reader registration capped at `max_concurrent_readers`. The
-/// epoch guards (T007) and miss path (T008) land behind this surface.
+/// The userspace frame pool: preallocated frames, the page table, CLOCK
+/// eviction, and epoch reclamation, with reader registration capped at
+/// `max_concurrent_readers`. The `Mutex<PageTable>` is the T007 substrate; the
+/// lock-free packed probe that supersedes it on the warm-hit path is owned by the
+/// miss path (T008).
 #[derive(Debug)]
 pub struct Pool {
     frames: Frames,
-    table: PageTable,
+    table: Mutex<PageTable>,
     clock: Clock,
+    global_epoch: AtomicU64,
+    slots: Box<[ReaderSlot]>,
+    evict_queue: Mutex<EvictQueue>,
     max_concurrent_readers: u32,
-    registered_readers: AtomicU32,
 }
 
 impl Pool {
@@ -384,12 +341,17 @@ impl Pool {
     }
 
     fn preallocated(config: PoolBuilder) -> Self {
+        let slots = (0..config.max_concurrent_readers)
+            .map(|_| ReaderSlot::vacant())
+            .collect();
         Self {
             frames: Frames::preallocated(config.frame_count, config.granule),
-            table: PageTable::with_frame_count(config.frame_count),
+            table: Mutex::new(PageTable::with_frame_count(config.frame_count)),
             clock: Clock::with_frame_count(config.frame_count),
+            global_epoch: AtomicU64::new(0),
+            slots,
+            evict_queue: Mutex::new(EvictQueue::with_capacity(config.frame_count)),
             max_concurrent_readers: config.max_concurrent_readers,
-            registered_readers: AtomicU32::new(0),
         }
     }
 
@@ -405,16 +367,18 @@ impl Pool {
     /// points (T008) subsume it and it leaves the documented surface.
     #[doc(hidden)]
     #[must_use]
-    pub fn page_table(&self) -> &PageTable {
-        &self.table
-    }
-
-    /// Provisional internal accessor for the T006 tests; the composed pool entry
-    /// points (T008) subsume it and it leaves the documented surface.
-    #[doc(hidden)]
-    #[must_use]
     pub fn clock(&self) -> &Clock {
         &self.clock
+    }
+
+    fn table(&self) -> MutexGuard<'_, PageTable> {
+        self.table.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn evict_queue(&self) -> MutexGuard<'_, EvictQueue> {
+        self.evict_queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Claims a reader registration slot.
@@ -424,13 +388,127 @@ impl Pool {
     /// [`RegisterError::AtCapacity`] once `max_concurrent_readers` slots are
     /// held — registration beyond capacity fails rather than deadlocking.
     pub fn register_reader(&self) -> Result<ReaderCtx<'_>, RegisterError> {
-        let prior = self.registered_readers.fetch_add(1, Ordering::AcqRel);
-        if prior >= self.max_concurrent_readers {
-            self.registered_readers.fetch_sub(1, Ordering::AcqRel);
-            return Err(RegisterError::AtCapacity {
-                max_concurrent_readers: self.max_concurrent_readers,
-            });
+        for slot in &self.slots {
+            if slot.try_occupy() {
+                return Ok(ReaderCtx::new(slot));
+            }
         }
-        Ok(ReaderCtx::new())
+        Err(RegisterError::AtCapacity {
+            max_concurrent_readers: self.max_concurrent_readers,
+        })
+    }
+
+    /// Makes `page` resident in a freshly claimed frame filled with `fill`,
+    /// standing in for the miss-completion path (T008) so a hit can be set up in
+    /// isolation.
+    ///
+    /// # Panics
+    ///
+    /// If no frame is `Free` — the watermark bounds a well-behaved caller below
+    /// this.
+    #[doc(hidden)]
+    pub fn insert_resident_frame(&self, page: PageId, fill: u8) -> ReadFrameIdx {
+        let frame = self.claim_free_frame();
+        self.frames.advance(frame, FrameState::InFlight);
+        // SAFETY: `frame` was just claimed Free and is not mapped in the page
+        // table (inserted below, only after Resident), so no `pin` can hold a
+        // guard over its bytes and this write aliases no live borrow of the
+        // granule.
+        unsafe { self.frames.fill(frame, fill) };
+        self.frames.advance(frame, FrameState::Resident);
+        self.table().insert(page, frame);
+        frame
+    }
+
+    /// Mints an epoch-pinned guard over `page` for `reader`: publishes the
+    /// reader's epoch BEFORE validating the frame is still Resident and mapped, so
+    /// an eviction that removed the mapping is observed as a miss (`None`) rather
+    /// than handing back reclaimable bytes. The guard borrows `reader`, so
+    /// dropping a reader while one of its guards lives is a compile error — an
+    /// epoch slot never vanishes under a live guard.
+    #[doc(hidden)]
+    pub fn pin<'ctx>(
+        &'ctx self,
+        reader: &'ctx ReaderCtx<'_>,
+        page: PageId,
+    ) -> Option<FrameGuard<'ctx>> {
+        let slot = reader.slot();
+        let first_guard = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
+        let resident = self
+            .table()
+            .lookup(page)
+            .filter(|&frame| self.frames.state(frame) == FrameState::Resident);
+        let Some(frame) = resident else {
+            if first_guard {
+                slot.abort_pin();
+            }
+            return None;
+        };
+        slot.commit_pin();
+        Some(FrameGuard::new(self.frames.frame_bytes(frame), slot))
+    }
+
+    /// Evicts `page`: removes its table mapping (so no new guard can pin the old
+    /// contents), moves the frame Resident -> Evicting, and enqueues it tagged
+    /// with the current global epoch. Isolated from CLOCK victim selection.
+    ///
+    /// # Panics
+    ///
+    /// If `page` has no mapping — a caller only evicts a resident page.
+    #[doc(hidden)]
+    pub fn evict_frame(&self, page: PageId) -> ReadFrameIdx {
+        let frame = self
+            .table()
+            .remove(page)
+            .expect("evict_frame targets a mapped page");
+        self.frames.advance(frame, FrameState::Evicting);
+        self.evict_queue()
+            .push(frame, self.global_epoch.load(Ordering::Acquire));
+        frame
+    }
+
+    /// The poll-boundary pass: advances the global epoch when every reader
+    /// permits, then reclaims Evicting frames that have aged two epochs
+    /// (Evicting -> Free). Returns the number reclaimed.
+    #[doc(hidden)]
+    pub fn poll(&self) -> usize {
+        self.advance_epoch();
+        let global_epoch = self.global_epoch.load(Ordering::Acquire);
+        let frames = &self.frames;
+        self.evict_queue().drain_matured(global_epoch, |frame| {
+            frames.advance(frame, FrameState::Free);
+        })
+    }
+
+    /// The residency state of `frame` — an observation seam for the epoch tests.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn frame_state(&self, frame: ReadFrameIdx) -> FrameState {
+        self.frames.state(frame)
+    }
+
+    /// Race-free only under the AD-4 single-poll-caller discipline that
+    /// serializes poll: the load-scan-store is not one atomic step. The
+    /// CAS-or-lock enforcing it for concurrent pollers is owned by T008; T009
+    /// loom models that lock.
+    fn advance_epoch(&self) {
+        let global_epoch = self.global_epoch.load(Ordering::Acquire);
+        let permitted = self
+            .slots
+            .iter()
+            .all(|slot| slot.permits_advance(global_epoch));
+        if permitted {
+            self.global_epoch.store(global_epoch + 1, Ordering::Release);
+        }
+    }
+
+    fn claim_free_frame(&self) -> ReadFrameIdx {
+        for index in 0..self.frames.count() {
+            let frame = ReadFrameIdx::new(index);
+            if self.frames.state(frame) == FrameState::Free {
+                return frame;
+            }
+        }
+        panic!("frame pool exhausted: no Free frame to make resident");
     }
 }

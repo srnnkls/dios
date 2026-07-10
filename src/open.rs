@@ -9,6 +9,7 @@
 use std::fs::File;
 
 use crate::driver::IoMode;
+use crate::error::IoError;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::ffi::c_int;
@@ -22,10 +23,20 @@ pub(crate) enum IoRequest {
     Direct,
 }
 
-pub(crate) fn probe(file: &File, request: IoRequest) -> IoMode {
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "probe returns a uniform Result across platforms; only the linux O_DIRECT-apply fcntl path is fallible"
+    )
+)]
+pub(crate) fn probe(file: &File, request: IoRequest) -> Result<IoMode, IoError> {
     match request {
+        IoRequest::Buffered => Ok(IoMode::Buffered),
+        #[cfg(target_os = "linux")]
         IoRequest::Direct => probe_direct(file),
-        IoRequest::Buffered => IoMode::Buffered,
+        #[cfg(not(target_os = "linux"))]
+        IoRequest::Direct => Ok(probe_direct(file)),
     }
 }
 
@@ -78,23 +89,65 @@ pub(crate) fn full_fsync(file: &File) -> std::io::Result<()> {
     }
 }
 
+// statx(2) and fcntl(2) declared to match glibc's C ABI on the linux build
+// targets; signatures follow the man pages.
 #[cfg(target_os = "linux")]
 unsafe extern "C" {
     fn statx(dirfd: c_int, pathname: *const u8, flags: c_int, mask: u32, buf: *mut u8) -> c_int;
+    fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
 }
 
+// O_DIRECT is arch-specific in linux uapi asm/fcntl.h: 0x4000 on x86_64, 0x10000 on aarch64 (where 0x4000 is O_DIRECTORY).
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const O_DIRECT: c_int = 0x4000;
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+const O_DIRECT: c_int = 0x10000;
+#[cfg(all(
+    target_os = "linux",
+    not(any(target_arch = "x86_64", target_arch = "aarch64"))
+))]
+compile_error!("O_DIRECT is arch-specific; add this target_arch's value from linux asm/fcntl.h");
+
 #[cfg(target_os = "linux")]
-fn probe_direct(file: &File) -> IoMode {
+fn probe_direct(file: &File) -> Result<IoMode, IoError> {
     use std::os::unix::io::AsRawFd;
 
-    if let Some(alignment) = statx_dio_align(file.as_raw_fd()) {
-        return IoMode::Direct(alignment);
+    let fd = file.as_raw_fd();
+    let Some(alignment) = statx_dio_align(fd).or_else(|| write_probe(file)) else {
+        eprintln!("dios: direct IO unavailable on this file; falling back to buffered reads");
+        return Ok(IoMode::Buffered);
+    };
+    probe_direct_apply(fd)?;
+    Ok(IoMode::Direct(alignment))
+}
+
+/// Sets `O_DIRECT` on the retained descriptor itself, so the fd the driver
+/// registers and issues reads against is the direct one — the probe never opens
+/// a separate `O_DIRECT` fd that would leak or diverge from the registered handle.
+///
+/// # Errors
+///
+/// The `fcntl` failure as an [`IoError`]: an operating error, not a programmer
+/// bug, so the open path surfaces it rather than aborting.
+#[cfg(target_os = "linux")]
+fn probe_direct_apply(fd: c_int) -> Result<(), IoError> {
+    const F_GETFL: c_int = 3;
+    const F_SETFL: c_int = 4;
+
+    assert!(fd >= 0, "an owned File yields a valid descriptor");
+    // SAFETY: `F_GETFL` reads the descriptor's status flags and takes no variadic
+    // argument.
+    let flags = unsafe { fcntl(fd, F_GETFL) };
+    if flags < 0 {
+        return Err(IoError::from(std::io::Error::last_os_error()));
     }
-    if let Some(alignment) = write_probe(file) {
-        return IoMode::Direct(alignment);
+    // SAFETY: `F_SETFL` consumes one int; on a descriptor the probe proved
+    // direct-capable, adding `O_DIRECT` only switches the data plane.
+    let status = unsafe { fcntl(fd, F_SETFL, flags | O_DIRECT) };
+    if status == -1 {
+        return Err(IoError::from(std::io::Error::last_os_error()));
     }
-    eprintln!("dios: direct IO unavailable on this file; falling back to buffered reads");
-    IoMode::Buffered
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -118,7 +171,7 @@ fn statx_dio_align(fd: c_int) -> Option<crate::alignment::Alignment> {
     let status = unsafe {
         statx(
             fd,
-            b"\0".as_ptr(),
+            c"".as_ptr().cast(),
             AT_EMPTY_PATH,
             STATX_DIOALIGN,
             buf.as_mut_ptr(),
@@ -144,9 +197,6 @@ fn write_probe(file: &File) -> Option<crate::alignment::Alignment> {
     use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::io::AsRawFd;
 
-    // asm-generic/fcntl.h: `O_DIRECT` is 0x4000 on the generic ABI (x86_64, the
-    // bench host). Arch-specific — powerpc, sparc, mips, and alpha differ.
-    const O_DIRECT: i32 = 0x4000;
     const PROBE_BYTES_MAX: u32 = 4096;
 
     let fd = file.as_raw_fd();

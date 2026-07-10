@@ -12,6 +12,7 @@
 //! compose the same core.
 
 use std::collections::VecDeque;
+use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -53,8 +54,9 @@ pub enum Backend {
 #[derive(Debug)]
 pub struct Driver(DriverCore<backend::Impl>);
 
-/// Builds a [`Driver`] with every capacity fixed up front. The eager slab is a
-/// plain preallocation and there is no ring to open, so the build is infallible.
+/// Builds a [`Driver`] with every capacity fixed up front. Capacities are the
+/// only inputs; a backend that opens a ring asserts its init at build, so the
+/// signature stays infallible.
 #[derive(Debug, Clone, Copy)]
 pub struct DriverBuilder {
     queue_capacity: u32,
@@ -107,7 +109,7 @@ impl DriverBuilder {
         assert!(self.queue_capacity > 0, "queue capacity must be positive");
         assert!(self.frames > 0, "frame count must be positive");
         assert!(self.frame_bytes > 0, "frame size must be positive");
-        let executor = backend::Impl::new(self.frames, self.frame_bytes);
+        let executor = backend::Impl::new(self.frames, self.frame_bytes, self.queue_capacity);
         let shared = Shared::new(
             CompletionSlab::with_capacity(self.queue_capacity),
             self.queue_capacity,
@@ -143,9 +145,12 @@ impl Driver {
             .read(true)
             .write(true)
             .open(path)?;
-        let io_mode = crate::open::probe(&file, how.io_request());
+        let io_mode = crate::open::probe(&file, how.io_request())?;
         let id = self.0.reserve_file()?;
-        self.0.executor().register_file(id.slot(), file);
+        if let Err(error) = self.0.executor().register_file(id.slot(), file) {
+            self.0.abort_file(id);
+            return Err(error);
+        }
         Ok(FileHandle::from_parts(id, io_mode))
     }
 
@@ -193,7 +198,49 @@ impl Driver {
     ///
     /// If `out` has zero capacity.
     pub fn poll(&self, out: &mut CompletionBatch) -> usize {
-        self.0.poll(out)
+        #[cfg(target_os = "linux")]
+        {
+            self.0.poll_ring(out)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.0.poll(out)
+        }
+    }
+
+    /// Drains completions like [`Driver::poll`], parking in the kernel for up to
+    /// `timeout` when none are ready. The wait runs outside the AD-4 submit mutex
+    /// (INV-3), so a concurrent [`Driver::submit_read`] never blocks on the poller.
+    ///
+    /// # Panics
+    ///
+    /// If `out` has zero capacity.
+    pub fn poll_wait(&self, out: &mut CompletionBatch, timeout: Duration) -> usize {
+        #[cfg(target_os = "linux")]
+        {
+            self.0.poll_wait_ring(out, timeout)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.0.poll_wait(out, timeout)
+        }
+    }
+
+    /// Closes `fd`, deferring the underlying `close(2)` past the drain of its
+    /// in-flight ops (INV-11). Consumes the handle so it cannot be reused.
+    pub fn close(&self, fd: FileHandle) {
+        self.0.close(fd);
+    }
+
+    /// Whether `fd`'s slot has reached the closed state — its deferred close
+    /// completed after the last in-flight op drained.
+    ///
+    /// # Panics
+    ///
+    /// If `fd` was minted by a different driver.
+    #[must_use]
+    pub fn is_closed(&self, fd: &FileHandle) -> bool {
+        self.0.is_closed(fd.file_id())
     }
 
     /// Blocking metadata-plane write (AD-3): loops past short transfers until the
@@ -213,7 +260,14 @@ impl Driver {
         buf: &[u8],
         offset: u64,
     ) -> Result<(), IoError> {
-        self.0.write_all_blocking(fd, buf, offset)
+        #[cfg(target_os = "linux")]
+        {
+            self.0.write_all_blocking_ring(fd, buf, offset)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.0.write_all_blocking(fd, buf, offset)
+        }
     }
 
     /// Blocking metadata-plane fsync barrier (`F_FULLFSYNC` on darwin).
@@ -226,7 +280,14 @@ impl Driver {
     ///
     /// If `fd` was minted by a different driver.
     pub fn fsync_blocking(&self, fd: &FileHandle, mode: SyncMode) -> Result<(), IoError> {
-        self.0.fsync_blocking(fd, mode)
+        #[cfg(target_os = "linux")]
+        {
+            self.0.fsync_blocking_ring(fd, mode)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.0.fsync_blocking(fd, mode)
+        }
     }
 
     /// Copies a drained read's frame bytes out of the eager slab into `out`,
@@ -495,18 +556,23 @@ pub(crate) enum Attempt {
     WouldBlock,
 }
 
-/// The backend-execution seam the shared core composes over (generics only, no
-/// dyn — AD-1). The backend lives outside the submit mutex, so `attempt` runs
-/// without the lock held (a real syscall on the eager/uring backends); the mock
-/// synchronises its own injected state internally. All methods take `&self`.
+/// The lifecycle seam every backend shares (generics only, no dyn — AD-1): op
+/// sizing, ready-order placement, and fd retirement. The per-op execute path is
+/// split out — [`EagerExecutor`] for the attempt-based backends, [`RingExecutor`]
+/// for `io_uring` — so no backend conforms to an execute shape it never runs.
+/// All methods take `&self`.
 pub(crate) trait Executor {
-    /// One attempt at the op named by `kind`; `clean_bytes` is the transfer a
-    /// fault-free op reports and `context` carries the file, offset, and target
-    /// resource. Runs in the execute phase, no submit lock held.
-    fn attempt(&self, kind: OpKind, clean_bytes: u32, context: OpContext<'_>) -> Attempt;
-
     /// The transfer byte count a clean `kind` op reports.
     fn clean_bytes(&self, kind: OpKind) -> u32;
+
+    /// Retains `file` in the fd `slot`, registering it with any backend resource
+    /// reads address it through (the ring's fixed-file table on `io_uring`).
+    ///
+    /// # Errors
+    ///
+    /// A backend registration failure, surfaced rather than retaining an unusable
+    /// descriptor. The eager and mock backends never fail.
+    fn register_file(&self, slot: u32, file: File) -> Result<(), IoError>;
 
     /// The position at which a freshly admitted op joins the ready order given
     /// the current queue length (seeded reordering in the mock; a real backend
@@ -518,6 +584,53 @@ pub(crate) trait Executor {
     /// drops the retained `File`, closing the descriptor and freeing the slot for
     /// reuse; the mock keeps no per-file state and no-ops.
     fn retire_file(&self, slot: u32);
+}
+
+/// The eager-shaped execute seam: a per-op syscall attempt the shared retry loop
+/// drives outside the submit mutex. The eager backend performs the real syscall;
+/// the mock replays seeded faults. The `io_uring` backend does not implement it —
+/// it fills SQEs through [`RingExecutor`] — so no backend fakes an attempt path.
+pub(crate) trait EagerExecutor: Executor {
+    /// One attempt at the op named by `kind`; `clean_bytes` is the transfer a
+    /// fault-free op reports and `context` carries the file, offset, and target
+    /// resource. Runs in the execute phase, no submit lock held.
+    fn attempt(&self, kind: OpKind, clean_bytes: u32, context: OpContext<'_>) -> Attempt;
+}
+
+/// The batched ring seam the `io_uring` backend composes over: SQE fill and CQE
+/// reap run under the AD-4 mutex, the kernel wait runs outside it (INV-3). The
+/// eager per-op [`EagerExecutor::attempt`] path is bypassed entirely.
+#[cfg(target_os = "linux")]
+pub(crate) trait RingExecutor: Executor {
+    /// The transfer length a clean full-frame read reports (registered-buffer
+    /// size).
+    fn read_len(&self) -> u32;
+
+    /// Fills one read SQE addressing the registered buffer for `frame` at
+    /// `offset`, tagged with `user_data`. Called under the AD-4 mutex.
+    fn push_read(&self, user_data: u64, fd_slot: u32, frame: ReadFrameIdx, offset: u64, len: u32);
+
+    /// Fills one fsync SQE, tagged with `user_data`. Called under the AD-4 mutex.
+    fn push_fsync(&self, user_data: u64, fd_slot: u32);
+
+    /// Submits filled SQEs without blocking on completions (`min_complete = 0`),
+    /// so poll never sleeps awaiting events. Runs OUTSIDE the AD-4 mutex.
+    fn submit(&self);
+
+    /// Submits filled SQEs and parks up to `timeout` for at least `want`
+    /// completions via the `EXT_ARG` kernel wait. Runs OUTSIDE the AD-4 mutex.
+    fn submit_and_wait(&self, want: u32, timeout: Duration);
+
+    /// Drains at most `limit` ready CQEs, routing each `(user_data, raw_result)`
+    /// to `sink`, and returns the count. Called under the AD-4 mutex.
+    fn reap<F: FnMut(u64, i32)>(&self, limit: u32, sink: F) -> u32;
+
+    /// Metadata-plane blocking write on the retained file (AD-3): `Ok(bytes)` or
+    /// `Err(errno)`.
+    fn blocking_write(&self, fd_slot: u32, buf: &[u8], offset: u64) -> Result<u32, i32>;
+
+    /// Metadata-plane blocking fsync barrier on the retained file (AD-3).
+    fn blocking_fsync(&self, fd_slot: u32) -> Result<(), i32>;
 }
 
 #[derive(Debug)]
@@ -538,6 +651,17 @@ pub(crate) struct OpContext<'buf> {
     pub(crate) offset: u64,
     pub(crate) frame: ReadFrameIdx,
     pub(crate) write_buf: &'buf [u8],
+}
+
+impl<'buf> OpContext<'buf> {
+    fn new(fd: FileId, offset: u64, frame: ReadFrameIdx, write_buf: &'buf [u8]) -> Self {
+        Self {
+            fd,
+            offset,
+            frame,
+            write_buf,
+        }
+    }
 }
 
 /// State guarded by the submit mutex: the op slab, the fd table, and the
@@ -624,6 +748,13 @@ impl<E> DriverCore<E> {
     pub(crate) fn is_closed(&self, id: FileId) -> bool {
         self.assert_own(id);
         self.lock().files.is_closed(id)
+    }
+
+    /// Releases a slot reserved by [`DriverCore::reserve_file`] whose backend
+    /// registration then failed, returning it to `Free` for reuse.
+    pub(crate) fn abort_file(&self, id: FileId) {
+        self.assert_own(id);
+        self.lock().files.abort_open(id);
     }
 }
 
@@ -748,7 +879,9 @@ impl<E: Executor> DriverCore<E> {
         shared.ready.insert(position, slot);
         token
     }
+}
 
+impl<E: EagerExecutor> DriverCore<E> {
     pub(crate) fn poll(&self, out: &mut CompletionBatch) -> usize {
         assert!(
             out.capacity() > 0,
@@ -761,12 +894,7 @@ impl<E: Executor> DriverCore<E> {
                 break;
             };
             let clean_bytes = self.executor.clean_bytes(kind);
-            let context = OpContext {
-                fd,
-                offset,
-                frame,
-                write_buf: &[],
-            };
+            let context = OpContext::new(fd, offset, frame, &[]);
             let outcome = self.execute(kind, clean_bytes, context);
             self.publish(slot, outcome, out);
             drained += 1;
@@ -864,12 +992,12 @@ impl<E: Executor> DriverCore<E> {
         let mut written = 0u32;
         while written < total {
             let remaining = total - written;
-            let context = OpContext {
-                fd: fd.file_id(),
-                offset: offset + u64::from(written),
-                frame: ReadFrameIdx::new(0),
-                write_buf: &buf[written as usize..],
-            };
+            let context = OpContext::new(
+                fd.file_id(),
+                offset + u64::from(written),
+                ReadFrameIdx::new(0),
+                &buf[written as usize..],
+            );
             match self.execute(OpKind::Write, remaining, context) {
                 Ok(bytes) => {
                     assert!(
@@ -894,16 +1022,168 @@ impl<E: Executor> DriverCore<E> {
                 return Err(IoError::from_raw(EBADF));
             }
         }
-        let context = OpContext {
-            fd: fd.file_id(),
-            offset: 0,
-            frame: ReadFrameIdx::new(0),
-            write_buf: &[],
-        };
+        let context = OpContext::new(fd.file_id(), 0, ReadFrameIdx::new(0), &[]);
         match self.execute(OpKind::Fsync, 0, context) {
             Ok(_) => Ok(()),
             Err(errno) => Err(IoError::from_raw(errno)),
         }
+    }
+}
+
+/// The `io_uring` poll seam. Prepare fills SQEs under the AD-4 mutex, the kernel
+/// wait runs outside it (INV-3), reap drains CQEs under the mutex. A completion
+/// routes to its slab slot by echoed `user_data`, not prepare order, because
+/// CQEs arrive unordered relative to submission.
+#[cfg(target_os = "linux")]
+impl<E: RingExecutor> DriverCore<E> {
+    pub(crate) fn poll_ring(&self, out: &mut CompletionBatch) -> usize {
+        assert!(
+            out.capacity() > 0,
+            "poll requires a non-empty completion batch"
+        );
+        out.reset();
+        let cap = u32::try_from(out.capacity()).expect("batch capacity fits u32");
+        let filled = self.fill_ring(cap);
+        if filled > 0 {
+            self.executor.submit();
+        }
+        self.reap_ring(out)
+    }
+
+    pub(crate) fn poll_wait_ring(&self, out: &mut CompletionBatch, timeout: Duration) -> usize {
+        assert!(
+            out.capacity() > 0,
+            "poll requires a non-empty completion batch"
+        );
+        out.reset();
+        let cap = u32::try_from(out.capacity()).expect("batch capacity fits u32");
+        let filled = self.fill_ring(cap);
+        self.executor.submit_and_wait(filled.max(1), timeout);
+        self.reap_ring(out)
+    }
+
+    /// Prepare (locked): drain ready slots into SQEs, tagging each with its slab
+    /// slot as `user_data`. Slots stay occupied — reclaimed only in reap.
+    fn fill_ring(&self, cap: u32) -> u32 {
+        let len = self.executor.read_len();
+        let mut shared = self.lock();
+        let mut filled = 0u32;
+        while filled < cap {
+            let Some(slot) = shared.ready.pop_front() else {
+                break;
+            };
+            let entry = shared.slab.peek(slot);
+            let user_data = u64::from(slot);
+            let fd_slot = entry.fd.slot();
+            match entry.kind {
+                OpKind::Read => {
+                    self.executor
+                        .push_read(user_data, fd_slot, entry.frame, entry.offset, len);
+                }
+                OpKind::Fsync => self.executor.push_fsync(user_data, fd_slot),
+                OpKind::Write => {
+                    unreachable!(
+                        "the ring poll path issues reads and fsyncs; async writes land in T006"
+                    )
+                }
+            }
+            filled += 1;
+        }
+        filled
+    }
+
+    /// Reap/finalize (locked): drain CQEs, reclaim each slot by echoed slot id,
+    /// drop the in-flight count (progressing a deferred close), release the write
+    /// lease, and emit the completion. Retires run after the lock is released.
+    fn reap_ring(&self, out: &mut CompletionBatch) -> usize {
+        let limit = u32::try_from(out.capacity()).expect("batch capacity fits u32");
+        let mut retire = [FileId::new(0, 0, 0); MAX_FILES as usize];
+        let mut retire_len = 0usize;
+        let mut drained = 0usize;
+        {
+            let mut shared = self.lock();
+            let shared = &mut *shared;
+            self.executor.reap(limit, |user_data, raw| {
+                let slot = u32::try_from(user_data).expect("uring user_data is a slab slot");
+                let (token, entry) = shared.slab.reclaim(slot);
+                let retire_due = shared.files.on_complete(entry.fd);
+                if let Some(lease) = entry.lease {
+                    lease.release();
+                }
+                out.push(Completion::new(token, entry.kind, ring_result(raw)));
+                if retire_due {
+                    assert!(retire_len < retire.len(), "at most one retire per open fd");
+                    retire[retire_len] = entry.fd;
+                    retire_len += 1;
+                }
+                drained += 1;
+            });
+        }
+        for fd in &retire[..retire_len] {
+            self.retire(*fd);
+        }
+        drained
+    }
+
+    pub(crate) fn write_all_blocking_ring(
+        &self,
+        fd: &FileHandle,
+        buf: &[u8],
+        offset: u64,
+    ) -> Result<(), IoError> {
+        let total = u32::try_from(buf.len()).expect("metadata write length within u32 bound");
+        self.check_live(fd.file_id())?;
+        let mut written = 0u32;
+        while written < total {
+            match self.executor.blocking_write(
+                fd.file_id().slot(),
+                &buf[written as usize..],
+                offset + u64::from(written),
+            ) {
+                Ok(bytes) => {
+                    assert!(
+                        bytes <= total - written,
+                        "backend reported more bytes than requested"
+                    );
+                    assert!(bytes > 0, "blocking write made no forward progress");
+                    written += bytes;
+                }
+                Err(errno) => return Err(IoError::from_raw(errno)),
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn fsync_blocking_ring(
+        &self,
+        fd: &FileHandle,
+        mode: SyncMode,
+    ) -> Result<(), IoError> {
+        let SyncMode::Full = mode;
+        self.check_live(fd.file_id())?;
+        self.executor
+            .blocking_fsync(fd.file_id().slot())
+            .map_err(IoError::from_raw)
+    }
+
+    fn check_live(&self, fd: FileId) -> Result<(), IoError> {
+        self.assert_own(fd);
+        if self.lock().files.is_live(fd) {
+            Ok(())
+        } else {
+            Err(IoError::from_raw(EBADF))
+        }
+    }
+}
+
+/// Maps a raw CQE result — non-negative byte count or `-errno` — to the op
+/// outcome the completion carries.
+#[cfg(target_os = "linux")]
+fn ring_result(raw: i32) -> Result<u32, IoError> {
+    if raw < 0 {
+        Err(IoError::from_raw(-raw))
+    } else {
+        Ok(u32::try_from(raw).expect("a non-negative CQE result fits u32"))
     }
 }
 
@@ -1021,6 +1301,22 @@ impl FileTable {
         );
         slot.state = FileState::Closing;
         slot.inflight == 0
+    }
+
+    fn abort_open(&mut self, id: FileId) {
+        let slot = &mut self.slots[id.slot() as usize];
+        assert_eq!(
+            slot.generation,
+            id.generation(),
+            "abort of a stale fd generation"
+        );
+        assert_eq!(
+            slot.state,
+            FileState::Open,
+            "abort_open expects a slot still Open from its reservation"
+        );
+        assert_eq!(slot.inflight, 0, "abort_open before any op is submitted");
+        slot.state = FileState::Free;
     }
 }
 

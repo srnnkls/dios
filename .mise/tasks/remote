@@ -14,16 +14,27 @@ usage() {
 host=${DIOS_REMOTE_HOST:-nix}
 dir=${DIOS_REMOTE_DIR:-build/dios}
 
-ssh "$host" bash -s <<EOF
+# One authorized master connection covers mkdir, rsync, and the run: the
+# 1Password agent signs once per 8h instead of once per ssh, so a mid-run
+# lock cannot stall the pipeline.
+mkdir -p "$HOME/.cache/dios"
+ssh_opts=(-o ControlMaster=auto -o "ControlPath=$HOME/.cache/dios/cm-%C" -o ControlPersist=8h)
+
+if ! ssh "${ssh_opts[@]}" -o ConnectTimeout=5 "$host" true >/dev/null; then
+  echo "cannot reach $host — if 1Password is locked, approve the ssh key (biometric) and retry" >&2
+  exit 1
+fi
+
+ssh "${ssh_opts[@]}" "$host" bash -s <<EOF
 mkdir -p "$dir"
 EOF
-rsync -az --delete --exclude=/target "${MISE_PROJECT_ROOT:?}/" "$host:$dir/"
+rsync -az --delete --exclude=/target -e "ssh ${ssh_opts[*]}" "${MISE_PROJECT_ROOT:?}/" "$host:$dir/"
 
 # The remote login shell is nushell and the box is NixOS: `bash -ls` gives
 # a bash that loads the login env (NIX_LD, required to exec mise-installed
 # toolchains) and reads the script from stdin, bypassing nushell parsing.
 printf -v cmd '%q ' "$@"
-exec ssh "$host" bash -ls <<EOF
+exec ssh "${ssh_opts[@]}" "$host" bash -ls <<EOF
 set -euo pipefail
 export PATH="\$HOME/.local/bin:\$PATH"
 cd "$dir"

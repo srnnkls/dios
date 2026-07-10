@@ -1,7 +1,9 @@
 //! API-fit spike (T016): drives two consumer shapes against an in-example stub
-//! pool, falsifying the `Get`/`Pending`/`ready` contract before the real pool
-//! (T006) is built. The stub — a fixed frame array plus a `HashMap` backing
-//! store, no CLOCK/EBR/singleflight — pins the call surface by using it.
+//! pool, falsifying the `Get`/`Pending`/`ready` contract. The stub wraps the real
+//! [`Pool`] for residency and epoch guards (register/pin/insert/poll) and uses the
+//! mock driver only to time miss submission and completion, keeping a `HashMap` of
+//! seeded page contents; the miss-path `get`/`ready` bookkeeping it models are
+//! owned by T008.
 //!
 //! The two shapes exercise the external consumer contracts this API must serve:
 //!  1. nmnm Gateway loop — a faulted worker takes other resident work rather
@@ -20,7 +22,7 @@
 //!     poll-again) and freeing the frame on `Err`.
 
 use dios::mock::MockDriver;
-use dios::{FrameGuard, Get, PageId, PendingToken, ReaderCtx, ReadyResult};
+use dios::{FrameGuard, Get, PageId, PendingToken, Pool, ReaderCtx, ReadyResult};
 
 const FRAME_BYTES: u32 = 4096;
 
@@ -61,7 +63,7 @@ fn assert_frame_fill(guard: &FrameGuard<'_>, fill: u8, frame_bytes: usize) {
 
 fn drive_ready<'pool>(
     pool: &'pool StubPool,
-    reader: &ReaderCtx<'pool>,
+    reader: &'pool ReaderCtx<'pool>,
     token: PendingToken,
 ) -> FrameGuard<'pool> {
     let mut token = token;
@@ -78,7 +80,7 @@ fn drive_ready<'pool>(
     panic!("token never readied under bounded polling");
 }
 
-fn warm(pool: &StubPool, reader: &ReaderCtx<'_>, page: PageId, fill: u8) {
+fn warm<'pool>(pool: &'pool StubPool, reader: &'pool ReaderCtx<'pool>, page: PageId, fill: u8) {
     match pool.get(reader, page) {
         Get::Pending(token) => {
             let guard = drive_ready(pool, reader, token);
@@ -194,37 +196,28 @@ fn k_way_merge_suspend_shape() {
     drop(guards);
 }
 
-use std::cell::{Cell, Ref, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 
 use dios::{CompletionBatch, FileHandle, FileId, OpToken, OpenHow, ReadFrameIdx};
 
-const READER_SLOT_COUNT: u32 = 16;
-
-/// A fixed frame array plus a `HashMap` backing store — no CLOCK, EBR, or
-/// singleflight. It pins the pool call surface the spike drives; T006 replaces
-/// it with the real pool.
+/// A `HashMap` backing store fronting a real [`Pool`] for residency and epoch
+/// guards, with the mock driver simulating miss submission and completion. It
+/// pins the pool call surface the consumer shapes drive; the pool's own
+/// `get`/`ready` that subsume this miss bookkeeping are owned by T008.
 struct StubPool {
     driver: MockDriver,
     file: FileHandle,
     frame_bytes: u32,
-    frames: Box<[RefCell<Box<[u8]>>]>,
-    metadata: RefCell<PoolMeta>,
+    pool: Pool,
+    misses: RefCell<Misses>,
     batch: RefCell<CompletionBatch>,
-    readers: Cell<u32>,
 }
 
-struct PoolMeta {
-    free: Vec<u32>,
-    residents: HashMap<PageId, u32>,
-    inflight: HashMap<OpToken, Miss>,
+struct Misses {
+    inflight: HashMap<OpToken, PageId>,
     backing: HashMap<PageId, u8>,
-}
-
-struct Miss {
-    page: PageId,
-    frame: u32,
 }
 
 impl StubPool {
@@ -232,26 +225,25 @@ impl StubPool {
         let file = driver
             .open(Path::new("stub"), OpenHow::read_write())
             .expect("stub file opens");
-        let mut buffers = Vec::with_capacity(frames as usize);
-        for _ in 0..frames {
-            buffers.push(RefCell::new(
-                vec![0u8; frame_bytes as usize].into_boxed_slice(),
-            ));
-        }
-        let metadata = PoolMeta {
-            free: (0..frames).rev().collect(),
-            residents: HashMap::new(),
-            inflight: HashMap::new(),
-            backing: HashMap::new(),
-        };
+        let pool = Pool::builder()
+            .frame_count(frames)
+            .granule(frame_bytes)
+            .max_concurrent_readers(1)
+            .peak_guards_per_reader(3)
+            .max_inflight_reads(1)
+            .miss_headroom(3)
+            .build()
+            .expect("watermark-satisfying stub pool builds");
         Self {
             driver,
             file,
             frame_bytes,
-            frames: buffers.into_boxed_slice(),
-            metadata: RefCell::new(metadata),
+            pool,
+            misses: RefCell::new(Misses {
+                inflight: HashMap::new(),
+                backing: HashMap::new(),
+            }),
             batch: RefCell::new(CompletionBatch::with_capacity(frames as usize)),
-            readers: Cell::new(0),
         }
     }
 
@@ -260,69 +252,57 @@ impl StubPool {
     }
 
     fn seed(&self, page: PageId, fill: u8) {
-        self.metadata.borrow_mut().backing.insert(page, fill);
+        self.misses.borrow_mut().backing.insert(page, fill);
     }
 
     fn register_reader(&self) -> Option<ReaderCtx<'_>> {
-        let taken = self.readers.get();
-        if taken < READER_SLOT_COUNT {
-            self.readers.set(taken + 1);
-            Some(ReaderCtx::new())
-        } else {
-            None
-        }
+        self.pool.register_reader().ok()
     }
 
-    fn get(&self, _reader: &ReaderCtx<'_>, page: PageId) -> Get<'_> {
-        if let Some(&frame) = self.metadata.borrow().residents.get(&page) {
-            return Get::Hit(self.frame_guard(frame));
+    fn get<'pool>(&'pool self, reader: &'pool ReaderCtx<'pool>, page: PageId) -> Get<'pool> {
+        if let Some(guard) = self.pool.pin(reader, page) {
+            return Get::Hit(guard);
         }
-        let Some(frame) = self.metadata.borrow_mut().free.pop() else {
-            return Get::Busy;
-        };
         let offset = u64::from(page.granule_idx()) * u64::from(self.frame_bytes);
+        // The mock read target is irrelevant to residency — the real pool owns
+        // the frame contents — so every simulated miss reads into mock frame 0.
         let Ok(token) = self
             .driver
-            .submit_read(&self.file, ReadFrameIdx::new(frame), offset)
+            .submit_read(&self.file, ReadFrameIdx::new(0), offset)
         else {
-            self.metadata.borrow_mut().free.push(frame);
             return Get::Busy;
         };
-        self.metadata
-            .borrow_mut()
-            .inflight
-            .insert(token, Miss { page, frame });
+        self.misses.borrow_mut().inflight.insert(token, page);
         Get::Pending(PendingToken::new(page))
     }
 
     fn poll(&self) {
         let mut batch = self.batch.borrow_mut();
         self.driver.poll(&mut batch);
-        let mut metadata = self.metadata.borrow_mut();
         for completion in batch.iter() {
-            let Some(miss) = metadata.inflight.remove(&completion.token()) else {
+            let mut misses = self.misses.borrow_mut();
+            let Some(page) = misses.inflight.remove(&completion.token()) else {
                 continue;
             };
-            let fill = metadata
+            let fill = misses
                 .backing
-                .get(&miss.page)
+                .get(&page)
                 .copied()
                 .expect("a submitted read targets a seeded page");
-            self.frames[miss.frame as usize].borrow_mut().fill(fill);
-            metadata.residents.insert(miss.page, miss.frame);
+            drop(misses);
+            self.pool.insert_resident_frame(page, fill);
         }
+        let _ = self.pool.poll();
     }
 
-    fn ready(&self, _reader: &ReaderCtx<'_>, token: PendingToken) -> ReadyResult<'_> {
-        if let Some(&frame) = self.metadata.borrow().residents.get(&token.page()) {
-            ReadyResult::Ready(self.frame_guard(frame))
-        } else {
-            ReadyResult::NotYet(token)
+    fn ready<'pool>(
+        &'pool self,
+        reader: &'pool ReaderCtx<'pool>,
+        token: PendingToken,
+    ) -> ReadyResult<'pool> {
+        match self.pool.pin(reader, token.page()) {
+            Some(guard) => ReadyResult::Ready(guard),
+            None => ReadyResult::NotYet(token),
         }
-    }
-
-    fn frame_guard(&self, frame: u32) -> FrameGuard<'_> {
-        let bytes = Ref::map(self.frames[frame as usize].borrow(), |buffer| &buffer[..]);
-        FrameGuard::new(bytes)
     }
 }
