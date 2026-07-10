@@ -7,19 +7,36 @@
 //! live in the core. Backend behaviour is never selected by matching
 //! [`Backend`](crate::Backend) (AD-1); the mock is a distinct type.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
 use crate::completion::CompletionBatch;
 use crate::driver::{
     Attempt, CompletionSlab, DriverCore, EagerExecutor, Executor, FileHandle, FileId, MAX_FILES,
-    OpContext, OpKind, OpToken, OpenHow, ReadFrameIdx, Shared, SyncMode,
+    OpContext, OpKind, OpToken, OpenHow, ReadFrameIdx, RingExecutor, Shared, SyncMode,
 };
 use crate::error::{IoError, SubmitError};
 use crate::pool::write_arena::{WriteArena, WriteSlot};
+use crate::pool::{Frames, PoolBackend};
+
+const EINTR: i32 = 4;
+#[cfg(target_os = "linux")]
+const EAGAIN: i32 = 11;
+#[cfg(not(target_os = "linux"))]
+const EAGAIN: i32 = 35;
+
+/// One read the pool issued against the mock: the file offset and the requested
+/// byte count. Recorded in submission order so the reslice remainder read
+/// (offset advanced by the short count, length the unfilled tail) is observable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadAttempt {
+    pub file_offset: u64,
+    pub requested_len: u32,
+}
 
 /// A fault the mock injects into the next resolved op, mimicking a syscall
 /// return the real backends handle.
@@ -111,6 +128,7 @@ impl MockDriverBuilder {
             executor,
             self.frames,
             self.retry_bound,
+            self.queue_capacity,
         ))
     }
 }
@@ -268,6 +286,43 @@ impl MockDriver {
     pub fn write_arena(&self, slot_count: u32) -> WriteArena {
         WriteArena::new(slot_count)
     }
+
+    /// Seeds the simulated disk: a clean read of `fd`'s `granule_idx` granule
+    /// fills the destination pool frame with `fill` in every byte. Called before
+    /// the mock is composed into a pool.
+    pub fn seed_page(&self, fd: &FileHandle, granule_idx: u32, fill: u8) {
+        self.0.executor().seed(fd.file_id(), granule_idx, fill);
+    }
+
+    /// The reads the composed pool issued against this mock, in submission order.
+    #[must_use]
+    pub fn read_attempts_in_order(&self) -> Vec<ReadAttempt> {
+        self.0.executor().attempts()
+    }
+}
+
+impl PoolBackend for MockDriver {
+    fn submit_read(
+        &self,
+        fd: &FileHandle,
+        frame: ReadFrameIdx,
+        file_offset: u64,
+        len: u32,
+    ) -> Result<OpToken, SubmitError> {
+        self.0.executor().record_attempt(ReadAttempt {
+            file_offset,
+            requested_len: len,
+        });
+        self.0.submit_read(fd, frame, file_offset)
+    }
+
+    fn poll(&self, out: &mut CompletionBatch) -> usize {
+        self.0.poll(out)
+    }
+
+    fn share_frames(&self, frames: Arc<Frames>) {
+        self.0.executor().set_arena(frames);
+    }
 }
 
 /// The mock backend's own state: injected faults and the reordering PRNG behind
@@ -277,6 +332,7 @@ impl MockDriver {
 #[derive(Debug)]
 struct MockExecutor {
     state: Mutex<MockState>,
+    arena: OnceLock<Arc<Frames>>,
     frames: u32,
     frame_bytes: u32,
 }
@@ -284,6 +340,8 @@ struct MockExecutor {
 #[derive(Debug)]
 struct MockState {
     injected: VecDeque<Injected>,
+    seeds: HashMap<(FileId, u32), u8>,
+    attempts: Vec<ReadAttempt>,
     rng: u64,
 }
 
@@ -292,8 +350,11 @@ impl MockExecutor {
         Self {
             state: Mutex::new(MockState {
                 injected: VecDeque::with_capacity(injected_capacity as usize),
+                seeds: HashMap::new(),
+                attempts: Vec::new(),
                 rng: seed,
             }),
+            arena: OnceLock::new(),
             frames,
             frame_bytes,
         }
@@ -305,6 +366,33 @@ impl MockExecutor {
 
     fn inject(&self, fault: Injected) {
         self.lock().injected.push_back(fault);
+    }
+
+    fn seed(&self, file_id: FileId, granule_idx: u32, fill: u8) {
+        self.lock().seeds.insert((file_id, granule_idx), fill);
+    }
+
+    fn attempts(&self) -> Vec<ReadAttempt> {
+        self.lock().attempts.clone()
+    }
+
+    fn record_attempt(&self, attempt: ReadAttempt) {
+        self.lock().attempts.push(attempt);
+    }
+
+    fn set_arena(&self, arena: Arc<Frames>) {
+        let _ = self.arena.set(arena);
+    }
+
+    /// Fills the destination pool frame with the seeded byte for a clean read,
+    /// modelling the disk transferring the granule's contents into the buffer.
+    fn fill_read(&self, context: &OpContext<'_>) {
+        let granule_idx = u32::try_from(context.offset / u64::from(self.frame_bytes))
+            .expect("granule index fits u32");
+        let fill = self.lock().seeds.get(&(context.fd, granule_idx)).copied();
+        if let (Some(arena), Some(fill)) = (self.arena.get(), fill) {
+            arena.fill_inflight(context.frame, fill);
+        }
     }
 }
 
@@ -332,8 +420,14 @@ impl EagerExecutor for MockExecutor {
             }
             OpKind::Write => {}
         }
-        match self.lock().injected.pop_front() {
-            None => Attempt::Done(clean_bytes),
+        let injected = self.lock().injected.pop_front();
+        match injected {
+            None => {
+                if matches!(kind, OpKind::Read) {
+                    self.fill_read(&context);
+                }
+                Attempt::Done(clean_bytes)
+            }
             Some(Injected::Io(errno)) => Attempt::Failed(errno),
             Some(Injected::Short(bytes)) => Attempt::Done(bytes),
             Some(Injected::Eintr) => Attempt::Interrupted,
@@ -359,6 +453,387 @@ impl Executor for MockExecutor {
     }
 
     fn retire_file(&self, _slot: u32) {}
+}
+
+/// Builds a [`MockRingDriver`] with all capacities fixed up front.
+#[derive(Debug, Clone, Copy)]
+pub struct MockRingDriverBuilder {
+    seed: u64,
+    queue_capacity: u32,
+    frames: u32,
+    frame_bytes: u32,
+    retry_bound: u32,
+}
+
+impl Default for MockRingDriverBuilder {
+    fn default() -> Self {
+        Self {
+            seed: 0,
+            queue_capacity: 1,
+            frames: 1,
+            frame_bytes: 4096,
+            retry_bound: 0,
+        }
+    }
+}
+
+impl MockRingDriverBuilder {
+    #[must_use]
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self
+    }
+
+    #[must_use]
+    pub fn queue_capacity(mut self, queue_capacity: u32) -> Self {
+        self.queue_capacity = queue_capacity;
+        self
+    }
+
+    #[must_use]
+    pub fn frames(mut self, frames: u32) -> Self {
+        self.frames = frames;
+        self
+    }
+
+    #[must_use]
+    pub fn frame_bytes(mut self, frame_bytes: u32) -> Self {
+        self.frame_bytes = frame_bytes;
+        self
+    }
+
+    #[must_use]
+    pub fn retry_bound(mut self, retry_bound: u32) -> Self {
+        self.retry_bound = retry_bound;
+        self
+    }
+
+    /// # Panics
+    ///
+    /// If any capacity is zero — capacities are fixed and positive at init.
+    #[must_use]
+    pub fn build(self) -> MockRingDriver {
+        assert!(self.queue_capacity > 0, "queue capacity must be positive");
+        assert!(self.frames > 0, "frame count must be positive");
+        assert!(self.frame_bytes > 0, "frame size must be positive");
+        let executor = MockRingExecutor::new(self.seed, self.frame_bytes, self.queue_capacity);
+        let shared = Shared::new(
+            CompletionSlab::with_capacity(self.queue_capacity),
+            self.queue_capacity,
+        );
+        MockRingDriver(DriverCore::new(
+            shared,
+            executor,
+            self.frames,
+            self.retry_bound,
+            self.queue_capacity,
+        ))
+    }
+}
+
+/// A seeded in-memory driver over the REAL `DriverCore` ring poll path
+/// (`poll_ring`/`fill_ring`/`reap_ring`), used to inject faults and adversarial
+/// CQE orderings at the `io_uring` reap seam off the bench host. The mock supplies
+/// only seeded CQE ordering and injected raw results; routing, slab reclaim,
+/// deferred close, and the `EAGAIN`/`EINTR` resubmit are the core's, unchanged.
+#[derive(Debug)]
+pub struct MockRingDriver(DriverCore<MockRingExecutor>);
+
+impl Drop for MockRingDriver {
+    fn drop(&mut self) {
+        self.0.quiesce_ring();
+    }
+}
+
+impl MockRingDriver {
+    #[must_use]
+    pub fn builder() -> MockRingDriverBuilder {
+        MockRingDriverBuilder::default()
+    }
+
+    /// Opens a fresh generational handle. Never touches disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EMFILE` when the fixed fd table is exhausted.
+    pub fn open(&self, path: &Path, how: OpenHow) -> Result<FileHandle, IoError> {
+        self.0.open(path, how)
+    }
+
+    /// Consumes the handle; the deferred close(2) is observable once the fd's
+    /// in-flight ops drain (INV-11).
+    ///
+    /// # Panics
+    ///
+    /// If `fd` was minted by a different driver.
+    pub fn close(&self, fd: FileHandle) {
+        self.0.close(fd);
+    }
+
+    /// Whether the fd named by `id` has issued its deferred close(2).
+    ///
+    /// # Panics
+    ///
+    /// If `id` was minted by a different driver.
+    #[must_use]
+    pub fn is_closed(&self, id: FileId) -> bool {
+        self.0.is_closed(id)
+    }
+
+    /// Mints a second reference to the same fd — the stale-handle test's ghost.
+    #[must_use]
+    pub fn duplicate_handle(&self, fd: &FileHandle) -> FileHandle {
+        FileHandle::from_id(fd.file_id())
+    }
+
+    /// Binds a per-attempt fault SEQUENCE to the op the NEXT submit creates, keyed
+    /// to that op's `user_data`, so a seeded reorder still lands each result on its
+    /// own token. Each element maps to one CQE attempt on the bound op.
+    pub fn inject_for_next_submit(&self, faults: &[Injected]) {
+        self.0.executor().inject_for_next_submit(faults);
+    }
+
+    /// Enqueues a read; the next [`MockRingDriver::poll`] fills its SQE and reaps
+    /// the seeded (possibly injected) CQE.
+    ///
+    /// # Errors
+    ///
+    /// [`SubmitError::StaleHandle`] for a stale fd, [`SubmitError::Full`] at
+    /// capacity.
+    ///
+    /// # Panics
+    ///
+    /// If `fd` was minted by a different driver, or `frame` is out of range.
+    pub fn submit_read(
+        &self,
+        fd: &FileHandle,
+        frame: ReadFrameIdx,
+        offset: u64,
+    ) -> Result<OpToken, SubmitError> {
+        let token = self.0.submit_read(fd, frame, offset)?;
+        self.0.executor().bind_pending(u64::from(token.slot()));
+        Ok(token)
+    }
+
+    /// Enqueues an fsync barrier.
+    ///
+    /// # Errors
+    ///
+    /// [`SubmitError::StaleHandle`] for a stale fd, [`SubmitError::Full`] at
+    /// capacity.
+    ///
+    /// # Panics
+    ///
+    /// If `fd` was minted by a different driver.
+    pub fn submit_fsync(&self, fd: &FileHandle, mode: SyncMode) -> Result<OpToken, SubmitError> {
+        let token = self.0.submit_fsync(fd, mode)?;
+        self.0.executor().bind_pending(u64::from(token.slot()));
+        Ok(token)
+    }
+
+    /// Fills ready SQEs and reaps their CQEs through the real ring path (never
+    /// sleeps); returns the completion count.
+    ///
+    /// # Panics
+    ///
+    /// If `out` has zero capacity.
+    pub fn poll(&self, out: &mut CompletionBatch) -> usize {
+        self.0.poll_ring(out)
+    }
+
+    /// Reaps like [`MockRingDriver::poll`], parking up to `timeout` when idle.
+    pub fn poll_wait(&self, out: &mut CompletionBatch, timeout: Duration) -> usize {
+        self.0.poll_wait_ring(out, timeout)
+    }
+
+    /// A shared observation of the ring state that survives the driver drop.
+    #[must_use]
+    pub fn observe(&self) -> Arc<MockRingObservation> {
+        self.0.executor().observe()
+    }
+}
+
+/// Counters shared with a [`MockRingDriver`] through an [`Arc`] that outlives it,
+/// so a test can assert the post-drop quiesce state (INV-8) and exactly-one-retire
+/// per closed fd (INV-11).
+#[derive(Debug, Default)]
+pub struct MockRingObservation {
+    submitted: AtomicU32,
+    reaped: AtomicU32,
+    retired: AtomicU32,
+}
+
+impl MockRingObservation {
+    /// Ops submitted but not yet terminally reaped.
+    #[must_use]
+    pub fn ops_in_flight(&self) -> u32 {
+        self.submitted
+            .load(Ordering::Acquire)
+            .saturating_sub(self.reaped.load(Ordering::Acquire))
+    }
+
+    /// Ops finalized in reap — a resubmitted `EAGAIN`/`EINTR` CQE is not counted.
+    #[must_use]
+    pub fn reaped(&self) -> u32 {
+        self.reaped.load(Ordering::Acquire)
+    }
+
+    /// `retire_file` calls — one per fully-drained closed fd.
+    #[must_use]
+    pub fn retired(&self) -> u32 {
+        self.retired.load(Ordering::Acquire)
+    }
+}
+
+/// The mock ring backend: a seeded reorder PRNG, per-op injected fault sequences
+/// keyed by `user_data`, and a ready-CQE queue produced at SQE-fill. It holds no
+/// per-file state — routing, reclaim, and retire progression are the core's.
+#[derive(Debug)]
+struct MockRingExecutor {
+    state: Mutex<MockRingState>,
+    frame_bytes: u32,
+    observation: Arc<MockRingObservation>,
+}
+
+#[derive(Debug)]
+struct MockRingState {
+    rng: u64,
+    pending: Option<Vec<Injected>>,
+    faults: HashMap<u64, VecDeque<Injected>>,
+    cqes: VecDeque<(u64, i32)>,
+}
+
+impl MockRingExecutor {
+    fn new(seed: u64, frame_bytes: u32, queue_capacity: u32) -> Self {
+        let capacity = queue_capacity as usize;
+        Self {
+            state: Mutex::new(MockRingState {
+                rng: seed,
+                pending: None,
+                faults: HashMap::with_capacity(capacity),
+                cqes: VecDeque::with_capacity(capacity),
+            }),
+            frame_bytes,
+            observation: Arc::new(MockRingObservation::default()),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, MockRingState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn observe(&self) -> Arc<MockRingObservation> {
+        Arc::clone(&self.observation)
+    }
+
+    fn inject_for_next_submit(&self, faults: &[Injected]) {
+        self.lock().pending = Some(faults.to_vec());
+    }
+
+    /// Binds any queued injection to the just-submitted op's `user_data` and
+    /// counts the op in flight. Called once per admitted submit.
+    fn bind_pending(&self, user_data: u64) {
+        let mut state = self.lock();
+        if let Some(faults) = state.pending.take() {
+            state.faults.insert(user_data, faults.into());
+        }
+        drop(state);
+        self.observation.submitted.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// The raw CQE the next attempt on `user_data` reports: the bound sequence's
+    /// next element, or a clean `clean_bytes` transfer once it is exhausted.
+    fn next_raw(state: &mut MockRingState, user_data: u64, clean_bytes: u32) -> i32 {
+        let fault = state
+            .faults
+            .get_mut(&user_data)
+            .and_then(VecDeque::pop_front);
+        match fault {
+            None => i32::try_from(clean_bytes).expect("a clean transfer fits i32"),
+            Some(Injected::Short(bytes)) => i32::try_from(bytes).expect("a short count fits i32"),
+            Some(Injected::Io(errno)) => -errno,
+            Some(Injected::Eagain) => -EAGAIN,
+            Some(Injected::Eintr) => -EINTR,
+        }
+    }
+}
+
+impl Executor for MockRingExecutor {
+    fn register_file(&self, _slot: u32, _file: File) -> Result<(), IoError> {
+        Ok(())
+    }
+
+    fn clean_bytes(&self, kind: OpKind) -> u32 {
+        match kind {
+            OpKind::Fsync => 0,
+            OpKind::Read | OpKind::Write => self.frame_bytes,
+        }
+    }
+
+    fn schedule(&self, ready_len: usize) -> usize {
+        rng_below(&mut self.lock().rng, ready_len + 1)
+    }
+
+    fn retire_file(&self, _slot: u32) {
+        self.observation.retired.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+impl RingExecutor for MockRingExecutor {
+    fn read_len(&self) -> u32 {
+        self.frame_bytes
+    }
+
+    fn push_read(
+        &self,
+        user_data: u64,
+        _fd_slot: u32,
+        _frame: ReadFrameIdx,
+        _offset: u64,
+        len: u32,
+    ) {
+        let mut state = self.lock();
+        let raw = Self::next_raw(&mut state, user_data, len);
+        state.cqes.push_back((user_data, raw));
+    }
+
+    fn push_fsync(&self, user_data: u64, _fd_slot: u32) {
+        let mut state = self.lock();
+        let raw = Self::next_raw(&mut state, user_data, 0);
+        state.cqes.push_back((user_data, raw));
+    }
+
+    fn submit(&self) {}
+
+    fn submit_and_wait(&self, _want: u32, _timeout: Duration) {}
+
+    fn reap<F: FnMut(u64, i32)>(&self, limit: u32, mut sink: F) -> u32 {
+        assert!(limit > 0, "a reap drains into a non-empty batch");
+        let mut state = self.lock();
+        let mut reaped = 0u32;
+        while reaped < limit {
+            let Some((user_data, raw)) = state.cqes.pop_front() else {
+                break;
+            };
+            sink(user_data, raw);
+            reaped += 1;
+        }
+        reaped
+    }
+
+    fn on_op_finalized(&self) {
+        self.observation.reaped.fetch_add(1, Ordering::AcqRel);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn blocking_write(&self, _fd_slot: u32, _buf: &[u8], _offset: u64) -> Result<u32, i32> {
+        unreachable!("the mock ring exposes no metadata plane")
+    }
+
+    #[cfg(target_os = "linux")]
+    fn blocking_fsync(&self, _fd_slot: u32) -> Result<(), i32> {
+        unreachable!("the mock ring exposes no metadata plane")
+    }
 }
 
 fn rng_below(state: &mut u64, bound: usize) -> usize {

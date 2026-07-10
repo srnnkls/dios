@@ -247,8 +247,13 @@ the first-touch bit store rides in the DIO-G1 parity bench.
 - Copy semantics: mmap and O_DIRECT are both one-DMA, zero-CPU-copy per
   miss; buffered pread is the only per-miss-copy variant. Parity is
   decided by lookup overhead and miss scheduling, not copies.
-- PageTable concurrency: warm-hit probes are lock-free and advisory over
-  atomic entry pairs — a torn or stale read is safe in both directions. A
+- PageTable concurrency: warm-hit probes are lock-free and advisory.
+  Realization (T008): a per-slot single-writer seqlock over atomics —
+  the entry exceeds 64 bits, so a word-CAS packed cell was impossible;
+  the seqlock returns non-torn snapshots (strictly stronger than the
+  torn-read-safe minimum this paragraph originally assumed), with all
+  writes serialized under the AD-4 lock. A stale read is safe in both
+  directions. A
   false hit fails the guard-create recheck (the frame no longer maps the
   page) and falls to the miss path; a false miss (an entry mid
   backward-shift) also falls to the miss path, which re-probes

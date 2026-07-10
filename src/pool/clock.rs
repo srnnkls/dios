@@ -4,7 +4,7 @@
 //! invariant. Eviction sweeps a deterministic hand, clearing set bits (spending
 //! their second chance) until it lands on a clear one.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::driver::ReadFrameIdx;
 
@@ -12,7 +12,7 @@ use crate::driver::ReadFrameIdx;
 pub struct Clock {
     reference_bits: Box<[AtomicBool]>,
     count: u32,
-    hand: u32,
+    hand: AtomicU32,
 }
 
 impl Clock {
@@ -32,7 +32,7 @@ impl Clock {
         Self {
             reference_bits: bits.into_boxed_slice(),
             count: frame_count,
-            hand: 0,
+            hand: AtomicU32::new(0),
         }
     }
 
@@ -64,19 +64,31 @@ impl Clock {
     }
 
     /// Advances the hand until it lands on a clear bit, clearing every set bit
-    /// it passes (each spending one second chance), and evicts that frame.
+    /// it passes (each spending one second chance), and evicts that frame — the
+    /// standalone-clock entry point.
     pub fn evict_victim(&mut self) -> ReadFrameIdx {
+        self.evict_victim_shared()
+    }
+
+    /// The sweep over the shared reference bits and the atomic hand. Callers
+    /// serialize it under the pool's AD-4 control-plane lock so the hand advances
+    /// single-writer even though the signature is `&self` (the reference bits stay
+    /// lock-free for the warm-hit path).
+    pub(crate) fn evict_victim_shared(&self) -> ReadFrameIdx {
+        let mut hand = self.hand.load(Ordering::Relaxed);
         for _ in 0..=self.count {
-            let index = self.hand;
-            self.hand = (self.hand + 1) % self.count;
+            let index = hand;
+            hand = (hand + 1) % self.count;
             let bit = &self.reference_bits[index as usize];
             if bit.load(Ordering::Relaxed) {
                 bit.store(false, Ordering::Relaxed);
             } else {
+                self.hand.store(hand, Ordering::Relaxed);
                 return ReadFrameIdx::new(index);
             }
         }
-        ReadFrameIdx::new(self.hand)
+        self.hand.store(hand, Ordering::Relaxed);
+        ReadFrameIdx::new(hand)
     }
 
     fn checked_index(&self, frame: ReadFrameIdx) -> usize {

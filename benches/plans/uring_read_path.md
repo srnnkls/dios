@@ -26,3 +26,11 @@ metric, workload, and gate ahead of the code per the bench-driven rule.
 Runs on the pinned Linux host (Threadripper 3970X, NVMe 970 PRO, kernel
 6.6) under the governor and cache-drop protocol the scope documents; the
 ring backend exists only on Linux, so there is no macOS arm.
+
+T005 adds a cold branch to the CQE reap: a `-EAGAIN`/`-EINTR` result under
+the init-time bound re-queues the op's slot for a fresh SQE instead of
+finalizing it (scope.md:596). On the fault-free read path the branch is a
+single sign test on a non-negative CQE result and never re-queues, so it
+adds no measured work to the pinned workload above; the retry cost is
+exercised only under injected transients. No new plan is warranted — the
+T014 gates on this metric cover the reap path with the branch in place.

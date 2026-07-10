@@ -674,6 +674,260 @@ batch_reviews:
       approved — all review phases complete; committed with the
       container gate standing in for the downed bench host per the
       owner decision (bench-host functional re-run owed on its return)
+  - batch: 6
+    timestamp: 2026-07-10
+    commit: pending
+    tasks: [T005, T008]
+    test_review:
+      rounds: in-progress
+      round_1:
+        reviewers: [claude-opus, claude-sonnet, codex-gpt5.6-sol, gemini-3.5-flash]
+        note: first sonnet dispatch died on a transient infra failure; re-dispatched fresh
+        verdicts: opus pass-all, gemini pass-all, sonnet re-dispatch x2 files, codex re-dispatch x3 files
+        red_verification: >-
+          Orchestrator verified all five states before dispatch: faults.rs
+          compile-RED on exactly the MockRingDriver surface; miss.rs
+          compile-RED 21 inventoried missing-surface errors (+ mock-gated
+          [[test]] registration so bare cargo test skips it); ring_close.rs
+          2x E0308 on the real is_closed wiring gap; zero_alloc 3/3 GREEN
+          both backends; uring_wait 3/3 GREEN in the container.
+        adjudications: >-
+          ACCEPTED (codex Critical + opus convergent): the MockRingDriver
+          contract must REQUIRE the real reap_ring via a mock RingExecutor
+          — the header's replica option deleted (mock-tautology risk).
+          ACCEPTED (codex): fault binding moves to submit-time per-op
+          attachment + a reordered mixed clean/error routing test.
+          ACCEPTED (codex, OWNER RULING overriding opus/gemini deferral):
+          ring EAGAIN/EINTR-CQE resubmit gets pinned now — EAGAIN CQEs are
+          real for O_DIRECT io_uring under pressure, tasks.yaml T005 lists
+          EAGAIN, scope.md:596 is cross-backend; seam gains retryable
+          injections + retry_bound-exhaustion tests. ACCEPTED
+          (codex+sonnet+orchestrator-read): two unbounded loops in
+          faults.rs bounded; closer stores the readiness flag before any
+          fallible assert. ACCEPTED (codex): seed determinism pins;
+          retire-count observation (task-text promise); genuinely
+          concurrent close/reopen; driver drop-with-in-flight quiesce via
+          the mock seam (T005-assigned, not T009). ACCEPTED (codex):
+          uring_wait INV-3 window lengthened so a mutex-holding poll_wait
+          fails. ACCEPTED (codex Critical): miss.rs gains page-seeded
+          content-fill in the seam + FrameGuard byte assertions across
+          pages/files (arena-routing observability); (sonnet, superseding
+          codex's trace seam): singleflight one-READ pinned via
+          queue_capacity=1; same-PageId retry after fanout; Busy branch
+          asserts frame-state immutability. CONDITIONAL: pool short-CQE
+          policy pinned only if design.md/scope settle it, else recorded
+          as an owner question. REJECTED: composition-shape test change
+          (Pool<D=Driver>/build_on stays; implementer carries the seam as
+          doc(hidden) — opus+codex direction, gemini endorsement);
+          zero_alloc one-cycle window (T009 hardens); ring_close and
+          zero_alloc passed clean.
+        fixes_applied: >-
+          BOTH testers applied all items. T005: seam contract now
+          REQUIRES the real DriverCore ring poll path over a mock
+          RingExecutor (replica option deleted); inject_for_next_submit
+          binds faults to ops at submit time + a reordered mixed-fault
+          routing test; retryable Eagain/Eintr injections with
+          retry-then-success and RETRY_BOUND+1-exhaustion tests (pins
+          scope.md:596 on the ring); every loop deadline+cap bounded,
+          readiness flag stored before fallible asserts; seed-determinism
+          pair; MockRingObservation{ops_in_flight,reaped,retired} for the
+          retire-count and drop-quiesce pins; genuinely concurrent
+          close/reopen race; uring_wait INV-3 window 3s vs 500ms +
+          pre-park delay, re-verified 3/3 in the container. 15 tests,
+          compile-RED on exactly one E0432. T008: MockDriver::seed_page
+          content seam + routing test (3 pages, 2 files, reordering
+          seed); singleflight one-READ via queue_capacity=1 (sonnet's
+          shape); same-PageId retry after fanout; Busy no-disturbance
+          with a REASONED relaxation (no-held-frame-freed + bytes-stable
+          instead of exact state equality — a legal CLOCK sweep may move
+          a guarded Resident frame to Evicting; flagged for round-2
+          adjudication); short-read policy SETTLED from docs and both
+          paths pinned (scope.md:601 reslice; scope.md:570 EOF-terminal
+          fanout); register_file replaced open in the contract. 8 tests,
+          compile-RED 39 errors all missing-surface (orchestrator
+          re-verified: 36 E0599 + 3 E0107; faults.rs 1 E0432; fmt clean;
+          bare cargo test --no-run skips both mock-gated files).
+      round_2:
+        reviewers: [claude-opus, codex-gpt5.6-sol, gemini-3.5-flash]
+        verdicts: >-
+          opus: miss.rs + uring_wait clean, faults.rs re-dispatch on two
+          Important oracle defects (FAULTS-1 seed-dependent routing hole
+          — fixed with an off-first-slot assertion, the tester
+          independently simulating the splitmix64 schedule to prove the
+          seed places the faulted op at drain position 3; FAULTS-2
+          released-flag false-fail window — store moved before the
+          drain). Item-13 adjudication: the tester's Busy relaxation is
+          CORRECT (design.md L134-156: CLOCK may move a guarded Resident
+          frame to Evicting; INV-1 defers only reuse) — the round-1
+          stronger assertion was wrong. gemini: clean. codex (post-
+          hardening tree): verified both opus fixes, added 11 findings —
+          ACCEPTED: retry-bound boundary row (exactly RETRY_BOUND then
+          success); dual-bound audit on four loops; reopener STARTED
+          handshake restoring the overlap proof the early released flag
+          vacated; worker-thread drop with recv_timeout (synchronous
+          drop could hang the suite); seed-divergence
+          contractual-schedule-or-seed-set; uring_wait open-before-park
+          + timed-submit-only + bounded entered spin; miss.rs config
+          coherence (max_inflight_reads>=3 for the 3-miss routing test;
+          peak_guards_per_reader=4 for the 4-guard singleflight test);
+          Busy oracle += InFlight==0 (completing the adjudicated
+          relaxation triple); positive-reslice proof via injected
+          sequence or attempt count (immediate-Resident-on-short
+          currently passes). codex's item-13 adjudication concurred
+          with opus (relaxation valid, plus the InFlight==0 negative
+          space).
+        fixes_applied: >-
+          ALL eleven items landed. T005: exactly-RETRY_BOUND boundary
+          row; dual bounds on the four deadline-only loops; reopener
+          started-handshake restoring the overlap proof (vacuous
+          released assert removed; ghost-stale + aliases_slot kept);
+          drop-quiesce on a worker thread with recv_timeout; the mock
+          schedule declared CONTRACTUAL in the seam header (splitmix64
+          insert-position, reference permutation stated); uring_wait
+          open-before-park with only submit_read timed; entered spin
+          dual-bounded. T008: routing-test config recomputed per INV-9
+          (inflight=3, headroom=9, frames=12); singleflight
+          peak_guards=4 with queue_capacity=1 retained; Busy oracle
+          full triple (Free==0 + InFlight==0 + bytes stable); reslice
+          proof reworked to the injected [Short, Io(EIO)] sequence —
+          Err(EIO) reachable only via a distinct remainder read, no
+          seam growth. Orchestrator re-verified: faults.rs 1x E0432,
+          miss.rs 40 all-surface errors, fmt clean, bare cargo test
+          skips the mock-gated files.
+      round_3:
+        reviewers: [claude-opus, codex-gpt5.6-sol, gemini-3.5-flash]
+        verdicts: >-
+          opus CLEAN on all eleven — including recomputing the reference
+          permutation [5,2,3,0,4,1] against the shipping splitmix64
+          insert algorithm (the seed-lottery risk grounded) and checking
+          the INV-9 arithmetic against the live builder formula. gemini
+          CLEAN (independently verified the drop-quiesce channel shape
+          and both RED states). codex 9/11 with two under-proved:
+          ACCEPTED — the reopener can exhaust its cap before main is
+          scheduled (fix: signal started only after the FIRST observed
+          EMFILE, deadline-dominant loop — proves a genuine pre-release
+          racing attempt AND kills the scheduling false-fail); the
+          reslice proof shows a second attempt but not a REMAINDER read
+          (a full-extent resubmit also consumes the EIO — fix: minimal
+          per-attempt (offset, len) observation on MockDriver, second
+          attempt asserted at offset += short count, len == remainder,
+          per scope.md:601's up-to-extent-length wording).
+      round_4:
+        reviewers: [claude-opus, codex-gpt5.6-sol, gemini-3.5-flash]
+        verdicts: >-
+          opus CLEAN on both terminal fixes (EMFILE-first traced
+          structurally; overlap now deterministic; reslice asserts
+          load-bearing against both falsifiers; Pool::driver judged
+          reasonable doc(hidden) observation surface). gemini CLEAN.
+          codex: reslice RESOLVED; reopen race one remaining
+          scheduling false-fail — main's drain loop terminates on
+          is_closed(ghost_id) whose generation check (driver.rs:1242)
+          goes permanently false once the racing reopener bumps the
+          slot generation → deadline false-fail. ACCEPTED: drain
+          terminates on the retire observation (obs.retired()) or the
+          anchor's completion token instead of old-generation
+          is_closed. T005 tester applying; scoped confirmation to
+          follow.
+      round_5:
+        reviewers: [codex-gpt5.6-sol, gemini-3.5-flash]
+        scope: single change — drain terminates on obs.retired()==0
+          (generation-agnostic) instead of old-generation is_closed
+        verdicts: >-
+          codex RESOLVED / gate CLEAN (its own round-4 item); gemini
+          resolved/clean. Orchestrator independently read the reworked
+          loop: dual-bounded, per-iteration ghost StaleHandle via a
+          real submit, raced-EMFILE handshake upstream. Tests FROZEN.
+      gate: cleared -> Phase B (five rounds; final states faults.rs 1x
+        E0432, miss.rs 41 all-surface, ring_close 2x E0308, zero_alloc
+        + uring_wait GREEN both platforms)
+    phase_b: >-
+      SEQUENTIAL (shared src/mock.rs + src/driver.rs). T005: real reap
+      path composed portably (cfg-lift; metadata methods stay linux),
+      retry in OpEntry.retries mirroring the eager policy,
+      is_closed(FileId), quiesce_ring + Drop, MockRingDriver +
+      observation — faults 16/16 + all suites green both platforms.
+      T008: Pool<D=Driver>/PoolBackend/build_on/driver(); single-writer
+      seqlock PageTable cell (entry > 64 bits, word-CAS impossible);
+      fixed-capacity MissTable singleflight; fill_inflight/
+      abort_inflight; drain_completions with reslice; Mutex<PageTable>
+      removed with a verified fence-survival argument; arena sharing
+      for eager/mock via share_frames(Arc<Frames>), ring wiring = T014
+      remainder; spike migrated to the real Pool; benches/overlap
+      authored (advisory container ~63x, 2.0x binds T014) — miss 8/8 +
+      full 15-target suite green both platforms. Both owning testers
+      ran unmask style passes (faults.rs 4 clippy items, miss.rs header
+      fence): clippy --all-targets -D warnings + fmt clean BOTH.
+    reviewers:
+      - { id: general-claude-opus, gates: { correctness: pass, security: pass, performance: pass } }
+      - { id: general-gemini, gates: { correctness: pass, security: pass, performance: pass } }
+      - { id: architecture-claude-opus, gates: { architecture: changes_requested } }
+      - { id: architecture-gemini, gates: { architecture: pass } }
+      - { id: compliance-claude-sonnet, gates: { style: pass-with-recommendations } }
+      - { id: compliance-gemini, gates: { style: changes_requested } }
+      - { id: codex, status: stalled-all-three-roles (persistent harness flakiness; gemini ok satisfies >=1 external per role) }
+    synthesized:
+      adjudications:
+        - "ACCEPT (arch Important): warm-hit CLOCK reference missing — pin never sets the bit, eviction FIFO-degrades for hot pages (design.md:164); fix restructures the reference bits as lock-free per-frame atomics, sweep stays under Control"
+        - "ACCEPT (compliance Critical + gemini): seqlock read-retry loop unbounded — cap + panic + write-side even-version debug_assert (paired assertions)"
+        - "ACCEPT (arch + compliance): fold InFlight->Free into FrameState::advance's legal set + doc fix (with a frozen transition-matrix conflict check gate)"
+        - "ACCEPT (both compliance): doc(hidden) on build_on, driver(), and the whole mock module (lib.rs module attribute)"
+        - "ACCEPT (general + compliance convergent): MockRingObservation.reaped counts terminal completions only"
+        - "ACCEPT (compliance): assertion density additions (ready/poll/claim_frame/admit + seqlock pair; sample ratio was 0.95)"
+        - "ACCEPT (minor): granule arithmetic dedup; T014-ownership cross-reference comments on share_frames/_len"
+        - "RECORDED (general Important + arch Important, adjudication e reject-as-standalone): the real-backend reslice/arena remainder is now an explicit T014 blocker in tasks.yaml (push_read buffer offset; len honored; private-slab double-allocation eliminated; parity gates cannot run before it)"
+        - "RECORDS: design.md PageTable-concurrency paragraph reconciled to name the seqlock realization (doc drift, not deviation)"
+        - "ACCEPT-AS-IS: no eager drop-quiesce (poll-inline, nothing kernel-visible at drop); EOF-as-EIO (scope.md:570 'like an IO error'); remainder-submit-failure EIO (note); is_closed stale-generation caller contract (note); first_free_frame + find_by_token O(n) cold-path scans (v1, overlap gate watches); Control mega-struct (unanimously endorsed per AD-4); blocking methods cfg(linux) on the trait"
+      verified_by_reviewers: >-
+        general opus hand-verified: seqlock torn-read impossibility +
+        single-writer discipline (all four writer callers under Control),
+        the begin_pin SeqCst fence ordering surviving the Mutex removal,
+        fill/abort InFlight gates (no mapped/guarded path), bounded
+        no-alloc ring retry (slot live across CQEs, ready re-queue never
+        reallocates), MissTable lifecycle no-leak, drain_completions
+        map-only-after-Resident ordering, quiesce_ring bound.
+    fix_pass:
+      dispatched: true
+      items: >-
+        T008 implementer (src/pool/** only): CLOCK lock-free reference
+        bits; bounded seqlock read + write assert; advance-table fold
+        (with conflict check); doc(hidden) x2; density; dedup; T014
+        comments. T005 implementer (mock.rs/driver.rs/lib.rs only):
+        terminal-only reaped counting; doc(hidden) mock module.
+      applied: >-
+        ALL items landed. T008: Clock moved out of Control (lock-free
+        AtomicBool reference bits, pin references every resident hit;
+        AtomicU32 hand mutated solely under the AD-4 lock via
+        evict_victim_shared); seqlock read bounded
+        (SEQLOCK_READ_SPINS_MAX + panic) with the write-side
+        even-version assert; abort_inflight conflict check CONFIRMED
+        the frozen transition-matrix pins InFlight->Free as must-panic
+        — bypass kept with an accurate FrameState doc exception, the
+        fold assigned to T009 (tasks.yaml); doc(hidden) on build_on +
+        driver(); six new assertions; read_span extraction; T014
+        ownership comments. T005: on_op_finalized defaulted trait hook
+        called exactly in reap_ring's terminal branch (real backend
+        inherits the no-op); mock module doc(hidden) with rustdoc -D
+        warnings verified.
+      verification: >-
+        opus ALL-VERIFIED with source evidence (warm path lock-free
+        traced; hand single-writer grep; seqlock pair canonical; every
+        new assertion checked not-over-tight; on_op_finalized placement
+        + no re-entrant lock). Hand-placement adjudication: call-site
+        discipline suffices — no physical relocation (a discipline
+        break is a loom-catchable logic bug, never UB); optional
+        Cell<u32> note recorded, non-blocking. gemini ALL-VERIFIED, no
+        new issues. codex stalled twice (persistent all session; >=1
+        external ok satisfied). Orchestrator gates on the final tree:
+        local 15 targets + clippy -D warnings + fmt clean; container 15
+        targets + clippy + fmt clean (own run).
+      remote_gate: >-
+        Bench host STILL network-unreachable — committed on the arm64
+        container gate per the standing owner decision; the owed
+        bench-host functional re-run now covers batches 5 AND 6
+        (checkpoint pending_gate).
+    outcome: >-
+      approved — committed on the container gate per the owner decision
+      (bench-host re-run owed on its return)
 issues:
   critical: []
   high: []

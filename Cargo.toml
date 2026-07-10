@@ -18,6 +18,14 @@ criterion = "0.8"
 name = "driver"
 required-features = ["mock"]
 
+[[test]]
+name = "faults"
+required-features = ["mock"]
+
+[[test]]
+name = "miss"
+required-features = ["mock"]
+
 [[example]]
 name = "api_fit_spike"
 required-features = ["mock"]
@@ -35,6 +43,11 @@ required-features = ["bench"]
 name = "compare"
 harness = false
 required-features = ["bench"]
+
+[[bench]]
+name = "overlap"
+harness = false
+required-features = ["bench", "mock"]
 
 [lints.rust]
 elided_lifetimes_in_paths = "warn"

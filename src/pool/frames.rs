@@ -11,9 +11,12 @@ use crate::pool::SECTOR_BYTES;
 
 const SECTOR: usize = SECTOR_BYTES as usize;
 
-/// Residency of one frame. The only legal cycle is
-/// `Free → InFlight → Resident → Evicting → Free` (INV-1); any other edge is a
-/// programmer error and panics through [`FrameState::advance`].
+/// Residency of one frame. [`FrameState::advance`] admits only the cycle
+/// `Free → InFlight → Resident → Evicting → Free` (INV-1) and panics on any other
+/// edge. The single exception is the miss-abort edge `InFlight → Free`, taken by
+/// [`Frames::abort_inflight`] (NOT through `advance`) for a faulted or
+/// EOF-terminated read whose frame was never published `Resident` nor mapped, so
+/// no guard borrows it and the reclamation stages do not apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameState {
     Free,
@@ -191,6 +194,47 @@ impl Frames {
         // SAFETY: the caller contract guarantees no live borrow of this granule,
         // so the write aliases no shared reference.
         unsafe { std::ptr::write_bytes(start, byte, self.granule as usize) };
+    }
+
+    /// Fills `frame`'s whole granule with `byte` while it is `InFlight` — the
+    /// state-gated fill seam (T008) that discharges [`Frames::fill`]'s
+    /// no-live-borrow contract for the miss-completion path. An `InFlight` frame
+    /// is unmapped in the page table, so `pin` cannot have handed out a guard over
+    /// its bytes and this write aliases no live borrow.
+    ///
+    /// # Panics
+    ///
+    /// If `frame` is out of range, or the frame is not `InFlight` — only an
+    /// unpublished in-flight frame accepts a fill.
+    pub fn fill_inflight(&self, frame: ReadFrameIdx, byte: u8) {
+        assert_eq!(
+            self.state(frame),
+            FrameState::InFlight,
+            "a filled frame is InFlight — unmapped, so no guard borrows its bytes"
+        );
+        // SAFETY: the `InFlight` state gate guarantees `frame` is unmapped in the
+        // page table, so `pin` never handed out a guard over these bytes; the write
+        // aliases no live shared borrow of the granule.
+        unsafe { self.fill(frame, byte) };
+    }
+
+    /// Returns an `InFlight` frame directly to `Free` — the miss-abort seam for a
+    /// faulted or EOF-terminated read whose frame was never published `Resident`
+    /// and never mapped, so no guard borrows it and the residency cycle's
+    /// `Resident`/`Evicting` reclamation stages do not apply.
+    ///
+    /// # Panics
+    ///
+    /// If `frame` is out of range, or the frame is not `InFlight` — only an
+    /// unpublished in-flight frame aborts.
+    pub fn abort_inflight(&self, frame: ReadFrameIdx) {
+        let index = self.checked_index(frame);
+        assert_eq!(
+            FrameState::from_tag(self.states[index].load(Ordering::Relaxed)),
+            FrameState::InFlight,
+            "only an unpublished InFlight frame aborts back to Free"
+        );
+        self.states[index].store(FrameState::Free.to_tag(), Ordering::Relaxed);
     }
 
     fn checked_index(&self, frame: ReadFrameIdx) -> usize {

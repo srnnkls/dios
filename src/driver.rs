@@ -33,6 +33,7 @@ const EAGAIN: i32 = 11;
 #[cfg(not(target_os = "linux"))]
 const EAGAIN: i32 = 35;
 const POLL_WAIT_QUANTUM: Duration = Duration::from_millis(5);
+const QUIESCE_IDLE_MAX: u32 = 1_000_000;
 
 /// Distinguishes driver instances so a [`FileHandle`] minted by one core is
 /// rejected by another whose fd slots happen to coincide. Bumped once per
@@ -119,6 +120,7 @@ impl DriverBuilder {
             executor,
             self.frames,
             self.retry_bound,
+            self.queue_capacity,
         ))
     }
 }
@@ -232,15 +234,16 @@ impl Driver {
         self.0.close(fd);
     }
 
-    /// Whether `fd`'s slot has reached the closed state — its deferred close
-    /// completed after the last in-flight op drained.
+    /// Whether the fd named by `id` has reached the closed state — its deferred
+    /// close completed after the last in-flight op drained. Takes the retained
+    /// [`FileId`] because [`Driver::close`] consumes the handle.
     ///
     /// # Panics
     ///
-    /// If `fd` was minted by a different driver.
+    /// If `id` was minted by a different driver.
     #[must_use]
-    pub fn is_closed(&self, fd: &FileHandle) -> bool {
-        self.0.is_closed(fd.file_id())
+    pub fn is_closed(&self, id: FileId) -> bool {
+        self.0.is_closed(id)
     }
 
     /// Blocking metadata-plane write (AD-3): loops past short transfers until the
@@ -305,6 +308,16 @@ impl Driver {
     }
 }
 
+/// The ring backend drains its kernel-visible ops before teardown (INV-8). The
+/// eager backend has no async op outstanding at drop — `poll` executes inline —
+/// so it needs no quiesce.
+#[cfg(target_os = "linux")]
+impl Drop for Driver {
+    fn drop(&mut self) {
+        self.0.quiesce_ring();
+    }
+}
+
 /// The three op kinds the driver issues; echoed in each completion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OpKind {
@@ -322,6 +335,11 @@ pub struct OpToken(u64);
 impl OpToken {
     pub(crate) fn new(slot: u32, generation: u32) -> Self {
         Self((u64::from(generation) << 32) | u64::from(slot))
+    }
+
+    /// The completion-slab slot this token names — the ring's `user_data`.
+    pub(crate) fn slot(self) -> u32 {
+        u32::try_from(self.0 & u64::from(u32::MAX)).expect("the low word is a u32 slot")
     }
 }
 
@@ -348,8 +366,8 @@ pub enum SyncMode {
 }
 
 /// How a file is opened. `read_write` is the only access mode v1 issues; the
-/// [`IoRequest`](crate::open::IoRequest) selects the buffered or direct-IO data
-/// plane, probed at [`Driver::open`].
+/// `IoRequest` selects the buffered or direct-IO data plane, probed at
+/// [`Driver::open`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct OpenHow {
     access: Access,
@@ -532,6 +550,15 @@ impl<T> CompletionSlab<T> {
             .expect("peek of an occupied slot")
     }
 
+    /// Mutably borrows an occupied slot's payload without reclaiming it — the ring
+    /// reap path bumps an op's retry count while the op stays live across CQEs.
+    pub(crate) fn peek_mut(&mut self, slot: u32) -> &mut T {
+        self.slots[slot as usize]
+            .payload
+            .as_mut()
+            .expect("peek of an occupied slot")
+    }
+
     pub(crate) fn reclaim(&mut self, slot: u32) -> (OpToken, T) {
         let entry = &mut self.slots[slot as usize];
         let token = OpToken::new(slot, entry.generation);
@@ -599,8 +626,9 @@ pub(crate) trait EagerExecutor: Executor {
 
 /// The batched ring seam the `io_uring` backend composes over: SQE fill and CQE
 /// reap run under the AD-4 mutex, the kernel wait runs outside it (INV-3). The
-/// eager per-op [`EagerExecutor::attempt`] path is bypassed entirely.
-#[cfg(target_os = "linux")]
+/// eager per-op [`EagerExecutor::attempt`] path is bypassed entirely. Portable so
+/// the seeded mock ring composes the same `DriverCore` reap path off-linux; only
+/// the `io_uring` implementation is Linux-gated.
 pub(crate) trait RingExecutor: Executor {
     /// The transfer length a clean full-frame read reports (registered-buffer
     /// size).
@@ -625,11 +653,17 @@ pub(crate) trait RingExecutor: Executor {
     /// to `sink`, and returns the count. Called under the AD-4 mutex.
     fn reap<F: FnMut(u64, i32)>(&self, limit: u32, sink: F) -> u32;
 
+    /// Fires once per op finalized in reap — never for a resubmitted
+    /// `EAGAIN`/`EINTR` CQE, which keeps the op live. Defaults to a no-op.
+    fn on_op_finalized(&self) {}
+
     /// Metadata-plane blocking write on the retained file (AD-3): `Ok(bytes)` or
-    /// `Err(errno)`.
+    /// `Err(errno)`. Linux-only — the metadata plane rides only the real ring.
+    #[cfg(target_os = "linux")]
     fn blocking_write(&self, fd_slot: u32, buf: &[u8], offset: u64) -> Result<u32, i32>;
 
     /// Metadata-plane blocking fsync barrier on the retained file (AD-3).
+    #[cfg(target_os = "linux")]
     fn blocking_fsync(&self, fd_slot: u32) -> Result<(), i32>;
 }
 
@@ -640,6 +674,7 @@ pub(crate) struct OpEntry {
     offset: u64,
     frame: ReadFrameIdx,
     lease: Option<WriteLease>,
+    retries: u32,
 }
 
 /// Per-op parameters the execute phase hands a backend: which file, at what
@@ -697,18 +732,30 @@ pub(crate) struct DriverCore<E> {
     executor: E,
     frames: u32,
     retry_bound: u32,
+    queue_capacity: u32,
     id: u64,
 }
 
 impl<E> DriverCore<E> {
-    pub(crate) fn new(shared: Shared, executor: E, frames: u32, retry_bound: u32) -> Self {
+    pub(crate) fn new(
+        shared: Shared,
+        executor: E,
+        frames: u32,
+        retry_bound: u32,
+        queue_capacity: u32,
+    ) -> Self {
         Self {
             inner: Mutex::new(shared),
             executor,
             frames,
             retry_bound,
+            queue_capacity,
             id: NEXT_DRIVER_ID.fetch_add(1, Ordering::Relaxed),
         }
+    }
+
+    fn inflight_total(&self) -> u32 {
+        self.lock().files.total_inflight()
     }
 
     pub(crate) fn executor(&self) -> &E {
@@ -802,6 +849,7 @@ impl<E: Executor> DriverCore<E> {
             offset,
             frame,
             lease: None,
+            retries: 0,
         };
         Ok(self.commit(&mut shared, slot, entry))
     }
@@ -828,6 +876,7 @@ impl<E: Executor> DriverCore<E> {
                     offset,
                     frame: ReadFrameIdx::new(0),
                     lease: Some(buf.into_lease()),
+                    retries: 0,
                 };
                 Ok(self.commit(&mut shared, slot, entry))
             }
@@ -849,6 +898,7 @@ impl<E: Executor> DriverCore<E> {
             offset: 0,
             frame: ReadFrameIdx::new(0),
             lease: None,
+            retries: 0,
         };
         Ok(self.commit(&mut shared, slot, entry))
     }
@@ -1034,7 +1084,6 @@ impl<E: EagerExecutor> DriverCore<E> {
 /// wait runs outside it (INV-3), reap drains CQEs under the mutex. A completion
 /// routes to its slab slot by echoed `user_data`, not prepare order, because
 /// CQEs arrive unordered relative to submission.
-#[cfg(target_os = "linux")]
 impl<E: RingExecutor> DriverCore<E> {
     pub(crate) fn poll_ring(&self, out: &mut CompletionBatch) -> usize {
         assert!(
@@ -1092,11 +1141,16 @@ impl<E: RingExecutor> DriverCore<E> {
         filled
     }
 
-    /// Reap/finalize (locked): drain CQEs, reclaim each slot by echoed slot id,
-    /// drop the in-flight count (progressing a deferred close), release the write
-    /// lease, and emit the completion. Retires run after the lock is released.
+    /// Reap/finalize (locked): drain CQEs, routing each by echoed slot id. A
+    /// retryable `-EAGAIN`/`-EINTR` result under the init-time bound keeps the op
+    /// live — its slot is re-queued for a fresh SQE, not reclaimed, and no
+    /// completion is emitted (scope.md:596). A terminal result reclaims the slot,
+    /// drops the in-flight count (progressing a deferred close), releases the
+    /// write lease, and emits the completion. Retires run after the lock is
+    /// released.
     fn reap_ring(&self, out: &mut CompletionBatch) -> usize {
         let limit = u32::try_from(out.capacity()).expect("batch capacity fits u32");
+        let retry_bound = self.retry_bound;
         let mut retire = [FileId::new(0, 0, 0); MAX_FILES as usize];
         let mut retire_len = 0usize;
         let mut drained = 0usize;
@@ -1105,6 +1159,12 @@ impl<E: RingExecutor> DriverCore<E> {
             let shared = &mut *shared;
             self.executor.reap(limit, |user_data, raw| {
                 let slot = u32::try_from(user_data).expect("uring user_data is a slab slot");
+                let entry = shared.slab.peek_mut(slot);
+                if ring_should_retry(entry.kind, raw, entry.retries, retry_bound) {
+                    entry.retries += 1;
+                    shared.ready.push_back(slot);
+                    return;
+                }
                 let (token, entry) = shared.slab.reclaim(slot);
                 let retire_due = shared.files.on_complete(entry.fd);
                 if let Some(lease) = entry.lease {
@@ -1116,6 +1176,7 @@ impl<E: RingExecutor> DriverCore<E> {
                     retire[retire_len] = entry.fd;
                     retire_len += 1;
                 }
+                self.executor.on_op_finalized();
                 drained += 1;
             });
         }
@@ -1125,6 +1186,31 @@ impl<E: RingExecutor> DriverCore<E> {
         drained
     }
 
+    /// Drains every in-flight op before teardown so no kernel-visible op is
+    /// abandoned (INV-8). Bounded: each poll that makes no progress counts against
+    /// a fixed cap.
+    pub(crate) fn quiesce_ring(&self) {
+        if self.inflight_total() == 0 {
+            return;
+        }
+        let capacity = self.queue_capacity.max(1) as usize;
+        let mut out = CompletionBatch::with_capacity(capacity);
+        let mut idle = 0u32;
+        while self.inflight_total() > 0 {
+            if self.poll_ring(&mut out) > 0 {
+                idle = 0;
+            } else {
+                idle += 1;
+                assert!(idle < QUIESCE_IDLE_MAX, "drop quiesce made no progress");
+            }
+        }
+    }
+}
+
+/// The ring metadata plane (AD-3): blocking `pwrite`/`fsync` on the retained
+/// file, never the ring. Linux-only — the mock ring has no metadata plane.
+#[cfg(target_os = "linux")]
+impl<E: RingExecutor> DriverCore<E> {
     pub(crate) fn write_all_blocking_ring(
         &self,
         fd: &FileHandle,
@@ -1178,12 +1264,25 @@ impl<E: RingExecutor> DriverCore<E> {
 
 /// Maps a raw CQE result — non-negative byte count or `-errno` — to the op
 /// outcome the completion carries.
-#[cfg(target_os = "linux")]
 fn ring_result(raw: i32) -> Result<u32, IoError> {
     if raw < 0 {
         Err(IoError::from_raw(-raw))
     } else {
         Ok(u32::try_from(raw).expect("a non-negative CQE result fits u32"))
+    }
+}
+
+/// Whether a raw CQE result is a resubmittable transient under the init-time
+/// bound: `EINTR` on every op, `EAGAIN` on reads only, mirroring the eager retry
+/// policy so both backends honour scope.md:596 identically.
+fn ring_should_retry(kind: OpKind, raw: i32, retries: u32, retry_bound: u32) -> bool {
+    if raw >= 0 || retries >= retry_bound {
+        return false;
+    }
+    match -raw {
+        EINTR => true,
+        EAGAIN => matches!(kind, OpKind::Read),
+        _ => false,
     }
 }
 
@@ -1237,6 +1336,10 @@ impl FileTable {
     fn is_live(&self, id: FileId) -> bool {
         let slot = &self.slots[id.slot() as usize];
         slot.generation == id.generation() && matches!(slot.state, FileState::Open)
+    }
+
+    fn total_inflight(&self) -> u32 {
+        self.slots.iter().map(|slot| slot.inflight).sum()
     }
 
     fn is_closed(&self, id: FileId) -> bool {

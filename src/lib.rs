@@ -16,6 +16,7 @@ mod open;
 mod pool;
 
 #[cfg(feature = "mock")]
+#[doc(hidden)]
 pub mod mock;
 
 #[cfg(feature = "bench")]
@@ -37,4 +38,4 @@ pub use pool::{
 /// They are not part of the documented pool surface; the composed pool entry
 /// points (T007/T008) subsume them.
 #[doc(hidden)]
-pub use pool::{Clock, FrameState, Frames, PageTable, ReaderCounters};
+pub use pool::{Clock, FrameState, Frames, PageTable, PoolBackend, ReaderCounters};
