@@ -4,7 +4,7 @@
 
 #[cfg(target_os = "linux")]
 use core::ffi::{c_int, c_void};
-use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
+use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 use std::ptr::NonNull;
 
 use crate::driver::ReadFrameIdx;
@@ -131,10 +131,13 @@ impl Frames {
             .expect("valid frame arena layout");
         // SAFETY: `layout` has a non-zero size (count, granule both positive); a
         // null return is routed to `handle_alloc_error`, so `base` is a live,
-        // sector-aligned, zeroed allocation of `span` bytes.
-        let ptr = unsafe { alloc_zeroed(layout) };
+        // sector-aligned allocation of `span` bytes.
+        let ptr = unsafe { alloc(layout) };
         let base = NonNull::new(ptr).unwrap_or_else(|| handle_alloc_error(layout));
         advise_hugepage(base, span);
+        // SAFETY: `base` addresses `span` writable bytes owned solely here; no
+        // reference to them exists yet.
+        unsafe { std::ptr::write_bytes(base.as_ptr(), 0, span) };
         Self {
             base,
             layout,
@@ -162,8 +165,8 @@ impl Frames {
         let offset = index * self.granule as usize;
         // SAFETY: `offset + granule <= span` because `index < count`.
         let start = unsafe { self.base.as_ptr().add(offset) };
-        // SAFETY: the region is initialised (zeroed at alloc) and lives as long
-        // as `&self`.
+        // SAFETY: the region is initialised (zeroed at construction) and lives as
+        // long as `&self`.
         unsafe { std::slice::from_raw_parts(start, self.granule as usize) }
     }
 
@@ -267,8 +270,8 @@ impl Frames {
 
 impl Drop for Frames {
     fn drop(&mut self) {
-        // SAFETY: `base`/`layout` are exactly the pair returned by `alloc_zeroed`
-        // in `preallocated`, freed once here at end of life.
+        // SAFETY: `base`/`layout` are exactly the pair returned by `alloc` in
+        // `preallocated`, freed once here at end of life.
         unsafe { dealloc(self.base.as_ptr(), self.layout) }
     }
 }
@@ -320,6 +323,57 @@ mod tests {
             base % HUGEPAGE_BYTES,
             0,
             "a >= 2 MiB arena is 2 MiB-aligned so THP can back it from byte zero"
+        );
+    }
+
+    fn vma_anon_huge_kib(addr: usize) -> u64 {
+        let smaps = std::fs::read_to_string("/proc/self/smaps").expect("smaps is readable");
+        let mut in_vma = false;
+        for line in smaps.lines() {
+            if let Some((range, _)) = line.split_once(' ')
+                && let Some((start, end)) = range.split_once('-')
+                && let (Ok(start), Ok(end)) = (
+                    usize::from_str_radix(start, 16),
+                    usize::from_str_radix(end, 16),
+                )
+            {
+                in_vma = (start..end).contains(&addr);
+                continue;
+            }
+            if in_vma && let Some(rest) = line.strip_prefix("AnonHugePages:") {
+                return rest
+                    .trim()
+                    .trim_end_matches(" kB")
+                    .parse()
+                    .expect("AnonHugePages field parses");
+            }
+        }
+        panic!("no smaps VMA contains the arena base");
+    }
+
+    fn thp_fault_backing_available() -> bool {
+        let enabled = std::fs::read_to_string("/sys/kernel/mm/transparent_hugepage/enabled")
+            .unwrap_or_default();
+        enabled.contains("[always]") || enabled.contains("[madvise]")
+    }
+
+    #[test]
+    fn a_hugepage_sized_arena_is_hugepage_backed_when_thp_is_available() {
+        if !thp_fault_backing_available() {
+            eprintln!("skipped: kernel offers no fault-time THP");
+            return;
+        }
+        let span = 4 * HUGEPAGE_BYTES;
+        let frame_count = u32::try_from(span / SECTOR).expect("frame count fits u32");
+        let frames = Frames::preallocated(frame_count, SECTOR_BYTES);
+        let base = frames.frame_bytes(ReadFrameIdx::new(0)).as_ptr().addr();
+        let resident_kib = vma_anon_huge_kib(base);
+        assert!(
+            resident_kib >= (HUGEPAGE_BYTES / 1024) as u64,
+            "construction's first touch happens after the MADV_HUGEPAGE hint, so at \
+             least one of the arena's {} possible hugepages is resident (got {} KiB)",
+            span / HUGEPAGE_BYTES,
+            resident_kib,
         );
     }
 }

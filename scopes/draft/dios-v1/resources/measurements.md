@@ -160,16 +160,18 @@ Three qualifiers give the number its real weight:
   QD64 — 17× device throughput unlocked purely by overlap a page
   fault can never express — plus explicit eviction (no kernel-reclaim
   TLB shootdowns under memory pressure) and errors as values.
-- TLB-pressure hypothesis: MEASURED — see mmap_tlb_pressure below.
-  The compression mechanism is confirmed on bare metal, the pool wins
-  outright under virtualization, and crossing 1.0 on bare metal now
-  hinges on the hugepage-arena follow-on (an open owner decision).
+- TLB-pressure hypothesis: RESOLVED — see mmap_tlb_pressure below.
+  With the arena verifiably hugepage-backed the bare-metal ratio
+  compresses to 1.18; the pool does not cross 1.0 on this box, and
+  the residual is residency machinery over a DRAM-dominated base,
+  not page walks.
 
 ### mmap_tlb_pressure — the same pair at a 256 MiB working set (65,536 pages; sanity gate ≤ 3.0)
 
 | Env | Ratio geomean | CI95 upper | THP state | vs 64-page ratio |
 |-----|---------------|------------|-----------|------------------|
 | `nix` | 1.378 | 1.391 | madvise (arena not madvise'd → 4 KiB both arms) | 1.909 → 1.378 |
+| `nix` (hugepage arena) | 1.184 | 1.196 | madvise, ENGAGED: thp_fault_alloc +128, fallback 0 | 1.909 → 1.184 |
 | `mac` | 1.922 | 2.030 | no knob (16 KiB pages, opaque superpages) | 1.582 → 1.922 |
 | `vm` | 0.260 / 1.132 / 1.755 (three runs) | — | madvise | RETRACTED — see below |
 
@@ -192,35 +194,53 @@ environment noise, and the two-dimensional-page-walk story, while
 mechanically plausible, is unproven here. The container remains a
 functional gate only.
 
-#### Hugepage-arena follow-on: tried, kernel declined (owner decision executed)
+#### Hugepage-arena follow-on: root-caused and fixed — THP engages, 1.38 → 1.18
 
-The arena is now 2 MiB-aligned when >= 2 MiB and `madvise(MADV_HUGEPAGE)`'d
-at allocation on Linux (src/pool/frames.rs; a Linux-gated pinning test
-holds the alignment). The change is correct and accepted — `madvise`
-returns 0 under the host's `madvise` THP policy — but the decisive
-re-run was FLAT: `nix` 1.378 → 1.392 with overlapping CIs. The
-diagnosis is conclusive: an in-process probe (identical
-alloc/advise/touch sequence) shows AnonHugePages delta = 0 across a
-fully-touched 256 MiB madvise'd arena, and /proc/vmstat's
-thp_fault_alloc AND thp_fault_fallback both sit at 0 SINCE BOOT —
-this kernel (NixOS 6.6.64, CONFIG_TRANSPARENT_HUGEPAGE=y, policy
-madvise) never attempts fault-time hugepage allocation at all.
-khugepaged runs at a 10-second scan cadence (5 pages collapsed since
-boot), far too slow for a bench, though a long-lived sira process
-could eventually be collapsed onto hugepages.
+CORRECTION: the previous revision of this section claimed this kernel
+"never attempts fault-time hugepage allocation at all". The kernel was
+never asked. Rust's `alloc_zeroed` on an over-aligned layout is
+`posix_memalign` plus an eager memset (std `sys/alloc/unix.rs` uses
+`calloc` only for alignment <= 16), so the whole arena span was
+faulted onto 4 KiB pages before `madvise(MADV_HUGEPAGE)` ran — under
+the madvise policy those faults are 4 KiB by definition, and advice on
+already-present pages does nothing at fault time (only khugepaged's
+slow collapse remains). The original in-process probe carried the same
+ordering bug, which is why it appeared to confirm kernel refusal.
 
-Status of the hypothesis: UNCONFIRMED, not falsified — the mechanism
-was never granted hugepages to prove or disprove. The change is KEPT:
-it is the zero-cost necessary substrate (nothing gets hugepages under
-madvise policy without it), every gate stays green with it in, and
-the falsifiable re-test is recorded — on any kernel where
-thp_fault_alloc moves (or in a long-lived process once khugepaged
-collapses the arena, verifiable as AnonHugePages growth), re-run
-`mmap_tlb_pressure` against the 1.39 baseline. What IS confirmed on
-bare metal: at a 256 MiB working set the pool's software overhead
-compresses to +38%, and the remaining gap on this box is dominated by
-data-side L3/DRAM misses paid equally by both arms — not by page
-walks, whose tables sit comfortably in the 3970X's 128 MB L3.
+The fix (src/pool/frames.rs): allocate uninitialised, advise, then
+zero — construction's first touch lands behind the hint. The pinning
+test now asserts real residency (AnonHugePages of the arena's own
+smaps VMA >= one hugepage) and fails on the alloc_zeroed ordering;
+`madvise rc == 0` is exactly the non-check that masked this. RED
+confirmed on `nix` against the old ordering (0 KiB resident), GREEN
+with the fix.
+
+Results on `nix`, engagement verified per run (thp_fault_alloc +128 —
+all 128 hugepages of the 256 MiB arena — thp_fault_fallback 0):
+
+| Arena backing | Ratio geomean | CI95 upper |
+|---------------|---------------|------------|
+| 4 KiB (pre-fix, re-measured twice) | 1.372 / 1.407 | 1.382 / 1.418 |
+| hugepage (two runs) | 1.184 / 1.181 | 1.196 / 1.193 |
+
+Status of the hypothesis: mechanism CONFIRMED, outcome REFUTED on this
+box. The plan's escalation lever (measure before theorizing) was
+exercised as a paired dTLB counter A/B over the whole bench process:
+misses 642K → 336K, miss rate 4.1% → 1.1% (process-wide, so setup
+dilutes per-arm attribution — directional evidence). Hugepage backing
+removes the pool arm's page walks and buys ~0.19 of ratio, but the
+pool still does not cross 1.0 at a 256 MiB working set: the remaining
++18% is the residency machinery over a base dominated by data-side
+L3/DRAM misses paid equally by both arms. A per-arm flamegraph
+decomposition of that +18% stays available via the flamegraph skill
+but gates nothing — the 3.0 sanity gate passes with headroom.
+
+Container (advisory; the ratio class is retracted above): full suite
+green, THP engaged there too (+128 faults), single run read 0.504.
+All pinned gates re-asserted green on `nix` with the fix in:
+mmap_warm_path 1.955 <= 3.0, mmap_tlb_pressure 1.196 <= 3.0,
+ring_read_bracket 0.945 <= 1.25, paired_smoke 1.01 <= 1.25, overlap
+advisory 62.8 (mock shape, consistent with the recorded 63.1).
 
 ### ring_read_bracket — driver-level ring read vs blocking pread, QD1 O_DIRECT (gate ≤ 1.25)
 
