@@ -25,7 +25,16 @@ pub use alignment::{Alignment, Unaligned};
 pub use completion::{Completion, CompletionBatch};
 pub use driver::{
     Backend, Driver, DriverBuilder, FileHandle, FileId, IoMode, OpKind, OpToken, OpenHow,
-    ReadFrameIdx, SyncMode, WriteArena, WriteSlot,
+    ReadFrameIdx, SyncMode,
 };
 pub use error::{IoError, SubmitError};
-pub use pool::{FrameGuard, Get, PageId, PendingToken, ReaderCtx, ReadyResult};
+pub use pool::{
+    FrameGuard, GRANULE_DEFAULT, Get, PageId, PendingToken, Pool, PoolBuilder, PoolConfigError,
+    ReaderCtx, ReadyResult, RegisterError, WriteArena, WriteSlot,
+};
+
+/// Internal pool building blocks the T006 tests reach through the crate root.
+/// They are not part of the documented pool surface; the composed pool entry
+/// points (T007/T008) subsume them.
+#[doc(hidden)]
+pub use pool::{Clock, FrameState, Frames, PageTable, ReaderCounters};

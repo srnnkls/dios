@@ -3,15 +3,14 @@ checkpoint:
   scope_path: ./scopes/active/dios-v1
   branch: feat/dios-v1
   timestamp: 2026-07-10
-  last_batch: 2
-  last_commit: 1cef8c3
+  last_batch: 4
+  last_commit: 56e66d7
   pending_gate: >-
-    remote Linux suite unverified for the batch-2 round-2 diff (ssh-agent
-    empty); run `mise run remote -- mise run test` green before the
-    batch-3 commit. T004 (uring) Phase A also blocked on the same auth.
+    none — ssh restored 2026-07-10; full Linux suite green on host nix
+    for the batches 2-4 tree (65 tests incl. uring cfg paths).
   tasks:
-    done: [T001, T002]
-    pending: [T003, T004, T016, T005, T006, T007, T008, T009, T015]
+    done: [T001, T002, T003, T016, T006]
+    pending: [T004, T007, T005, T008, T009, T015]
     deferred_external:
       tasks: [T010, T011, T012, T013, T014]
       reason: >-
@@ -20,8 +19,8 @@ checkpoint:
         unmerged branches — T010's baseline tree does not exist yet. Owner
         decision 2026-07-10: build dios fully first, integrate into sira later.
   next_batch:
-    number: 3
-    tasks: [T003, T004, T016]
+    number: 5
+    tasks: [T004, T007]
   deferred_issues:
     - "non_exhaustive on SubmitError -> T002 owns the variant set"
     - "Backend enum public probe -> T002 revisits when Driver gains its constructor; must never become runtime routing (AD-1)"

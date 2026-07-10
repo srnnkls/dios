@@ -109,8 +109,16 @@ markers:
     area: data_model
     description: "GRANULE default value — fixed in T006 by block-size distribution measurement with max value size as input (AD-6)"
     doc_ref: "scope.md#open-questions"
-    status: open
-    resolution: null
+    status: resolved
+    resolution: >-
+      GRANULE_DEFAULT = 4096, fixed in T006 (2026-07-10) from the recorded
+      S003 measurement (gestalt store, 36,423 rows: max value 758 B, 36,421
+      values <= 16 B) — every measured value fits one sector, padding
+      fragmentation is negligible, so the O_DIRECT sector floor is the
+      granule. Derivation carried in GRANULE_DEFAULT's rustdoc
+      (src/pool/mod.rs). Per-store override remains a construction
+      parameter; a fresh distribution measurement over sira stores can
+      revisit the default at T011/T014 without an API change.
   - id: M004
     area: scope
     description: "Value-log (WiscKey) escalation scope if the AD-6 cap binds"

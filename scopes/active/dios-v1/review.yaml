@@ -172,10 +172,8 @@ batch_reviews:
         stalled twice, skipped per peer protocol). Local gates green
         (31/31 bench,mock; clippy pedantic; fmt).
       remote_gate: >-
-        PENDING — ssh-agent lost its identities mid-session; the round-2
-        (shared-core-only) diff is unverified on Linux. Round-1 state ran
-        green on host nix. MUST run `mise run remote -- mise run test`
-        green before the batch-3 commit.
+        CLEARED 2026-07-10 (ssh restored): full Linux suite green on host
+        nix — 8 lib + 24 driver + 1 eager(probe) + 25 pool + 7 scaffold.
     outcome: approved
   - batch: 3
     timestamp: 2026-07-10
@@ -274,9 +272,115 @@ batch_reviews:
         residuals: public close -> T005 deferral stands; end-to-end
         retire-count observation -> T005's close-with-in-flight fault row).
       remote_gate: >-
-        PENDING — same ssh-agent blocker as batch 2; Linux suite (incl. the
-        probe-only linux test and uring-stub compile) unverified for
-        batches 2-3. MUST be green before the batch-4 commit.
+        CLEARED 2026-07-10 (ssh restored): Linux suite green on host nix,
+        incl. the probe-only linux test and the uring-stub compile.
+    outcome: approved
+  - batch: 4
+    timestamp: 2026-07-10
+    commit: pending
+    tasks: [T006]
+    test_review:
+      rounds: 2
+      round_1:
+        reviewers: [claude-opus, claude-sonnet, codex-gpt5.6-sol, gemini-3.5-flash]
+        findings: 8
+        summary: >-
+          Unanimous: backward-shift delete test could pass vacuously without a
+          forced collision chain (fixed via a hash-agnostic home_slot seam +
+          colliding_pages construction). Codex: exhaustive 4x4 transition
+          matrix replaced three per-edge tests; whole-loop should_panic
+          restructured; watermark boundaries made formula-discriminating.
+          Opus: sector-vs-granule alignment over-pin relaxed; dead >=758
+          assertion dropped. Sonnet: occupancy tautology repurposed to
+          negative-probe termination; CLOCK check-then-set renamed to its
+          return contract with store-elision deferred to T009 (recorded in
+          T009's task content). Rejected: compaction-as-reader at the builder
+          (caller-side semantics); gemini's eviction-determinism-tautology and
+          register_reader claims (opus/sonnet cleared both explicitly).
+      round_2:
+        reviewers: [claude-opus, codex-gpt5.6-sol, gemini-3.5-flash]
+        findings: 0
+        outcome: clean (24 tests)
+    reviewers:
+      - id: general-claude-opus
+        status: success
+        gates: { correctness: pass, security: pass, performance: pass }
+      - id: general-codex-gpt5.6-sol
+        status: success
+        gates: { correctness: fail, security: pass, performance: fail }
+      - id: general-gemini-3.5-flash
+        status: success
+        gates: { correctness: pass, security: pass, performance: pass }
+      - id: architecture-claude-opus
+        status: success
+        gates: { architecture: pass }
+      - id: architecture-codex-gpt5.6-sol
+        status: success
+        gates: { architecture: fail }
+      - id: architecture-gemini-3.5-flash
+        status: success
+        gates: { architecture: pass-with-caveats }
+      - id: compliance-claude-sonnet
+        status: success
+        gates: { style: fail }
+      - id: compliance-codex-gpt5.6-sol
+        status: success
+        gates: { style: fail }
+      - id: compliance-gemini-3.5-flash
+        status: success
+        gates: { style: pass-with-recommendations }
+    synthesized:
+      gates:
+        correctness: pass
+        security: pass
+        performance: pass
+        architecture: pass-with-deferred-seams
+        style: fail-then-fixed
+      critical_issues: 0
+      high_issues: 8
+      medium_issues: 8
+    verified_by_reviewers: >-
+      opus-general hand-verified the backward-shift modular home-distance
+      arithmetic under wrap-around, CLOCK termination under all-referenced
+      (0..=count bound), the u64-widened watermark arithmetic, aligned-alloc
+      overflow/dealloc symmetry, and the WriteArena relocation's byte-identical
+      lease discipline.
+    adjudications:
+      - "codex CRITICAL async-write write_buf: unreachable via any public API (no public submit_write on Driver; eager Write arm debug_asserts; blocking path carries the real buffer) — the already-recorded latent seam, REASSIGNED from T006 to T008 where the consumer lands (threading it now would be untested code)"
+      - "codex dependency-cycle claim on driver->pool::write_arena: REJECTED — opus's DAG analysis shows write_arena is a dependency-free leaf; no cycle exists or is created by T008's pool->driver edge"
+      - "internal types at crate root: frozen tests import them; mitigated with #[doc(hidden)] instead of removal"
+      - "GRANULE_DEFAULT derivation critique (value sizes vs encoded block sizes) ACCEPTED as a doc-honesty fix: 4096 stands on value evidence + sira's ~4KiB writer block target; T011/T014 re-validate on real encoded segments"
+      - "missing bench plan (AGENTS bench-driven rule) ACCEPTED: benches/plans/pool_warm_path.md added; binding gates remain DIO-G1/G2 at T014, bench itself lands with T008"
+    fix_pass:
+      dispatched: true
+      items: >-
+        sector-multiple/pow2 asserts in both pub constructors (unanimous);
+        table.rs assertion density incl. unguarded len decrement; Display+Error
+        on PoolConfigError/RegisterError; single SECTOR const; watermark u32
+        edges (checked_mul, typed errors for degenerate configs); pow2-rounding
+        overflow guard; submit_write alignment symmetry with the read path;
+        WriteSlot SAFETY completeness; probe-readiness doc temper; doc(hidden)
+        internals; GRANULE_DEFAULT doc strengthening; pool_warm_path bench
+        plan; naming (hash locals, SECTOR); plus one tester-added wrap-around
+        backward-shift test.
+      task_reassignments:
+        - "T008: PageTable cell -> atomically-loadable packed representation; arena unification is an ownership redesign (fill seam + sharing model); Pool composes over Driver (&self + AD-4 lock); OpContext.write_buf threading"
+        - "T007: ReaderCtx Drop releases its registration slot (+ re-register test); CAS cap instead of fetch_add-rollback"
+      verification: >-
+        round 1: opus verified (asserts traced against legal wrapped chains,
+        submit_write assert Direct-only + pre-consumption, doc(hidden)
+        imports intact, watermark floor judged sound), gemini verified,
+        codex found 4 residuals (REAL: the new insert assert misfired on
+        full-table in-place update — fixed by moving it onto the insertion
+        arm, with a tester extension pinning full-occupancy update; bench
+        plan baseline made a pinned interleaved A/B arm; DIO-G2 description
+        corrected; T006/T008 ownership contradiction resolved in
+        tasks.yaml). Round 2 fixes verified green (75 tests, clippy, fmt,
+        YAML parse).
+      remote_gate: >-
+        CLEARED 2026-07-10: full Linux suite green on host nix for the
+        batches 2-4 tree (65 tests incl. uring cfg paths and the pool
+        suite).
     outcome: approved
 issues:
   critical: []

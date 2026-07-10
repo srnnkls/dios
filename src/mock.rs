@@ -15,9 +15,10 @@ use std::time::Duration;
 use crate::completion::CompletionBatch;
 use crate::driver::{
     Attempt, CompletionSlab, DriverCore, Executor, FileHandle, FileId, OpContext, OpKind, OpToken,
-    OpenHow, ReadFrameIdx, Shared, SyncMode, WriteArena, WriteSlot,
+    OpenHow, ReadFrameIdx, Shared, SyncMode,
 };
 use crate::error::{IoError, SubmitError};
+use crate::pool::write_arena::{WriteArena, WriteSlot};
 
 /// A fault the mock injects into the next resolved op, mimicking a syscall
 /// return the real backends handle.

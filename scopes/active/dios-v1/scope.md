@@ -700,6 +700,8 @@ repository against `dios` as a dependency.
 
 ## Open Questions
 
-- [ ] GRANULE default value — fixed during T006 by block-size
-  distribution measurement (the hard-bound and padding rules are already
-  decided, AD-5; only the number is open).
+- [x] GRANULE default value — RESOLVED in T006: 4096 (sector floor), from
+  the recorded S003 gestalt-store measurement (max value 758 B over
+  36,423 rows; padding fragmentation negligible). Derivation in
+  `GRANULE_DEFAULT`'s rustdoc; per-store override stays a construction
+  parameter (marker M001).

@@ -13,14 +13,15 @@
 
 use std::collections::VecDeque;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::alignment::Alignment;
 use crate::backend;
 use crate::completion::{Completion, CompletionBatch};
 use crate::error::{IoError, SubmitError};
+use crate::pool::write_arena::{WriteLease, WriteSlot};
 
 pub(crate) const MAX_FILES: u32 = 64;
 const EINTR: i32 = 4;
@@ -413,111 +414,6 @@ impl FileHandle {
     }
 }
 
-/// Granule-aligned write staging (the `O_DIRECT` data plane), separate from the
-/// read pool. Slots are leased by [`WriteArena::alloc`] and freed on drop or at
-/// the completion drain of the write that consumed them (INV-11). The aligned
-/// buffer backing is T006's task; this holds only the slot bookkeeping.
-#[derive(Debug)]
-pub struct WriteArena {
-    state: Arc<ArenaState>,
-}
-
-#[derive(Debug)]
-struct ArenaState {
-    free: Box<[AtomicBool]>,
-}
-
-impl WriteArena {
-    pub(crate) fn new(slot_count: u32) -> Self {
-        let mut free = Vec::with_capacity(slot_count as usize);
-        for _ in 0..slot_count {
-            free.push(AtomicBool::new(true));
-        }
-        Self {
-            state: Arc::new(ArenaState {
-                free: free.into_boxed_slice(),
-            }),
-        }
-    }
-
-    /// Leases a free staging slot, or `None` when every slot is in use. The
-    /// lease borrows the arena; no refcount is taken until the slot is consumed
-    /// by a submit.
-    #[must_use]
-    pub fn alloc(&self) -> Option<WriteSlot<'_>> {
-        for (index, cell) in self.state.free.iter().enumerate() {
-            let was_free = cell.swap(false, Ordering::AcqRel);
-            if was_free {
-                let slot = u32::try_from(index).ok()?;
-                return Some(WriteSlot {
-                    arena: &self.state,
-                    slot,
-                    consumed: false,
-                });
-            }
-        }
-        None
-    }
-}
-
-/// A leased write-staging slot, borrowed from its [`WriteArena`]. Dropped
-/// unsubmitted, it frees at once; consumed by `submit_write`, it frees only when
-/// the write's completion drains.
-#[derive(Debug)]
-pub struct WriteSlot<'arena> {
-    arena: &'arena Arc<ArenaState>,
-    slot: u32,
-    consumed: bool,
-}
-
-impl WriteSlot<'_> {
-    pub(crate) fn into_lease(mut self) -> WriteLease {
-        self.consumed = true;
-        WriteLease {
-            state: Arc::clone(self.arena),
-            slot: self.slot,
-            released: false,
-        }
-    }
-}
-
-impl Drop for WriteSlot<'_> {
-    fn drop(&mut self) {
-        if !self.consumed {
-            self.arena.free[self.slot as usize].store(true, Ordering::Release);
-        }
-    }
-}
-
-/// Ownership of a leased slot moved into an in-flight write. The slot is freed
-/// exactly once — at completion drain via [`WriteLease::release`], or as a
-/// teardown net through `Drop` if the write is never drained.
-#[derive(Debug)]
-pub(crate) struct WriteLease {
-    state: Arc<ArenaState>,
-    slot: u32,
-    released: bool,
-}
-
-impl WriteLease {
-    pub(crate) fn release(mut self) {
-        self.free_once();
-    }
-
-    fn free_once(&mut self) {
-        if !self.released {
-            self.state.free[self.slot as usize].store(true, Ordering::Release);
-            self.released = true;
-        }
-    }
-}
-
-impl Drop for WriteLease {
-    fn drop(&mut self) {
-        self.free_once();
-    }
-}
-
 /// Fixed-capacity op slab shared by every backend: slots acquired at submit
 /// (minting an [`OpToken`] = slot + generation), reclaimed at completion drain.
 /// Generation bumps on each fill, so a reused slot never aliases a stale token
@@ -785,6 +681,13 @@ impl<E: Executor> DriverCore<E> {
         buf: WriteSlot<'arena>,
         offset: u64,
     ) -> Result<OpToken, (SubmitError, WriteSlot<'arena>)> {
+        if let IoMode::Direct(alignment) = fd.io_mode() {
+            assert!(
+                alignment.check(offset).is_ok(),
+                "offset {offset} is not aligned to {} bytes",
+                alignment.get()
+            );
+        }
         let mut shared = self.lock();
         match self.admit(&mut shared, fd.file_id()) {
             Ok(slot) => {

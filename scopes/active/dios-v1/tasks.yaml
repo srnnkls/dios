@@ -33,25 +33,25 @@ tasks:
     files: [tests/zero_alloc.rs, tests/faults.rs]
     depends_on: [T003, T004]
   - id: T006
-    content: Frame pool — preallocated aligned frames, open-addressed PageTable (fixed capacity 2× frames rounded to a power of two; advisory lock-free probes with authoritative re-probe under the AD-4 lock, backward-shift delete, no tombstones), CLOCK eviction (check-then-set reference bit on hit; per-ReaderCtx hit/eviction counters aggregated at poll — no shared RMW on the warm path), frame state machine, WriteArena staging buffers; watermark from static max merge fan-out (ln_runs + levels, compaction counted as a reader) + open-fail below watermark (INV-9); fix GRANULE default from block-size distribution measurement with max value size as input (AD-6, incl. padding-fragmentation cost). OpContext.write_buf is empty on the async poll path, so T006 threads the WriteLease bytes through prepare/execute when wiring the data plane, and frame-arena ownership relocates from the eager backend to the pool's registered arena.
-    status: pending
+    content: Frame pool — preallocated aligned frames, open-addressed PageTable (fixed capacity 2× frames rounded to a power of two; advisory lock-free probes with authoritative re-probe under the AD-4 lock, backward-shift delete, no tombstones), CLOCK eviction (check-then-set reference bit on hit; per-ReaderCtx hit/eviction counters aggregated at poll — no shared RMW on the warm path), frame state machine, WriteArena staging buffers; watermark from static max merge fan-out (ln_runs + levels, compaction counted as a reader) + open-fail below watermark (INV-9); fix GRANULE default from block-size distribution measurement with max value size as input (AD-6, incl. padding-fragmentation cost). OpContext.write_buf is empty on the async poll path (write_buf threading and arena relocation reassigned to T008 — see T008).
+    status: done
     phase: pool
     files: [src/pool/frames.rs, src/pool/table.rs, src/pool/write_arena.rs]
     depends_on: [T003, T016]
   - id: T007
-    content: Epoch pin guards per design.md EBR spec — FrameGuard, ReaderCtx<'pool> (!Send + !Sync, per-thread epoch slot), registration slots capped at max_concurrent_readers with TLS-destructor deregistration, publish-before-validate guard create, poll-boundary epoch advance, two-advance reclamation, compile-fail tests (guard borrow escape; ReaderCtx cross-thread/outlives-pool)
+    content: Epoch pin guards per design.md EBR spec — FrameGuard, ReaderCtx<'pool> (!Send + !Sync, per-thread epoch slot), registration slots capped at max_concurrent_readers with TLS-destructor deregistration, publish-before-validate guard create, poll-boundary epoch advance, two-advance reclamation, compile-fail tests (guard borrow escape; ReaderCtx cross-thread/outlives-pool). ReaderCtx gains a Drop that releases its registration slot (current cap counter never decrements; add a register->drop->re-register test) and consider CAS instead of fetch_add-rollback for the cap
     status: pending
     phase: pool
     files: [src/pool/epoch.rs, tests/guard_compile_fail.rs]
     depends_on: [T006]
   - id: T008
-    content: Miss path — Pending tokens (drop = waiter-interest only), singleflight per PageId with IO-error fanout (ReadyResult::Err to all waiters, frame freed), Busy beyond watermark, overlap bench (64 concurrent cold gets <= 2.0x p50 single-miss); pool stays CRC-agnostic (raw granules)
+    content: Miss path — Pending tokens (drop = waiter-interest only), singleflight per PageId with IO-error fanout (ReadyResult::Err to all waiters, frame freed), Busy beyond watermark, overlap bench (64 concurrent cold gets <= 2.0x p50 single-miss); pool stays CRC-agnostic (raw granules). PageTable's Option-tuple cell becomes an atomically-loadable packed cell (advisory probes would otherwise be a data race); arena unification is an ownership REDESIGN (Frames needs a state-gated mutable fill seam + a pool<->backend sharing model) not a file move; Pool composes over the Driver with &self entry points + the AD-4 control-plane lock; OpContext.write_buf threads the WriteLease bytes here (reassigned from T006 — no test consumer existed)
     status: pending
     phase: pool
     files: [src/pool/miss.rs, benches/overlap.rs]
     depends_on: [T007, T004]
   - id: T009
-    content: Pool concurrency proofs — loom frame-state + EBR grace-period tests, zero-alloc gates on get/submit/poll, backpressure test (watermark-sized pool, all spare frames pinned)
+    content: Pool concurrency proofs — loom frame-state + EBR grace-period tests, zero-alloc gates on get/submit/poll, backpressure test (watermark-sized pool, all spare frames pinned). Also owns the CLOCK store-elision proof deferred from T006's test gate — a repeat hit on an already-set reference bit performs NO store (the DIO-G1 hot-path invariant); T006's unit test pins only the return-value contract, which an always-store impl satisfies
     status: pending
     phase: pool
     files: [tests/loom_pool.rs, tests/zero_alloc.rs]
@@ -102,7 +102,7 @@ tasks:
 meta:
   created: 2026-07-07
   last_updated: 2026-07-10
-  progress: 4/16
+  progress: 5/16
   blocked_by: [sira-read-perf, sira-read-concurrency]
 
 phases:
