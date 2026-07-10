@@ -29,9 +29,17 @@ eligible for THP without an madvise; on `madvise` it is not, and the pool arm
 sees no hugepage benefit. macOS numbers are advisory (no THP knob; the darwin VM
 manages superpages opaquely) and stand only as the portable trend datapoint.
 
-The follow-on — an explicit `madvise(MADV_HUGEPAGE)` on the arena to force
-hugepage backing under the `madvise` THP policy — is a SEPARATE owner decision,
-not this bench. This bench only measures what the default policy already gives.
+The follow-on landed: the arena (`src/pool/frames.rs`) is now allocated 2 MiB-aligned
+on Linux when it is at least a hugepage large and is `madvise(MADV_HUGEPAGE)`'d before
+first touch, so the pool arm's anonymous arena is hugepage-eligible even under the
+`madvise` THP policy (the mmap arm remains backed by 4 KiB file-cache pages). This
+change's pass/fail gate is the nix `mmap_tlb_pressure` ratio improving from the
+recorded 1.378 baseline (ci95 1.391) with the pinned regression benches
+(`mmap_warm_path`, `ring_read_bracket`, the zero-alloc suite) staying green. The
+`madvise` return is ignored by design — a `THP=never` kernel returns `EINVAL` and the
+pool runs correctly on 4 KiB pages — so any Linux run must still record
+`/sys/kernel/mm/transparent_hugepage/enabled` next to the ratio for the number to be
+interpretable.
 
 **Capacity:** the pool builder must compose at 65,536 frames (watermark and
 config arithmetic stay within their `u32` bounds — the arena span 65,536 × 4096 =

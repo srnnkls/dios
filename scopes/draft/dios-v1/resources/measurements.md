@@ -171,7 +171,7 @@ Three qualifiers give the number its real weight:
 |-----|---------------|------------|-----------|------------------|
 | `nix` | 1.378 | 1.391 | madvise (arena not madvise'd → 4 KiB both arms) | 1.909 → 1.378 |
 | `mac` | 1.922 | 2.030 | no knob (16 KiB pages, opaque superpages) | 1.582 → 1.922 |
-| `vm` | 0.260 | 0.267 | madvise | 1.480 → 0.260 — the pool WINS 3.8× |
+| `vm` | 0.260 / 1.132 / 1.755 (three runs) | — | madvise | RETRACTED — see below |
 
 Three regimes, one mechanism. On bare metal (`nix`) both arms sit on
 4 KiB pages, so TLB misses inflate both arms equally in absolute
@@ -184,19 +184,43 @@ its own arena is also 4 KiB-paged — that is precisely what
 per 2 MiB versus mmap's per-4 KiB; the host runs THP=madvise, so
 nothing gets hugepages without asking). On macOS the ratio stays
 flat — 16 KiB base pages quarter the TLB pressure and the OS offers
-no THP control, so the advisory arm shows nothing either way. In
-the container the pool wins outright: a guest TLB miss on a
-file-backed overlayfs mapping pays a two-dimensional page walk
-(guest plus host tables), so mmap's hardware residency check becomes
-the most expensive thing in the loop while the pool's software cost
-is unchanged — an advisory environment, but it is the regime any
-containerized/virtualized deployment actually runs in.
+no THP control, so the advisory arm shows nothing either way. RETRACTION: the container's first run read 0.260 (initially reported
+as "the pool wins 3.8× under virtualization"); two repeats read 1.132
+and 1.755. A 7× spread across identical runs means the container
+cannot measure this workload — the 0.260 headline is withdrawn as
+environment noise, and the two-dimensional-page-walk story, while
+mechanically plausible, is unproven here. The container remains a
+functional gate only.
 
-OPEN FOLLOW-ON (owner decision): `madvise(MADV_HUGEPAGE)` on the
-frame arena at allocation — a small Linux-only change in the arena
-alloc path — to test whether bare-metal `nix` crosses 1.0. The
-measured trend says the remaining +38% is mostly page-walk cost the
-hugepage mapping would remove.
+#### Hugepage-arena follow-on: tried, kernel declined (owner decision executed)
+
+The arena is now 2 MiB-aligned when >= 2 MiB and `madvise(MADV_HUGEPAGE)`'d
+at allocation on Linux (src/pool/frames.rs; a Linux-gated pinning test
+holds the alignment). The change is correct and accepted — `madvise`
+returns 0 under the host's `madvise` THP policy — but the decisive
+re-run was FLAT: `nix` 1.378 → 1.392 with overlapping CIs. The
+diagnosis is conclusive: an in-process probe (identical
+alloc/advise/touch sequence) shows AnonHugePages delta = 0 across a
+fully-touched 256 MiB madvise'd arena, and /proc/vmstat's
+thp_fault_alloc AND thp_fault_fallback both sit at 0 SINCE BOOT —
+this kernel (NixOS 6.6.64, CONFIG_TRANSPARENT_HUGEPAGE=y, policy
+madvise) never attempts fault-time hugepage allocation at all.
+khugepaged runs at a 10-second scan cadence (5 pages collapsed since
+boot), far too slow for a bench, though a long-lived sira process
+could eventually be collapsed onto hugepages.
+
+Status of the hypothesis: UNCONFIRMED, not falsified — the mechanism
+was never granted hugepages to prove or disprove. The change is KEPT:
+it is the zero-cost necessary substrate (nothing gets hugepages under
+madvise policy without it), every gate stays green with it in, and
+the falsifiable re-test is recorded — on any kernel where
+thp_fault_alloc moves (or in a long-lived process once khugepaged
+collapses the arena, verifiable as AnonHugePages growth), re-run
+`mmap_tlb_pressure` against the 1.39 baseline. What IS confirmed on
+bare metal: at a 256 MiB working set the pool's software overhead
+compresses to +38%, and the remaining gap on this box is dominated by
+data-side L3/DRAM misses paid equally by both arms — not by page
+walks, whose tables sit comfortably in the 3970X's 128 MB L3.
 
 ### ring_read_bracket — driver-level ring read vs blocking pread, QD1 O_DIRECT (gate ≤ 1.25)
 

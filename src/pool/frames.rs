@@ -2,6 +2,8 @@
 //! residency state machine (INV-1). All capacity is fixed at construction; a
 //! frame base never moves for the arena's lifetime.
 
+#[cfg(target_os = "linux")]
+use core::ffi::{c_int, c_void};
 use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use std::ptr::NonNull;
 
@@ -10,6 +12,19 @@ use crate::pool::SECTOR_BYTES;
 use crate::sync::{AtomicU8, Ordering};
 
 const SECTOR: usize = SECTOR_BYTES as usize;
+
+const HUGEPAGE_BYTES: usize = 2 * 1024 * 1024;
+
+// madvise(2) declared to match glibc's C ABI on the linux build targets; the
+// signature follows the man page. MADV_HUGEPAGE is arch-uniform in the linux uapi
+// (asm-generic/mman-common.h): 14.
+#[cfg(target_os = "linux")]
+unsafe extern "C" {
+    fn madvise(addr: *mut c_void, len: usize, advice: c_int) -> c_int;
+}
+
+#[cfg(target_os = "linux")]
+const MADV_HUGEPAGE: c_int = 14;
 
 /// Residency of one frame. [`FrameState::advance`] admits the residency cycle
 /// `Free → InFlight → Resident → Evicting → Free` (INV-1) plus the miss-abort edge
@@ -112,12 +127,14 @@ impl Frames {
         let span = (count as usize)
             .checked_mul(granule as usize)
             .expect("frame arena span within isize::MAX");
-        let layout = Layout::from_size_align(span, SECTOR).expect("valid frame arena layout");
+        let layout = Layout::from_size_align(span, arena_alignment(span, granule))
+            .expect("valid frame arena layout");
         // SAFETY: `layout` has a non-zero size (count, granule both positive); a
         // null return is routed to `handle_alloc_error`, so `base` is a live,
         // sector-aligned, zeroed allocation of `span` bytes.
         let ptr = unsafe { alloc_zeroed(layout) };
         let base = NonNull::new(ptr).unwrap_or_else(|| handle_alloc_error(layout));
+        advise_hugepage(base, span);
         Self {
             base,
             layout,
@@ -253,5 +270,56 @@ impl Drop for Frames {
         // SAFETY: `base`/`layout` are exactly the pair returned by `alloc_zeroed`
         // in `preallocated`, freed once here at end of life.
         unsafe { dealloc(self.base.as_ptr(), self.layout) }
+    }
+}
+
+/// Transparent hugepages install only at a 2 MiB-aligned virtual address, so a
+/// Linux arena at least a hugepage large is 2 MiB-aligned (or granule-aligned if
+/// that is larger); a sector-aligned start would strand the head and tail.
+fn arena_alignment(span: usize, granule: u32) -> usize {
+    if cfg!(target_os = "linux") && span >= HUGEPAGE_BYTES {
+        HUGEPAGE_BYTES.max(granule as usize)
+    } else {
+        SECTOR
+    }
+}
+
+/// Must run before the arena's pages are first touched: fault-time THP (defrag
+/// `madvise`) backs only untouched ranges, so the hint has to precede the warmup
+/// fill.
+fn advise_hugepage(base: NonNull<u8>, len: usize) {
+    #[cfg(target_os = "linux")]
+    {
+        if len >= HUGEPAGE_BYTES {
+            // SAFETY: `base`/`len` name the live allocation just returned by
+            // `alloc_zeroed` and owned solely here; `madvise` only sets a VMA hint
+            // and reads or writes no user bytes. The result is ignored on purpose:
+            // the hint is best-effort — a `THP=never` kernel returns `EINVAL` and
+            // the arena runs correctly on 4 KiB pages, so a rejected hint must
+            // never fail construction.
+            let _ = unsafe { madvise(base.as_ptr().cast(), len, MADV_HUGEPAGE) };
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (base, len);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hugepage_sized_arena_starts_2mib_aligned() {
+        let frame_count =
+            u32::try_from(HUGEPAGE_BYTES / SECTOR).expect("hugepage frame count fits u32");
+        let frames = Frames::preallocated(frame_count, SECTOR_BYTES);
+        let base = frames.frame_bytes(ReadFrameIdx::new(0)).as_ptr().addr();
+        assert_eq!(
+            base % HUGEPAGE_BYTES,
+            0,
+            "a >= 2 MiB arena is 2 MiB-aligned so THP can back it from byte zero"
+        );
     }
 }
