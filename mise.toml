@@ -8,19 +8,19 @@ actionlint = "1.7.12"
 run = "cargo build"
 
 [tasks.test]
-run = "cargo test --features bench"
+run = "cargo test --features bench,mock"
 
 [tasks.fmt]
 run = "cargo fmt"
 
 [tasks.lint]
 description = "clippy (pedantic, warnings as errors) + rustfmt check"
-run = ["cargo clippy --all-targets --features bench -- -D warnings", "cargo fmt --check"]
+run = ["cargo clippy --all-targets --features bench,mock -- -D warnings", "cargo fmt --check"]
 
 [tasks.doc]
 description = "rustdoc with warnings as errors"
 env = { RUSTDOCFLAGS = "-D warnings" }
-run = "cargo doc --no-deps --features bench"
+run = "cargo doc --no-deps --features bench,mock"
 
 [tasks.check]
 depends = ["lint", "test", "doc"]

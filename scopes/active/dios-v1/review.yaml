@@ -77,6 +77,106 @@ batch_reviews:
         linux_selects_the_uring_backend (uring cfg path compiles + selects);
         cosmetic residue (submit_err test fn name) renamed post-verification
     outcome: approved
+  - batch: 2
+    timestamp: 2026-07-10
+    commit: pending
+    tasks: [T002]
+    test_review:
+      rounds: 3
+      round_1:
+        reviewers: [claude-opus, claude-sonnet, codex-gpt5.6-sol, gemini-3.5-flash]
+        findings: 9
+        summary: >-
+          Orchestrator RED-verification pass preceded the gate (all 472 lines
+          read; lease/permutation/retry-bound assertions traced). Gate round 1:
+          unbounded completion loop, stale-handle test not pinning generational
+          rejection, EINTR/EAGAIN retry tests unable to distinguish a dropped
+          injection (fixed via sequence discrimination), errno-unspecific
+          is_err asserts, missing fsync/blocking-wrapper EINTR coverage,
+          loose poll_wait bounds.
+      round_2:
+        reviewers: [claude-opus, codex-gpt5.6-sol, gemini-3.5-flash]
+        findings: 4
+        summary: >-
+          Bare poll() lacked an elapsed bound; parked-poller test raced;
+          seed determinism did not pin seed-sensitivity; FileId
+          slot()/generation() accessors replaced by the opaque aliases_slot
+          predicate (opus advisory + codex).
+      round_3:
+        reviewers: [claude-opus, codex-gpt5.6-sol, gemini-3.5-flash]
+        findings: 0
+        outcome: clean (24 tests)
+    reviewers:
+      - id: general-claude-opus
+        status: success
+        gates: { correctness: pass, security: pass, performance: pass }
+      - id: general-codex-gpt5.6-sol
+        status: success
+        gates: { correctness: fail, security: pass, performance: fail }
+      - id: general-gemini-3.5-flash
+        status: success
+        gates: { correctness: pass, security: pass, performance: pass }
+      - id: architecture-claude-opus
+        status: success
+        gates: { architecture: fail }
+      - id: architecture-codex-gpt5.6-sol
+        status: success
+        gates: { architecture: fail }
+      - id: architecture-gemini-3.5-flash
+        status: success
+        gates: { architecture: fail }
+      - id: compliance-claude-sonnet
+        status: success
+        gates: { style: fail }
+      - id: compliance-codex-gpt5.6-sol
+        status: stalled-skipped
+        gates: {}
+      - id: compliance-gemini-3.5-flash
+        status: success
+        gates: { style: fail }
+    synthesized:
+      gates:
+        correctness: fail-then-fixed
+        security: pass
+        performance: fail-then-fixed
+        architecture: fail-then-fixed
+        style: fail-then-fixed
+      critical_issues: 1
+      high_issues: 7
+      medium_issues: 9
+    fix_pass:
+      dispatched: true
+      resolved:
+        - "CRIT write_all_blocking truncation-as-success (codex general) -> loops the remainder, oversize asserts, zero-progress bounded"
+        - "HIGH INV-11 core trapped in mock (opus+codex+gemini architecture) -> FileTable/leases/retry/admission/finalization hoisted into DriverCore<E: Executor>; MockDriver = newtype over DriverCore<MockExecutor>; Driver = newtype over DriverCore<backend::Impl>; AD-4 prepare/execute/publish phases structural"
+        - "HIGH blocking wrappers debug_assert-only liveness (codex general) -> EBADF-class error value in release"
+        - "HIGH frame index unbounded + tautological assert (codex general, sonnet compliance) -> asserted against configured frame count"
+        - "HIGH double-close idempotent (codex general) -> asserts per scope close semantics (EBADF = driver state bug)"
+        - "HIGH generation wrap ABA at 2^32 (codex general) -> exhaustion asserts replace wrapping_add"
+        - "HIGH quadratic partial drains (codex general) -> ready VecDeque, O(taken) polls, seeded determinism preserved"
+        - "MED mock feature-gated default-off (opus+codex architecture) -> required-features on driver test; mise tasks pass bench,mock"
+        - "MED WriteSlot<'arena> arena-borrowed per contract (opus architecture); buffer backing deferred to T006 (tasked there)"
+        - "MED WriteLease Drop free-exactly-once (opus general)"
+        - "MED is_read bool -> OpKind (sonnet compliance); admission dedup, dead Option<WriteLease> param removed (sonnet)"
+        - "MED FileTable assertion pairing + poll capacity assert (sonnet compliance, opus general)"
+      deviations:
+        - "CompletionBatch keeps usize capacity API — frozen tests/driver.rs calls with usize; revisit when tests unfreeze"
+        - "mock fault-resolution executes under the lock (shared injected state); structural execute seam exists for T003/T004; INV-3 park-outside-lock tested"
+      verification: >-
+        round 1: opus verified, gemini verified, codex issues_remain (4 real:
+        execute seam unusable unlocked + reclaim-before-execute, FileHandle
+        unbound to its DriverCore, over-report guard debug-only, partial
+        assertion pairing). Round 2 fixed all four (three-phase poll with
+        publish-only reclaim, AtomicU64 driver id + assert_own at every
+        entry point, hard asserts); re-verified by opus + gemini (codex
+        stalled twice, skipped per peer protocol). Local gates green
+        (31/31 bench,mock; clippy pedantic; fmt).
+      remote_gate: >-
+        PENDING — ssh-agent lost its identities mid-session; the round-2
+        (shared-core-only) diff is unverified on Linux. Round-1 state ran
+        green on host nix. MUST run `mise run remote -- mise run test`
+        green before the batch-3 commit.
+    outcome: approved
 issues:
   critical: []
   high: []

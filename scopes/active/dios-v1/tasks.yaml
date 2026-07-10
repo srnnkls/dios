@@ -10,7 +10,7 @@ tasks:
     depends_on: []
   - id: T002
     content: Driver surface — op kinds, CompletionSlab, submit/poll contract (SubmitErr::Full backpressure; submit never waits on kernel/queue; poll_wait kernel wait outside the AD-4 mutex), resource-lease contract (INV-11 — generational FileHandle with by-value close deferred past drain, OpToken issued by submit never caller-chosen, submit_write consumes WriteSlot freed at completion drain), blocking metadata wrappers (write_all_blocking/fsync_blocking), EAGAIN/EINTR/short-read semantics; mock backend with seeded deterministic completion REORDERING (DST seam — crash/ordering tests run adversarial schedules on any platform)
-    status: pending
+    status: done
     phase: crate-core
     files: [src/driver.rs, src/completion.rs]
     depends_on: [T001]
@@ -102,7 +102,7 @@ tasks:
 meta:
   created: 2026-07-07
   last_updated: 2026-07-10
-  progress: 1/16
+  progress: 2/16
   blocked_by: [sira-read-perf, sira-read-concurrency]
 
 phases:

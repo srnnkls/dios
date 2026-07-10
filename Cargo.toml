@@ -9,9 +9,14 @@ publish = false
 
 [features]
 bench = []
+mock = []
 
 [dev-dependencies]
 criterion = "0.8"
+
+[[test]]
+name = "driver"
+required-features = ["mock"]
 
 [[bench]]
 name = "smoke"
