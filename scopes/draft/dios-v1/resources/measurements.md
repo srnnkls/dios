@@ -127,6 +127,49 @@ pure-access overhead is the parity headroom DIO-G1's CRC+decode
 amortization has to absorb; at a ~70 ns scan the absolute overhead is
 tens of nanoseconds per hit.
 
+#### Why the pool cannot beat mmap on a warm hit — and why it does not need to
+
+On a resident page, mmap's entire residency answer (is it here, where
+is it, may I touch it) is the MMU's page-table walk, cached in the
+TLB: it executes in silicon, in parallel with the load, at effectively
+zero instruction cost. The pool answers the same question in software
+— a seqlock probe (two atomic loads plus a fence-ordered field read),
+the epoch publish with its first-pin `SeqCst` fence (a store-buffer
+drain, roughly 20–40 cycles on x86; the price of the memory-safety
+protocol the T009 loom proofs validated), one residency-validation
+load, and the CLOCK check-then-set. Roughly 15–30 ns of unavoidable
+software per fenced hit on top of a ~33 ns scan is exactly the
+measured 1.9×. No userspace residency layer beats a TLB hit at its own
+game; the gate is a sanity bound, not a superiority claim.
+
+Three qualifiers give the number its real weight:
+
+- The bench overstates the production gap by construction: it drops
+  the guard every iteration, so every hit pays the fenced first-pin
+  publish. sira's cursors hold a guard across a block scan, and nested
+  or repeat pins skip both the publish and the fence — the amortized
+  per-hit overhead in the real access pattern is mostly the seqlock
+  probe alone. The binding DIO-G1 gate then sits at the block-fetch
+  layer, where per-block CRC+decode (microseconds) ride on both arms —
+  which is why 1.02 parity is the target there.
+- The design trades nanoseconds on hits for an order of magnitude on
+  misses. mmap's miss is a page fault: a trap that blocks the thread,
+  cannot batch or overlap, is invisible to any scheduler, and reports
+  errors as SIGBUS. The pool's miss is a submitted op. The fio bracket
+  above quantifies the difference: 15.9k IOPS at QD1 versus 269k at
+  QD64 — 17× device throughput unlocked purely by overlap a page
+  fault can never express — plus explicit eviction (no kernel-reclaim
+  TLB shootdowns under memory pressure) and errors as values.
+- OPEN HYPOTHESIS (unmeasured): under TLB pressure the pool could win
+  outright. This bench's 64-page working set is mmap's best case; at
+  a large working set, file-backed 4 KiB mmap burns one TLB entry per
+  page while the pool's frames are one contiguous allocation that
+  could be hugepage-backed (one entry per 2 MiB). A `mmap_warm_path`
+  variant with a working set in the hundreds of MiB would test it;
+  hugepage-backing the frame arena is a small, self-contained change
+  if the numbers justify it. Running that variant — and any arena
+  change it motivates — is an owner decision, not scheduled work.
+
 ### ring_read_bracket — driver-level ring read vs blocking pread, QD1 O_DIRECT (gate ≤ 1.25)
 
 | Env | Ratio geomean | CI95 upper | Gate |
