@@ -2,30 +2,184 @@ checkpoint:
   scope_name: dios-v1
   scope_path: ./scopes/active/dios-v1
   branch: feat/dios-v1
+  worktree: /Users/srnnkls/projects/dios/.worktrees/feat-dios-v1
   timestamp: 2026-07-10
   last_batch: 4
-  last_commit: 56e66d7
+  last_commit: 6ba8ae0
   pending_gate: >-
-    none — ssh restored 2026-07-10; full Linux suite green on host nix
-    for the batches 2-4 tree (65 tests incl. uring cfg paths).
+    none for batches 1-4 — ssh restored 2026-07-10; full Linux suite green
+    on host nix for the committed tree. NOTE the batch-5 RED state below:
+    the untracked T007 test files intentionally break the full workspace
+    build until T007's implementer lands.
+
+  commits:
+    - { batch: 1, sha: 8706fb0, tasks: [T001], note: "scaffold — backend seam, error values, Alignment newtype" }
+    - { batch: 2, sha: 1cef8c3, tasks: [T002], note: "DriverCore<E: Executor> (locked-prepare/unlocked-execute/locked-publish), generational FileTable, INV-11 leases, seeded DST mock, 24 contract tests" }
+    - { batch: 3, sha: 56e66d7, tasks: [T003, T016], note: "eager executor (real syscalls at poll), src/open.rs direct-IO probe (darwin F_NOCACHE / linux statx), Driver public surface, two-phase retire (finish_retire = sole Closed-writer), pool contract types + api_fit_spike" }
+    - { batch: 4, sha: 6ba8ae0, tasks: [T006], note: "frame pool core: Frames/PageTable(backward-shift)/Clock/WriteArena(unified)/Pool builder + INV-9 watermark; GRANULE_DEFAULT=4096 resolves M001; benches/plans/pool_warm_path.md" }
+
   tasks:
     done: [T001, T002, T003, T016, T006]
-    pending: [T004, T007, T005, T008, T009, T015]
+    in_progress: [T004, T007]
+    pending: [T005, T008, T009, T015]
     deferred_external:
       tasks: [T010, T011, T012, T013, T014]
       reason: >-
-        sira-wiring phase executes in ~/projects/sira. RP007 landed 2026-07-10,
-        but feat/sira-read-perf and feat/sira-read-concurrency are independent
-        unmerged branches — T010's baseline tree does not exist yet. Owner
-        decision 2026-07-10: build dios fully first, integrate into sira later.
-  next_batch:
-    number: 5
-    tasks: [T004, T007]
-  deferred_issues:
-    - "non_exhaustive on SubmitError -> T002 owns the variant set"
-    - "Backend enum public probe -> T002 revisits when Driver gains its constructor; must never become runtime routing (AD-1)"
-    - "public Driver::close (scope API contract) -> T005 wires it with its close/quiesce fault tests; the core close + retire discipline already exists"
-    - "concurrent close+reopen slot-reuse coverage -> T005 (or the batch-3 fix's DriverCore unit test if it landed); single-threaded suites cannot exercise the retire race"
+        sira-wiring executes in ~/projects/sira. RP007 landed 2026-07-10,
+        but feat/sira-read-perf and feat/sira-read-concurrency are
+        independent unmerged branches — T010's baseline tree does not
+        exist. OWNER DECISION 2026-07-10: build dios fully first,
+        integrate into sira later. Do not start T010 or merge sira
+        branches without the user initiating it.
+
+  batch_5_state:
+    position: >-
+      Phase A COMPLETE for both tasks (tester reports received and
+      recorded below); orchestrator RED-verification of the test files and
+      Phase A.5 (test review gate) NOT yet run. RESUME AT: read the four
+      untracked test files, verify RED quality per operations/execute.md,
+      then dispatch the A.5 gate (opus+sonnet Tasks + one peer fan-out to
+      gpt,gemini) on all four files, then Phase B implementers in
+      parallel (T004 and T007 touch disjoint src files; both touch the
+      spike example — check before parallel Phase B: T007's implementer
+      must keep examples/api_fit_spike.rs compiling when sealing the
+      provisional constructors, T004 does not touch it).
+    untracked_files:
+      - "tests/uring.rs (T004 — crate-level cfg(target_os = linux)-gated; see report)"
+      - "tests/epoch_guards.rs (T007 — compile-RED on 5 missing Pool seams)"
+      - "tests/reader_registration.rs (T007 — runtime-RED: 2 failures on missing ReaderCtx Drop-release)"
+      - "tests/guard_compile_fail.rs (T007 — negative-trait-bound guards, GREEN today as regression pins; 3 compile_fail doctests authored in its header must MOVE to src/pool/epoch.rs docs)"
+    build_caveat: >-
+      `cargo test --features bench,mock` FAILS TO BUILD locally and
+      remotely right now — tests/epoch_guards.rs references five
+      not-yet-existing Pool seams and cargo aborts all targets on any
+      target's compile error. This is the intended RED state. Isolated
+      runs work: `cargo test --test pool` (26), `--test driver` (24,
+      needs --features mock), `--test eager` (11), `--test scaffold` (7),
+      `--test reader_registration` (2 pass / 2 RED). Remote uring RED:
+      `mise run remote -- cargo test --test uring` (6 RED at the stub's
+      unreachable, 2 pass as shared-contract pins).
+    t004_tester_report_summary: >-
+      tests/uring.rs — 8 tests. RED verified ON THE BENCH HOST: 6 fail at
+      src/backend/uring.rs:30 unreachable!(execute path lands in T004);
+      2 pass as regression pins (ENOENT open; misaligned-Direct panic —
+      proving the bench-host test fs is O_DIRECT-capable). Pins: direct
+      read round-trip through the ring, blocking-write+read round-trip,
+      async fsync zero-byte reap, batched N-submit single-poll reap
+      (set-equality, order-tolerant), short-read count, SQ-full
+      backpressure + recovery (queue_capacity=1 as the SQ-depth proxy —
+      no new builder method). COVERAGE BOUNDARY (deliberate): poll_wait
+      EXT_ARG + INV-3 parked-poller and deferred-close/is_closed are NOT
+      pinned — those methods are not yet forwarded onto the public
+      Driver, and referencing them would break the workspace build. T004
+      must forward poll_wait/close/is_closed onto Driver; a FOLLOW-UP
+      test file then pins EXT_ARG-outside-mutex, INV-3, and
+      deferred-close-through-the-ring. The io-uring crate (target-gated,
+      the scope's only allowed new dependency) is the implementer's to
+      add. T004's tasks.yaml content carries the three seam-restructure
+      preconditions (batched SQE-fill/reap not attempt(); register_file
+      retains the File; O_DIRECT applied to the retained fd per probe).
+    t007_tester_report_summary: >-
+      Three files. reader_registration.rs: runtime-RED — ReaderCtx has no
+      Drop releasing its slot (2 failures; cap counter never decrements).
+      epoch_guards.rs: compile-RED on exactly five NEW #[doc(hidden)]
+      Pool seams the tests define as T008's substrate:
+      insert_resident_frame(&self, PageId, u8) -> ReadFrameIdx;
+      pin(&self, &ReaderCtx, PageId) -> Option<FrameGuard>;
+      evict_frame(&self, PageId) -> ReadFrameIdx; poll(&self) -> usize;
+      frame_state(&self, ReadFrameIdx) -> FrameState. EPOCH ARITHMETIC
+      PINNED (from design.md): pin publishes local=global BEFORE
+      validating Resident+mapped; evict tags with current global and
+      REMOVES the table mapping (subsequent pin returns None); poll
+      advances global by 1 iff every registered reader is u64::MAX or
+      ==global; reclaim Evicting->Free when tag+2 <= global — EXACTLY
+      two-advance (1 poll = still Evicting, 2nd = Free). Nested pins on
+      one reader share one published epoch, release on last drop.
+      guard_compile_fail.rs: !Send/!Sync negative-bound guards (GREEN
+      today, regression pins); three compile_fail doctests authored in
+      its header MUST MOVE to src/pool/epoch.rs doc comments (rustdoc
+      only harvests the lib crate) and be re-verified failing for the
+      RIGHT reason post-implementation. The implementer must keep
+      examples/api_fit_spike.rs compiling when sealing the provisional
+      ReaderCtx::new/FrameGuard::new/PendingToken::new shims (the spike
+      still uses them) — migrate the spike or keep gated shims. T007's
+      tasks.yaml content also carries: TLS-destructor deregistration,
+      CAS-over-fetch_add consideration.
+
+  pipeline_after_batch_5:
+    - "batch 6: T005 (needs T004) + T008 (needs T007+T004). T008's tasks.yaml content carries: packed atomically-loadable PageTable cell (advisory probes are a data race on the Option-tuple cell), arena-ownership REDESIGN (Frames needs a state-gated mutable fill seam + pool<->backend sharing model — NOT a file move; eager still owns its private slab), Pool composes over Driver (&self + AD-4 control-plane lock), OpContext.write_buf threads the WriteLease bytes (reassigned from T006). T005's content: fault tests incl. public Driver::close wiring + close/quiesce + concurrent close-reopen coverage + end-to-end retire-count observation."
+    - "batch 7: T009 (needs T007; owns the CLOCK store-elision proof — see its content) + T015 (needs T008; extends the spike to the full pool API + extraction checklist with the Send-able per-WorkItem residency lease note)"
+    - "then: final review per operations/execute.md Step 8 (fetch + rebase onto origin/main first — the branch has NEVER been pushed; origin/main == branch point), Step 9 /scope done prompt. NO auto-PR (no issue ref in the original invocation)."
+
+  process_recipe:
+    pipeline: >-
+      Four mandatory phases per batch (operations/execute.md): Phase A
+      fresh task-tester subagents (orchestrator NEVER authors code or
+      tests) -> orchestrator RED verification (read the files; Rust RED =
+      missing-surface errors only; hunt oracle-invention against
+      scope.md) -> Phase A.5 test review gate -> Phase B task-implementer
+      subagents with frozen tests -> Phase C three-role review ->
+      synthesis with explicit accept/reject adjudications -> fix pass
+      (task-implementer; never touches test files — test changes go to
+      the OWNING tester agent by SendMessage) -> targeted fix
+      verification (opus + peer; repeat until all three verify) ->
+      records -> commit.
+    reviewers: >-
+      review_config: reviewers [opus, sonnet, gpt, gemini], effort high.
+      Claude = Task tool, subagent_type task-reviewer, model opus/sonnet.
+      Externals = ONE `peer -d .reviews/<slug> --reviewers gpt,gemini
+      --effort high "<prompt>"` per role (never shell to codex/gemini
+      directly; read the TSV manifest; >=1 external ok required). A.5
+      round 1: opus+sonnet+peer; re-check rounds: opus+peer. Phase C
+      roles: General=opus (correctness/security/perf), Architecture=opus
+      (gestalt analyze), Compliance=sonnet (AGENTS.md + loqui) — all six
+      dispatched in ONE message.
+    known_flakiness: >-
+      codex stalls often (peer retries once, then skip — proceed on
+      gemini); gemini/pi stalls occasionally, usually recovers on retry.
+      `peer <harness> -o file` single mode does NOT mkdir -p; use fan-out
+      (-d). Reviewer noise patterns seen: sonnet flagged the nmnm/sira
+      consumer names as garbled text (REJECTED — they are the consumer
+      systems); gemini asked for a 512 floor in Alignment (REJECTED —
+      the statx probe owns the floor).
+    commit_hook: >-
+      hk runs `cargo clippy --all-targets --features bench -- -D
+      warnings` + `cargo fmt --check` at commit. Tester files routinely
+      trip pedantic/fmt once the implementation exists — send the OWNING
+      tester a style-only pass before committing (established pattern).
+      `git add -A` is hook-blocked: stage explicit paths.
+    remote_protocol: >-
+      `mise run remote -- <cmd>` syncs the tree to host nix and runs it;
+      remote target/ persists. Run the full remote suite green before
+      every batch commit. T004's GREEN verification is remote-first.
+      ssh failure mode: "The agent has no identities" -> user runs
+      `! ssh-add ~/.ssh/id_ed25519`.
+    records: >-
+      Per batch append to review.yaml (test_review rounds, per-reviewer
+      gates, synthesized, adjudications, fix_pass, verification,
+      remote_gate, outcome), update tasks.yaml statuses + meta.progress,
+      update this checkpoint — all committed WITH the batch
+      ("<type>(<scope>): ... / Tasks: ... / Batch: N/7").
+      checkpoint.last_commit rides one commit behind; branch is unpushed
+      so amend is safe.
+
+  standing_decisions:
+    - "Misalignment on a Direct handle is a PROGRAMMER ERROR: panics with 'is not aligned' wording (owner ruling; scope semantics paragraph beats T003 task-text)"
+    - "GRANULE_DEFAULT = 4096 — M001 RESOLVED (marker + scope.md updated); derivation in src/pool/mod.rs rustdoc; T011/T014 re-validate on real encoded segments"
+    - "SubmitError (not SubmitErr) / alignment module (not align): no-abbreviations rule beats indicative scope signatures; KEEP fd/buf/inflight/granule_idx/ReaderCtx as scope-contract vocabulary"
+    - "Backend enum + Driver::BACKEND: diagnostic-only, never runtime routing (AD-1)"
+    - "Pool contract types are crate-root exports; provisional #[doc(hidden)] constructors SEALED AT T007; Frames/PageTable/Clock/FrameState/ReaderCounters are doc(hidden) re-exports (frozen tests import them)"
+    - "Two-phase retire: a slot reaches Closed ONLY via finish_retire after executor.retire_file completes outside the submit lock (publish AND zero-inflight close paths share one helper)"
+    - "codex's driver->pool::write_arena cycle claim REJECTED (opus DAG analysis: write_arena is a dependency-free leaf)"
+    - "compaction-as-reader is caller-side input semantics, not builder-testable (rejected at the T006 gate)"
+    - "queue_capacity doubles as the ring/SQ-depth proxy (CompletionSlab bounds in-flight per AD-4) — no separate ring-depth builder knob"
+
+  environment:
+    - "peer at ~/.local/bin/peer; reviews under .reviews/ (git-ignored); registry: gpt=codex-gpt5.6-sol, gemini=gemini-3.5-flash (pi/vertex)"
+    - "bench host nix: NixOS kernel 6.6.64, Threadripper 3970X, NVMe 970 PRO; login shell nushell (ad-hoc ssh via `bash -ls` stdin scripts); test-fs is O_DIRECT-capable (proven by the T004 Direct-mode pins)"
+    - "sira repo ~/projects/sira: main lacks both read branches — DO NOT merge without the user"
+    - "MSRV 1.95, edition 2024, cfg_select!; io-uring crate (target-gated) is the ONLY allowed new dependency, added by T004's implementer"
+
   review_config:
     reasoning_effort: high
     reviewers: [opus, sonnet, gpt, gemini]

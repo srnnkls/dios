@@ -22,7 +22,7 @@ tasks:
     depends_on: [T002]
   - id: T004
     content: io_uring backend — registered buffers + READ_FIXED, EXT_ARG poll_wait, SQ-full flush-retry-once, shared ring + submit mutex (AD-4), O_DIRECT probe with buffered fallback (kernel >= 5.15; support + alignment per opened file via statx STATX_DIOALIGN, per Constraints). The Executor/poll seam landed by T003 is eager-shaped, so T004 RESTRUCTURES the execute phase into batched SQE-fill at prepare plus reap at poll/poll_wait with the EXT_ARG kernel wait outside the AD-4 mutex rather than implementing attempt(). register_file must retain the File and register its fd where the current stub drops it, and the probe result must be applied to that retained fd by opening with O_DIRECT per the probe since the fallback probe fd is separate today.
-    status: pending
+    status: in_progress
     phase: crate-core
     files: [src/backend/uring.rs]
     depends_on: [T002]
@@ -40,7 +40,7 @@ tasks:
     depends_on: [T003, T016]
   - id: T007
     content: Epoch pin guards per design.md EBR spec — FrameGuard, ReaderCtx<'pool> (!Send + !Sync, per-thread epoch slot), registration slots capped at max_concurrent_readers with TLS-destructor deregistration, publish-before-validate guard create, poll-boundary epoch advance, two-advance reclamation, compile-fail tests (guard borrow escape; ReaderCtx cross-thread/outlives-pool). ReaderCtx gains a Drop that releases its registration slot (current cap counter never decrements; add a register->drop->re-register test) and consider CAS instead of fetch_add-rollback for the cap
-    status: pending
+    status: in_progress
     phase: pool
     files: [src/pool/epoch.rs, tests/guard_compile_fail.rs]
     depends_on: [T006]
