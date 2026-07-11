@@ -21,12 +21,26 @@ plane additionally gains O_DIRECT on segment data (no page-cache dirtying
 by large compactions) and a single IO abstraction for future nmnm
 extraction.
 
-Layering: the pool is the raw-granule residency layer directly replacing
-mmap at the `BlockSource` seam. The decoded-block cache from
-sira-read-perf sits ABOVE it and is unchanged; a decoded-cache hit
-touches neither backend. DIO-G1 therefore measures at the block-fetch
-layer with the decoded cache bypassed — an end-to-end warm get would be
-dominated by the decoded cache and discriminate nothing.
+Layering (revised 2026-07-11 — the original paragraph predated sira's
+zero-copy work and described a cache that no longer exists): the pool is
+the raw-granule residency layer directly replacing mmap at the
+`BlockSource` seam. Post-RH003 the "decoded-block cache" owns no bytes:
+`CachedBlock` holds `BlockPayload::Mapped`, a reference into backend
+bytes kept alive for the cache entry's arbitrary lifetime
+(`cursor.rs:117-123` states the pinning invariant). Under the pool that
+would mean a long-lived frame pin per cache entry — the opposite of this
+design's EBR model, whose guards are short-lived and cursor-scoped, whose
+reclamation halts on a stalled guard, and whose watermark budgets a
+handful of guards per reader. Resolution, owned by sira-point-format
+batch 1 (a blocker of the sira phase): the cache degenerates to what it
+already is post-zero-copy — a parse-once artifact memo plus the
+FirstTouch verified bitmap, byte-source-independent metadata — and block
+bytes reside only in the backend, fetched through a short-lived guard
+inside `load_into` (`cursor.rs:937`), exactly the discipline the EBR
+model assumes. DIO-G1 therefore measures the block-fetch layer with the
+artifact memo warm in both arms; the earlier "decoded cache bypassed"
+framing is retired — there is no byte cache to bypass, and bypassing the
+metadata would compare a path neither backend ships.
 
 ---
 

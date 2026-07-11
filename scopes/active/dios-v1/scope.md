@@ -3,7 +3,7 @@ created: 2026-07-07
 status: active
 issue_type: Feature
 parent: sira-read-concurrency
-blocked_by: [sira-read-perf, sira-read-concurrency]
+blocked_by: [sira-point-format]  # sira-read-perf, sira-read-concurrency, sira-read-hotpath (PR #5) all done; sira-point-format batch 1 converges the cache onto this scope's seam
 ---
 
 # Scope: dios-v1
@@ -20,12 +20,21 @@ crate's API is shaped to later implement nmnm's specced-but-unbuilt
 `BlockCache`/`MemHandle` residency layer (nmnm `architecture.md:39-56`,
 `src/io/` is a one-line stub) without modification.
 
-Sequencing: fully sequential — no task starts until sira-read-perf and
-sira-read-concurrency are done. Their landed read path (decoded-block
-cache, shared-Arc benches, RC-R1..R3 gates) is the baseline this scope
-measures against. The pool sits BELOW the decoded-block cache: it
-replaces mmap as the raw-block residency layer feeding
-CRC-verify + decode; the decoded cache stays.
+Sequencing: fully sequential. The original blockers (sira-read-perf,
+sira-read-concurrency) are done, as is sira-read-hotpath (merged, PR #5);
+the live blocker for the sira phase is sira-point-format, whose batch 1
+dissolves the zero-copy layering collision and converges sira's cache
+onto the seam this scope needs (design.md, Layering). The measurement
+baseline is the read-hotpath exit gate — Mac: point 1.47x redb (1.67µs),
+range 1.98x, col-point 5.0µs; Threadripper: point 1.88x (2.46µs), range
+1.91x, col-point 11µs — and moves as sira-point-format lands, so DIO-G1
+re-baselines at execution time. The TR box (this repo's pinned gate host)
+now carries a validated sira bench setup the DIO-G1 sira arm reuses
+as-is: rust 1.96 via mise, stores under ~/build/sira-readprof/full. The
+pool replaces mmap as the raw-block residency layer feeding
+CRC-verify + decode; what sits above it post-zero-copy is metadata only
+(parse-once artifact memo + FirstTouch verified bitmap), not a byte
+cache.
 
 ## Goal
 
@@ -42,11 +51,14 @@ parity with mmap at the block-fetch layer and zero hot-path allocation.
   repository's root. The sira-wiring phase executes there against
   `dios` as a dependency; the blocking scopes (`sira-read-perf`,
   `sira-read-concurrency`) are active there under `scopes/active/`.
-- sira's mmap surface is two readers (`sira/src/segment/cursor.rs:298`,
-  `sira/src/columnar.rs:1128`); the block-load choke points are
-  `load_into` (`cursor.rs:530-547`) and `load_key_block`/`decoded_column`
-  (`columnar.rs:1219-1231`). Writes already flow through the `CommitFs`
-  trait (`sira/src/manifest.rs:264-283`).
+- sira's mmap surface is two readers (`sira/src/segment/cursor.rs:25`
+  `SegmentReader.mmap`, `sira/src/columnar.rs:1137`); the block-load
+  choke points are `load_into` (`cursor.rs:937`) and
+  `load_key_block`/`decoded_column` (`columnar.rs:1354`/`1367`); the
+  layering-collision site is `BlockPayload::Mapped` (`cursor.rs:117-123`,
+  whose invariant comment states the cache entry pins its mapping —
+  refs refreshed 2026-07-11 against merged read-hotpath). Writes already
+  flow through the `CommitFs` trait (`sira/src/manifest.rs:264`).
 - `sira/src/segment/block_storage.rs` already exists and is unrelated:
   it holds CRC verification (`verify_and_strip_crc`) used by the exact
   files this scope touches. It stays where it is. The new read-backend
@@ -247,8 +259,12 @@ scope.
   completion drain after warmup; enforced by an alloc-count harness
   (pattern: nmnm `tests/zero_alloc.rs`).
 - Strict warm parity (Linux), precise form: measured at the block-fetch
-  layer (decoded-block cache disabled or cold, so the bench compares
-  pool-frame fetch against mmap fetch, both feeding CRC+decode), on the
+  layer with the artifact memo warm in both arms (post sira-point-format
+  batch 1 the cache above the seam holds only byte-source-independent
+  metadata, so the bench compares pool-frame fetch against mmap fetch,
+  both feeding CRC+decode, with no byte cache to bypass — the earlier
+  "cache disabled or cold" framing is retired; it fought the zero-copy
+  layering), on the
   pinned 1/5-scale bench, ≥ 30 interleaved repetitions; PASS iff the
   upper bound of the one-sided 95% CI of the wall-time ratio pool/mmap
   is ≤ 1.02 — a one-sided non-inferiority bound with a 2% margin: true
@@ -398,8 +414,9 @@ deliverable, reviewed before implementation):
 ### Technical Requirements (gates)
 
 - DIO-G1 strict parity (Linux): block-fetch-layer warm point-get via
-  pool vs mmap, decoded-block cache bypassed; PASS iff upper bound of
-  the one-sided 95% CI of the ratio ≤ 1.02 (non-inferiority, 2% margin;
+  pool vs mmap, artifact memo warm in both arms (no byte cache exists to
+  bypass post sira-point-format batch 1); PASS iff upper bound of the
+  one-sided 95% CI of the ratio ≤ 1.02 (non-inferiority, 2% margin;
   protocol in Constraints).
 - DIO-G2 scaling (Linux): non-inverse threaded reads per RC-R2
   methodology (8t ≥ 2x 1t throughput target inherited), under the AD-4
@@ -443,8 +460,8 @@ deliverable, reviewed before implementation):
 
 ## Acceptance Criteria
 
-- [ ] Given a warm 1/5-scale store on Linux with the decoded-block cache
-  bypassed,
+- [ ] Given a warm 1/5-scale store on Linux with the artifact memo warm
+  in both arms (block bytes resident only in the backend under test),
   when the pinned block-fetch bench runs pool vs mmap interleaved ≥ 30
   reps,
   then the one-sided 95% CI upper bound of the ratio is ≤ 1.02
