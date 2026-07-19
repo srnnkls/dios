@@ -235,19 +235,25 @@ impl EvictQueue {
 #[derive(Debug)]
 pub struct ReaderCtx<'pool> {
     slot: &'pool ReaderSlot,
+    pool_identity: &'pool AtomicU64,
     _thread_bound: PhantomData<*const ()>,
 }
 
 impl<'pool> ReaderCtx<'pool> {
-    pub(crate) fn new(slot: &'pool ReaderSlot) -> Self {
+    pub(crate) fn new(slot: &'pool ReaderSlot, pool_identity: &'pool AtomicU64) -> Self {
         Self {
             slot,
+            pool_identity,
             _thread_bound: PhantomData,
         }
     }
 
     pub(crate) fn slot(&self) -> &'pool ReaderSlot {
         self.slot
+    }
+
+    pub(crate) fn belongs_to(&self, pool_identity: &AtomicU64) -> bool {
+        std::ptr::eq(self.pool_identity, pool_identity)
     }
 }
 

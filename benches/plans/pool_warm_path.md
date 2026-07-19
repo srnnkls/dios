@@ -41,3 +41,10 @@ above is the other half. Any pre-batch-7 warm-path baseline is stale, so the
 first post-batch-7 run re-establishes the pin and the T014 characterization runs
 against the fenced code. Nested/repeat pins skip the fence, so it does not touch
 the steady-state warm-hit cost.
+
+Pool-identity safety note: binding `ReaderCtx` to its exact pool adds one pointer
+equality before the existing warm-hit probe. The metric, 40-rep workload, 1.10
+upper bound, compare command, and escalation lever above remain the pre-recorded
+gate. Non-hit admission must not scan terminal miss records: exact
+slot/generation and frame indexes provide bounded O(1) cleanup; the existing
+overlap plan remains the miss-path regression gate.

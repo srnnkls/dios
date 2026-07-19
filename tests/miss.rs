@@ -546,6 +546,143 @@ fn a_cross_pool_token_panics_before_the_target_pool_observes_its_page() {
 }
 
 #[test]
+fn a_cross_pool_reader_panics_before_get_touches_the_target_pool() {
+    let frames = 4u32;
+    let source = pool_on(a_mock(0x50_0C_7E, frames, frames), frames, 1, 1, 3);
+    let source_reader = source.register_reader().expect("a source reader slot");
+
+    let target_mock = a_mock(0x7A_26_E7, frames, frames);
+    let target_file = target_mock
+        .open(Path::new("reader-cross-target"), DirectIo::Disabled)
+        .expect("target mock open");
+    let target_id = target_file.file_id();
+    target_mock.seed_page(&target_file, 1, 0x71);
+    let target = pool_on(target_mock, frames, 1, 1, 3);
+    target.register_file(target_file);
+
+    let panic = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let _ = target.get(&source_reader, PageId::new(target_id, 1));
+    }));
+    assert!(
+        panic.is_err(),
+        "a reader capability belongs to exactly one pool"
+    );
+    assert_eq!(
+        frames_in_state(&target, frames, FrameState::Free),
+        frames,
+        "reader ownership is rejected before the target claims or observes a frame"
+    );
+    assert!(
+        target.driver().read_attempts_in_order().is_empty(),
+        "reader ownership is rejected before target IO admission"
+    );
+}
+
+#[test]
+fn a_cross_pool_reader_panics_before_ready_pins_the_target_frame() {
+    let frames = 4u32;
+    let source = pool_on(a_mock(0x50_0C_75, frames, frames), frames, 1, 1, 3);
+    let source_reader = source.register_reader().expect("a source reader slot");
+
+    let target_mock = a_mock(0x7A_26_75, frames, frames);
+    let target_file = target_mock
+        .open(Path::new("reader-ready-target"), DirectIo::Disabled)
+        .expect("target mock open");
+    let target_id = target_file.file_id();
+    target_mock.seed_page(&target_file, 2, 0x72);
+    let target = pool_on(target_mock, frames, 1, 1, 3);
+    target.register_file(target_file);
+    let target_reader = target.register_reader().expect("a target reader slot");
+    let page = PageId::new(target_id, 2);
+    let token = expect_pending(target.get(&target_reader, page), "target miss");
+    target.poll();
+
+    let panic = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let _ = target.ready(&source_reader, token);
+    }));
+    assert!(panic.is_err(), "ready rejects a reader from another pool");
+    match target.get(&target_reader, page) {
+        Get::Hit(guard) => assert_page_bytes(&guard, 0x72),
+        Get::Pending(_) => panic!("reader rejection cannot lose the resident target frame"),
+        Get::Busy => panic!("reader rejection cannot make a resident target page Busy"),
+    }
+}
+
+#[test]
+fn a_foreign_page_file_identity_panics_before_admission_or_frame_mutation() {
+    let frames = 4u32;
+    let foreign_mock = a_mock(0x00F0_2E16, frames, frames);
+    let foreign_file = foreign_mock
+        .open(Path::new("page-foreign-source"), DirectIo::Disabled)
+        .expect("foreign mock open");
+    let foreign_id = foreign_file.file_id();
+
+    let target_mock = a_mock(0x7A_26_F1, frames, frames);
+    let target_file = target_mock
+        .open(Path::new("page-foreign-target"), DirectIo::Disabled)
+        .expect("target mock open");
+    let target = pool_on(target_mock, frames, 1, 1, 3);
+    target.register_file(target_file);
+    let target_reader = target.register_reader().expect("a target reader slot");
+
+    let panic = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let _ = target.get(&target_reader, PageId::new(foreign_id, 1));
+    }));
+    assert!(
+        panic.is_err(),
+        "a PageId cannot route through an unrelated handle that happens to occupy the same fd slot"
+    );
+    assert_eq!(
+        frames_in_state(&target, frames, FrameState::Free),
+        frames,
+        "foreign file identity is rejected before a frame leaves Free"
+    );
+    assert!(
+        target.driver().read_attempts_in_order().is_empty(),
+        "foreign file identity is rejected before a read attempt"
+    );
+}
+
+#[test]
+fn a_stale_page_file_generation_panics_before_reusing_its_live_slot() {
+    let frames = 4u32;
+    let mock = a_mock(0x57_A1_E0, frames, frames);
+    let stale_file = mock
+        .open(Path::new("page-stale-generation"), DirectIo::Disabled)
+        .expect("stale mock open");
+    let stale_id = stale_file.file_id();
+    mock.close(stale_file);
+    let live_file = mock
+        .open(Path::new("page-live-generation"), DirectIo::Disabled)
+        .expect("live mock reopen");
+    assert!(
+        live_file.file_id().aliases_slot(&stale_id),
+        "the regression requires fd-slot reuse with a distinct generation"
+    );
+
+    let pool = pool_on(mock, frames, 1, 1, 3);
+    pool.register_file(live_file);
+    let reader = pool.register_reader().expect("a reader slot");
+    let panic = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let _ = pool.get(&reader, PageId::new(stale_id, 1));
+    }));
+
+    assert!(
+        panic.is_err(),
+        "a stale generation cannot route through the live handle in its reused slot"
+    );
+    assert_eq!(
+        frames_in_state(&pool, frames, FrameState::Free),
+        frames,
+        "stale generation is rejected before a frame leaves Free"
+    );
+    assert!(
+        pool.driver().read_attempts_in_order().is_empty(),
+        "stale generation is rejected before a read attempt"
+    );
+}
+
+#[test]
 fn a_successful_unconsumed_token_protects_its_exact_frame_until_drop() {
     let frames = 4u32;
     let mock = a_mock(0x51_CC_E5_50, frames, frames);

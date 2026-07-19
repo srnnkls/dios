@@ -356,14 +356,6 @@ impl MissTable {
         }
     }
 
-    pub(crate) fn clean_terminal_zeros(&mut self, interests: &MissInterests) {
-        for index in 0..self.slots.len() {
-            if let Some(entry) = self.slots[index] {
-                self.clean_terminal_zero(MissSlot::new(index), entry.generation, interests);
-            }
-        }
-    }
-
     pub(crate) fn prepare_eviction(
         &mut self,
         frame: ReadFrameIdx,

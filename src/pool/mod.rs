@@ -578,7 +578,7 @@ impl<D: PoolBackend> Pool<D> {
     pub fn register_reader(&self) -> Result<ReaderCtx<'_>, RegisterError> {
         for slot in &self.slots {
             if slot.try_occupy() {
-                return Ok(ReaderCtx::new(slot));
+                return Ok(ReaderCtx::new(slot, &self.global_epoch));
             }
         }
         Err(RegisterError::AtCapacity {
@@ -613,7 +613,7 @@ impl<D: PoolBackend> Pool<D> {
             return Get::Hit(guard);
         }
         let mut control = self.control();
-        control.miss.clean_terminal_zeros(&self.miss_interests);
+        let _ = registered_file(&control.files, page);
         if self
             .table
             .lookup(page)
@@ -669,6 +669,7 @@ impl<D: PoolBackend> Pool<D> {
         reader: &'pool ReaderCtx<'pool>,
         token: PendingToken<'pool>,
     ) -> ReadyResult<'pool> {
+        self.assert_reader_owner(reader);
         assert!(
             std::ptr::eq(token.interests, &raw const self.miss_interests),
             "a pending capability cannot cross pool identity"
@@ -700,7 +701,7 @@ impl<D: PoolBackend> Pool<D> {
                     "a successful terminal record protects its exact mapped frame"
                 );
                 let guard = self
-                    .pin_internal(reader, entry.page())
+                    .pin_owned(reader, entry.page())
                     .expect("the protected successful frame remains pinnable");
                 let slot = token.slot;
                 let generation = token.generation;
@@ -743,6 +744,15 @@ impl<D: PoolBackend> Pool<D> {
         reader: &'ctx ReaderCtx<'_>,
         page: PageId,
     ) -> Option<FrameGuard<'ctx>> {
+        self.assert_reader_owner(reader);
+        self.pin_owned(reader, page)
+    }
+
+    fn pin_owned<'ctx>(
+        &'ctx self,
+        reader: &'ctx ReaderCtx<'_>,
+        page: PageId,
+    ) -> Option<FrameGuard<'ctx>> {
         let slot = reader.slot();
         let first_guard = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
         let resident = self
@@ -758,6 +768,13 @@ impl<D: PoolBackend> Pool<D> {
         let _ = self.clock.reference(frame);
         slot.commit_pin();
         Some(FrameGuard::new(self.frames.frame_bytes(frame), slot))
+    }
+
+    fn assert_reader_owner(&self, reader: &ReaderCtx<'_>) {
+        assert!(
+            reader.belongs_to(&self.global_epoch),
+            "a reader capability cannot cross pool identity"
+        );
     }
 
     /// Makes `page` resident in a freshly claimed frame filled with `fill`,
@@ -826,9 +843,7 @@ impl<D: PoolBackend> Pool<D> {
         filled: u32,
     ) -> Result<OpToken, SubmitError> {
         let (offset, len) = read_span(page, self.granule, filled);
-        let fd = control.files[page.file().slot() as usize]
-            .as_ref()
-            .expect("a registered file backs every requested page");
+        let fd = registered_file(&control.files, page);
         self.driver.submit_read(fd, frame, offset, filled, len)
     }
 
@@ -903,9 +918,7 @@ impl<D: PoolBackend> Pool<D> {
                         self.drain_completions_finish_success(miss, frame_pages, index, entry);
                     } else {
                         let (offset, len) = read_span(entry.page(), self.granule, filled);
-                        let fd = files[entry.page().file().slot() as usize]
-                            .as_ref()
-                            .expect("a registered file backs every in-flight miss");
+                        let fd = registered_file(files, entry.page());
                         if let Ok(token) =
                             self.driver
                                 .submit_read(fd, entry.frame(), offset, filled, len)
@@ -997,6 +1010,18 @@ impl<D: PoolBackend> Pool<D> {
 fn read_span(page: PageId, granule: u32, filled: u32) -> (u64, u32) {
     let base = u64::from(page.granule_idx()) * u64::from(granule);
     (base + u64::from(filled), granule - filled)
+}
+
+fn registered_file(files: &[Option<FileHandle>], page: PageId) -> &FileHandle {
+    let file = files[page.file().slot() as usize]
+        .as_ref()
+        .expect("a registered file backs every requested page");
+    assert_eq!(
+        file.file_id(),
+        page.file(),
+        "a page capability must name the exact registered file identity"
+    );
+    file
 }
 
 impl PoolBackend for Driver {
