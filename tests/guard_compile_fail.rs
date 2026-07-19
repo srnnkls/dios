@@ -9,16 +9,8 @@
 //!     the marker invariants (INV-6, EBR per-thread slot) against regression.
 //!
 //!  2. `compile_fail` DOCTESTS — the three lifetime/thread escapes below. Rustdoc
-//!     doctests are harvested only from the LIBRARY crate (`cargo test --doc`), not
-//!     from a `tests/` integration file, so the implementer must attach these three
-//!     blocks to `src/pool/epoch.rs` (or a `#[doc]` carrier there) once the `pin`
-//!     seam exists. They are reproduced verbatim in this header as the spec. They
-//!     reference the T007 `Pool::pin` / `register_reader` seams, so TODAY they
-//!     "fail to resolve" (the symbols do not exist) — a `compile_fail` block passes
-//!     on ANY compile error, so they pass trivially/vacuously now and only become
-//!     MEANINGFUL once the seam compiles and the ONLY remaining error is the
-//!     lifetime/`Send` violation. This state is recorded honestly in the tester
-//!     report; the implementer must re-verify each fails for the RIGHT reason.
+//!     harvests the executable copies from `src/pool/epoch.rs`; this integration
+//!     test keeps the contracts beside the marker assertions for review.
 //!
 //! Doctest A — a guard's borrow must not outlive the pool that minted it (INV-6):
 //!

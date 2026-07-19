@@ -216,6 +216,7 @@ impl RingExecutor for Uring {
         user_data: u64,
         fd_slot: u32,
         source: *const u8,
+        source_offset: u32,
         file_offset: u64,
         requested_len: u32,
     ) {
@@ -228,10 +229,15 @@ impl RingExecutor for Uring {
             "a leased staging slot has a live pointer"
         );
         assert!(requested_len > 0, "a write transfers a non-empty slot");
-        let entry = opcode::WriteFixed::new(types::Fixed(fd_slot), source, requested_len, 1)
-            .offset(file_offset)
-            .build()
-            .user_data(user_data);
+        assert!(
+            source_offset < self.frame_bytes,
+            "a write source starts within one staging granule"
+        );
+        assert!(
+            requested_len <= self.frame_bytes - source_offset,
+            "a write source tail stays within its registered granule"
+        );
+        let entry = push_write_entry(user_data, fd_slot, source, file_offset, requested_len);
         self.push_sqe(&entry);
     }
 
@@ -294,5 +300,37 @@ impl RingExecutor for Uring {
         };
         file.sync_all()
             .map_err(|error| error.raw_os_error().unwrap_or(EIO))
+    }
+}
+
+fn push_write_entry(
+    user_data: u64,
+    fd_slot: u32,
+    source: *const u8,
+    file_offset: u64,
+    requested_len: u32,
+) -> squeue::Entry {
+    opcode::WriteFixed::new(types::Fixed(fd_slot), source, requested_len, 1)
+        .offset(file_offset)
+        .build()
+        .user_data(user_data)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ptr::NonNull;
+
+    use super::*;
+
+    #[test]
+    fn async_write_sqe_is_fixed_buffer_opcode() {
+        let entry = push_write_entry(7, 3, NonNull::<u8>::dangling().as_ptr(), 8_192, 4_096);
+
+        assert_eq!(
+            entry.get_opcode(),
+            opcode::WriteFixed::CODE,
+            "ordinary WRITE does not prove the registered staging arena is used"
+        );
+        assert_eq!(entry.get_user_data(), 7, "the slab slot routes the CQE");
     }
 }

@@ -81,7 +81,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use dios::driver::{Completion, CompletionBatch, FileHandle, OpToken, SubmitError};
-use dios::testing::{Injected, MockRingDriver, ReadFrameIdx};
+use dios::testing::{Injected, MockRingDriver, ReadFrameIdx, WriteAttempt};
 use dios::DirectIo;
 
 const FRAME_BYTES: u32 = 4096;
@@ -230,6 +230,98 @@ fn a_short_cqe_surfaces_its_partial_byte_count_without_reslicing() {
         Ok(short),
         "the ring reap surfaces the true partial count; reslicing a short read is the \
          pool's job (T008), never the driver's"
+    );
+}
+
+#[test]
+fn a_short_write_cqe_retains_the_slot_and_resubmits_the_exact_tail() {
+    let m = ring(1, 4, 4);
+    let fd = open(&m);
+    let arena = m.write_arena();
+    let slot = arena.alloc().expect("one staging slot");
+    let offset = 8_192u64;
+    let short = 512u32;
+    m.inject_for_next_submit(&[Injected::Short(short)]);
+    let token = m
+        .submit_write(&fd, slot, offset)
+        .expect("write submits within capacity");
+    let mut out = CompletionBatch::with_capacity(1);
+
+    assert_eq!(
+        m.poll(&mut out),
+        0,
+        "a positive short CQE is internal progress, not a logical completion"
+    );
+    assert!(
+        arena.alloc().is_none(),
+        "the consumed staging slot stays held across the tail resubmit"
+    );
+    assert_eq!(
+        m.poll(&mut out),
+        1,
+        "the clean tail CQE terminally completes the one logical write"
+    );
+    let completion = out.iter().next().expect("one logical completion");
+    assert_eq!(completion.token(), token);
+    assert_eq!(result_of(completion), Ok(FRAME_BYTES));
+    assert_eq!(
+        m.write_attempts_in_order(),
+        vec![
+            WriteAttempt {
+                file_offset: offset,
+                source_offset: 0,
+                requested_len: FRAME_BYTES,
+            },
+            WriteAttempt {
+                file_offset: offset + u64::from(short),
+                source_offset: short,
+                requested_len: FRAME_BYTES - short,
+            },
+        ]
+    );
+    assert!(
+        arena.alloc().is_some(),
+        "terminal reap releases the slot exactly once"
+    );
+}
+
+#[test]
+fn zero_progress_write_cqes_stop_at_the_ring_retry_bound() {
+    let m = ring(1, 4, 4);
+    let fd = open(&m);
+    let arena = m.write_arena();
+    let slot = arena.alloc().expect("one staging slot");
+    m.inject_for_next_submit(&[Injected::Short(0); (RETRY_BOUND + 1) as usize]);
+    let token = m
+        .submit_write(&fd, slot, 0)
+        .expect("write submits within capacity");
+    let mut out = CompletionBatch::with_capacity(1);
+
+    for _ in 0..RETRY_BOUND {
+        assert_eq!(m.poll(&mut out), 0, "zero progress remains internal");
+        assert!(
+            arena.alloc().is_none(),
+            "the staging slot stays held before the retry bound is terminal"
+        );
+    }
+    assert_eq!(m.poll(&mut out), 1, "the bounded failure is terminal");
+    let completion = out.iter().next().expect("one terminal completion");
+    assert_eq!(completion.token(), token);
+    assert_eq!(result_of(completion), Err(EIO));
+    assert_eq!(
+        m.write_attempts_in_order(),
+        vec![
+            WriteAttempt {
+                file_offset: 0,
+                source_offset: 0,
+                requested_len: FRAME_BYTES,
+            };
+            (RETRY_BOUND + 1) as usize
+        ]
+    );
+    assert!(
+        arena.alloc().is_some(),
+        "terminal failure releases the slot"
     );
 }
 

@@ -78,18 +78,26 @@ impl ArenaState {
         assert_eq!(self.owner, owner, "write slot used with a foreign driver");
     }
 
-    pub(crate) fn region(&self, slot: u32) -> (*const u8, u32) {
+    pub(crate) fn region(&self, slot: u32, source_offset: u32, len: u32) -> *const u8 {
         let index = slot as usize;
         assert!(index < self.free.len(), "write slot index within its arena");
-        let offset = index * self.granule as usize;
         assert!(
-            offset + self.granule as usize <= self.layout.size(),
+            source_offset <= self.granule,
+            "write source starts within its slot"
+        );
+        assert!(
+            len <= self.granule - source_offset,
+            "write source range lies within its slot"
+        );
+        let offset = index * self.granule as usize + source_offset as usize;
+        assert!(
+            offset + len as usize <= self.layout.size(),
             "write slot region lies within its arena"
         );
         // SAFETY: the checked slot range is within this allocation. The occupied
         // free bit keeps the region stable and unavailable to another lease.
         let source = unsafe { self.base.as_ptr().add(offset) };
-        (source.cast_const(), self.granule)
+        source.cast_const()
     }
 
     pub(crate) fn release(&self, slot: u32) {

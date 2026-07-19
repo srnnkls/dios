@@ -12,7 +12,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use dios::driver::{CompletionBatch, OpKind, OpToken, SubmitError, SyncMode};
-use dios::testing::{Injected, MockDriver, ReadFrameIdx};
+use dios::testing::{Injected, MockDriver, ReadFrameIdx, WriteAttempt};
 use dios::DirectIo;
 
 const FRAME_BYTES: u32 = 4096;
@@ -507,6 +507,78 @@ fn eagain_surfaces_as_an_error_on_writes_without_retry() {
         poll_one(&m),
         Err(EAGAIN),
         "EAGAIN on a write surfaces directly; the queued EIO is never reached, proving no retry"
+    );
+}
+
+#[test]
+fn a_positive_short_write_resubmits_the_exact_unwritten_tail() {
+    let m = mock(1, 4, 4);
+    let fd = open(&m);
+    let arena = m.write_arena();
+    let slot = arena.alloc().expect("slot");
+    let offset = 8_192u64;
+    let short = 512u32;
+    m.inject_next(Injected::Short(short));
+
+    assert!(m.submit_write(&fd, slot, offset).is_ok(), "submit");
+    assert_eq!(
+        poll_one(&m),
+        Ok(FRAME_BYTES),
+        "one logical write completes only after its whole staging granule lands"
+    );
+    assert_eq!(
+        m.write_attempts_in_order(),
+        vec![
+            WriteAttempt {
+                file_offset: offset,
+                source_offset: 0,
+                requested_len: FRAME_BYTES,
+            },
+            WriteAttempt {
+                file_offset: offset + u64::from(short),
+                source_offset: short,
+                requested_len: FRAME_BYTES - short,
+            },
+        ],
+        "the second pwrite sees only the exact file/source tail"
+    );
+    assert!(
+        arena.alloc().is_some(),
+        "the consumed slot releases once, after the logical write is terminal"
+    );
+}
+
+#[test]
+fn a_zero_progress_write_stops_at_the_retry_bound() {
+    let m = mock(1, 4, 4);
+    let fd = open(&m);
+    let arena = m.write_arena();
+    let slot = arena.alloc().expect("slot");
+    for _ in 0..=3 {
+        m.inject_next(Injected::Short(0));
+    }
+
+    assert!(m.submit_write(&fd, slot, 0).is_ok(), "submit");
+    assert_eq!(
+        poll_one(&m),
+        Err(EIO),
+        "zero progress is a bounded operating failure, never a successful zero-byte write"
+    );
+    assert_eq!(
+        m.write_attempts_in_order(),
+        vec![
+            WriteAttempt {
+                file_offset: 0,
+                source_offset: 0,
+                requested_len: FRAME_BYTES,
+            };
+            4
+        ],
+        "retry_bound=3 permits the initial attempt plus exactly three retries"
+    );
+    assert!(
+        arena.alloc().is_some(),
+        "the slot releases only after the bounded zero-progress failure"
     );
 }
 

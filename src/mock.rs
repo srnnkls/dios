@@ -40,6 +40,15 @@ pub struct ReadAttempt {
     pub requested_len: u32,
 }
 
+/// One asynchronous write attempt: the file offset, source offset within the
+/// retained staging slot, and exact tail length presented to the backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WriteAttempt {
+    pub file_offset: u64,
+    pub source_offset: u32,
+    pub requested_len: u32,
+}
+
 /// Direct-I/O capability reported by a deterministic mock file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DirectIoSupport {
@@ -369,6 +378,12 @@ impl MockDriver {
     pub fn read_attempts_in_order(&self) -> Vec<ReadAttempt> {
         self.0.executor().attempts()
     }
+
+    /// The write tails presented to the eager-shaped executor, in attempt order.
+    #[must_use]
+    pub fn write_attempts_in_order(&self) -> Vec<WriteAttempt> {
+        self.0.executor().write_attempts()
+    }
 }
 
 /// A borrowing view of a [`MockDriver`]'s fixed staging slots.
@@ -432,6 +447,7 @@ struct MockState {
     injected: VecDeque<Injected>,
     seeds: HashMap<(FileId, u32), u8>,
     attempts: Vec<ReadAttempt>,
+    write_attempts: Vec<WriteAttempt>,
     rng: u64,
 }
 
@@ -448,6 +464,7 @@ impl MockExecutor {
                 injected: VecDeque::with_capacity(injected_capacity as usize),
                 seeds: HashMap::new(),
                 attempts: Vec::new(),
+                write_attempts: Vec::with_capacity(injected_capacity as usize),
                 rng: seed,
             }),
             arena: OnceLock::new(),
@@ -475,6 +492,10 @@ impl MockExecutor {
 
     fn record_attempt(&self, attempt: ReadAttempt) {
         self.lock().attempts.push(attempt);
+    }
+
+    fn write_attempts(&self) -> Vec<WriteAttempt> {
+        self.lock().write_attempts.clone()
     }
 
     fn set_arena(&self, arena: Arc<Frames>) {
@@ -525,7 +546,17 @@ impl EagerExecutor for MockExecutor {
             }
             OpKind::Write => {}
         }
-        let injected = self.lock().injected.pop_front();
+        let injected = {
+            let mut state = self.lock();
+            if matches!(kind, OpKind::Write) {
+                state.write_attempts.push(WriteAttempt {
+                    file_offset: context.file_offset,
+                    source_offset: context.destination_offset,
+                    requested_len: context.requested_len,
+                });
+            }
+            state.injected.pop_front()
+        };
         match injected {
             None => {
                 if matches!(kind, OpKind::Read) {
@@ -743,6 +774,19 @@ impl MockRingDriver {
         Ok(token)
     }
 
+    /// Enqueues a write from a retained staging slot through the real ring reap
+    /// path, binding any pending injected CQE sequence to its slab slot.
+    pub fn submit_write<'arena>(
+        &self,
+        fd: &FileHandle,
+        buf: WriteSlot<'arena>,
+        offset: u64,
+    ) -> Result<OpToken, (SubmitError, WriteSlot<'arena>)> {
+        let token = self.0.submit_write(fd, buf, offset)?;
+        self.0.executor().bind_pending(u64::from(token.slot()));
+        Ok(token)
+    }
+
     /// Enqueues an fsync barrier.
     ///
     /// # Errors
@@ -778,6 +822,20 @@ impl MockRingDriver {
     #[must_use]
     pub fn observe(&self) -> Arc<MockRingObservation> {
         self.0.executor().observe()
+    }
+
+    /// Borrows the mock ring driver's fixed write-staging arena.
+    #[must_use]
+    pub fn write_arena(&self) -> MockWriteArena<'_> {
+        MockWriteArena {
+            state: self.0.write_arena_state(),
+        }
+    }
+
+    /// The write tails filled into mock SQEs, in submission order.
+    #[must_use]
+    pub fn write_attempts_in_order(&self) -> Vec<WriteAttempt> {
+        self.0.executor().write_attempts()
     }
 }
 
@@ -829,6 +887,7 @@ struct MockRingState {
     pending: Option<Vec<Injected>>,
     faults: HashMap<u64, VecDeque<Injected>>,
     cqes: VecDeque<(u64, i32)>,
+    write_attempts: Vec<WriteAttempt>,
 }
 
 impl MockRingExecutor {
@@ -840,6 +899,7 @@ impl MockRingExecutor {
                 pending: None,
                 faults: HashMap::with_capacity(capacity),
                 cqes: VecDeque::with_capacity(capacity),
+                write_attempts: Vec::with_capacity(capacity),
             }),
             frame_bytes,
             observation: Arc::new(MockRingObservation::default()),
@@ -852,6 +912,10 @@ impl MockRingExecutor {
 
     fn observe(&self) -> Arc<MockRingObservation> {
         Arc::clone(&self.observation)
+    }
+
+    fn write_attempts(&self) -> Vec<WriteAttempt> {
+        self.lock().write_attempts.clone()
     }
 
     fn inject_for_next_submit(&self, faults: &[Injected]) {
@@ -932,7 +996,8 @@ impl RingExecutor for MockRingExecutor {
         user_data: u64,
         _fd_slot: u32,
         source: *const u8,
-        _file_offset: u64,
+        source_offset: u32,
+        file_offset: u64,
         requested_len: u32,
     ) {
         assert!(
@@ -940,6 +1005,11 @@ impl RingExecutor for MockRingExecutor {
             "a mock write receives a live staging slot"
         );
         let mut state = self.lock();
+        state.write_attempts.push(WriteAttempt {
+            file_offset,
+            source_offset,
+            requested_len,
+        });
         let raw = Self::next_raw(&mut state, user_data, requested_len);
         state.cqes.push_back((user_data, raw));
     }

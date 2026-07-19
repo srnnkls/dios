@@ -42,6 +42,7 @@ use crate::pool::{Frames, ReadFrameIdx};
 
 pub(crate) const MAX_FILES: u32 = 64;
 const EINTR: i32 = 4;
+const EIO: i32 = 5;
 const EBADF: i32 = 9;
 const EMFILE: i32 = 24;
 #[cfg(target_os = "linux")]
@@ -729,6 +730,7 @@ pub(crate) trait RingExecutor: Executor {
         user_data: u64,
         fd_slot: u32,
         source: *const u8,
+        source_offset: u32,
         file_offset: u64,
         requested_len: u32,
     );
@@ -776,8 +778,9 @@ pub(crate) struct OpEntry {
 }
 
 /// Per-op parameters the execute phase hands a backend: which file, at what
-/// offset, into (reads) or out of (writes) which resource. The mock ignores it
-/// and replays injected faults; the eager backend performs the real syscall.
+/// offset, into (reads) or out of (writes) which resource. `destination_offset`
+/// is the read destination or write source offset within the fixed buffer. The
+/// eager backend performs the real syscall; mocks replay injected outcomes.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OpContext<'buf> {
     pub(crate) fd: FileId,
@@ -806,14 +809,14 @@ impl<'buf> OpContext<'buf> {
         }
     }
 
-    fn write(fd: FileId, file_offset: u64, write_buf: &'buf [u8]) -> Self {
+    fn write(fd: FileId, file_offset: u64, source_offset: u32, write_buf: &'buf [u8]) -> Self {
         let requested_len =
             u32::try_from(write_buf.len()).expect("write length fits the driver bound");
         Self {
             fd,
             file_offset,
             frame: ReadFrameIdx::new(0),
-            destination_offset: 0,
+            destination_offset: source_offset,
             requested_len,
             write_buf,
         }
@@ -828,6 +831,18 @@ impl<'buf> OpContext<'buf> {
             requested_len: 0,
             write_buf: &[],
         }
+    }
+
+    fn advance_write(self, bytes: u32) -> Self {
+        assert!(bytes > 0, "a write tail advances by positive progress");
+        assert!(bytes < self.requested_len, "only a short write has a tail");
+        let start = bytes as usize;
+        Self::write(
+            self.fd,
+            self.file_offset + u64::from(bytes),
+            self.destination_offset + bytes,
+            &self.write_buf[start..],
+        )
     }
 }
 
@@ -1150,7 +1165,7 @@ impl<E: EagerExecutor> DriverCore<E> {
             let Some((slot, kind, context)) = self.prepare_next() else {
                 break;
             };
-            let outcome = self.execute(kind, context.requested_len, context);
+            let outcome = self.execute(kind, context);
             self.publish(slot, outcome, out);
             drained += 1;
         }
@@ -1229,12 +1244,21 @@ impl<E: EagerExecutor> DriverCore<E> {
                 let write_slot = entry
                     .write_slot
                     .expect("an async write retains a staging slot index");
-                let (source, len) = self.write_arena.region(write_slot);
-                assert_eq!(len, entry.requested_len, "write slot length stays stable");
+                let source = self.write_arena.region(
+                    write_slot,
+                    entry.destination_offset,
+                    entry.requested_len,
+                );
                 // SAFETY: the occupied slab entry retains the slot's free bit
                 // until publish, and the driver-owned arena outlives execution.
-                let write_buf = unsafe { std::slice::from_raw_parts(source, len as usize) };
-                OpContext::write(entry.fd, entry.file_offset, write_buf)
+                let write_buf =
+                    unsafe { std::slice::from_raw_parts(source, entry.requested_len as usize) };
+                OpContext::write(
+                    entry.fd,
+                    entry.file_offset,
+                    entry.destination_offset,
+                    write_buf,
+                )
             }
         };
         Some((slot, entry.kind, context))
@@ -1243,12 +1267,32 @@ impl<E: EagerExecutor> DriverCore<E> {
     /// Execute (submit mutex *not* held): the retry policy and its fixed bound
     /// over the backend's simulated or real syscall. `EINTR` resubmits on every
     /// op, `EAGAIN` resubmits on reads but surfaces on writes and fsync.
-    fn execute(&self, kind: OpKind, clean_bytes: u32, context: OpContext<'_>) -> Result<u32, i32> {
+    fn execute(&self, kind: OpKind, context: OpContext<'_>) -> Result<u32, i32> {
         let retry_would_block = matches!(kind, OpKind::Read);
         let mut retries = 0u32;
+        let logical_len = context.requested_len;
+        let mut next = context;
         loop {
-            match self.executor.attempt(kind, clean_bytes, context) {
-                Attempt::Done(bytes) => return Ok(bytes),
+            match self.executor.attempt(kind, next.requested_len, next) {
+                Attempt::Done(bytes) => {
+                    assert!(
+                        bytes <= next.requested_len,
+                        "executor reported more bytes than requested"
+                    );
+                    if !matches!(kind, OpKind::Write) {
+                        return Ok(bytes);
+                    }
+                    if bytes == next.requested_len {
+                        return Ok(logical_len);
+                    }
+                    if bytes > 0 {
+                        next = next.advance_write(bytes);
+                    } else if retries >= self.retry_bound {
+                        return Err(EIO);
+                    } else {
+                        retries += 1;
+                    }
+                }
                 Attempt::Failed(errno) => return Err(errno),
                 Attempt::Interrupted => {
                     if retries >= self.retry_bound {
@@ -1293,7 +1337,7 @@ impl<E: EagerExecutor> DriverCore<E> {
         let Some((slot, kind, context)) = self.prepare_next() else {
             return false;
         };
-        let outcome = self.execute(kind, context.requested_len, context);
+        let outcome = self.execute(kind, context);
         self.publish_to_backlog(slot, outcome);
         true
     }
@@ -1342,9 +1386,10 @@ impl<E: EagerExecutor> DriverCore<E> {
             let context = OpContext::write(
                 fd.file_id(),
                 offset + u64::from(written),
+                written,
                 &buf[written as usize..],
             );
-            match self.execute(OpKind::Write, remaining, context) {
+            match self.execute(OpKind::Write, context) {
                 Ok(bytes) => {
                     assert!(
                         bytes <= remaining,
@@ -1369,7 +1414,7 @@ impl<E: EagerExecutor> DriverCore<E> {
             }
         }
         let context = OpContext::fsync(fd.file_id());
-        match self.execute(OpKind::Fsync, 0, context) {
+        match self.execute(OpKind::Fsync, context) {
             Ok(_) => Ok(()),
             Err(errno) => Err(IoError::from_raw(errno)),
         }
@@ -1458,10 +1503,19 @@ impl<E: RingExecutor> DriverCore<E> {
                     let write_slot = entry
                         .write_slot
                         .expect("an async write retains a staging slot index");
-                    let (source, len) = self.write_arena.region(write_slot);
-                    assert_eq!(len, entry.requested_len, "write slot length stays stable");
-                    self.executor
-                        .push_write(user_data, fd_slot, source, entry.file_offset, len);
+                    let source = self.write_arena.region(
+                        write_slot,
+                        entry.destination_offset,
+                        entry.requested_len,
+                    );
+                    self.executor.push_write(
+                        user_data,
+                        fd_slot,
+                        source,
+                        entry.destination_offset,
+                        entry.file_offset,
+                        entry.requested_len,
+                    );
                 }
             }
             filled += 1;
@@ -1488,16 +1542,15 @@ impl<E: RingExecutor> DriverCore<E> {
             self.executor.reap(limit, |user_data, raw| {
                 let slot = u32::try_from(user_data).expect("uring user_data is a slab slot");
                 let entry = shared.slab.peek_mut(slot);
-                if ring_should_retry(entry.kind, raw, entry.retries, retry_bound) {
-                    entry.retries += 1;
+                let RingProgress::Terminal(result) = ring_progress(entry, raw, retry_bound) else {
                     shared.ready.push_back(slot);
                     return;
-                }
+                };
                 let (token, entry) = shared.slab.reclaim(slot);
                 let retire_due = shared.files.on_complete(entry.fd);
                 self.release_raw_frame(&entry);
                 self.release_write_slot(&entry);
-                out.push(Completion::new(token, entry.kind, ring_result(raw)));
+                out.push(Completion::new(token, entry.kind, result));
                 if retire_due {
                     assert!(retire_len < retire.len(), "at most one retire per open fd");
                     retire[retire_len] = entry.fd;
@@ -1629,6 +1682,41 @@ fn ring_result(raw: i32) -> Result<u32, IoError> {
     } else {
         Ok(u32::try_from(raw).expect("a non-negative CQE result fits u32"))
     }
+}
+
+#[derive(Debug)]
+enum RingProgress {
+    Resubmit,
+    Terminal(Result<u32, IoError>),
+}
+
+fn ring_progress(entry: &mut OpEntry, raw: i32, retry_bound: u32) -> RingProgress {
+    if ring_should_retry(entry.kind, raw, entry.retries, retry_bound) {
+        entry.retries += 1;
+        return RingProgress::Resubmit;
+    }
+    if !matches!(entry.kind, OpKind::Write) || raw < 0 {
+        return RingProgress::Terminal(ring_result(raw));
+    }
+    let bytes = u32::try_from(raw).expect("a non-negative CQE result fits u32");
+    assert!(
+        bytes <= entry.requested_len,
+        "write CQE reported more bytes than requested"
+    );
+    if bytes == entry.requested_len {
+        return RingProgress::Terminal(Ok(entry.destination_offset + bytes));
+    }
+    if bytes == 0 {
+        if entry.retries >= retry_bound {
+            return RingProgress::Terminal(Err(IoError::from_raw(EIO)));
+        }
+        entry.retries += 1;
+        return RingProgress::Resubmit;
+    }
+    entry.file_offset += u64::from(bytes);
+    entry.destination_offset += bytes;
+    entry.requested_len -= bytes;
+    RingProgress::Resubmit
 }
 
 /// Whether a raw CQE result is a resubmittable transient under the init-time

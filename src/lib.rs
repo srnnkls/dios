@@ -202,7 +202,7 @@ pub mod testing {
     #[cfg(feature = "mock")]
     pub use crate::mock::{
         DirectIoSupport, Injected, MockDriver, MockDriverBuilder, MockRingDriver,
-        MockRingDriverBuilder, MockRingObservation, ReadAttempt,
+        MockRingDriverBuilder, MockRingObservation, ReadAttempt, WriteAttempt,
     };
     #[cfg(any(feature = "mock", feature = "bench"))]
     pub use crate::pool::{Clock, FrameState, PageTable, PoolBackend, ReaderCounters};

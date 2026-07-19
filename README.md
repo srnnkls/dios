@@ -32,7 +32,8 @@ let reader = pool.register_reader()?;
 let page = PageId::new(file, 0);
 
 if let Get::Pending(mut token) = pool.get(&reader, page) {
-    loop {
+    let mut polls = 0u32;
+    while polls < 1_000_000 {
         pool.poll();
         match pool.ready(&reader, token) {
             ReadyResult::Ready(frame) => {
@@ -42,6 +43,10 @@ if let Get::Pending(mut token) = pool.get(&reader, page) {
             ReadyResult::NotYet(pending) => token = pending,
             ReadyResult::Err(error) => return Err(error.into()),
         }
+        polls += 1;
+    }
+    if polls == 1_000_000 {
+        return Err("pool read exceeded the polling bound".into());
     }
 }
 # Ok::<(), Box<dyn std::error::Error>>(())

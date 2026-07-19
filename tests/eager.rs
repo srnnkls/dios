@@ -296,9 +296,16 @@ fn a_read_lands_the_file_bytes_in_the_preallocated_frame() {
 
     drv.submit_read(&fd, ReadFrameIdx::new(1), 0)
         .expect("submit within capacity");
+    let mut frame = vec![0u8; FRAME_BYTES as usize];
+    let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = drv.copy_frame(ReadFrameIdx::new(1), &mut frame);
+    }));
+    assert!(
+        rejected.is_err(),
+        "safe frame observation rejects while the queued pread may still mutate it"
+    );
     assert_eq!(drain_one(&drv), Ok(FRAME_BYTES), "a full-frame read");
 
-    let mut frame = vec![0u8; FRAME_BYTES as usize];
     let _ = drv.copy_frame(ReadFrameIdx::new(1), &mut frame);
     assert_eq!(
         frame, payload,
