@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::driver::{Attempt, Backend, EagerExecutor, Executor, OpContext, OpKind, MAX_FILES};
 use crate::error::IoError;
+use crate::pool::write_arena::ArenaState;
 use crate::pool::Frames;
 
 const EINTR: i32 = 4;
@@ -21,6 +22,7 @@ const EIO: i32 = 5;
 pub(crate) struct Eager {
     state: Mutex<EagerState>,
     frames: Arc<Frames>,
+    _write_arena: Arc<ArenaState>,
     frame_bytes: u32,
 }
 
@@ -32,7 +34,11 @@ struct EagerState {
 impl Eager {
     pub(crate) const KIND: Backend = Backend::Eager;
 
-    pub(crate) fn new(frames: Arc<Frames>, _queue_capacity: u32) -> Self {
+    pub(crate) fn new(
+        frames: Arc<Frames>,
+        write_arena: Arc<ArenaState>,
+        _queue_capacity: u32,
+    ) -> Self {
         assert!(frames.count() > 0, "frame count must be positive");
         let frame_bytes = frames.granule();
         assert!(frame_bytes > 0, "frame size must be positive");
@@ -43,6 +49,7 @@ impl Eager {
                 files: files.into_boxed_slice(),
             }),
             frames,
+            _write_arena: write_arena,
             frame_bytes,
         }
     }

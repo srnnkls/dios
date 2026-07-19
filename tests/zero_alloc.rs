@@ -92,6 +92,7 @@ fn driver() -> Driver {
         .queue_capacity(4)
         .frames(2)
         .frame_bytes(FRAME_BYTES)
+        .write_slots(1)
         .retry_bound(3)
         .build()
         .expect("the test driver initializes")
@@ -155,6 +156,33 @@ fn a_warm_fsync_submit_and_poll_drain_allocate_nothing() {
     assert_eq!(
         allocations, 0,
         "the fsync completion path allocates nothing after warmup (INV-2 / DIO-G4)"
+    );
+}
+
+#[test]
+fn a_warm_write_slot_submit_and_poll_drain_allocate_nothing() {
+    let path = temp_frame("write");
+    let drv = driver();
+    let fd = open(&drv, &path);
+    let arena = drv.write_arena();
+    let mut out = CompletionBatch::with_capacity(4);
+
+    let mut warm = arena.alloc().expect("warmup staging slot");
+    warm.fill(0x51);
+    drv.submit_write(&fd, warm, 0).expect("warmup write");
+    drain_one(&drv, &mut out);
+
+    let allocations = armed_allocations(|| {
+        let mut slot = arena.alloc().expect("armed staging slot");
+        slot.fill(0xA3);
+        drv.submit_write(&fd, slot, 0)
+            .expect("armed write within capacity");
+        drain_one(&drv, &mut out);
+    });
+
+    assert_eq!(
+        allocations, 0,
+        "write-slot acquire + submit + drain uses only init-time arena/slab storage"
     );
 }
 

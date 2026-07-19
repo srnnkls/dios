@@ -16,12 +16,12 @@ use std::time::Duration;
 
 use crate::completion::CompletionBatch;
 use crate::driver::{
-    Attempt, CompletionSlab, DriverCore, EagerExecutor, Executor, FileHandle, FileId, OpContext,
-    OpKind, OpToken, RingExecutor, Shared, SyncMode, MAX_FILES,
+    next_driver_id, Attempt, CompletionSlab, DriverCore, EagerExecutor, Executor, FileHandle,
+    FileId, OpContext, OpKind, OpToken, RingExecutor, Shared, SyncMode, MAX_FILES,
 };
 use crate::error::{IoError, SubmitError};
 use crate::open::DirectIo;
-use crate::pool::write_arena::{WriteArena, WriteSlot};
+use crate::pool::write_arena::{shared as shared_write_arena, ArenaState, WriteSlot};
 use crate::pool::{Frames, PoolBackend, ReadFrameIdx};
 
 const EINTR: i32 = 4;
@@ -70,6 +70,7 @@ pub struct MockDriverBuilder {
     queue_capacity: u32,
     frames: u32,
     frame_bytes: u32,
+    write_slots: u32,
     retry_bound: u32,
     direct_io_support: DirectIoSupport,
 }
@@ -81,6 +82,7 @@ impl Default for MockDriverBuilder {
             queue_capacity: 1,
             frames: 1,
             frame_bytes: 4096,
+            write_slots: 1,
             retry_bound: 0,
             direct_io_support: DirectIoSupport::Supported,
         }
@@ -113,6 +115,12 @@ impl MockDriverBuilder {
     }
 
     #[must_use]
+    pub fn write_slots(mut self, write_slots: u32) -> Self {
+        self.write_slots = write_slots;
+        self
+    }
+
+    #[must_use]
     pub fn retry_bound(mut self, retry_bound: u32) -> Self {
         self.retry_bound = retry_bound;
         self
@@ -133,6 +141,9 @@ impl MockDriverBuilder {
         assert!(self.queue_capacity > 0, "queue capacity must be positive");
         assert!(self.frames > 0, "frame count must be positive");
         assert!(self.frame_bytes > 0, "frame size must be positive");
+        assert!(self.write_slots > 0, "write slot count must be positive");
+        let id = next_driver_id();
+        let write_arena = shared_write_arena(self.write_slots, self.frame_bytes, id);
         let executor = MockExecutor::new(
             self.seed,
             self.frames,
@@ -147,9 +158,11 @@ impl MockDriverBuilder {
         MockDriver(DriverCore::new(
             shared,
             executor,
+            write_arena,
             self.frames,
             self.retry_bound,
             self.queue_capacity,
+            id,
         ))
     }
 }
@@ -157,6 +170,12 @@ impl MockDriverBuilder {
 /// A seeded in-memory driver used as the deterministic test backend.
 #[derive(Debug)]
 pub struct MockDriver(DriverCore<MockExecutor>);
+
+impl Drop for MockDriver {
+    fn drop(&mut self) {
+        self.0.quiesce();
+    }
+}
 
 impl MockDriver {
     #[must_use]
@@ -330,10 +349,12 @@ impl MockDriver {
         FileHandle::from_id(fd.file_id())
     }
 
-    /// A fresh write-staging arena of `slot_count` granule-aligned slots.
+    /// Borrows the mock driver's fixed write-staging arena.
     #[must_use]
-    pub fn write_arena(&self, slot_count: u32) -> WriteArena {
-        WriteArena::new(slot_count)
+    pub fn write_arena(&self) -> MockWriteArena<'_> {
+        MockWriteArena {
+            state: self.0.write_arena_state(),
+        }
     }
 
     /// Seeds the simulated disk: a clean read of `fd`'s `granule_idx` granule
@@ -347,6 +368,20 @@ impl MockDriver {
     #[must_use]
     pub fn read_attempts_in_order(&self) -> Vec<ReadAttempt> {
         self.0.executor().attempts()
+    }
+}
+
+/// A borrowing view of a [`MockDriver`]'s fixed staging slots.
+#[derive(Debug, Clone, Copy)]
+pub struct MockWriteArena<'driver> {
+    state: &'driver ArenaState,
+}
+
+impl MockWriteArena<'_> {
+    /// Leases a mock staging slot, or `None` when all fixed slots are held.
+    #[must_use]
+    pub fn alloc(&self) -> Option<WriteSlot<'_>> {
+        self.state.alloc()
     }
 }
 
@@ -540,6 +575,7 @@ pub struct MockRingDriverBuilder {
     queue_capacity: u32,
     frames: u32,
     frame_bytes: u32,
+    write_slots: u32,
     retry_bound: u32,
 }
 
@@ -550,6 +586,7 @@ impl Default for MockRingDriverBuilder {
             queue_capacity: 1,
             frames: 1,
             frame_bytes: 4096,
+            write_slots: 1,
             retry_bound: 0,
         }
     }
@@ -581,6 +618,12 @@ impl MockRingDriverBuilder {
     }
 
     #[must_use]
+    pub fn write_slots(mut self, write_slots: u32) -> Self {
+        self.write_slots = write_slots;
+        self
+    }
+
+    #[must_use]
     pub fn retry_bound(mut self, retry_bound: u32) -> Self {
         self.retry_bound = retry_bound;
         self
@@ -594,6 +637,9 @@ impl MockRingDriverBuilder {
         assert!(self.queue_capacity > 0, "queue capacity must be positive");
         assert!(self.frames > 0, "frame count must be positive");
         assert!(self.frame_bytes > 0, "frame size must be positive");
+        assert!(self.write_slots > 0, "write slot count must be positive");
+        let id = next_driver_id();
+        let write_arena = shared_write_arena(self.write_slots, self.frame_bytes, id);
         let executor = MockRingExecutor::new(self.seed, self.frame_bytes, self.queue_capacity);
         let shared = Shared::new(
             CompletionSlab::with_capacity(self.queue_capacity),
@@ -602,9 +648,11 @@ impl MockRingDriverBuilder {
         MockRingDriver(DriverCore::new(
             shared,
             executor,
+            write_arena,
             self.frames,
             self.retry_bound,
             self.queue_capacity,
+            id,
         ))
     }
 }

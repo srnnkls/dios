@@ -41,6 +41,7 @@ fn driver(frames: u32, frame_bytes: u32, queue_capacity: u32) -> Driver {
         .queue_capacity(queue_capacity)
         .frames(frames)
         .frame_bytes(frame_bytes)
+        .write_slots(queue_capacity)
         .retry_bound(3)
         .build()
 }
@@ -227,6 +228,29 @@ fn a_blocking_write_then_ring_read_round_trips() {
     assert_eq!(
         frame, payload,
         "the bytes the blocking write plumbed are read back through the ring"
+    );
+}
+
+#[test]
+fn an_async_write_uses_the_registered_write_arena() {
+    let path = temp_path("fixed-write");
+    std::fs::File::create(&path).expect("pre-create the target file");
+    let drv = driver(1, FRAME_BYTES, 1);
+    let fd = open_existing(&drv, &path, DirectIo::Disabled);
+    let arena = drv.write_arena();
+    let mut slot = arena.alloc().expect("one registered staging slot");
+    slot.fill(0xC7);
+
+    drv.submit_write(&fd, slot, 0)
+        .expect("WRITE_FIXED submit within capacity");
+    assert_eq!(
+        drain_one(&drv),
+        Ok(FRAME_BYTES),
+        "the ring accepts registered buffer index 1 and writes one granule"
+    );
+    assert_eq!(
+        std::fs::read(&path).expect("read the written file"),
+        vec![0xC7; FRAME_BYTES as usize]
     );
 }
 

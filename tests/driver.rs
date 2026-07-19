@@ -24,11 +24,21 @@ const EAGAIN: i32 = 11;
 const EAGAIN: i32 = 35;
 
 fn mock(seed: u64, queue_capacity: u32, frames: u32) -> MockDriver {
+    mock_with_write_slots(seed, queue_capacity, frames, 1)
+}
+
+fn mock_with_write_slots(
+    seed: u64,
+    queue_capacity: u32,
+    frames: u32,
+    write_slots: u32,
+) -> MockDriver {
     MockDriver::builder()
         .seed(seed)
         .queue_capacity(queue_capacity)
         .frames(frames)
         .frame_bytes(FRAME_BYTES)
+        .write_slots(write_slots)
         .retry_bound(3)
         .build()
 }
@@ -99,7 +109,7 @@ fn submit_read_token_is_echoed_in_the_drained_completion() {
 fn write_and_fsync_completions_carry_their_op_kinds() {
     let m = mock(1, 4, 4);
     let fd = open(&m);
-    let arena = m.write_arena(1);
+    let arena = m.write_arena();
     let slot = arena.alloc().expect("one staging slot");
 
     let Ok(write_token) = m.submit_write(&fd, slot, 0) else {
@@ -292,7 +302,7 @@ fn submit_on_a_stale_handle_is_rejected_while_the_reused_slot_still_works() {
 fn a_consumed_write_slot_is_freed_only_at_completion_drain() {
     let m = mock(1, 4, 4);
     let fd = open(&m);
-    let arena = m.write_arena(1);
+    let arena = m.write_arena();
 
     let slot = arena.alloc().expect("one slot");
     let Ok(token) = m.submit_write(&fd, slot, 0) else {
@@ -313,7 +323,7 @@ fn a_consumed_write_slot_is_freed_only_at_completion_drain() {
 #[test]
 fn a_dropped_unsubmitted_write_slot_is_freed_immediately() {
     let m = mock(1, 4, 4);
-    let arena = m.write_arena(1);
+    let arena = m.write_arena();
     {
         let _slot = arena.alloc().expect("one slot");
     }
@@ -325,9 +335,9 @@ fn a_dropped_unsubmitted_write_slot_is_freed_immediately() {
 
 #[test]
 fn a_full_queue_hands_the_write_slot_back_in_the_error_arm() {
-    let m = mock(1, 1, 2);
+    let m = mock_with_write_slots(1, 1, 2, 2);
     let fd = open(&m);
-    let arena = m.write_arena(2);
+    let arena = m.write_arena();
 
     let blocker = m
         .submit_read(&fd, ReadFrameIdx::new(0), 0)
@@ -344,6 +354,43 @@ fn a_full_queue_hands_the_write_slot_back_in_the_error_arm() {
         panic!("the recovered slot resubmits once capacity frees");
     };
     assert_eq!(drain_tokens(&m, 1), vec![token]);
+}
+
+#[test]
+fn a_stale_handle_hands_the_write_slot_back_unchanged() {
+    let m = mock(1, 2, 2);
+    let fd = open(&m);
+    let ghost = m.duplicate_handle(&fd);
+    m.close(fd);
+    let live = open(&m);
+    let arena = m.write_arena();
+    let slot = arena.alloc().expect("one staging slot");
+
+    let Err((SubmitError::StaleHandle, slot)) = m.submit_write(&ghost, slot, 0) else {
+        panic!("the stale generation returns its unconsumed staging slot");
+    };
+    let token = m
+        .submit_write(&live, slot, 0)
+        .expect("the returned slot submits unchanged on the live generation");
+    assert_eq!(drain_tokens(&m, 1), vec![token]);
+}
+
+#[test]
+fn a_foreign_driver_write_slot_panics_before_consumption() {
+    let owner = mock(1, 1, 1);
+    let foreign = mock(2, 1, 1);
+    let fd = open(&foreign);
+    let arena = owner.write_arena();
+    let slot = arena.alloc().expect("owner staging slot");
+
+    let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = foreign.submit_write(&fd, slot, 0);
+    }));
+    assert!(rejected.is_err(), "foreign owner identity is rejected");
+    assert!(
+        arena.alloc().is_some(),
+        "the panic path drops the still-unconsumed slot back to its owner"
+    );
 }
 
 #[test]
@@ -365,7 +412,7 @@ fn eintr_is_resubmitted_internally_on_reads() {
 fn eintr_is_resubmitted_internally_on_writes() {
     let m = mock(1, 4, 4);
     let fd = open(&m);
-    let arena = m.write_arena(1);
+    let arena = m.write_arena();
     let slot = arena.alloc().expect("slot");
     m.inject_next(Injected::Eintr);
     m.inject_next(Injected::Io(EIO));
@@ -450,7 +497,7 @@ fn eagain_is_resubmitted_on_reads() {
 fn eagain_surfaces_as_an_error_on_writes_without_retry() {
     let m = mock(1, 4, 4);
     let fd = open(&m);
-    let arena = m.write_arena(1);
+    let arena = m.write_arena();
     let slot = arena.alloc().expect("slot");
     m.inject_next(Injected::Eagain);
     m.inject_next(Injected::Io(EIO));

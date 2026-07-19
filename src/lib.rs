@@ -120,6 +120,12 @@ pub mod testing {
     /// entering this post-construction test seam.
     #[cfg(feature = "mock")]
     pub trait PoolBuilderTestingExt {
+        /// Builds a pool over the supplied deterministic driver.
+        ///
+        /// # Errors
+        ///
+        /// Returns the pool configuration error when the fixed capacities do
+        /// not satisfy the residency invariants.
         fn build_on(
             self,
             driver: MockDriver,

@@ -22,14 +22,15 @@
 //!     `peak_guards_per_reader`/`max_inflight_reads`/`miss_headroom` -> `build()`
 //!     -> `Result<Pool, PoolConfigError>` (`BelowWatermark`/`MissHeadroomTooSmall`/
 //!     granule variants), `register_reader() -> Result<_, _>`;
-//!   `GRANULE_DEFAULT: u32`; `WriteArena::with_slots(slot_count, granule)`;
+//!   `GRANULE_DEFAULT: u32`; `DriverBuilder::write_slots(slot_count)` and
+//!   `Driver::write_arena()`;
 //!   `WriteSlot: DerefMut<Target = [u8]>`; `ReaderCounters::new()` with
 //!     `record_hit(&self)`/`record_eviction(&self)`/`hits()`/`evictions()`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use dios::driver::{Driver, WriteArena};
+use dios::driver::Driver;
 use dios::testing::{
     Clock, FrameState, PageTable, ReadFrameIdx, ReaderCounters, TestFrames as Frames,
 };
@@ -489,7 +490,12 @@ fn pool_accepts_a_valid_granule() {
 
 #[test]
 fn write_arena_allocs_to_capacity_then_exhausts_then_frees_on_drop() {
-    let arena = WriteArena::with_slots(2, 4096);
+    let driver = Driver::builder()
+        .queue_capacity(2)
+        .write_slots(2)
+        .build()
+        .expect("driver init");
+    let arena = driver.write_arena();
     let a = arena.alloc().expect("first slot");
     let b = arena.alloc().expect("second slot");
     assert!(
@@ -507,7 +513,12 @@ fn write_arena_allocs_to_capacity_then_exhausts_then_frees_on_drop() {
 #[test]
 fn write_slot_is_sector_aligned_granule_sized_and_deref_mut_roundtrips() {
     let granule = 4096u32;
-    let arena = WriteArena::with_slots(1, granule);
+    let driver = Driver::builder()
+        .frame_bytes(granule)
+        .write_slots(1)
+        .build()
+        .expect("driver init");
+    let arena = driver.write_arena();
     let mut slot = arena.alloc().expect("a slot");
 
     assert_eq!(

@@ -10,7 +10,7 @@ use std::ptr::NonNull;
 use crate::pool::SECTOR_BYTES;
 use crate::sync::{AtomicU8, Ordering};
 
-#[cfg(target_os = "linux")]
+#[cfg(all(test, target_os = "linux"))]
 const SECTOR: usize = SECTOR_BYTES as usize;
 
 const HUGEPAGE_BYTES: usize = 2 * 1024 * 1024;
@@ -45,7 +45,7 @@ const MADV_HUGEPAGE: c_int = 14;
 
 /// Residency of one frame. [`FrameState::advance`] admits the residency cycle
 /// `Free → InFlight → Resident → Evicting → Free` (INV-1) plus the miss-abort edge
-/// `InFlight → Free`, and panics on any other edge. [`Frames::abort_inflight`]
+/// `InFlight → Free`, and panics on any other edge. `Frames::abort_inflight`
 /// takes the abort edge for a faulted or EOF-terminated read whose frame was never
 /// published `Resident` nor mapped, so no guard borrows it and the reclamation
 /// stages do not apply.

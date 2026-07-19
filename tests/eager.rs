@@ -10,9 +10,6 @@
 //!    silent bool (scope Constraints).
 //!  * `Driver::copy_frame` is the read-observation seam until T007's `FrameGuard`.
 //!
-//! `WriteSlot`'s aligned backing buffer is T006's, so a data-carrying async
-//! `submit_write` is not exercisable here.
-//!
 //! On Linux `Driver` binds the uring backend (T004) and `src/backend/eager.rs`
 //! does not compile there, so the eager submit path cannot be reached on Linux;
 //! the Linux test covers only the backend-agnostic `src/open.rs` probe, and the
@@ -21,11 +18,11 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+#[cfg(not(target_os = "linux"))]
+use std::time::Duration;
 
 #[cfg(not(target_os = "linux"))]
-use dios::driver::WriteArena;
-#[cfg(not(target_os = "linux"))]
-use dios::driver::{CompletionBatch, Driver, FileHandle, IoMode, SyncMode};
+use dios::driver::{CompletionBatch, Driver, FileHandle, IoMode, SubmitError, SyncMode};
 use dios::testing::{DriverObservation, DriverReadTestingExt, ReadFrameIdx};
 use dios::DirectIo;
 
@@ -49,6 +46,7 @@ fn driver(frames: u32, frame_bytes: u32, queue_capacity: u32) -> Driver {
         .queue_capacity(queue_capacity)
         .frames(frames)
         .frame_bytes(frame_bytes)
+        .write_slots(queue_capacity)
         .retry_bound(3)
         .build()
         .expect("the eager driver initializes")
@@ -114,7 +112,7 @@ fn dropping_the_eager_driver_quiesces_an_admitted_write() {
     std::fs::File::create(&path).expect("pre-create the target file");
     let drv = driver(1, FRAME_BYTES, 1);
     let fd = open_existing(&drv, &path, DirectIo::Disabled);
-    let arena = WriteArena::with_slots(1, FRAME_BYTES);
+    let arena = drv.write_arena();
     let mut slot = arena.alloc().expect("one staging slot is available");
     slot.fill(0xD7);
 
@@ -128,6 +126,124 @@ fn dropping_the_eager_driver_quiesces_an_admitted_write() {
         vec![0xD7; FRAME_BYTES as usize],
         "drop drains admitted eager work before the retained file and staging lease are released"
     );
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn exhausted_alloc_wait_pumps_a_write_and_preserves_its_completion() {
+    let path = temp_path("write-alloc-wait");
+    std::fs::File::create(&path).expect("pre-create the target file");
+    let drv = driver(1, FRAME_BYTES, 1);
+    let fd = open_existing(&drv, &path, DirectIo::Disabled);
+    let arena = drv.write_arena();
+    let mut slot = arena.alloc().expect("one staging slot");
+    slot.fill(0xA7);
+    let token = drv
+        .submit_write(&fd, slot, 0)
+        .expect("the sole staging slot is admitted");
+
+    assert!(arena.alloc().is_none(), "the admitted write owns the slot");
+    let recycled = arena
+        .alloc_wait(Duration::from_secs(1))
+        .expect("the eager waiter pumps its own write to completion");
+    assert_eq!(recycled.len(), FRAME_BYTES as usize);
+    drop(recycled);
+
+    let mut out = CompletionBatch::with_capacity(1);
+    assert_eq!(
+        drv.poll(&mut out),
+        1,
+        "the pumped completion remains visible"
+    );
+    assert_eq!(out.iter().next().expect("one completion").token(), token);
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn alloc_wait_times_out_when_an_unsubmitted_slot_stays_held() {
+    let drv = driver(1, FRAME_BYTES, 1);
+    let arena = drv.write_arena();
+    let held = arena.alloc().expect("one staging slot");
+    let timeout = Duration::from_millis(20);
+    let started = std::time::Instant::now();
+
+    assert!(
+        arena.alloc_wait(timeout).is_none(),
+        "no admitted op can free the slot"
+    );
+    assert!(
+        started.elapsed() >= timeout,
+        "the bounded wait honors its deadline"
+    );
+    drop(held);
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn completion_backlog_saturation_backpressures_then_recovers() {
+    let path = temp_path("write-backlog");
+    std::fs::File::create(&path).expect("pre-create the target file");
+    let drv = driver(1, FRAME_BYTES, 2);
+    let fd = open_existing(&drv, &path, DirectIo::Disabled);
+    let arena = drv.write_arena();
+
+    let first = arena.alloc().expect("first slot");
+    drv.submit_write(&fd, first, 0).expect("first write");
+    let second = arena
+        .alloc_wait(Duration::from_secs(1))
+        .expect("first completion frees the staging slot");
+    drv.submit_write(&fd, second, 0).expect("second write");
+    let third = arena
+        .alloc_wait(Duration::from_secs(1))
+        .expect("second completion frees the staging slot");
+
+    let Err((SubmitError::Full, third)) = drv.submit_write(&fd, third, 0) else {
+        panic!("two preserved completions saturate the fixed admission bound");
+    };
+    let mut out = CompletionBatch::with_capacity(1);
+    assert_eq!(
+        drv.poll(&mut out),
+        1,
+        "public poll drains the oldest backlog entry"
+    );
+    drv.submit_write(&fd, third, 0)
+        .expect("draining one completion restores one admission credit");
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn a_write_slot_from_another_driver_is_rejected_before_consumption() {
+    let path = temp_path("foreign-write-slot");
+    std::fs::File::create(&path).expect("pre-create the target file");
+    let owner = driver(1, FRAME_BYTES, 1);
+    let foreign = driver(1, FRAME_BYTES, 1);
+    let fd = open_existing(&foreign, &path, DirectIo::Disabled);
+    let arena = owner.write_arena();
+    let slot = arena.alloc().expect("owner slot");
+
+    let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = foreign.submit_write(&fd, slot, 0);
+    }));
+    assert!(
+        rejected.is_err(),
+        "cross-driver slots are programmer errors"
+    );
+    assert!(
+        arena.alloc().is_some(),
+        "unwinding returned the unconsumed owner slot"
+    );
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn write_slots_are_aligned_to_the_configured_granule() {
+    let granule = 16 * 1024;
+    let drv = driver(1, granule, 1);
+    let arena = drv.write_arena();
+    let slot = arena.alloc().expect("one staging slot");
+
+    assert_eq!(slot.len(), granule as usize);
+    assert_eq!(slot.as_ptr().addr() % granule as usize, 0);
 }
 
 #[cfg(not(target_os = "linux"))]

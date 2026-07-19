@@ -36,7 +36,7 @@ use crate::backend;
 pub use crate::completion::{Completion, CompletionBatch};
 pub use crate::error::{IoError, SubmitError};
 use crate::open::DirectIo;
-use crate::pool::write_arena::WriteLease;
+use crate::pool::write_arena::{shared as shared_write_arena, ArenaState};
 pub use crate::pool::write_arena::{WriteArena, WriteSlot};
 use crate::pool::{Frames, ReadFrameIdx};
 
@@ -55,6 +55,10 @@ const QUIESCE_IDLE_MAX: u32 = 1_000_000;
 /// rejected by another whose fd slots happen to coincide. Bumped once per
 /// [`DriverCore`] construction — never on the hot path.
 static NEXT_DRIVER_ID: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn next_driver_id() -> u64 {
+    NEXT_DRIVER_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 /// A diagnostic probe of the compiled backend. Op routing binds to the
 /// cfg-selected concrete type (AD-1), never by matching this at runtime.
@@ -77,6 +81,7 @@ pub struct DriverBuilder {
     queue_capacity: u32,
     frames: u32,
     frame_bytes: u32,
+    write_slots: u32,
     retry_bound: u32,
 }
 
@@ -86,6 +91,7 @@ impl Default for DriverBuilder {
             queue_capacity: 1,
             frames: 1,
             frame_bytes: 4096,
+            write_slots: 1,
             retry_bound: 0,
         }
     }
@@ -113,6 +119,13 @@ impl DriverBuilder {
         self
     }
 
+    /// Sets the fixed number of granule-sized write staging slots.
+    #[must_use]
+    pub fn write_slots(mut self, write_slots: u32) -> Self {
+        self.write_slots = write_slots;
+        self
+    }
+
     /// Sets the maximum retries for interrupted or retryable operations.
     #[must_use]
     pub fn retry_bound(mut self, retry_bound: u32) -> Self {
@@ -132,6 +145,7 @@ impl DriverBuilder {
         assert!(self.queue_capacity > 0, "queue capacity must be positive");
         assert!(self.frames > 0, "frame count must be positive");
         assert!(self.frame_bytes > 0, "frame size must be positive");
+        assert!(self.write_slots > 0, "write slot count must be positive");
         let frames = Arc::new(Frames::preallocated(self.frames, self.frame_bytes));
         self.build_with_frames(frames)
     }
@@ -154,10 +168,12 @@ impl DriverBuilder {
             self.frame_bytes,
             "driver and arena frame sizes match"
         );
+        let id = next_driver_id();
+        let write_arena = shared_write_arena(self.write_slots, self.frame_bytes, id);
         #[cfg(target_os = "linux")]
-        let executor = backend::Impl::new(frames, self.queue_capacity)?;
+        let executor = backend::Impl::new(frames, Arc::clone(&write_arena), self.queue_capacity)?;
         #[cfg(not(target_os = "linux"))]
-        let executor = backend::Impl::new(frames, self.queue_capacity);
+        let executor = backend::Impl::new(frames, Arc::clone(&write_arena), self.queue_capacity);
         let shared = Shared::new(
             CompletionSlab::with_capacity(self.queue_capacity),
             self.queue_capacity,
@@ -165,9 +181,11 @@ impl DriverBuilder {
         Ok(Driver(DriverCore::new(
             shared,
             executor,
+            write_arena,
             self.frames,
             self.retry_bound,
             self.queue_capacity,
+            id,
         )))
     }
 }
@@ -180,6 +198,27 @@ impl Driver {
     #[must_use]
     pub fn builder() -> DriverBuilder {
         DriverBuilder::default()
+    }
+
+    /// Borrows this driver's fixed, registered write-staging arena.
+    #[must_use]
+    pub fn write_arena(&self) -> WriteArena<'_> {
+        WriteArena::new(self)
+    }
+
+    pub(crate) fn alloc_write_slot(&self) -> Option<WriteSlot<'_>> {
+        self.0.write_arena.alloc()
+    }
+
+    pub(crate) fn alloc_write_slot_wait(&self, timeout: Duration) -> Option<WriteSlot<'_>> {
+        #[cfg(target_os = "linux")]
+        {
+            self.0.alloc_write_slot_wait_ring(timeout)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.0.alloc_write_slot_wait(timeout)
+        }
     }
 
     /// Opens an existing file read-write, applying the requested direct-I/O
@@ -732,7 +771,7 @@ pub(crate) struct OpEntry {
     destination_offset: u32,
     requested_len: u32,
     raw_frame_lease: bool,
-    lease: Option<WriteLease>,
+    write_slot: Option<u32>,
     retries: u32,
 }
 
@@ -800,6 +839,7 @@ pub(crate) struct Shared {
     slab: CompletionSlab<OpEntry>,
     files: FileTable,
     ready: VecDeque<u32>,
+    completion_backlog: VecDeque<Completion>,
 }
 
 impl Shared {
@@ -808,6 +848,7 @@ impl Shared {
             slab,
             files: FileTable::new(),
             ready: VecDeque::with_capacity(ready_capacity as usize),
+            completion_backlog: VecDeque::with_capacity(ready_capacity as usize),
         }
     }
 }
@@ -823,6 +864,7 @@ impl Shared {
 pub(crate) struct DriverCore<E> {
     inner: Mutex<Shared>,
     executor: E,
+    write_arena: Arc<ArenaState>,
     frames: u32,
     retry_bound: u32,
     queue_capacity: u32,
@@ -834,18 +876,21 @@ impl<E> DriverCore<E> {
     pub(crate) fn new(
         shared: Shared,
         executor: E,
+        write_arena: Arc<ArenaState>,
         frames: u32,
         retry_bound: u32,
         queue_capacity: u32,
+        id: u64,
     ) -> Self {
         Self {
             inner: Mutex::new(shared),
             executor,
+            write_arena,
             frames,
             retry_bound,
             queue_capacity,
             raw_read_inflight: (0..frames).map(|_| AtomicBool::new(false)).collect(),
-            id: NEXT_DRIVER_ID.fetch_add(1, Ordering::Relaxed),
+            id,
         }
     }
 
@@ -855,6 +900,10 @@ impl<E> DriverCore<E> {
 
     pub(crate) fn executor(&self) -> &E {
         &self.executor
+    }
+
+    pub(crate) fn write_arena_state(&self) -> &ArenaState {
+        &self.write_arena
     }
 
     fn lock(&self) -> MutexGuard<'_, Shared> {
@@ -991,7 +1040,7 @@ impl<E: Executor> DriverCore<E> {
             destination_offset,
             requested_len,
             raw_frame_lease,
-            lease: None,
+            write_slot: None,
             retries: 0,
         };
         Ok(self.commit(&mut shared, slot, entry))
@@ -1003,6 +1052,7 @@ impl<E: Executor> DriverCore<E> {
         buf: WriteSlot<'arena>,
         offset: u64,
     ) -> Result<OpToken, (SubmitError, WriteSlot<'arena>)> {
+        buf.assert_owner(self.id);
         if let IoMode::Direct(alignment) = fd.io_mode() {
             assert!(
                 alignment.check(offset).is_ok(),
@@ -1023,7 +1073,7 @@ impl<E: Executor> DriverCore<E> {
                     destination_offset: 0,
                     requested_len,
                     raw_frame_lease: false,
-                    lease: Some(buf.into_lease()),
+                    write_slot: Some(buf.into_index()),
                     retries: 0,
                 };
                 Ok(self.commit(&mut shared, slot, entry))
@@ -1048,7 +1098,7 @@ impl<E: Executor> DriverCore<E> {
             destination_offset: 0,
             requested_len: 0,
             raw_frame_lease: false,
-            lease: None,
+            write_slot: None,
             retries: 0,
         };
         Ok(self.commit(&mut shared, slot, entry))
@@ -1060,7 +1110,13 @@ impl<E: Executor> DriverCore<E> {
     fn admit(&self, shared: &mut Shared, fd: FileId) -> Result<u32, SubmitError> {
         self.assert_own(fd);
         if shared.files.is_live(fd) {
-            shared.slab.reserve().ok_or(SubmitError::Full)
+            let retained = u32::try_from(shared.completion_backlog.len())
+                .expect("completion backlog length fits u32");
+            if shared.files.total_inflight() + retained >= self.queue_capacity {
+                Err(SubmitError::Full)
+            } else {
+                shared.slab.reserve().ok_or(SubmitError::Full)
+            }
         } else {
             Err(SubmitError::StaleHandle)
         }
@@ -1089,7 +1145,7 @@ impl<E: EagerExecutor> DriverCore<E> {
             "poll requires a non-empty completion batch"
         );
         out.reset();
-        let mut drained = 0usize;
+        let mut drained = self.drain_completion_backlog(out);
         while drained < out.capacity() {
             let Some((slot, kind, context)) = self.prepare_next() else {
                 break;
@@ -1099,6 +1155,24 @@ impl<E: EagerExecutor> DriverCore<E> {
             drained += 1;
         }
         drained
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) fn alloc_write_slot_wait(&self, timeout: Duration) -> Option<WriteSlot<'_>> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(slot) = self.write_arena.alloc() {
+                return Some(slot);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            if self.pump_one_to_backlog() {
+                continue;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            self.write_arena.wait_for_release(remaining);
+        }
     }
 
     pub(crate) fn poll_wait(&self, out: &mut CompletionBatch, timeout: Duration) -> usize {
@@ -1152,15 +1226,13 @@ impl<E: EagerExecutor> DriverCore<E> {
             ),
             OpKind::Fsync => OpContext::fsync(entry.fd),
             OpKind::Write => {
-                let lease = entry
-                    .lease
-                    .as_ref()
-                    .expect("an async write retains its staging lease");
-                let (source, len) = lease.region();
-                assert_eq!(len, entry.requested_len, "write lease length stays stable");
-                // SAFETY: the lease remains owned by this occupied slab entry
-                // until `publish`; no other operation can reclaim the slot or
-                // mutate the consumed staging region meanwhile.
+                let write_slot = entry
+                    .write_slot
+                    .expect("an async write retains a staging slot index");
+                let (source, len) = self.write_arena.region(write_slot);
+                assert_eq!(len, entry.requested_len, "write slot length stays stable");
+                // SAFETY: the occupied slab entry retains the slot's free bit
+                // until publish, and the driver-owned arena outlives execution.
                 let write_buf = unsafe { std::slice::from_raw_parts(source, len as usize) };
                 OpContext::write(entry.fd, entry.file_offset, write_buf)
             }
@@ -1206,11 +1278,43 @@ impl<E: EagerExecutor> DriverCore<E> {
             let (token, entry) = shared.slab.reclaim(slot);
             let retire_due = shared.files.on_complete(entry.fd);
             self.release_raw_frame(&entry);
-            if let Some(lease) = entry.lease {
-                lease.release();
-            }
+            self.release_write_slot(&entry);
             let result = outcome.map_err(IoError::from_raw);
             out.push(Completion::new(token, entry.kind, result));
+            retire_due.then_some(entry.fd)
+        };
+        if let Some(fd) = retiring {
+            self.retire(fd);
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn pump_one_to_backlog(&self) -> bool {
+        let Some((slot, kind, context)) = self.prepare_next() else {
+            return false;
+        };
+        let outcome = self.execute(kind, context.requested_len, context);
+        self.publish_to_backlog(slot, outcome);
+        true
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn publish_to_backlog(&self, slot: u32, outcome: Result<u32, i32>) {
+        let retiring = {
+            let mut shared = self.lock();
+            let (token, entry) = shared.slab.reclaim(slot);
+            let retire_due = shared.files.on_complete(entry.fd);
+            self.release_raw_frame(&entry);
+            self.release_write_slot(&entry);
+            assert!(
+                shared.completion_backlog.len() < self.queue_capacity as usize,
+                "completion backlog stays within the init-time admission bound"
+            );
+            shared.completion_backlog.push_back(Completion::new(
+                token,
+                entry.kind,
+                outcome.map_err(IoError::from_raw),
+            ));
             retire_due.then_some(entry.fd)
         };
         if let Some(fd) = retiring {
@@ -1283,12 +1387,16 @@ impl<E: RingExecutor> DriverCore<E> {
             "poll requires a non-empty completion batch"
         );
         out.reset();
-        let cap = u32::try_from(out.capacity()).expect("batch capacity fits u32");
+        let backlog = self.drain_completion_backlog(out);
+        if backlog == out.capacity() {
+            return backlog;
+        }
+        let cap = u32::try_from(out.capacity() - backlog).expect("batch capacity fits u32");
         let filled = self.fill_ring(cap);
         if filled > 0 {
             self.executor.submit();
         }
-        self.reap_ring(out)
+        backlog + self.reap_ring(out, cap)
     }
 
     pub(crate) fn poll_wait_ring(&self, out: &mut CompletionBatch, timeout: Duration) -> usize {
@@ -1297,10 +1405,29 @@ impl<E: RingExecutor> DriverCore<E> {
             "poll requires a non-empty completion batch"
         );
         out.reset();
+        let backlog = self.drain_completion_backlog(out);
+        if backlog > 0 {
+            return backlog;
+        }
         let cap = u32::try_from(out.capacity()).expect("batch capacity fits u32");
         let filled = self.fill_ring(cap);
         self.executor.submit_and_wait(filled.max(1), timeout);
-        self.reap_ring(out)
+        self.reap_ring(out, cap)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn alloc_write_slot_wait_ring(&self, timeout: Duration) -> Option<WriteSlot<'_>> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(slot) = self.write_arena.alloc() {
+                return Some(slot);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            self.write_arena.wait_for_release(remaining);
+        }
     }
 
     /// Prepare (locked): drain ready slots into SQEs, tagging each with its slab
@@ -1328,12 +1455,11 @@ impl<E: RingExecutor> DriverCore<E> {
                 }
                 OpKind::Fsync => self.executor.push_fsync(user_data, fd_slot),
                 OpKind::Write => {
-                    let lease = entry
-                        .lease
-                        .as_ref()
-                        .expect("an async write retains its staging lease");
-                    let (source, len) = lease.region();
-                    assert_eq!(len, entry.requested_len, "write lease length stays stable");
+                    let write_slot = entry
+                        .write_slot
+                        .expect("an async write retains a staging slot index");
+                    let (source, len) = self.write_arena.region(write_slot);
+                    assert_eq!(len, entry.requested_len, "write slot length stays stable");
                     self.executor
                         .push_write(user_data, fd_slot, source, entry.file_offset, len);
                 }
@@ -1350,8 +1476,8 @@ impl<E: RingExecutor> DriverCore<E> {
     /// drops the in-flight count (progressing a deferred close), releases the
     /// write lease, and emits the completion. Retires run after the lock is
     /// released.
-    fn reap_ring(&self, out: &mut CompletionBatch) -> usize {
-        let limit = u32::try_from(out.capacity()).expect("batch capacity fits u32");
+    fn reap_ring(&self, out: &mut CompletionBatch, limit: u32) -> usize {
+        assert!(limit > 0, "ring reap limit is positive");
         let retry_bound = self.retry_bound;
         let mut retire = [FileId::new(0, 0, 0); MAX_FILES as usize];
         let mut retire_len = 0usize;
@@ -1370,9 +1496,7 @@ impl<E: RingExecutor> DriverCore<E> {
                 let (token, entry) = shared.slab.reclaim(slot);
                 let retire_due = shared.files.on_complete(entry.fd);
                 self.release_raw_frame(&entry);
-                if let Some(lease) = entry.lease {
-                    lease.release();
-                }
+                self.release_write_slot(&entry);
                 out.push(Completion::new(token, entry.kind, ring_result(raw)));
                 if retire_due {
                     assert!(retire_len < retire.len(), "at most one retire per open fd");
@@ -1411,6 +1535,25 @@ impl<E: RingExecutor> DriverCore<E> {
 }
 
 impl<E> DriverCore<E> {
+    fn drain_completion_backlog(&self, out: &mut CompletionBatch) -> usize {
+        let mut shared = self.lock();
+        let mut drained = 0usize;
+        while drained < out.capacity() {
+            let Some(completion) = shared.completion_backlog.pop_front() else {
+                break;
+            };
+            out.push(completion);
+            drained += 1;
+        }
+        drained
+    }
+
+    fn release_write_slot(&self, entry: &OpEntry) {
+        if let Some(slot) = entry.write_slot {
+            self.write_arena.release(slot);
+        }
+    }
+
     fn release_raw_frame(&self, entry: &OpEntry) {
         if entry.raw_frame_lease {
             let was_inflight =

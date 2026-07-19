@@ -6,9 +6,7 @@
 
 use std::path::Path;
 
-use dios::driver::{
-    CompletionBatch, Driver, FileHandle, OpToken, SubmitError, WriteArena, WriteSlot,
-};
+use dios::driver::{CompletionBatch, Driver, FileHandle, OpToken, SubmitError, WriteSlot};
 #[cfg(feature = "mock")]
 use dios::mock::{DirectIoSupport, MockDriver};
 #[cfg(feature = "mock")]
@@ -33,6 +31,7 @@ fn configured_driver() -> Result<Driver, IoError> {
         .queue_capacity(1)
         .frames(1)
         .frame_bytes(GRANULE)
+        .write_slots(1)
         .build()
 }
 
@@ -48,7 +47,8 @@ fn open_driver_file(
     driver.open(path, direct_io)
 }
 
-fn advanced_driver_contract(driver: &Driver, file: &FileHandle, arena: &WriteArena) {
+fn advanced_driver_contract(driver: &Driver, file: &FileHandle) {
+    let arena = driver.write_arena();
     let slot = arena.alloc().expect("the fixture reserves a staging slot");
     let submitted: Result<OpToken, (SubmitError, WriteSlot<'_>)> =
         driver.submit_write(file, slot, 0);
@@ -133,7 +133,7 @@ fn public_signatures_preserve_the_existing_residency_adt() {
     }
 
     let inspect_signature: fn(Get<'_>) = inspect;
-    let driver_contract_signature: fn(&Driver, &FileHandle, &WriteArena) = advanced_driver_contract;
+    let driver_contract_signature: fn(&Driver, &FileHandle) = advanced_driver_contract;
     let build_pool_signature: fn() -> Result<Pool, PoolBuildError> = configured_pool;
     let open_pool_file_signature: fn(&Pool, &Path) -> Result<FileId, IoError> = open_pool_file;
     let open_driver_file_signature: fn(&Driver, &Path, DirectIo) -> Result<FileHandle, IoError> =

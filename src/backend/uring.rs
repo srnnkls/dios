@@ -20,6 +20,7 @@ use io_uring::{opcode, squeue, types, IoUring};
 
 use crate::driver::{Backend, Executor, OpKind, RingExecutor, MAX_FILES};
 use crate::error::IoError;
+use crate::pool::write_arena::ArenaState;
 use crate::pool::Frames;
 use crate::pool::ReadFrameIdx;
 
@@ -40,6 +41,7 @@ struct Iovec {
 pub(crate) struct Uring {
     ring: IoUring,
     frames: Arc<Frames>,
+    _write_arena: Arc<ArenaState>,
     files: Mutex<Box<[Option<File>]>>,
     frame_bytes: u32,
 }
@@ -55,7 +57,11 @@ impl std::fmt::Debug for Uring {
 impl Uring {
     pub(crate) const KIND: Backend = Backend::Uring;
 
-    pub(crate) fn new(frames: Arc<Frames>, queue_capacity: u32) -> Result<Self, IoError> {
+    pub(crate) fn new(
+        frames: Arc<Frames>,
+        write_arena: Arc<ArenaState>,
+        queue_capacity: u32,
+    ) -> Result<Self, IoError> {
         assert!(frames.count() > 0, "frame count must be positive");
         let frame_bytes = frames.granule();
         assert!(frame_bytes > 0, "frame size must be positive");
@@ -66,16 +72,21 @@ impl Uring {
         ring.submitter()
             .register_files_sparse(MAX_FILES)
             .map_err(IoError::from)?;
-        let iov = Iovec {
-            iov_base: frames.base_ptr().cast(),
-            iov_len: frames.span_len(),
-        };
-        // SAFETY: a one-element slice over the on-stack iovec; `register_buffers`
-        // reads it only for the duration of the call.
-        let bufs = unsafe { std::slice::from_raw_parts(std::ptr::from_ref(&iov).cast(), 1) };
-        // SAFETY: `Iovec` is layout-compatible with `libc::iovec`; the slab keeps a
-        // fixed address and the ring drops before it (declaration order), so the
-        // registered buffer stays valid for every op the ring issues.
+        let iov = [
+            Iovec {
+                iov_base: frames.base_ptr().cast(),
+                iov_len: frames.span_len(),
+            },
+            Iovec {
+                iov_base: write_arena.base_ptr().cast(),
+                iov_len: write_arena.span_len(),
+            },
+        ];
+        // SAFETY: `Iovec` is layout-compatible with `libc::iovec` and the array
+        // is live for this slice borrow.
+        let bufs = unsafe { std::slice::from_raw_parts(iov.as_ptr().cast(), iov.len()) };
+        // SAFETY: both arenas keep fixed addresses and the ring drops before
+        // them, so registered buffer indexes 0 and 1 remain valid for every op.
         unsafe { ring.submitter().register_buffers(bufs) }.map_err(IoError::from)?;
 
         let mut files = Vec::with_capacity(MAX_FILES as usize);
@@ -83,6 +94,7 @@ impl Uring {
         Ok(Self {
             ring,
             frames,
+            _write_arena: write_arena,
             files: Mutex::new(files.into_boxed_slice()),
             frame_bytes,
         })
@@ -216,7 +228,7 @@ impl RingExecutor for Uring {
             "a leased staging slot has a live pointer"
         );
         assert!(requested_len > 0, "a write transfers a non-empty slot");
-        let entry = opcode::Write::new(types::Fixed(fd_slot), source, requested_len)
+        let entry = opcode::WriteFixed::new(types::Fixed(fd_slot), source, requested_len, 1)
             .offset(file_offset)
             .build()
             .user_data(user_data);
