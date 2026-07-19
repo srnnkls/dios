@@ -328,7 +328,7 @@ mod tests {
 
         assert_eq!(
             entry.get_opcode(),
-            opcode::WriteFixed::CODE,
+            u32::from(opcode::WriteFixed::CODE),
             "ordinary WRITE does not prove the registered staging arena is used"
         );
         assert_eq!(entry.get_user_data(), 7, "the slab slot routes the CQE");
