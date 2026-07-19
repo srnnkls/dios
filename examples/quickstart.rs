@@ -6,9 +6,9 @@ use dios::{DirectIo, Get, IoError, PageId, PendingToken, Pool, ReaderCtx, ReadyR
 
 const POLLS_MAX: u32 = 64;
 
-enum ReadState {
+enum ReadState<'pool> {
     Lookup,
-    Waiting(PendingToken),
+    Waiting(PendingToken<'pool>),
 }
 
 enum ReadError {
@@ -57,7 +57,11 @@ fn main() {
     drop(pool);
 }
 
-fn read_page(pool: &Pool, reader: &ReaderCtx<'_>, page: PageId) -> Result<(), ReadError> {
+fn read_page<'pool>(
+    pool: &'pool Pool,
+    reader: &'pool ReaderCtx<'pool>,
+    page: PageId,
+) -> Result<(), ReadError> {
     let mut state = ReadState::Lookup;
     for _ in 0..POLLS_MAX {
         state = match state {

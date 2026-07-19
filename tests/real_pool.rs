@@ -32,7 +32,7 @@ fn pool() -> Pool {
         .expect("a watermark-satisfying real pool")
 }
 
-fn pending(outcome: Get<'_>) -> PendingToken {
+fn pending(outcome: Get<'_>) -> PendingToken<'_> {
     match outcome {
         Get::Pending(token) => token,
         Get::Hit(_) => panic!("a first lookup of an uncached extent cannot hit"),
@@ -40,7 +40,11 @@ fn pending(outcome: Get<'_>) -> PendingToken {
     }
 }
 
-fn admit_pending(pool: &Pool, reader: &ReaderCtx<'_>, page: PageId) -> PendingToken {
+fn admit_pending<'pool>(
+    pool: &'pool Pool,
+    reader: &'pool ReaderCtx<'pool>,
+    page: PageId,
+) -> PendingToken<'pool> {
     for _ in 0..POLLS_MAX {
         match pool.get(reader, page) {
             Get::Pending(token) => return token,
@@ -56,7 +60,7 @@ fn admit_pending(pool: &Pool, reader: &ReaderCtx<'_>, page: PageId) -> PendingTo
 fn ready<'pool>(
     pool: &'pool Pool,
     reader: &'pool ReaderCtx<'pool>,
-    mut token: PendingToken,
+    mut token: PendingToken<'pool>,
 ) -> FrameGuard<'pool> {
     for _ in 0..POLLS_MAX {
         match pool.ready(reader, token) {

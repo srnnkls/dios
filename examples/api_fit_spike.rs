@@ -86,7 +86,7 @@ fn assert_frame_fill(guard: &FrameGuard<'_>, fill: u8) {
 fn drive_ready<'pool>(
     pool: &'pool Pool<MockDriver>,
     reader: &'pool ReaderCtx<'pool>,
-    token: PendingToken,
+    token: PendingToken<'pool>,
 ) -> FrameGuard<'pool> {
     let mut token = token;
     for _ in 0..READY_POLLS_MAX {

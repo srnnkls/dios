@@ -10,7 +10,6 @@
     not(any(feature = "mock", feature = "bench")),
     expect(
         unreachable_pub,
-        unnameable_types,
         reason = "structural pool probes are public only through the feature-gated testing module"
     )
 )]
@@ -30,7 +29,7 @@ pub use pool::loom_model;
 
 #[cfg(feature = "mock")]
 #[doc(hidden)]
-pub mod mock;
+mod mock;
 
 /// Deterministic backends and structural observation seams for tests.
 #[cfg(any(feature = "mock", feature = "bench"))]
@@ -143,7 +142,7 @@ pub mod testing {
     }
 
     /// Narrow control-plane seams for deterministic residency tests.
-    pub trait PoolTestingExt<D: PoolBackend> {
+    pub trait PoolTestingExt {
         fn register_file(&self, file: crate::driver::FileHandle);
         fn frame_state(&self, frame: ReadFrameIdx) -> FrameState;
         fn pin<'ctx>(
@@ -154,37 +153,54 @@ pub mod testing {
         fn insert_resident_frame(&self, page: crate::pool::PageId, fill: u8) -> ReadFrameIdx;
         fn evict_frame(&self, page: crate::pool::PageId) -> ReadFrameIdx;
         fn clock_reference_stores(&self) -> u64;
+        fn pending_waiters(&self, token: &crate::pool::PendingToken<'_>) -> u32;
     }
 
-    impl<D: PoolBackend> PoolTestingExt<D> for crate::pool::Pool<D> {
-        fn register_file(&self, file: crate::driver::FileHandle) {
-            self.register_file_internal(file);
-        }
+    macro_rules! impl_pool_testing_ext {
+        ($backend:ty) => {
+            impl PoolTestingExt for crate::pool::Pool<$backend> {
+                fn register_file(&self, file: crate::driver::FileHandle) {
+                    self.register_file_internal(file);
+                }
 
-        fn frame_state(&self, frame: ReadFrameIdx) -> FrameState {
-            self.frame_state_internal(frame)
-        }
+                fn frame_state(&self, frame: ReadFrameIdx) -> FrameState {
+                    self.frame_state_internal(frame)
+                }
 
-        fn pin<'ctx>(
-            &'ctx self,
-            reader: &'ctx crate::pool::ReaderCtx<'_>,
-            page: crate::pool::PageId,
-        ) -> Option<crate::pool::FrameGuard<'ctx>> {
-            self.pin_internal(reader, page)
-        }
+                fn pin<'ctx>(
+                    &'ctx self,
+                    reader: &'ctx crate::pool::ReaderCtx<'_>,
+                    page: crate::pool::PageId,
+                ) -> Option<crate::pool::FrameGuard<'ctx>> {
+                    self.pin_internal(reader, page)
+                }
 
-        fn insert_resident_frame(&self, page: crate::pool::PageId, fill: u8) -> ReadFrameIdx {
-            self.insert_resident_frame_internal(page, fill)
-        }
+                fn insert_resident_frame(
+                    &self,
+                    page: crate::pool::PageId,
+                    fill: u8,
+                ) -> ReadFrameIdx {
+                    self.insert_resident_frame_internal(page, fill)
+                }
 
-        fn evict_frame(&self, page: crate::pool::PageId) -> ReadFrameIdx {
-            self.evict_frame_internal(page)
-        }
+                fn evict_frame(&self, page: crate::pool::PageId) -> ReadFrameIdx {
+                    self.evict_frame_internal(page)
+                }
 
-        fn clock_reference_stores(&self) -> u64 {
-            self.clock_reference_stores_internal()
-        }
+                fn clock_reference_stores(&self) -> u64 {
+                    self.clock_reference_stores_internal()
+                }
+
+                fn pending_waiters(&self, token: &crate::pool::PendingToken<'_>) -> u32 {
+                    self.pending_waiters_internal(token)
+                }
+            }
+        };
     }
+
+    impl_pool_testing_ext!(crate::driver::Driver);
+    #[cfg(feature = "mock")]
+    impl_pool_testing_ext!(MockDriver);
 
     /// Mock-only access to deterministic fault injection and observations.
     #[cfg(feature = "mock")]
@@ -202,10 +218,10 @@ pub mod testing {
     #[cfg(feature = "mock")]
     pub use crate::mock::{
         DirectIoSupport, Injected, MockDriver, MockDriverBuilder, MockRingDriver,
-        MockRingDriverBuilder, MockRingObservation, ReadAttempt, WriteAttempt,
+        MockRingDriverBuilder, MockRingObservation, MockWriteArena, ReadAttempt, WriteAttempt,
     };
     #[cfg(any(feature = "mock", feature = "bench"))]
-    pub use crate::pool::{Clock, FrameState, PageTable, PoolBackend, ReaderCounters};
+    pub use crate::pool::{Clock, FrameState, PageTable, ReaderCounters};
 }
 
 #[cfg(feature = "bench")]

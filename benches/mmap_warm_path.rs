@@ -212,7 +212,11 @@ fn warm_all_pages(pool: &Pool<MockDriver>, reader: &ReaderCtx<'_>, file_id: dios
     }
 }
 
-fn drive_ready(pool: &Pool<MockDriver>, reader: &ReaderCtx<'_>, token: PendingToken) {
+fn drive_ready<'pool>(
+    pool: &'pool Pool<MockDriver>,
+    reader: &'pool ReaderCtx<'pool>,
+    token: PendingToken<'pool>,
+) {
     let mut token = token;
     for _ in 0..READY_POLLS_MAX {
         match pool.ready(reader, token) {

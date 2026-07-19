@@ -9,6 +9,7 @@
 //! [`Mutex`]. The miss singleflight and the backend seam live in [`miss`].
 
 use std::cell::Cell;
+use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -30,14 +31,14 @@ mod table;
 pub(crate) mod write_arena;
 
 use epoch::{advance_epoch, EvictQueue, ReaderSlot};
-use miss::{MissOutcome, MissTable};
+use miss::{MissEntry, MissInterests, MissOutcome, MissSlot, MissTable};
 
 pub use clock::Clock;
 pub use epoch::{FrameGuard, ReaderCtx};
 pub(crate) use frames::Frames;
 pub use frames::{FrameState, ReadFrameIdx};
 pub(crate) use miss::sealed::Sealed as PoolBackendSealed;
-pub use miss::PoolBackend;
+pub(crate) use miss::PoolBackend;
 pub use table::PageTable;
 
 /// Default frame granule, fixed per store at open and never below the `O_DIRECT`
@@ -92,7 +93,7 @@ pub enum Get<'pool> {
     /// The extent is resident and borrowed for the guard lifetime.
     Hit(FrameGuard<'pool>),
     /// One read is in flight; the token can be checked with [`Pool::ready`].
-    Pending(PendingToken),
+    Pending(PendingToken<'pool>),
     /// No frame can be admitted within the bounded reclaim pass.
     Busy,
 }
@@ -104,7 +105,7 @@ pub enum ReadyResult<'pool> {
     /// The read completed and the extent is now borrowed.
     Ready(FrameGuard<'pool>),
     /// The read remains in flight and returns its waiter token.
-    NotYet(PendingToken),
+    NotYet(PendingToken<'pool>),
     /// The read failed and its frame was returned to the pool.
     Err(IoError),
 }
@@ -113,19 +114,49 @@ pub enum ReadyResult<'pool> {
 /// interest only — the in-flight read still completes and the page becomes
 /// resident. Minted only by the pool's miss path.
 #[derive(Debug)]
-pub struct PendingToken {
+pub struct PendingToken<'pool> {
     page: PageId,
+    slot: MissSlot,
+    generation: NonZeroU64,
+    interests: &'pool MissInterests,
+    active: bool,
 }
 
-impl PendingToken {
-    pub(crate) fn new(page: PageId) -> Self {
-        Self { page }
+impl<'pool> PendingToken<'pool> {
+    fn new(
+        page: PageId,
+        slot: MissSlot,
+        generation: NonZeroU64,
+        interests: &'pool MissInterests,
+    ) -> Self {
+        Self {
+            page,
+            slot,
+            generation,
+            interests,
+            active: true,
+        }
     }
 
     #[must_use]
     /// Returns the page this waiter observes.
     pub fn page(&self) -> PageId {
         self.page
+    }
+
+    fn consume(mut self) -> u32 {
+        let remaining = self.interests.release(self.slot, self.generation);
+        self.active = false;
+        remaining
+    }
+}
+
+impl Drop for PendingToken<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            self.interests.release(self.slot, self.generation);
+            self.active = false;
+        }
     }
 }
 
@@ -463,6 +494,7 @@ pub struct Pool<D = Driver> {
     clock: Clock,
     global_epoch: AtomicU64,
     slots: Box<[ReaderSlot]>,
+    miss_interests: MissInterests,
     control: Mutex<Control>,
     driver: D,
     granule: u32,
@@ -478,6 +510,10 @@ impl Pool<Driver> {
     }
 }
 
+#[expect(
+    private_bounds,
+    reason = "the private sealed bound preserves static dispatch for the two crate-owned pool backends"
+)]
 impl<D: PoolBackend> Pool<D> {
     fn preallocated(config: PoolBuilder, driver: D, frames: Arc<Frames>) -> Self {
         assert_eq!(
@@ -506,6 +542,7 @@ impl<D: PoolBackend> Pool<D> {
             clock: Clock::with_frame_count(config.frame_count),
             global_epoch: AtomicU64::new(0),
             slots,
+            miss_interests: MissInterests::with_capacity(config.frame_count),
             control: Mutex::new(control),
             driver,
             granule: config.granule,
@@ -576,6 +613,7 @@ impl<D: PoolBackend> Pool<D> {
             return Get::Hit(guard);
         }
         let mut control = self.control();
+        control.miss.clean_terminal_zeros(&self.miss_interests);
         if self
             .table
             .lookup(page)
@@ -587,12 +625,18 @@ impl<D: PoolBackend> Pool<D> {
                 None => Get::Busy,
             };
         }
-        if let Some(index) = control.miss.find(page) {
-            match control.miss.entry(index).outcome() {
-                MissOutcome::Pending => return Get::Pending(PendingToken::new(page)),
-                MissOutcome::Failed(_) => control.miss.resolve(index),
-            }
+        if let Some(index) = control.miss.find_pending(page) {
+            let (slot, generation) = control.miss.join(index, &self.miss_interests);
+            return Get::Pending(PendingToken::new(
+                page,
+                slot,
+                generation,
+                &self.miss_interests,
+            ));
         }
+        let Some(miss_slot) = control.miss.admission_slot(&self.miss_interests) else {
+            return Get::Busy;
+        };
         let Some(frame) = self.claim_frame(&mut control) else {
             return Get::Busy;
         };
@@ -601,37 +645,71 @@ impl<D: PoolBackend> Pool<D> {
             self.frames.abort_inflight(frame);
             return Get::Busy;
         };
-        let admitted = control.miss.admit(page, frame, token);
-        debug_assert!(
-            admitted,
-            "the miss table admits within the frame-count bound"
-        );
-        Get::Pending(PendingToken::new(page))
+        let generation = control
+            .miss
+            .admit(miss_slot, page, frame, token, &self.miss_interests);
+        Get::Pending(PendingToken::new(
+            page,
+            miss_slot,
+            generation,
+            &self.miss_interests,
+        ))
     }
 
     /// Re-checks a pending miss: `Ready` once its page is resident, `Err` on a
     /// faulted or EOF-terminated read (frame already freed), else `NotYet` handing
     /// the token back.
+    ///
+    /// # Panics
+    ///
+    /// If `token` was minted by a different pool or no longer names its exact
+    /// live miss generation.
     pub fn ready<'pool>(
         &'pool self,
         reader: &'pool ReaderCtx<'pool>,
-        token: PendingToken,
+        token: PendingToken<'pool>,
     ) -> ReadyResult<'pool> {
-        let page = token.page();
-        if let Some(guard) = self.pin_internal(reader, page) {
-            return ReadyResult::Ready(guard);
-        }
-        let control = self.control();
-        let outcome = control
+        assert!(
+            std::ptr::eq(token.interests, &raw const self.miss_interests),
+            "a pending capability cannot cross pool identity"
+        );
+        let mut control = self.control();
+        let entry = control
             .miss
-            .find(page)
-            .map(|i| control.miss.entry(i).outcome());
-        match outcome {
-            Some(MissOutcome::Failed(errno)) => {
-                debug_assert!(errno != 0, "a fanned-out miss failure carries a real errno");
+            .validate(token.slot, token.generation, token.page);
+        match entry.outcome() {
+            MissOutcome::Pending => ReadyResult::NotYet(token),
+            MissOutcome::Failed(errno) => {
+                let slot = token.slot;
+                let generation = token.generation;
+                let remaining = token.consume();
+                debug_assert_eq!(
+                    self.miss_interests.waiters(slot, generation),
+                    Some(remaining),
+                    "terminal consumption updates the exact generation"
+                );
+                control
+                    .miss
+                    .clean_terminal_zero(slot, generation, &self.miss_interests);
                 ReadyResult::Err(IoError::from_raw(errno))
             }
-            Some(MissOutcome::Pending) | None => ReadyResult::NotYet(token),
+            MissOutcome::Succeeded => {
+                assert_eq!(
+                    self.table.lookup(entry.page()),
+                    Some(entry.frame()),
+                    "a successful terminal record protects its exact mapped frame"
+                );
+                let guard = self
+                    .pin_internal(reader, entry.page())
+                    .expect("the protected successful frame remains pinnable");
+                let slot = token.slot;
+                let generation = token.generation;
+                let _ = token.consume();
+                control
+                    .miss
+                    .clean_terminal_zero(slot, generation, &self.miss_interests);
+                ReadyResult::Ready(guard)
+            }
         }
     }
 
@@ -715,8 +793,17 @@ impl<D: PoolBackend> Pool<D> {
         let mut control = self.control();
         let frame = self
             .table
-            .remove_shared(page)
+            .lookup(page)
             .expect("evict_frame targets a mapped page");
+        assert!(
+            control.miss.prepare_eviction(frame, &self.miss_interests),
+            "a testing eviction cannot bypass live pending-token protection"
+        );
+        assert_eq!(
+            self.table.remove_shared(page),
+            Some(frame),
+            "the control lock keeps the eviction mapping stable"
+        );
         self.frames.advance(frame, FrameState::Evicting);
         control.frame_pages[frame.get() as usize] = None;
         control
@@ -777,6 +864,9 @@ impl<D: PoolBackend> Pool<D> {
             if self.frames.state(victim) != FrameState::Resident {
                 continue;
             }
+            if !control.miss.prepare_eviction(victim, &self.miss_interests) {
+                continue;
+            }
             if let Some(page) = control.frame_pages[victim.get() as usize].take() {
                 self.table.remove_shared(page);
             }
@@ -805,17 +895,12 @@ impl<D: PoolBackend> Pool<D> {
             let entry = miss.entry(index);
             match completion.result() {
                 Ok(0) => {
-                    self.frames.abort_inflight(entry.frame());
-                    miss.fail(index, SHORT_READ_EOF_ERRNO);
+                    self.drain_completions_finish_failure(miss, index, entry, SHORT_READ_EOF_ERRNO);
                 }
                 Ok(bytes) => {
                     let filled = entry.filled() + bytes;
                     if filled >= self.granule {
-                        self.frames.advance(entry.frame(), FrameState::Resident);
-                        self.table.insert_shared(entry.page(), entry.frame());
-                        frame_pages[entry.frame().get() as usize] = Some(entry.page());
-                        let _ = self.clock.reference(entry.frame());
-                        miss.resolve(index);
+                        self.drain_completions_finish_success(miss, frame_pages, index, entry);
                     } else {
                         let (offset, len) = read_span(entry.page(), self.granule, filled);
                         let fd = files[entry.page().file().slot() as usize]
@@ -827,18 +912,56 @@ impl<D: PoolBackend> Pool<D> {
                         {
                             miss.advance_remainder(index, filled, token);
                         } else {
-                            self.frames.abort_inflight(entry.frame());
-                            miss.fail(index, SHORT_READ_EOF_ERRNO);
+                            self.drain_completions_finish_failure(
+                                miss,
+                                index,
+                                entry,
+                                SHORT_READ_EOF_ERRNO,
+                            );
                         }
                     }
                 }
                 Err(err) => {
                     let errno = err.raw_os_error().unwrap_or(SHORT_READ_EOF_ERRNO);
-                    self.frames.abort_inflight(entry.frame());
-                    miss.fail(index, errno);
+                    self.drain_completions_finish_failure(miss, index, entry, errno);
                 }
             }
         }
+    }
+
+    fn drain_completions_finish_success(
+        &self,
+        miss: &mut MissTable,
+        frame_pages: &mut [Option<PageId>],
+        index: usize,
+        entry: MissEntry,
+    ) {
+        self.frames.advance(entry.frame(), FrameState::Resident);
+        self.table.insert_shared(entry.page(), entry.frame());
+        frame_pages[entry.frame().get() as usize] = Some(entry.page());
+        let _ = self.clock.reference(entry.frame());
+        miss.succeed(index);
+        miss.clean_terminal_zero(
+            MissSlot::new(index),
+            entry.generation(),
+            &self.miss_interests,
+        );
+    }
+
+    fn drain_completions_finish_failure(
+        &self,
+        miss: &mut MissTable,
+        index: usize,
+        entry: MissEntry,
+        errno: i32,
+    ) {
+        self.frames.abort_inflight(entry.frame());
+        miss.fail(index, errno);
+        miss.clean_terminal_zero(
+            MissSlot::new(index),
+            entry.generation(),
+            &self.miss_interests,
+        );
     }
 
     fn advance_and_reclaim(&self, control: &mut Control) -> usize {
@@ -854,6 +977,17 @@ impl<D: PoolBackend> Pool<D> {
     #[must_use]
     pub(crate) fn clock_reference_stores_internal(&self) -> u64 {
         self.clock.reference_stores()
+    }
+
+    #[must_use]
+    pub(crate) fn pending_waiters_internal(&self, token: &PendingToken<'_>) -> u32 {
+        assert!(
+            std::ptr::eq(token.interests, &raw const self.miss_interests),
+            "pending waiter observation uses its owning pool"
+        );
+        self.miss_interests
+            .waiters(token.slot, token.generation)
+            .expect("pending waiter observation names the exact generation")
     }
 }
 

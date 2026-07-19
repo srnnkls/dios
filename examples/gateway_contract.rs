@@ -111,7 +111,7 @@ fn assert_frame_fill(guard: &FrameGuard<'_>, fill: u8) {
 fn drive_ready<'pool>(
     pool: &'pool Pool<MockDriver>,
     reader: &'pool ReaderCtx<'pool>,
-    token: PendingToken,
+    token: PendingToken<'pool>,
 ) -> FrameGuard<'pool> {
     let mut token = token;
     for _ in 0..READY_POLLS_MAX {
@@ -158,7 +158,7 @@ struct WorkItem {
 /// the fills in the order items COMPLETED — the interleaving oracle.
 fn drain_gateway(pool: &Pool<MockDriver>, reader: &ReaderCtx<'_>, items: &[WorkItem]) -> Vec<u8> {
     let mut ready_queue: VecDeque<WorkItem> = items.iter().copied().collect();
-    let mut parked: Vec<(u8, PendingToken)> = Vec::with_capacity(items.len());
+    let mut parked: Vec<(u8, PendingToken<'_>)> = Vec::with_capacity(items.len());
     let mut completed: Vec<u8> = Vec::with_capacity(items.len());
 
     while let Some(item) = ready_queue.pop_front() {
@@ -306,10 +306,10 @@ fn error_fanout_to_cancelled_and_live_pair() {
     warm(&pool, &reader, page, 0x99);
 }
 
-fn drive_err(
-    pool: &Pool<MockDriver>,
-    reader: &ReaderCtx<'_>,
-    token: PendingToken,
+fn drive_err<'pool>(
+    pool: &'pool Pool<MockDriver>,
+    reader: &'pool ReaderCtx<'pool>,
+    token: PendingToken<'pool>,
 ) -> dios::IoError {
     let mut token = token;
     for _ in 0..READY_POLLS_MAX {
@@ -380,5 +380,5 @@ fn assert_send<T: Send>(_value: &T) {}
 fn send_able_handles_cross_the_steal_boundary() {
     fn require_send<T: Send>() {}
     require_send::<PageId>();
-    require_send::<PendingToken>();
+    require_send::<PendingToken<'static>>();
 }

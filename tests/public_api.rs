@@ -8,9 +8,7 @@ use std::path::Path;
 
 use dios::driver::{CompletionBatch, Driver, FileHandle, OpToken, SubmitError, WriteSlot};
 #[cfg(feature = "mock")]
-use dios::mock::{DirectIoSupport, MockDriver};
-#[cfg(feature = "mock")]
-use dios::testing::PoolBuilderTestingExt;
+use dios::testing::{DirectIoSupport, MockDriver, PoolBuilderTestingExt};
 use dios::{DirectIo, FileId, Get, IoError, PageId, Pool, PoolBuildError, PoolConfigError};
 
 const GRANULE: u32 = 4096;

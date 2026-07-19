@@ -31,7 +31,7 @@ fn next_page(counter: &Cell<u32>, file: FileId) -> PageId {
 fn drive_ready<'pool>(
     pool: &'pool Pool<MockDriver>,
     reader: &'pool ReaderCtx<'pool>,
-    token: PendingToken,
+    token: PendingToken<'pool>,
 ) -> Option<()> {
     let mut token = token;
     for _ in 0..READY_POLLS_MAX {

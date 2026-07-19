@@ -27,7 +27,7 @@
 //! impl<D: PoolBackend> Pool<D> {
 //!     pub fn register_file(&self, fd: FileHandle);   // route PageId.file() -> this handle (+ base offset)
 //!     pub fn get<'p>(&'p self, reader: &'p ReaderCtx<'p>, page: PageId) -> Get<'p>;
-//!     pub fn ready<'p>(&'p self, reader: &'p ReaderCtx<'p>, token: PendingToken) -> ReadyResult<'p>;
+//!     pub fn ready<'p>(&'p self, reader: &'p ReaderCtx<'p>, token: PendingToken<'p>) -> ReadyResult<'p>;
 //!     pub fn poll(&self) -> usize;   // extends T007 poll: drain driver, InFlight->Resident + map, ready
 //!                                    // tokens (or record fault/short), THEN epoch-advance/reclaim.
 //!     pub fn driver(&self) -> &D;    // borrow the composed driver for test observation
@@ -70,6 +70,7 @@
 //!   * The 64-concurrent-cold-gets overlap bench (<= 2.0x p50 single-miss) and its
 //!     benches/plans/ entry are the IMPLEMENTER's per the bench-driven rule.
 
+use std::panic::AssertUnwindSafe;
 use std::path::Path;
 
 use dios::testing::{
@@ -151,7 +152,7 @@ fn assert_page_bytes(guard: &FrameGuard<'_>, fill: u8) {
 fn drive_ready<'pool>(
     pool: &'pool Pool<MockDriver>,
     reader: &'pool ReaderCtx<'pool>,
-    token: PendingToken,
+    token: PendingToken<'pool>,
 ) -> FrameGuard<'pool> {
     let mut token = token;
     for _ in 0..READY_POLLS_MAX {
@@ -167,7 +168,7 @@ fn drive_ready<'pool>(
     panic!("a submitted miss never readied within the bounded poll budget");
 }
 
-fn expect_pending(outcome: Get<'_>, whose: &str) -> PendingToken {
+fn expect_pending<'pool>(outcome: Get<'pool>, whose: &str) -> PendingToken<'pool> {
     match outcome {
         Get::Pending(token) => token,
         Get::Hit(_) => panic!("{whose}: a cold page cannot hit"),
@@ -356,6 +357,255 @@ fn a_faulted_miss_fans_the_error_to_all_waiters_then_a_fresh_read_of_the_same_pa
         Get::Pending(_) => panic!("the retried page is resident and must hit"),
         Get::Busy => panic!("a resident page is never Busy"),
     }
+}
+
+#[test]
+fn an_early_retry_cannot_steal_the_terminal_error_from_old_waiters() {
+    let frames = 8u32;
+    let mock = a_mock(0xEA_12_1E_70, frames, frames);
+    let file = mock
+        .open(Path::new("miss-early-retry"), DirectIo::Disabled)
+        .expect("mock open");
+    let file_id = file.file_id();
+    mock.seed_page(&file, 6, 0x66);
+    mock.inject_next(Injected::Io(EIO));
+    let pool = pool_on(mock, frames, 1, 1, 3);
+    pool.register_file(file);
+    let reader = pool.register_reader().expect("a reader slot");
+    let page = PageId::new(file_id, 6);
+
+    let old_a = expect_pending(pool.get(&reader, page), "old waiter A");
+    let old_b = expect_pending(pool.get(&reader, page), "old waiter B");
+    pool.poll();
+
+    let retry = expect_pending(pool.get(&reader, page), "early same-page retry");
+    pool.poll();
+
+    for (whose, token) in [("old waiter A", old_a), ("old waiter B", old_b)] {
+        match pool.ready(&reader, token) {
+            ReadyResult::Err(error) => assert_eq!(
+                error.raw_os_error(),
+                Some(EIO),
+                "{whose} remains bound to the original failed generation"
+            ),
+            ReadyResult::Ready(_) => panic!("{whose} stole the retry generation's success"),
+            ReadyResult::NotYet(_) => panic!("{whose}'s original failure is terminal"),
+        }
+    }
+
+    let guard = drive_ready(&pool, &reader, retry);
+    assert_page_bytes(&guard, 0x66);
+}
+
+#[test]
+fn retained_failures_saturate_the_fixed_miss_table_then_recover_after_interest_drops() {
+    let frames = 4u32;
+    let mock = a_mock(0x5A_70_AA_7E, frames, frames);
+    let file = mock
+        .open(Path::new("miss-retained-saturation"), DirectIo::Disabled)
+        .expect("mock open");
+    let file_id = file.file_id();
+    for granule_idx in 0..=frames {
+        mock.seed_page(
+            &file,
+            granule_idx,
+            0x70 | u8::try_from(granule_idx).expect("small fixture index"),
+        );
+    }
+    let pool = pool_on(mock, frames, 1, 1, 3);
+    pool.register_file(file);
+    let reader = pool.register_reader().expect("a reader slot");
+    let mut retained = Vec::with_capacity(frames as usize);
+
+    for granule_idx in 0..frames {
+        pool.driver().inject_next(Injected::Io(EIO));
+        retained.push(expect_pending(
+            pool.get(&reader, PageId::new(file_id, granule_idx)),
+            "retained failure",
+        ));
+        pool.poll();
+    }
+
+    let attempts_before = pool.driver().read_attempts_in_order().len();
+    let recovery_page = PageId::new(file_id, frames);
+    assert!(
+        matches!(pool.get(&reader, recovery_page), Get::Busy),
+        "live terminal interests consume the fixed miss-record capacity"
+    );
+    assert_eq!(
+        pool.driver().read_attempts_in_order().len(),
+        attempts_before,
+        "Busy is decided before claiming a frame or submitting a read"
+    );
+
+    drop(retained.pop());
+    let recovery = expect_pending(
+        pool.get(&reader, recovery_page),
+        "capacity recovery after one interest drops",
+    );
+    let guard = drive_ready(&pool, &reader, recovery);
+    assert_page_bytes(&guard, 0x74);
+
+    for token in retained {
+        match pool.ready(&reader, token) {
+            ReadyResult::Err(error) => assert_eq!(error.raw_os_error(), Some(EIO)),
+            ReadyResult::Ready(_) => panic!("an old retained failure observed a later success"),
+            ReadyResult::NotYet(_) => panic!("a retained failure is terminal"),
+        }
+    }
+}
+
+#[test]
+fn dropping_one_failed_waiter_preserves_the_other_waiters_error() {
+    let frames = 4u32;
+    let mock = a_mock(0xD0_0F_0A_E0, frames, frames);
+    let file = mock
+        .open(Path::new("miss-drop-one-failure"), DirectIo::Disabled)
+        .expect("mock open");
+    let file_id = file.file_id();
+    mock.inject_next(Injected::Io(EIO));
+    let pool = pool_on(mock, frames, 1, 1, 3);
+    pool.register_file(file);
+    let reader = pool.register_reader().expect("a reader slot");
+    let page = PageId::new(file_id, 1);
+
+    let dropped = expect_pending(pool.get(&reader, page), "dropped waiter");
+    let survivor = expect_pending(pool.get(&reader, page), "surviving waiter");
+    pool.poll();
+    drop(dropped);
+
+    match pool.ready(&reader, survivor) {
+        ReadyResult::Err(error) => assert_eq!(error.raw_os_error(), Some(EIO)),
+        ReadyResult::Ready(_) => panic!("the surviving waiter lost its terminal error"),
+        ReadyResult::NotYet(_) => panic!("the surviving waiter's failure is terminal"),
+    }
+}
+
+#[test]
+fn repeated_not_yet_checks_preserve_exactly_one_waiter_interest() {
+    let frames = 4u32;
+    let mock = a_mock(0xA0_71_E7, frames, frames);
+    let file = mock
+        .open(Path::new("miss-not-yet-interest"), DirectIo::Disabled)
+        .expect("mock open");
+    let file_id = file.file_id();
+    let pool = pool_on(mock, frames, 1, 1, 3);
+    pool.register_file(file);
+    let reader = pool.register_reader().expect("a reader slot");
+    let page = PageId::new(file_id, 2);
+    let mut token = expect_pending(pool.get(&reader, page), "not-yet miss");
+
+    assert_eq!(pool.pending_waiters(&token), 1, "get minted one interest");
+    for _ in 0..8 {
+        token = match pool.ready(&reader, token) {
+            ReadyResult::NotYet(handed_back) => handed_back,
+            ReadyResult::Ready(_) => panic!("without poll, the miss cannot be ready"),
+            ReadyResult::Err(_) => panic!("without poll, the miss cannot have failed"),
+        };
+        assert_eq!(
+            pool.pending_waiters(&token),
+            1,
+            "NotYet returns the same capability without decrementing or rejoining"
+        );
+    }
+}
+
+#[test]
+fn a_cross_pool_token_panics_before_the_target_pool_observes_its_page() {
+    let frames = 4u32;
+    let source_mock = a_mock(0x50_0A_CE, frames, frames);
+    let source_file = source_mock
+        .open(Path::new("miss-cross-source"), DirectIo::Disabled)
+        .expect("source mock open");
+    let source_id = source_file.file_id();
+    let source = pool_on(source_mock, frames, 1, 1, 3);
+    source.register_file(source_file);
+    let source_reader = source.register_reader().expect("a source reader slot");
+    let token = expect_pending(
+        source.get(&source_reader, PageId::new(source_id, 1)),
+        "source miss",
+    );
+
+    let target_mock = a_mock(0x7A_A6_E7, frames, frames);
+    let target = pool_on(target_mock, frames, 1, 1, 3);
+    let target_reader = target.register_reader().expect("a target reader slot");
+    let target_attempts_before = target.driver().read_attempts_in_order().len();
+
+    let panic = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let _ = target.ready(&target_reader, token);
+    }));
+    assert!(
+        panic.is_err(),
+        "a pending capability belongs to exactly one pool"
+    );
+    assert_eq!(
+        target.driver().read_attempts_in_order().len(),
+        target_attempts_before,
+        "pool identity is rejected before target-pool miss state is observed or submitted"
+    );
+}
+
+#[test]
+fn a_successful_unconsumed_token_protects_its_exact_frame_until_drop() {
+    let frames = 4u32;
+    let mock = a_mock(0x51_CC_E5_50, frames, frames);
+    let file = mock
+        .open(Path::new("miss-success-interest"), DirectIo::Disabled)
+        .expect("mock open");
+    let file_id = file.file_id();
+    for granule_idx in 0..=(frames * 2) {
+        mock.seed_page(
+            &file,
+            granule_idx,
+            u8::try_from(0x40 + granule_idx).expect("small fixture fill"),
+        );
+    }
+    let pool = pool_on(mock, frames, 1, 1, 3);
+    pool.register_file(file);
+    let reader = pool.register_reader().expect("a reader slot");
+    let held_page = PageId::new(file_id, 0);
+    let held = expect_pending(pool.get(&reader, held_page), "held successful miss");
+    pool.poll();
+
+    for granule_idx in 1..=frames {
+        let page = PageId::new(file_id, granule_idx);
+        let token = loop {
+            match pool.get(&reader, page) {
+                Get::Pending(token) => break token,
+                Get::Busy => {
+                    pool.poll();
+                }
+                Get::Hit(_) => panic!("a new pressure page cannot hit"),
+            }
+        };
+        drop(drive_ready(&pool, &reader, token));
+    }
+
+    match pool.get(&reader, held_page) {
+        Get::Hit(guard) => assert_page_bytes(&guard, 0x40),
+        Get::Pending(_) => panic!("CLOCK evicted a frame protected by terminal waiter interest"),
+        Get::Busy => panic!("a protected resident page cannot be Busy"),
+    }
+
+    drop(held);
+    for granule_idx in (frames + 1)..=(frames * 2) {
+        let page = PageId::new(file_id, granule_idx);
+        let token = loop {
+            match pool.get(&reader, page) {
+                Get::Pending(token) => break token,
+                Get::Busy => {
+                    pool.poll();
+                }
+                Get::Hit(_) => panic!("a new post-drop pressure page cannot hit"),
+            }
+        };
+        drop(drive_ready(&pool, &reader, token));
+    }
+
+    assert!(
+        !matches!(pool.get(&reader, held_page), Get::Hit(_)),
+        "after the last token drops, the successful frame returns to normal CLOCK eviction"
+    );
 }
 
 #[test]
