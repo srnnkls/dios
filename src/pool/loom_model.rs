@@ -12,7 +12,8 @@
 //! the seqlock write and read back after, so the seqlock's Release/Acquire pairing
 //! is what excludes the torn coupling.
 
-use crate::driver::{FileId, ReadFrameIdx};
+use crate::driver::FileId;
+use crate::pool::ReadFrameIdx;
 use crate::sync::{Arc, AtomicU64, Mutex, MutexGuard, Ordering};
 
 use super::epoch::{advance_epoch, EvictQueue, ReaderSlot};

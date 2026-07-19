@@ -13,11 +13,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-use dios::driver::{
-    CompletionBatch, Driver, FileHandle, IoMode, OpToken, OpenHow, ReadFrameIdx, SubmitError,
-    SyncMode,
-};
-use dios::testing::DriverObservation;
+use dios::driver::{CompletionBatch, Driver, FileHandle, IoMode, OpToken, SubmitError, SyncMode};
+use dios::testing::{DriverObservation, DriverReadTestingExt, ReadFrameIdx};
+use dios::DirectIo;
 
 const FRAME_BYTES: u32 = 4096;
 const ENOENT: i32 = 2;
@@ -47,8 +45,8 @@ fn driver(frames: u32, frame_bytes: u32, queue_capacity: u32) -> Driver {
         .build()
 }
 
-fn open_existing(drv: &Driver, path: &Path, how: OpenHow) -> FileHandle {
-    drv.open(path, how)
+fn open_existing(drv: &Driver, path: &Path, direct_io: DirectIo) -> FileHandle {
+    drv.open(path, direct_io)
         .expect("open of a pre-created file succeeds")
 }
 
@@ -164,7 +162,7 @@ fn a_direct_read_lands_the_file_bytes_through_the_ring() {
     let payload: Vec<u8> = (0..FRAME_BYTES).map(|i| (i % 251) as u8).collect();
     std::fs::write(&path, &payload).expect("seed a full frame of known bytes");
     let drv = driver(2, FRAME_BYTES, 4);
-    let fd = open_existing(&drv, &path, OpenHow::read_write().direct());
+    let fd = open_existing(&drv, &path, DirectIo::Preferred);
 
     let retained = direct_read_retained_fd(&path);
     assert_eq!(
@@ -208,7 +206,7 @@ fn a_blocking_write_then_ring_read_round_trips() {
     let path = temp_path("write-read");
     std::fs::File::create(&path).expect("pre-create the target file");
     let drv = driver(1, FRAME_BYTES, 4);
-    let fd = open_existing(&drv, &path, OpenHow::read_write());
+    let fd = open_existing(&drv, &path, DirectIo::Disabled);
 
     let payload: Vec<u8> = (0..FRAME_BYTES).map(|i| (i % 97) as u8).collect();
     drv.write_all_blocking(&fd, &payload, 0)
@@ -237,7 +235,7 @@ fn an_async_fsync_completes_with_a_zero_byte_transfer() {
     let path = temp_path("async-fsync");
     std::fs::write(&path, [0u8; 64]).expect("seed a file");
     let drv = driver(1, FRAME_BYTES, 4);
-    let fd = open_existing(&drv, &path, OpenHow::read_write());
+    let fd = open_existing(&drv, &path, DirectIo::Disabled);
 
     drv.submit_fsync(&fd, SyncMode::Full)
         .expect("submit within capacity");
@@ -260,7 +258,7 @@ fn batched_submits_before_any_poll_all_reap_out_of_order_tolerated() {
         .collect();
     std::fs::write(&path, &contents).expect("seed N distinct frames");
     let drv = driver(N, FRAME_BYTES, N + 2);
-    let fd = open_existing(&drv, &path, OpenHow::read_write());
+    let fd = open_existing(&drv, &path, DirectIo::Disabled);
 
     let mut submitted: HashSet<OpToken> = HashSet::new();
     for f in 0..N {
@@ -320,7 +318,7 @@ fn a_full_queue_backpressures_without_blocking_then_recovers_after_a_poll() {
     let path = temp_path("sq-full");
     std::fs::write(&path, vec![0u8; FRAME_BYTES as usize * 2]).expect("seed two frames");
     let drv = driver(2, FRAME_BYTES, 1);
-    let fd = open_existing(&drv, &path, OpenHow::read_write());
+    let fd = open_existing(&drv, &path, DirectIo::Disabled);
 
     let first = drv
         .submit_read(&fd, ReadFrameIdx::new(0), 0)
@@ -352,7 +350,7 @@ fn a_short_read_at_eof_reports_the_partial_count_through_the_ring() {
     let short_len = 1500u32;
     std::fs::write(&path, vec![0x5Au8; short_len as usize]).expect("seed a sub-frame file");
     let drv = driver(1, FRAME_BYTES, 4);
-    let fd = open_existing(&drv, &path, OpenHow::read_write());
+    let fd = open_existing(&drv, &path, DirectIo::Disabled);
 
     drv.submit_read(&fd, ReadFrameIdx::new(0), 0)
         .expect("submit within capacity");
@@ -369,7 +367,7 @@ fn open_of_a_missing_path_surfaces_enoent() {
     let drv = driver(1, FRAME_BYTES, 4);
 
     let err = drv
-        .open(&path, OpenHow::read_write())
+        .open(&path, DirectIo::Disabled)
         .expect_err("opening a nonexistent path fails");
     assert_eq!(
         err.raw_os_error(),
@@ -384,7 +382,7 @@ fn a_misaligned_read_on_a_direct_handle_panics_before_an_op_issues() {
     let path = temp_path("misaligned");
     std::fs::write(&path, vec![0u8; FRAME_BYTES as usize]).expect("seed a full frame");
     let drv = driver(1, FRAME_BYTES, 4);
-    let fd = open_existing(&drv, &path, OpenHow::read_write().direct());
+    let fd = open_existing(&drv, &path, DirectIo::Preferred);
 
     let IoMode::Direct(sector) = fd.io_mode() else {
         panic!("the bench-host fs must probe a direct O_DIRECT handle for this contract");

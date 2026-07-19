@@ -9,8 +9,9 @@
 //! correctness of the seqlock is pinned by the T006 table tests and the T008 miss
 //! path; the concurrent read/write interleaving proof is T009 loom.
 
-use crate::driver::{FileId, ReadFrameIdx};
+use crate::driver::FileId;
 use crate::pool::PageId;
+use crate::pool::ReadFrameIdx;
 use crate::sync::{fence, spin_loop, AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 /// Under the AD-4 single-writer discipline a read that never observes a stable

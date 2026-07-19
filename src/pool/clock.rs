@@ -4,7 +4,7 @@
 //! invariant. Eviction sweeps a deterministic hand, clearing set bits (spending
 //! their second chance) until it lands on a clear one.
 
-use crate::driver::ReadFrameIdx;
+use crate::pool::ReadFrameIdx;
 use crate::sync::{AtomicBool, AtomicU32, Ordering};
 
 #[derive(Debug)]

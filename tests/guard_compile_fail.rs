@@ -23,21 +23,16 @@
 //! Doctest A — a guard's borrow must not outlive the pool that minted it (INV-6):
 //!
 //! ```compile_fail
-//! use dios::{Driver, OpenHow, PageId, Pool};
-//! fn escapes() -> dios::FrameGuard<'static> {
-//!     let pool = Pool::builder()
-//!         .frame_count(16).granule(4096)
-//!         .max_concurrent_readers(1).peak_guards_per_reader(1)
-//!         .max_inflight_reads(1).miss_headroom(3)
-//!         .build().unwrap();
-//!     let reader = pool.register_reader().unwrap();
-//!     let path = std::env::temp_dir().join("dios_guard_doctest_a.bin");
-//!     std::fs::write(&path, [0u8; 64]).unwrap();
-//!     let driver = Driver::builder().build();
-//!     let file = driver.open(&path, OpenHow::read_write()).unwrap().file_id();
-//!     let page = PageId::new(file, 0);
-//!     pool.insert_resident_frame(page, 0);
-//!     pool.pin(&reader, page).unwrap() // borrows `pool`; cannot escape as 'static
+//! use dios::{FrameGuard, Get, PageId, Pool, ReaderCtx};
+//! fn escapes<'pool>(
+//!     pool: &'pool Pool,
+//!     reader: &'pool ReaderCtx<'pool>,
+//!     page: PageId,
+//! ) -> FrameGuard<'static> {
+//!     match pool.get(reader, page) {
+//!         Get::Hit(guard) => guard, // borrows `pool`; cannot escape as 'static
+//!         Get::Pending(_) | Get::Busy => panic!("the lifetime is the contract"),
+//!     }
 //! }
 //! ```
 //!

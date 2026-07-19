@@ -23,7 +23,9 @@ use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use dios::driver::{CompletionBatch, Driver, FileHandle, OpenHow, ReadFrameIdx, SyncMode};
+use dios::driver::{CompletionBatch, Driver, FileHandle, SyncMode};
+use dios::testing::{DriverReadTestingExt, ReadFrameIdx};
+use dios::DirectIo;
 
 const FRAME_BYTES: u32 = 4096;
 const DRAIN_POLLS_MAX: u32 = 1_000_000;
@@ -96,7 +98,7 @@ fn driver() -> Driver {
 }
 
 fn open(drv: &Driver, path: &Path) -> FileHandle {
-    drv.open(path, OpenHow::read_write())
+    drv.open(path, DirectIo::Disabled)
         .expect("open the seeded file")
 }
 
@@ -220,9 +222,10 @@ fn a_deferred_close_retiring_during_a_poll_drain_allocates_nothing() {
 mod pool_gates {
     use std::path::Path;
 
-    use dios::driver::{OpenHow, ReadFrameIdx};
-    use dios::testing::{FrameState, MockDriver};
-    use dios::{FrameGuard, Get, PageId, Pool, ReaderCtx};
+    use dios::testing::{
+        FrameState, MockDriver, PoolBuilderTestingExt, PoolTestingExt, ReadFrameIdx,
+    };
+    use dios::{DirectIo, FrameGuard, Get, PageId, Pool, ReaderCtx};
 
     use super::armed_allocations;
 
@@ -282,7 +285,7 @@ mod pool_gates {
         let frames = 8u32;
         let mock = a_mock(frames);
         let file = mock
-            .open(Path::new("za-warm-hit"), OpenHow::read_write())
+            .open(Path::new("za-warm-hit"), DirectIo::Disabled)
             .expect("mock open");
         let file_id = file.file_id();
         mock.seed_page(&file, 4, 0xC4);
@@ -310,7 +313,7 @@ mod pool_gates {
         let frames = 8u32;
         let mock = a_mock(frames);
         let file = mock
-            .open(Path::new("za-miss-submit"), OpenHow::read_write())
+            .open(Path::new("za-miss-submit"), DirectIo::Disabled)
             .expect("mock open");
         let file_id = file.file_id();
         for idx in 0..frames {
@@ -340,7 +343,7 @@ mod pool_gates {
         let frames = 8u32;
         let mock = a_mock(frames);
         let file = mock
-            .open(Path::new("za-poll-drain"), OpenHow::read_write())
+            .open(Path::new("za-poll-drain"), DirectIo::Disabled)
             .expect("mock open");
         let file_id = file.file_id();
         mock.seed_page(&file, 2, 0x22);
@@ -371,7 +374,7 @@ mod pool_gates {
         let frames = 4u32;
         let mock = a_mock(frames);
         let file = mock
-            .open(Path::new("za-busy"), OpenHow::read_write())
+            .open(Path::new("za-busy"), DirectIo::Disabled)
             .expect("mock open");
         let file_id = file.file_id();
         for idx in 0..frames {
@@ -431,7 +434,7 @@ mod pool_gates {
         let frames = 8u32;
         let mock = a_mock(frames);
         let file = mock
-            .open(Path::new("za-store-elision"), OpenHow::read_write())
+            .open(Path::new("za-store-elision"), DirectIo::Disabled)
             .expect("mock open");
         let file_id = file.file_id();
         mock.seed_page(&file, 6, 0x66);

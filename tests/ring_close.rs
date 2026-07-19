@@ -17,7 +17,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-use dios::driver::{CompletionBatch, Driver, OpenHow, ReadFrameIdx};
+use dios::driver::{CompletionBatch, Driver};
+use dios::testing::{DriverReadTestingExt, ReadFrameIdx};
+use dios::DirectIo;
 
 const FRAME_BYTES: u32 = 4096;
 const DRAIN_DEADLINE: Duration = Duration::from_secs(5);
@@ -65,7 +67,7 @@ fn deferred_close_through_the_ring_flips_is_closed_only_after_the_in_flight_read
         .retry_bound(3)
         .build();
     let fd = drv
-        .open(&path, OpenHow::read_write())
+        .open(&path, DirectIo::Disabled)
         .expect("open the seeded file");
     let id = fd.file_id();
 

@@ -52,8 +52,13 @@ pub struct CompletionBatch {
 
 impl CompletionBatch {
     /// Allocates a completion batch with a fixed maximum capacity.
+    ///
+    /// # Panics
+    ///
+    /// If `capacity` is zero; every poll must be able to make bounded progress.
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
+        assert!(capacity > 0, "completion batch capacity must be positive");
         Self {
             items: Vec::with_capacity(capacity),
         }

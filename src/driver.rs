@@ -10,6 +10,19 @@
 //! held; the mock synchronises its own injected state internally. Op routing is
 //! never selected by matching a runtime tag (AD-1). Both [`Driver`] and the mock
 //! compose the same core.
+//!
+//! Read placement is owned by [`crate::Pool`], not exposed as a caller-chosen
+//! frame index on the advanced driver:
+//!
+//! ```compile_fail
+//! use dios::driver::{Driver, ReadFrameIdx};
+//! use dios::DirectIo;
+//! let driver = Driver::builder().build().unwrap();
+//! let path = std::env::temp_dir().join("dios_raw_read_surface.bin");
+//! std::fs::write(&path, [0u8; 4096]).unwrap();
+//! let file = driver.open(&path, DirectIo::Disabled).unwrap();
+//! driver.submit_read(&file, ReadFrameIdx::new(0), 0).unwrap();
+//! ```
 
 use std::collections::VecDeque;
 use std::fs::File;
@@ -25,7 +38,7 @@ pub use crate::error::{IoError, SubmitError};
 use crate::open::DirectIo;
 use crate::pool::write_arena::WriteLease;
 pub use crate::pool::write_arena::{WriteArena, WriteSlot};
-use crate::pool::Frames;
+use crate::pool::{Frames, ReadFrameIdx};
 
 pub(crate) const MAX_FILES: u32 = 64;
 const EINTR: i32 = 4;
@@ -169,16 +182,16 @@ impl Driver {
         DriverBuilder::default()
     }
 
-    /// Opens an existing file read-write, probing the direct-IO mode `how`
-    /// requests; the outcome rides in the handle's [`FileHandle::io_mode`] as an
+    /// Opens an existing file read-write, applying the requested direct-I/O
+    /// policy; the outcome rides in the handle's [`FileHandle::io_mode`] as an
     /// observable enum (scope Constraints). No create mode in v1.
     ///
     /// # Errors
     ///
     /// The open syscall's operating failure (`ENOENT`, `EACCES`, …), or `EMFILE`
     /// when the fixed fd table is exhausted.
-    pub fn open(&self, path: &Path, how: OpenHow) -> Result<FileHandle, IoError> {
-        self.open_with_direct_io(path, how.direct_io)
+    pub fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, IoError> {
+        self.open_with_direct_io(path, direct_io)
     }
 
     pub(crate) fn open_with_direct_io(
@@ -190,7 +203,8 @@ impl Driver {
             .read(true)
             .write(true)
             .open(path)?;
-        let io_mode = crate::open::probe(&file, direct_io)?;
+        let arena_granule = self.0.executor().clean_bytes(OpKind::Read);
+        let io_mode = crate::open::probe(&file, direct_io, arena_granule)?;
         let id = self.0.reserve_file()?;
         if let Err(error) = self.0.executor().register_file(id.slot(), file) {
             self.0.abort_file(id);
@@ -212,7 +226,7 @@ impl Driver {
     /// If `fd` was minted by a different driver, if `frame` is out of range, or a
     /// direct handle receives a misaligned `offset` — each rejected before the op
     /// is issued.
-    pub fn submit_read(
+    pub(crate) fn submit_read_internal(
         &self,
         fd: &FileHandle,
         frame: ReadFrameIdx,
@@ -290,7 +304,7 @@ impl Driver {
 
     /// Drains completions like [`Driver::poll`], parking in the kernel for up to
     /// `timeout` when none are ready. The wait runs outside the AD-4 submit mutex
-    /// (INV-3), so a concurrent [`Driver::submit_read`] never blocks on the poller.
+    /// (INV-3), so a concurrent pool read admission never blocks on the poller.
     ///
     /// # Panics
     ///
@@ -373,17 +387,19 @@ impl Driver {
 
     #[cfg(any(feature = "mock", feature = "bench"))]
     pub(crate) fn copy_frame_testing(&self, frame: ReadFrameIdx, out: &mut [u8]) -> usize {
-        self.0.executor().copy_frame(frame, out)
+        self.0.copy_frame_testing(frame, out)
     }
 }
 
-/// The ring backend drains its kernel-visible ops before teardown (INV-8). The
-/// eager backend has no async op outstanding at drop — `poll` executes inline —
-/// so it needs no quiesce.
-#[cfg(target_os = "linux")]
+/// Drains every admitted operation before backend resources are released
+/// (INV-8). Ring operations may already be kernel-visible; eager operations
+/// remain in the bounded ready queue until this teardown poll executes them.
 impl Drop for Driver {
     fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
         self.0.quiesce_ring();
+        #[cfg(not(target_os = "linux"))]
+        self.0.quiesce();
     }
 }
 
@@ -415,68 +431,11 @@ impl OpToken {
     }
 }
 
-/// Which read-pool frame a read lands in. Reuse is governed by the pool's frame
-/// state machine (INV-1), not by this index.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ReadFrameIdx(u32);
-
-impl ReadFrameIdx {
-    /// Creates an opaque frame index.
-    #[must_use]
-    pub fn new(frame: u32) -> Self {
-        Self(frame)
-    }
-
-    pub(crate) fn get(self) -> u32 {
-        self.0
-    }
-}
-
 /// Durability barrier requested by an fsync op.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SyncMode {
     /// Flush file data and metadata through the device barrier.
     Full,
-}
-
-/// How a file is opened. `read_write` is the only access mode v1 issues; the
-/// `IoRequest` selects the buffered or direct-IO data plane, probed at
-/// [`Driver::open`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct OpenHow {
-    access: Access,
-    direct_io: DirectIo,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Access {
-    ReadWrite,
-}
-
-impl OpenHow {
-    /// Opens an existing file read-write through buffered I/O.
-    #[must_use]
-    pub fn read_write() -> Self {
-        Self {
-            access: Access::ReadWrite,
-            direct_io: DirectIo::Disabled,
-        }
-    }
-
-    /// Requests direct IO (`O_DIRECT` on Linux, `F_NOCACHE` on darwin). The probe
-    /// reports the outcome as [`IoMode`]; a filesystem without direct support
-    /// falls back to [`IoMode::Buffered`] (scope Constraints).
-    #[must_use]
-    pub fn direct(mut self) -> Self {
-        self.direct_io = DirectIo::Preferred;
-        self
-    }
-}
-
-impl From<OpenHow> for DirectIo {
-    fn from(how: OpenHow) -> Self {
-        how.direct_io
-    }
 }
 
 /// How a file's data plane transfers: direct with a probed sector [`Alignment`],
@@ -910,8 +869,7 @@ impl<E> DriverCore<E> {
         );
     }
 
-    pub(crate) fn open(&self, path: &Path, how: OpenHow) -> Result<FileHandle, IoError> {
-        let _ = how;
+    pub(crate) fn open_mock(&self, path: &Path) -> Result<FileHandle, IoError> {
         debug_assert!(!path.as_os_str().is_empty(), "open path must be non-empty");
         let mut shared = self.lock();
         match shared.files.open(self.id) {
@@ -942,6 +900,23 @@ impl<E> DriverCore<E> {
 }
 
 impl<E: Executor> DriverCore<E> {
+    #[cfg(any(feature = "mock", feature = "bench"))]
+    fn copy_frame_testing(&self, frame: ReadFrameIdx, out: &mut [u8]) -> usize {
+        let shared = self.lock();
+        let mutating = shared.slab.slots.iter().any(|slot| {
+            slot.payload
+                .as_ref()
+                .is_some_and(|entry| entry.kind == OpKind::Read && entry.frame == frame)
+        });
+        assert!(
+            !mutating,
+            "a test observation never aliases an in-flight frame mutation"
+        );
+        let copied = self.executor.copy_frame(frame, out);
+        drop(shared);
+        copied
+    }
+
     #[expect(
         clippy::needless_pass_by_value,
         reason = "close consumes the handle by value so it cannot be reused (INV-11)"
@@ -1138,6 +1113,26 @@ impl<E: EagerExecutor> DriverCore<E> {
                 return 0;
             }
             std::thread::sleep((deadline - now).min(POLL_WAIT_QUANTUM));
+        }
+    }
+
+    /// Drains every admitted eager op before teardown (INV-8). A non-empty
+    /// queue makes progress on each pass; the idle bound catches a broken
+    /// backend rather than permitting an unbounded shutdown loop.
+    pub(crate) fn quiesce(&self) {
+        if self.inflight_total() == 0 {
+            return;
+        }
+        let capacity = self.queue_capacity.max(1) as usize;
+        let mut out = CompletionBatch::with_capacity(capacity);
+        let mut idle = 0u32;
+        while self.inflight_total() > 0 {
+            if self.poll(&mut out) > 0 {
+                idle = 0;
+            } else {
+                idle += 1;
+                assert!(idle < QUIESCE_IDLE_MAX, "drop quiesce made no progress");
+            }
         }
     }
 

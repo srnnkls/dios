@@ -24,8 +24,9 @@ mod bracket {
     use std::os::unix::fs::{FileExt, OpenOptionsExt};
     use std::path::{Path, PathBuf};
 
-    use dios::driver::{CompletionBatch, Driver, OpenHow, ReadFrameIdx};
-    use dios::testing::DriverObservation;
+    use dios::driver::{CompletionBatch, Driver};
+    use dios::testing::{DriverObservation, DriverReadTestingExt, ReadFrameIdx};
+    use dios::DirectIo;
 
     const GRANULE: usize = 4096;
     const FILE_GRANULES: u32 = 16_384;
@@ -163,7 +164,7 @@ mod bracket {
             .retry_bound(RETRY_BOUND)
             .build();
         let fd = drv
-            .open(&path, OpenHow::read_write().direct())
+            .open(&path, DirectIo::Preferred)
             .expect("open the ring O_DIRECT fd");
         let mut batch = CompletionBatch::with_capacity(1);
 

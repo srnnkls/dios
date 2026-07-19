@@ -38,9 +38,10 @@
 use std::collections::VecDeque;
 use std::path::Path;
 
-use dios::driver::OpenHow;
-use dios::testing::{Injected, MockDriver};
-use dios::{FileId, FrameGuard, Get, PageId, PendingToken, Pool, ReaderCtx, ReadyResult};
+use dios::testing::{
+    Injected, MockDriver, MockPoolTestingExt, PoolBuilderTestingExt, PoolTestingExt,
+};
+use dios::{DirectIo, FileId, FrameGuard, Get, PageId, PendingToken, Pool, ReaderCtx, ReadyResult};
 
 const FRAME_BYTES: u32 = 4096;
 const READY_POLLS_MAX: u32 = 64;
@@ -69,7 +70,7 @@ fn contract_pool(seed: u64, seeds: &[(u32, u8)]) -> (Pool<MockDriver>, FileId) {
         .retry_bound(0)
         .build();
     let file = mock
-        .open(Path::new("gateway"), OpenHow::read_write())
+        .open(Path::new("gateway"), DirectIo::Disabled)
         .expect("mock file opens");
     let file_id = file.file_id();
     for &(granule_idx, fill) in seeds {

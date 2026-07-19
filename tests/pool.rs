@@ -29,9 +29,11 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use dios::driver::{Driver, OpenHow, ReadFrameIdx, WriteArena};
-use dios::testing::{Clock, FrameState, Frames, PageTable, ReaderCounters};
-use dios::{FileId, PageId, Pool, PoolConfigError, GRANULE_DEFAULT};
+use dios::driver::{Driver, WriteArena};
+use dios::testing::{
+    Clock, FrameState, PageTable, ReadFrameIdx, ReaderCounters, TestFrames as Frames,
+};
+use dios::{DirectIo, FileId, PageId, Pool, PoolConfigError, GRANULE_DEFAULT};
 
 const SECTOR: usize = 4096;
 
@@ -46,7 +48,7 @@ fn a_file_id() -> FileId {
     let driver = Driver::builder().build();
     let driver = driver.expect("the test driver initializes");
     driver
-        .open(&path, OpenHow::read_write())
+        .open(&path, DirectIo::Disabled)
         .expect("open temp file")
         .file_id()
 }

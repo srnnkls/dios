@@ -5,24 +5,21 @@
 //! [`Driver`](crate::Driver) and the deterministic [`MockDriver`](crate::mock::MockDriver)
 //! satisfy it inherently — the pool owns the driver it composes and never selects
 //! a backend by matching a runtime tag (AD-1). The read target unifies with the
-//! pool's frames through [`PoolBackend::share_frames`]: a completed read fills the
-//! pool frame directly rather than a private slab.
+//! pool's frames at construction: a completed read fills the pool frame directly
+//! rather than a private slab.
 //!
 //! [`MissTable`] coalesces every `get` for one missing page onto a single
 //! in-flight read (singleflight). A completion resolves the page `Resident`, a
 //! short read reslices the remainder, and an IO error or short-read-at-EOF fans
 //! the failure to every waiter and frees the frame.
 
-use std::path::Path;
-use std::sync::Arc;
-
 use crate::completion::CompletionBatch;
-use crate::driver::{FileHandle, OpToken, ReadFrameIdx};
+use crate::driver::{FileHandle, OpToken};
 use crate::error::IoError;
 use crate::error::SubmitError;
 use crate::open::DirectIo;
-use crate::pool::frames::Frames;
-use crate::pool::PageId;
+use crate::pool::{PageId, ReadFrameIdx};
+use std::path::Path;
 
 pub(super) mod sealed {
     #[expect(
@@ -58,12 +55,6 @@ pub trait PoolBackend: sealed::Sealed {
 
     /// Drains ready completions into `out`, returning the count.
     fn poll(&self, out: &mut CompletionBatch) -> usize;
-
-    /// Hands the backend the pool's frame arena so a completed read lands in the
-    /// pool frame. The default no-op fits the mock (which fills the shared frame
-    /// directly) and any backend that reads into its own slab; registering the
-    /// arena as the ring's fixed read buffers is the T014 unification.
-    fn share_frames(&self, frames: Arc<Frames>);
 }
 
 /// A submitted miss's terminal disposition. A successful completion removes the

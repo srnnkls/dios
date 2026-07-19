@@ -18,9 +18,10 @@ use std::time::Duration;
 
 use io_uring::{opcode, squeue, types, IoUring};
 
-use crate::driver::{Backend, Executor, OpKind, ReadFrameIdx, RingExecutor, MAX_FILES};
+use crate::driver::{Backend, Executor, OpKind, RingExecutor, MAX_FILES};
 use crate::error::IoError;
 use crate::pool::Frames;
+use crate::pool::ReadFrameIdx;
 
 const EINTR: i32 = 4;
 const EAGAIN: i32 = 11;

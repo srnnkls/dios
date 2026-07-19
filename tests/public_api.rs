@@ -11,6 +11,8 @@ use dios::driver::{
 };
 #[cfg(feature = "mock")]
 use dios::mock::{DirectIoSupport, MockDriver};
+#[cfg(feature = "mock")]
+use dios::testing::PoolBuilderTestingExt;
 use dios::{DirectIo, FileId, Get, IoError, PageId, Pool, PoolBuildError, PoolConfigError};
 
 const GRANULE: u32 = 4096;
@@ -36,6 +38,14 @@ fn configured_driver() -> Result<Driver, IoError> {
 
 fn open_pool_file(pool: &Pool, path: &Path) -> Result<FileId, IoError> {
     pool.open(path, DirectIo::Disabled)
+}
+
+fn open_driver_file(
+    driver: &Driver,
+    path: &Path,
+    direct_io: DirectIo,
+) -> Result<FileHandle, IoError> {
+    driver.open(path, direct_io)
 }
 
 fn advanced_driver_contract(driver: &Driver, file: &FileHandle, arena: &WriteArena) {
@@ -126,6 +136,8 @@ fn public_signatures_preserve_the_existing_residency_adt() {
     let driver_contract_signature: fn(&Driver, &FileHandle, &WriteArena) = advanced_driver_contract;
     let build_pool_signature: fn() -> Result<Pool, PoolBuildError> = configured_pool;
     let open_pool_file_signature: fn(&Pool, &Path) -> Result<FileId, IoError> = open_pool_file;
+    let open_driver_file_signature: fn(&Driver, &Path, DirectIo) -> Result<FileHandle, IoError> =
+        open_driver_file;
     let build_driver_signature: fn() -> Result<Driver, IoError> = configured_driver;
     let construct_page_signature: fn(FileId, u32) -> PageId = PageId::new;
     let io_error_type: Option<IoError> = None;
@@ -134,8 +146,15 @@ fn public_signatures_preserve_the_existing_residency_adt() {
         driver_contract_signature,
         build_pool_signature,
         open_pool_file_signature,
+        open_driver_file_signature,
         build_driver_signature,
         construct_page_signature,
         io_error_type,
     ));
+}
+
+#[test]
+#[should_panic(expected = "completion batch capacity must be positive")]
+fn completion_batches_reject_zero_capacity_at_construction() {
+    let _ = CompletionBatch::with_capacity(0);
 }

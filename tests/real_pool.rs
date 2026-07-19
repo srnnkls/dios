@@ -192,7 +192,9 @@ fn eager_short_read_preserves_prefix_and_reads_only_the_extent_remainder() {
 mod portable_read_ranges {
     use std::path::Path;
 
-    use dios::testing::{Injected, MockDriver};
+    use dios::testing::{
+        Injected, MockDriver, MockPoolTestingExt, PoolBuilderTestingExt, PoolTestingExt,
+    };
 
     use super::*;
 

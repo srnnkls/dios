@@ -16,9 +16,8 @@ use std::hint::black_box;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
-use dios::driver::OpenHow;
-use dios::testing::MockDriver;
-use dios::{Get, PageId, PendingToken, Pool, ReaderCtx, ReadyResult};
+use dios::testing::{MockDriver, PoolBuilderTestingExt, PoolTestingExt};
+use dios::{DirectIo, Get, PageId, PendingToken, Pool, ReaderCtx, ReadyResult};
 
 const GRANULE: usize = 4096;
 const RESIDENT_PAGES: u32 = 64;
@@ -177,7 +176,7 @@ fn resident_pool() -> (Pool<MockDriver>, dios::FileId) {
         .retry_bound(0)
         .build();
     let file = mock
-        .open(Path::new("mmap-warm-pool"), OpenHow::read_write())
+        .open(Path::new("mmap-warm-pool"), DirectIo::Disabled)
         .expect("mock file opens");
     let file_id = file.file_id();
     for idx in 0..RESIDENT_PAGES {

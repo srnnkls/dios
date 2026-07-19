@@ -80,10 +80,9 @@ use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use dios::driver::{
-    Completion, CompletionBatch, FileHandle, OpToken, OpenHow, ReadFrameIdx, SubmitError,
-};
-use dios::testing::{Injected, MockRingDriver};
+use dios::driver::{Completion, CompletionBatch, FileHandle, OpToken, SubmitError};
+use dios::testing::{Injected, MockRingDriver, ReadFrameIdx};
+use dios::DirectIo;
 
 const FRAME_BYTES: u32 = 4096;
 const RETRY_BOUND: u32 = 3;
@@ -109,7 +108,7 @@ fn ring(seed: u64, queue_capacity: u32, frames: u32) -> MockRingDriver {
 }
 
 fn open(m: &MockRingDriver) -> FileHandle {
-    m.open(Path::new("seg-000000"), OpenHow::read_write())
+    m.open(Path::new("seg-000000"), DirectIo::Disabled)
         .expect("mock open never touches disk")
 }
 
@@ -506,7 +505,7 @@ fn fd_table_exhaustion_surfaces_emfile_and_recovers_after_a_close() {
     let mut open_handles: Vec<FileHandle> = Vec::new();
     let mut exhausted: Option<i32> = None;
     for _ in 0..POLLS_MAX {
-        match m.open(Path::new("seg"), OpenHow::read_write()) {
+        match m.open(Path::new("seg"), DirectIo::Disabled) {
             Ok(fd) => open_handles.push(fd),
             Err(err) => {
                 exhausted = Some(err.raw_os_error().unwrap_or(-1));
@@ -540,7 +539,7 @@ fn fd_table_exhaustion_surfaces_emfile_and_recovers_after_a_close() {
         );
     }
 
-    m.open(Path::new("seg"), OpenHow::read_write())
+    m.open(Path::new("seg"), DirectIo::Disabled)
         .expect("closing an fd returns its table slot, so a fresh open succeeds again");
 }
 
@@ -622,7 +621,7 @@ fn a_ghost_handle_stays_stale_through_a_concurrent_reopen_race() {
 
     let mut others: Vec<FileHandle> = Vec::new();
     for _ in 0..POLLS_MAX {
-        match m.open(Path::new("seg"), OpenHow::read_write()) {
+        match m.open(Path::new("seg"), DirectIo::Disabled) {
             Ok(handle) => others.push(handle),
             Err(_) => break,
         }
@@ -640,7 +639,7 @@ fn a_ghost_handle_stays_stale_through_a_concurrent_reopen_race() {
         thread::spawn(move || {
             let deadline = Instant::now() + DEADLINE;
             loop {
-                match m.open(Path::new("seg"), OpenHow::read_write()) {
+                match m.open(Path::new("seg"), DirectIo::Disabled) {
                     Ok(handle) => {
                         if handle.file_id().aliases_slot(&ghost_id) {
                             return handle.file_id();

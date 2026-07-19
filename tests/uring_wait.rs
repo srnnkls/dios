@@ -20,7 +20,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use dios::driver::{CompletionBatch, Driver, OpenHow, ReadFrameIdx};
+use dios::driver::{CompletionBatch, Driver};
+use dios::testing::{DriverReadTestingExt, ReadFrameIdx};
+use dios::DirectIo;
 
 const FRAME_BYTES: u32 = 4096;
 const DRAIN_DEADLINE: Duration = Duration::from_secs(5);
@@ -76,7 +78,7 @@ fn poll_wait_reaps_a_ready_completion_without_burning_the_full_timeout() {
     let path = seed_frame("ready");
     let drv = driver(1, FRAME_BYTES, 4);
     let fd = drv
-        .open(&path, OpenHow::read_write())
+        .open(&path, DirectIo::Disabled)
         .expect("open the seeded file");
 
     drv.submit_read(&fd, ReadFrameIdx::new(0), 0)
@@ -113,7 +115,7 @@ fn a_submit_from_another_thread_completes_while_a_poller_is_parked_in_poll_wait(
     let reaped = Arc::new(AtomicU32::new(0));
 
     let fd = drv
-        .open(&path, OpenHow::read_write())
+        .open(&path, DirectIo::Disabled)
         .expect("open the seeded file");
 
     let parked = {

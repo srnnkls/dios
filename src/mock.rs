@@ -17,12 +17,12 @@ use std::time::Duration;
 use crate::completion::CompletionBatch;
 use crate::driver::{
     Attempt, CompletionSlab, DriverCore, EagerExecutor, Executor, FileHandle, FileId, OpContext,
-    OpKind, OpToken, OpenHow, ReadFrameIdx, RingExecutor, Shared, SyncMode, MAX_FILES,
+    OpKind, OpToken, RingExecutor, Shared, SyncMode, MAX_FILES,
 };
 use crate::error::{IoError, SubmitError};
 use crate::open::DirectIo;
 use crate::pool::write_arena::{WriteArena, WriteSlot};
-use crate::pool::{Frames, PoolBackend};
+use crate::pool::{Frames, PoolBackend, ReadFrameIdx};
 
 const EINTR: i32 = 4;
 #[cfg(target_os = "linux")]
@@ -164,13 +164,17 @@ impl MockDriver {
         MockDriverBuilder::default()
     }
 
+    pub(crate) fn share_frames_for_pool(&self, frames: Arc<Frames>) {
+        self.0.executor().set_arena(frames);
+    }
+
     /// Opens a fresh generational handle. Never touches disk.
     ///
     /// # Errors
     ///
     /// Returns `EMFILE` when the fixed fd table is exhausted.
-    pub fn open(&self, path: &Path, direct_io: impl Into<DirectIo>) -> Result<FileHandle, IoError> {
-        self.open_with_direct_io(path, direct_io.into())
+    pub fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, IoError> {
+        self.open_with_direct_io(path, direct_io)
     }
 
     fn open_with_direct_io(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, IoError> {
@@ -183,7 +187,7 @@ impl MockDriver {
             );
             return Err(IoError::from(error));
         }
-        let handle = self.0.open(path, OpenHow::read_write())?;
+        let handle = self.0.open_mock(path)?;
         let io_mode = if direct_io != DirectIo::Disabled
             && self.0.executor().direct_io_support == DirectIoSupport::Supported
         {
@@ -370,10 +374,6 @@ impl PoolBackend for MockDriver {
 
     fn poll(&self, out: &mut CompletionBatch) -> usize {
         self.0.poll(out)
-    }
-
-    fn share_frames(&self, frames: Arc<Frames>) {
-        self.0.executor().set_arena(frames);
     }
 }
 
@@ -634,8 +634,8 @@ impl MockRingDriver {
     /// # Errors
     ///
     /// Returns `EMFILE` when the fixed fd table is exhausted.
-    pub fn open(&self, path: &Path, how: OpenHow) -> Result<FileHandle, IoError> {
-        self.0.open(path, how)
+    pub fn open(&self, path: &Path, _direct_io: DirectIo) -> Result<FileHandle, IoError> {
+        self.0.open_mock(path)
     }
 
     /// Consumes the handle; the deferred close(2) is observable once the fd's

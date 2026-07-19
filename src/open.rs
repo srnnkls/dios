@@ -25,23 +25,42 @@ pub enum DirectIo {
     Required,
 }
 
-pub(crate) fn probe(file: &File, policy: DirectIo) -> Result<IoMode, IoError> {
+pub(crate) fn probe(file: &File, policy: DirectIo, arena_granule: u32) -> Result<IoMode, IoError> {
+    assert!(
+        arena_granule.is_power_of_two(),
+        "the read arena granule is a power of two"
+    );
     if policy == DirectIo::Disabled {
         return Ok(IoMode::Buffered);
     }
-    #[cfg(target_os = "linux")]
-    let mode = probe_direct(file)?;
-    #[cfg(not(target_os = "linux"))]
-    let mode = probe_direct(file);
-    if policy == DirectIo::Required && mode == IoMode::Buffered {
-        let error = std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "direct IO is unsupported for this file",
+    let Some(alignment) = probe_direct_alignment(file) else {
+        return direct_unavailable(policy, "direct IO is unsupported for this file");
+    };
+    if !direct_arena_compatible(arena_granule, alignment) {
+        return direct_unavailable(
+            policy,
+            "direct IO alignment exceeds the configured arena granule",
         );
+    }
+    match enable_direct(file) {
+        Ok(()) => Ok(IoMode::Direct(alignment)),
+        Err(error) if policy == DirectIo::Required => Err(error),
+        Err(_) => Ok(IoMode::Buffered),
+    }
+}
+
+fn direct_unavailable(policy: DirectIo, message: &'static str) -> Result<IoMode, IoError> {
+    if policy == DirectIo::Required {
+        let error = std::io::Error::new(std::io::ErrorKind::Unsupported, message);
         Err(IoError::from(error))
     } else {
-        Ok(mode)
+        Ok(IoMode::Buffered)
     }
+}
+
+fn direct_arena_compatible(granule: u32, alignment: crate::alignment::Alignment) -> bool {
+    let required = alignment.get();
+    required <= granule && granule.is_multiple_of(required)
 }
 
 #[cfg(target_os = "macos")]
@@ -57,7 +76,12 @@ unsafe extern "C" {
 }
 
 #[cfg(target_os = "macos")]
-fn probe_direct(file: &File) -> IoMode {
+fn probe_direct_alignment(_file: &File) -> Option<crate::alignment::Alignment> {
+    crate::alignment::Alignment::new(DARWIN_SECTOR_BYTES)
+}
+
+#[cfg(target_os = "macos")]
+fn enable_direct(file: &File) -> Result<(), IoError> {
     use std::os::unix::io::AsRawFd;
 
     let fd = file.as_raw_fd();
@@ -66,15 +90,9 @@ fn probe_direct(file: &File) -> IoMode {
     // its one int argument and only toggles the descriptor's cache policy.
     let status = unsafe { fcntl(fd, F_NOCACHE, 1) };
     if status == -1 {
-        return IoMode::Buffered;
+        return Err(IoError::from(std::io::Error::last_os_error()));
     }
-    let alignment =
-        crate::alignment::Alignment::new(DARWIN_SECTOR_BYTES).expect("4096 is a power of two");
-    debug_assert!(
-        alignment.get().is_power_of_two() && alignment.get() >= 512,
-        "a direct sector alignment is a power of two at least 512"
-    );
-    IoMode::Direct(alignment)
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -113,16 +131,15 @@ const O_DIRECT: c_int = 0x10000;
 compile_error!("O_DIRECT is arch-specific; add this target_arch's value from linux asm/fcntl.h");
 
 #[cfg(target_os = "linux")]
-fn probe_direct(file: &File) -> Result<IoMode, IoError> {
+fn probe_direct_alignment(file: &File) -> Option<crate::alignment::Alignment> {
     use std::os::unix::io::AsRawFd;
 
     let fd = file.as_raw_fd();
-    let Some(alignment) = statx_dio_align(fd).or_else(|| write_probe(file)) else {
+    let alignment = statx_dio_align(fd).or_else(|| write_probe(file));
+    if alignment.is_none() {
         eprintln!("dios: direct IO unavailable on this file; falling back to buffered reads");
-        return Ok(IoMode::Buffered);
-    };
-    probe_direct_apply(fd)?;
-    Ok(IoMode::Direct(alignment))
+    }
+    alignment
 }
 
 /// Sets `O_DIRECT` on the retained descriptor itself, so the fd the driver
@@ -134,10 +151,13 @@ fn probe_direct(file: &File) -> Result<IoMode, IoError> {
 /// The `fcntl` failure as an [`IoError`]: an operating error, not a programmer
 /// bug, so the open path surfaces it rather than aborting.
 #[cfg(target_os = "linux")]
-fn probe_direct_apply(fd: c_int) -> Result<(), IoError> {
+fn enable_direct(file: &File) -> Result<(), IoError> {
+    use std::os::unix::io::AsRawFd;
+
     const F_GETFL: c_int = 3;
     const F_SETFL: c_int = 4;
 
+    let fd = file.as_raw_fd();
     assert!(fd >= 0, "an owned File yields a valid descriptor");
     // SAFETY: `F_GETFL` reads the descriptor's status flags and takes no variadic
     // argument.
@@ -160,14 +180,6 @@ fn statx_dio_align(fd: c_int) -> Option<crate::alignment::Alignment> {
     const STATX_DIOALIGN: u32 = 0x0000_2000;
     const STATX_LEN: usize = 256;
     // Byte offsets into `struct statx` (linux uapi, include/uapi/linux/stat.h):
-    // `stx_mask` at 0, `stx_dio_offset_align` at 156.
-    const MASK_OFFSET: usize = 0;
-    const DIO_OFFSET_ALIGN_OFFSET: usize = 156;
-    const _: () = assert!(
-        DIO_OFFSET_ALIGN_OFFSET + 4 <= STATX_LEN,
-        "the dio-align field lies within the statx buffer"
-    );
-
     assert!(fd >= 0, "an owned File yields a valid descriptor");
     let mut buf = [0u8; STATX_LEN];
     // SAFETY: `buf` is 256 bytes = `sizeof(struct statx)`; an empty path with
@@ -184,16 +196,37 @@ fn statx_dio_align(fd: c_int) -> Option<crate::alignment::Alignment> {
     if status != 0 {
         return None;
     }
+    statx_dio_alignment(&buf)
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn statx_dio_alignment(buf: &[u8; 256]) -> Option<crate::alignment::Alignment> {
+    const STATX_DIOALIGN: u32 = 0x0000_2000;
+    const MASK_OFFSET: usize = 0;
+    const DIO_MEMORY_ALIGN_OFFSET: usize = 152;
+    const DIO_OFFSET_ALIGN_OFFSET: usize = 156;
+    const _: () = assert!(
+        DIO_OFFSET_ALIGN_OFFSET + 4 <= 256,
+        "the dio-align fields lie within the statx buffer"
+    );
+
     let mask = u32::from_ne_bytes(buf[MASK_OFFSET..MASK_OFFSET + 4].try_into().ok()?);
     if mask & STATX_DIOALIGN == 0 {
         return None;
     }
-    let align = u32::from_ne_bytes(
+    let memory = u32::from_ne_bytes(
+        buf[DIO_MEMORY_ALIGN_OFFSET..DIO_MEMORY_ALIGN_OFFSET + 4]
+            .try_into()
+            .ok()?,
+    );
+    let offset = u32::from_ne_bytes(
         buf[DIO_OFFSET_ALIGN_OFFSET..DIO_OFFSET_ALIGN_OFFSET + 4]
             .try_into()
             .ok()?,
     );
-    crate::alignment::Alignment::new(align)
+    let memory = crate::alignment::Alignment::new(memory)?;
+    let offset = crate::alignment::Alignment::new(offset)?;
+    Some(memory.max(offset))
 }
 
 #[cfg(target_os = "linux")]
@@ -244,11 +277,46 @@ fn direct_read_ok(file: &File, len: u32) -> bool {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn probe_direct(_file: &File) -> IoMode {
-    IoMode::Buffered
+fn probe_direct_alignment(_file: &File) -> Option<crate::alignment::Alignment> {
+    None
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn enable_direct(_file: &File) -> Result<(), IoError> {
+    let error = std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "direct IO is unsupported on this platform",
+    );
+    Err(IoError::from(error))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub(crate) fn full_fsync(file: &File) -> std::io::Result<()> {
     file.sync_all()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_alignment_uses_the_stricter_statx_memory_or_offset_requirement() {
+        let mut statx = [0u8; 256];
+        statx[0..4].copy_from_slice(&0x0000_2000u32.to_ne_bytes());
+        statx[152..156].copy_from_slice(&8192u32.to_ne_bytes());
+        statx[156..160].copy_from_slice(&4096u32.to_ne_bytes());
+
+        assert_eq!(
+            statx_dio_alignment(&statx).map(crate::alignment::Alignment::get),
+            Some(8192),
+            "registered memory must satisfy stx_dio_mem_align even when offsets need less"
+        );
+    }
+
+    #[test]
+    fn a_direct_arena_must_be_a_whole_multiple_of_the_device_alignment() {
+        let alignment = crate::alignment::Alignment::new(8192).expect("power of two");
+        assert!(direct_arena_compatible(16_384, alignment));
+        assert!(!direct_arena_compatible(4096, alignment));
+    }
 }

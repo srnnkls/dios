@@ -30,9 +30,9 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use dios::driver::{Driver, OpenHow};
-use dios::testing::FrameState;
-use dios::{FileId, PageId, Pool};
+use dios::driver::Driver;
+use dios::testing::{FrameState, PoolTestingExt};
+use dios::{DirectIo, FileId, PageId, Pool};
 
 static FILE_SEQ: AtomicU32 = AtomicU32::new(0);
 
@@ -47,7 +47,7 @@ fn a_file_id() -> FileId {
     let driver = Driver::builder().build();
     let driver = driver.expect("the test driver initializes");
     driver
-        .open(&path, OpenHow::read_write())
+        .open(&path, DirectIo::Disabled)
         .expect("open temp file")
         .file_id()
 }

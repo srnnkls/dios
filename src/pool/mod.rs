@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::completion::CompletionBatch;
-use crate::driver::{Driver, FileHandle, FileId, OpKind, OpToken, ReadFrameIdx, MAX_FILES};
+use crate::driver::{Driver, FileHandle, FileId, OpKind, OpToken, MAX_FILES};
 use crate::error::{IoError, SubmitError};
 use crate::open::DirectIo;
 use crate::sync::{AtomicU64, Mutex, MutexGuard, Ordering};
@@ -34,7 +34,8 @@ use miss::{MissOutcome, MissTable};
 
 pub use clock::Clock;
 pub use epoch::{FrameGuard, ReaderCtx};
-pub use frames::{FrameState, Frames};
+pub(crate) use frames::Frames;
+pub use frames::{FrameState, ReadFrameIdx};
 pub(crate) use miss::sealed::Sealed as PoolBackendSealed;
 pub use miss::PoolBackend;
 pub use table::PageTable;
@@ -411,11 +412,14 @@ impl PoolBuilder {
     /// # Errors
     ///
     /// [`PoolConfigError`] on the same open-time checks as [`PoolBuilder::build`].
-    #[doc(hidden)]
-    pub fn build_on<D: PoolBackend>(self, driver: D) -> Result<Pool<D>, PoolConfigError> {
+    #[cfg(feature = "mock")]
+    pub(crate) fn build_on_internal(
+        self,
+        driver: crate::mock::MockDriver,
+    ) -> Result<Pool<crate::mock::MockDriver>, PoolConfigError> {
         self.validate()?;
         let frames = Arc::new(Frames::preallocated(self.frame_count, self.granule));
-        driver.share_frames(Arc::clone(&frames));
+        driver.share_frames_for_pool(Arc::clone(&frames));
         Ok(Pool::preallocated(self, driver, frames))
     }
 }
@@ -439,6 +443,19 @@ struct Control {
 /// `max_concurrent_readers`. The CLOCK reference bits sit outside the control
 /// mutex so a warm hit sets them lock-free; the sweep hand advances only under
 /// the mutex.
+///
+/// Control-plane construction and mutation seams are not part of the product
+/// API:
+///
+/// ```compile_fail
+/// use dios::Pool;
+/// let pool = Pool::builder()
+///     .frame_count(8).granule(4096)
+///     .max_concurrent_readers(1).peak_guards_per_reader(1)
+///     .max_inflight_reads(1).miss_headroom(3)
+///     .build().unwrap();
+/// let _driver = pool.driver();
+/// ```
 #[derive(Debug)]
 pub struct Pool<D = Driver> {
     frames: Arc<Frames>,
@@ -498,9 +515,8 @@ impl<D: PoolBackend> Pool<D> {
     }
 
     /// Borrows the composed driver — a test/observation seam.
-    #[doc(hidden)]
     #[must_use]
-    pub fn driver(&self) -> &D {
+    pub(crate) fn driver_internal(&self) -> &D {
         &self.driver
     }
 
@@ -535,7 +551,7 @@ impl<D: PoolBackend> Pool<D> {
 
     /// Routes every `PageId` naming `fd`'s file to this handle. Reads for such a
     /// page issue against `fd` at `granule_idx × granule`.
-    pub fn register_file(&self, fd: FileHandle) {
+    pub(crate) fn register_file_internal(&self, fd: FileHandle) {
         let slot = fd.file_id().slot() as usize;
         self.control().files[slot] = Some(fd);
     }
@@ -548,7 +564,7 @@ impl<D: PoolBackend> Pool<D> {
     pub fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileId, IoError> {
         let handle = self.driver.open(path, direct_io)?;
         let file = handle.file_id();
-        self.register_file(handle);
+        self.register_file_internal(handle);
         Ok(file)
     }
 
@@ -556,7 +572,7 @@ impl<D: PoolBackend> Pool<D> {
     /// read (or joins one in flight); no evictable frame after one bounded reclaim
     /// attempt is `Busy`.
     pub fn get<'pool>(&'pool self, reader: &'pool ReaderCtx<'pool>, page: PageId) -> Get<'pool> {
-        if let Some(guard) = self.pin(reader, page) {
+        if let Some(guard) = self.pin_internal(reader, page) {
             return Get::Hit(guard);
         }
         let mut control = self.control();
@@ -566,7 +582,7 @@ impl<D: PoolBackend> Pool<D> {
             .is_some_and(|frame| self.frames.state(frame) == FrameState::Resident)
         {
             drop(control);
-            return match self.pin(reader, page) {
+            return match self.pin_internal(reader, page) {
                 Some(guard) => Get::Hit(guard),
                 None => Get::Busy,
             };
@@ -602,7 +618,7 @@ impl<D: PoolBackend> Pool<D> {
         token: PendingToken,
     ) -> ReadyResult<'pool> {
         let page = token.page();
-        if let Some(guard) = self.pin(reader, page) {
+        if let Some(guard) = self.pin_internal(reader, page) {
             return ReadyResult::Ready(guard);
         }
         let control = self.control();
@@ -635,9 +651,8 @@ impl<D: PoolBackend> Pool<D> {
     }
 
     /// The residency state of `frame` — an observation seam for the epoch tests.
-    #[doc(hidden)]
     #[must_use]
-    pub fn frame_state(&self, frame: ReadFrameIdx) -> FrameState {
+    pub(crate) fn frame_state_internal(&self, frame: ReadFrameIdx) -> FrameState {
         self.frames.state(frame)
     }
 
@@ -645,8 +660,7 @@ impl<D: PoolBackend> Pool<D> {
     /// reader's epoch BEFORE validating the frame is still Resident and mapped, so
     /// an eviction that removed the mapping is observed as a miss (`None`) rather
     /// than handing back reclaimable bytes.
-    #[doc(hidden)]
-    pub fn pin<'ctx>(
+    pub(crate) fn pin_internal<'ctx>(
         &'ctx self,
         reader: &'ctx ReaderCtx<'_>,
         page: PageId,
@@ -676,8 +690,7 @@ impl<D: PoolBackend> Pool<D> {
     ///
     /// If no frame is `Free` — the watermark bounds a well-behaved caller below
     /// this.
-    #[doc(hidden)]
-    pub fn insert_resident_frame(&self, page: PageId, fill: u8) -> ReadFrameIdx {
+    pub(crate) fn insert_resident_frame_internal(&self, page: PageId, fill: u8) -> ReadFrameIdx {
         let mut control = self.control();
         let frame = self
             .first_free_frame()
@@ -698,8 +711,7 @@ impl<D: PoolBackend> Pool<D> {
     /// # Panics
     ///
     /// If `page` has no mapping — a caller only evicts a resident page.
-    #[doc(hidden)]
-    pub fn evict_frame(&self, page: PageId) -> ReadFrameIdx {
+    pub(crate) fn evict_frame_internal(&self, page: PageId) -> ReadFrameIdx {
         let mut control = self.control();
         let frame = self
             .table
@@ -839,9 +851,8 @@ impl<D: PoolBackend> Pool<D> {
 
     /// Cumulative clear→set CLOCK reference-bit stores across every `get()` hit
     /// path — the DIO-G1 store-elision observation seam (T009 zero-alloc gate).
-    #[doc(hidden)]
     #[must_use]
-    pub fn clock_reference_stores(&self) -> u64 {
+    pub(crate) fn clock_reference_stores_internal(&self) -> u64 {
         self.clock.reference_stores()
     }
 }
@@ -872,10 +883,6 @@ impl PoolBackend for Driver {
 
     fn poll(&self, out: &mut CompletionBatch) -> usize {
         Driver::poll(self, out)
-    }
-
-    fn share_frames(&self, _frames: Arc<Frames>) {
-        unreachable!("the default pool constructs its driver with the shared arena")
     }
 }
 

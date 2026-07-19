@@ -10,9 +10,8 @@ use std::hint::black_box;
 use std::path::Path;
 
 use dios::bench::{ratio_gate, run_paired, write_samples};
-use dios::driver::OpenHow;
-use dios::testing::MockDriver;
-use dios::{FileId, Get, PageId, PendingToken, Pool, ReaderCtx, ReadyResult};
+use dios::testing::{MockDriver, PoolBuilderTestingExt, PoolTestingExt};
+use dios::{DirectIo, FileId, Get, PageId, PendingToken, Pool, ReaderCtx, ReadyResult};
 
 const GRANULE: u32 = 4096;
 const FRAMES: u32 = 256;
@@ -97,7 +96,7 @@ fn main() {
         .retry_bound(0)
         .build();
     let file = mock
-        .open(Path::new("overlap"), OpenHow::read_write())
+        .open(Path::new("overlap"), DirectIo::Disabled)
         .expect("mock file opens");
     let file_id = file.file_id();
     let pool = Pool::builder()

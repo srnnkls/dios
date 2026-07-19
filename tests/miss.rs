@@ -72,9 +72,11 @@
 
 use std::path::Path;
 
-use dios::driver::{OpenHow, ReadFrameIdx};
-use dios::testing::{FrameState, Injected, MockDriver};
-use dios::{FrameGuard, Get, PageId, PendingToken, Pool, ReaderCtx, ReadyResult};
+use dios::testing::{
+    FrameState, Injected, MockDriver, MockPoolTestingExt, PoolBuilderTestingExt, PoolTestingExt,
+    ReadFrameIdx,
+};
+use dios::{DirectIo, FrameGuard, Get, PageId, PendingToken, Pool, ReaderCtx, ReadyResult};
 
 const GRANULE: u32 = 4096;
 const EIO: i32 = 5;
@@ -180,7 +182,7 @@ fn a_cold_get_misses_then_readies_its_seeded_content_and_a_warm_re_get_hits() {
     let frames = 8u32;
     let mock = a_mock(0x0000_C01D, frames, 8);
     let file = mock
-        .open(Path::new("miss-cold"), OpenHow::read_write())
+        .open(Path::new("miss-cold"), DirectIo::Disabled)
         .expect("mock open");
     let file_id = file.file_id();
     mock.seed_page(&file, 4, 0xC4);
@@ -217,10 +219,10 @@ fn completions_route_each_pages_bytes_into_its_own_frame_across_offsets_and_file
     let frames = 12u32;
     let mock = a_mock(0xF00D_BEEF, frames, frames);
     let file_a = mock
-        .open(Path::new("route-a"), OpenHow::read_write())
+        .open(Path::new("route-a"), DirectIo::Disabled)
         .expect("open a");
     let file_b = mock
-        .open(Path::new("route-b"), OpenHow::read_write())
+        .open(Path::new("route-b"), DirectIo::Disabled)
         .expect("open b");
     let (id_a, id_b) = (file_a.file_id(), file_b.file_id());
     mock.seed_page(&file_a, 2, 0xA2);
@@ -259,7 +261,7 @@ fn n_gets_for_one_missing_page_issue_exactly_one_read_under_a_single_slot_queue(
     let waiters = 4u32;
     let mock = a_mock(0x51_1F_11_00, frames, 1);
     let file = mock
-        .open(Path::new("miss-singleflight"), OpenHow::read_write())
+        .open(Path::new("miss-singleflight"), DirectIo::Disabled)
         .expect("mock open");
     let file_id = file.file_id();
     mock.seed_page(&file, 2, 0x2F);
@@ -304,7 +306,7 @@ fn a_faulted_miss_fans_the_error_to_all_waiters_then_a_fresh_read_of_the_same_pa
     let waiters = 3u32;
     let mock = a_mock(0xFA_17_ED_00, frames, 8);
     let file = mock
-        .open(Path::new("miss-fault"), OpenHow::read_write())
+        .open(Path::new("miss-fault"), DirectIo::Disabled)
         .expect("mock open");
     let file_id = file.file_id();
     mock.seed_page(&file, 5, 0x55);
@@ -361,7 +363,7 @@ fn dropping_a_pending_token_cancels_interest_only_and_the_read_still_completes()
     let frames = 8u32;
     let mock = a_mock(0x0D_00_09_ED, frames, 8);
     let file = mock
-        .open(Path::new("miss-drop"), OpenHow::read_write())
+        .open(Path::new("miss-drop"), DirectIo::Disabled)
         .expect("mock open");
     let file_id = file.file_id();
     mock.seed_page(&file, 3, 0x3D);
@@ -403,7 +405,7 @@ fn a_miss_is_pending_within_the_watermark_and_busy_leaves_pinned_frames_untouche
     let frames = 4u32;
     let mock = a_mock(0x0000_B05E, frames, 8);
     let file = mock
-        .open(Path::new("miss-busy"), OpenHow::read_write())
+        .open(Path::new("miss-busy"), DirectIo::Disabled)
         .expect("mock open");
     let file_id = file.file_id();
     for index in 0..frames {
@@ -485,7 +487,7 @@ fn a_short_read_with_remaining_extent_resubmits_the_remainder_as_a_distinct_read
     let frames = 8u32;
     let mock = a_mock(0x0000_5401, frames, 8);
     let file = mock
-        .open(Path::new("miss-short-remainder"), OpenHow::read_write())
+        .open(Path::new("miss-short-remainder"), DirectIo::Disabled)
         .expect("mock open");
     let file_id = file.file_id();
     mock.seed_page(&file, 1, 0x1C);
@@ -556,7 +558,7 @@ fn a_short_read_at_eof_is_terminal_and_fans_err_to_all_waiters_and_frees_the_fra
     let waiters = 2u32;
     let mock = a_mock(0x0000_E0F0, frames, 8);
     let file = mock
-        .open(Path::new("miss-short-eof"), OpenHow::read_write())
+        .open(Path::new("miss-short-eof"), DirectIo::Disabled)
         .expect("mock open");
     let file_id = file.file_id();
     mock.inject_next(Injected::Short(0));

@@ -11,10 +11,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use dios::driver::{
-    CompletionBatch, OpKind, OpToken, OpenHow, ReadFrameIdx, SubmitError, SyncMode,
-};
-use dios::testing::{Injected, MockDriver};
+use dios::driver::{CompletionBatch, OpKind, OpToken, SubmitError, SyncMode};
+use dios::testing::{Injected, MockDriver, ReadFrameIdx};
+use dios::DirectIo;
 
 const FRAME_BYTES: u32 = 4096;
 const EINTR: i32 = 4;
@@ -35,7 +34,7 @@ fn mock(seed: u64, queue_capacity: u32, frames: u32) -> MockDriver {
 }
 
 fn open(m: &MockDriver) -> dios::driver::FileHandle {
-    m.open(Path::new("seg-000000"), OpenHow::read_write())
+    m.open(Path::new("seg-000000"), DirectIo::Disabled)
         .expect("mock open never touches disk")
 }
 

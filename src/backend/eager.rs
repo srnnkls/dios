@@ -136,7 +136,7 @@ impl Executor for Eager {
     }
 
     #[cfg(any(feature = "mock", feature = "bench"))]
-    fn copy_frame(&self, frame: crate::driver::ReadFrameIdx, out: &mut [u8]) -> usize {
+    fn copy_frame(&self, frame: crate::pool::ReadFrameIdx, out: &mut [u8]) -> usize {
         self.frames.copy_frame(frame, out)
     }
 }

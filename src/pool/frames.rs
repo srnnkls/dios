@@ -7,13 +7,30 @@ use core::ffi::{c_int, c_void};
 use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
 use std::ptr::NonNull;
 
-use crate::driver::ReadFrameIdx;
 use crate::pool::SECTOR_BYTES;
 use crate::sync::{AtomicU8, Ordering};
 
+#[cfg(target_os = "linux")]
 const SECTOR: usize = SECTOR_BYTES as usize;
 
 const HUGEPAGE_BYTES: usize = 2 * 1024 * 1024;
+
+/// Which read-pool frame an internal read lands in. This type is reachable only
+/// through the feature-gated structural testing surface; product callers name
+/// pages and receive [`crate::FrameGuard`] leases instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ReadFrameIdx(u32);
+
+impl ReadFrameIdx {
+    #[must_use]
+    pub fn new(frame: u32) -> Self {
+        Self(frame)
+    }
+
+    pub(crate) fn get(self) -> u32 {
+        self.0
+    }
+}
 
 // madvise(2) declared to match glibc's C ABI on the linux build targets; the
 // signature follows the man page. MADV_HUGEPAGE is arch-uniform in the linux uapi
@@ -89,7 +106,7 @@ impl FrameState {
 /// its base is sector-aligned because the allocation is and `granule` is a
 /// multiple of a sector.
 #[derive(Debug)]
-pub struct Frames {
+pub(crate) struct Frames {
     base: NonNull<u8>,
     layout: Layout,
     states: Box<[AtomicU8]>,
@@ -117,7 +134,7 @@ impl Frames {
     /// If `count` is zero, if `granule` is not a power of two or falls below the
     /// sector floor, or the total span overflows a `Layout`.
     #[must_use]
-    pub fn preallocated(count: u32, granule: u32) -> Self {
+    pub(crate) fn preallocated(count: u32, granule: u32) -> Self {
         assert!(count > 0, "frame count must be positive");
         assert!(granule.is_power_of_two(), "granule must be a power of two");
         assert!(
@@ -150,7 +167,7 @@ impl Frames {
     }
 
     #[must_use]
-    pub fn count(&self) -> u32 {
+    pub(crate) fn count(&self) -> u32 {
         self.count
     }
 
@@ -216,7 +233,7 @@ impl Frames {
     ///
     /// If `frame` is out of range for the configured count.
     #[must_use]
-    pub fn frame_bytes(&self, frame: ReadFrameIdx) -> &[u8] {
+    pub(crate) fn frame_bytes(&self, frame: ReadFrameIdx) -> &[u8] {
         let index = self.checked_index(frame);
         let offset = index * self.granule as usize;
         // SAFETY: `offset + granule <= span` because `index < count`.
@@ -240,7 +257,7 @@ impl Frames {
     ///
     /// If `frame` is out of range for the configured count.
     #[must_use]
-    pub fn state(&self, frame: ReadFrameIdx) -> FrameState {
+    pub(crate) fn state(&self, frame: ReadFrameIdx) -> FrameState {
         FrameState::from_tag(self.states[self.checked_index(frame)].load(Ordering::Relaxed))
     }
 
@@ -254,7 +271,7 @@ impl Frames {
     /// # Panics
     ///
     /// If `frame` is out of range, or the transition is illegal (INV-1).
-    pub fn advance(&self, frame: ReadFrameIdx, to: FrameState) {
+    pub(crate) fn advance(&self, frame: ReadFrameIdx, to: FrameState) {
         let index = self.checked_index(frame);
         let current = FrameState::from_tag(self.states[index].load(Ordering::Relaxed));
         self.states[index].store(current.advance(to).to_tag(), Ordering::Relaxed);
@@ -274,7 +291,7 @@ impl Frames {
     /// # Panics
     ///
     /// If `frame` is out of range.
-    pub unsafe fn fill(&self, frame: ReadFrameIdx, byte: u8) {
+    pub(crate) unsafe fn fill(&self, frame: ReadFrameIdx, byte: u8) {
         let index = self.checked_index(frame);
         let offset = index * self.granule as usize;
         // SAFETY: `offset + granule <= span` because `index < count`.
@@ -294,7 +311,7 @@ impl Frames {
     ///
     /// If `frame` is out of range, or the frame is not `InFlight` — only an
     /// unpublished in-flight frame accepts a fill.
-    pub fn fill_inflight(&self, frame: ReadFrameIdx, byte: u8) {
+    pub(crate) fn fill_inflight(&self, frame: ReadFrameIdx, byte: u8) {
         assert_eq!(
             self.state(frame),
             FrameState::InFlight,
@@ -315,7 +332,7 @@ impl Frames {
     ///
     /// If `frame` is out of range, or the frame is not `InFlight` — only an
     /// unpublished in-flight frame aborts.
-    pub fn abort_inflight(&self, frame: ReadFrameIdx) {
+    pub(crate) fn abort_inflight(&self, frame: ReadFrameIdx) {
         let index = self.checked_index(frame);
         assert_eq!(
             FrameState::from_tag(self.states[index].load(Ordering::Relaxed)),
@@ -347,7 +364,7 @@ fn arena_alignment(span: usize, granule: u32) -> usize {
     if cfg!(target_os = "linux") && span >= HUGEPAGE_BYTES {
         HUGEPAGE_BYTES.max(granule as usize)
     } else {
-        SECTOR
+        granule as usize
     }
 }
 
@@ -438,6 +455,20 @@ mod tests {
              least one of the arena's {} possible hugepages is resident (got {} KiB)",
             span / HUGEPAGE_BYTES,
             resident_kib,
+        );
+    }
+}
+
+#[cfg(test)]
+mod alignment_tests {
+    use super::*;
+
+    #[test]
+    fn a_small_arena_still_honors_a_granule_above_the_sector_floor() {
+        assert_eq!(
+            arena_alignment(8192, 8192),
+            8192,
+            "each frame base must satisfy a direct device whose alignment exceeds 4096 bytes"
         );
     }
 }
