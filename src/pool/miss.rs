@@ -13,18 +13,32 @@
 //! short read reslices the remainder, and an IO error or short-read-at-EOF fans
 //! the failure to every waiter and frees the frame.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::completion::CompletionBatch;
 use crate::driver::{FileHandle, OpToken, ReadFrameIdx};
+use crate::error::IoError;
 use crate::error::SubmitError;
-use crate::pool::PageId;
+use crate::open::DirectIo;
 use crate::pool::frames::Frames;
+use crate::pool::PageId;
+
+pub(super) mod sealed {
+    #[expect(
+        unnameable_types,
+        reason = "the unnameable supertrait deliberately seals the test backend seam"
+    )]
+    pub trait Sealed {}
+}
 
 /// The read-submit + drain seam the pool composes over. Sealed to the crate's own
 /// driver types; carried `#[doc(hidden)]` so it is not documented public API.
 #[doc(hidden)]
-pub trait PoolBackend {
+pub trait PoolBackend: sealed::Sealed {
+    /// Opens and retains a data file according to `direct_io`.
+    fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, IoError>;
+
     /// Enqueues a read of `len` bytes at `file_offset` into `frame`. The pool
     /// always requests the whole granule first, then the remainder tail after a
     /// short read (reslice, scope.md:601).
@@ -38,6 +52,7 @@ pub trait PoolBackend {
         fd: &FileHandle,
         frame: ReadFrameIdx,
         file_offset: u64,
+        destination_offset: u32,
         len: u32,
     ) -> Result<OpToken, SubmitError>;
 
@@ -48,9 +63,7 @@ pub trait PoolBackend {
     /// pool frame. The default no-op fits the mock (which fills the shared frame
     /// directly) and any backend that reads into its own slab; registering the
     /// arena as the ring's fixed read buffers is the T014 unification.
-    fn share_frames(&self, frames: Arc<Frames>) {
-        let _ = frames;
-    }
+    fn share_frames(&self, frames: Arc<Frames>);
 }
 
 /// A submitted miss's terminal disposition. A successful completion removes the

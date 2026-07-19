@@ -72,11 +72,9 @@
 
 use std::path::Path;
 
-use dios::mock::{Injected, MockDriver};
-use dios::{
-    FrameGuard, FrameState, Get, OpenHow, PageId, PendingToken, Pool, ReadFrameIdx, ReaderCtx,
-    ReadyResult,
-};
+use dios::driver::{OpenHow, ReadFrameIdx};
+use dios::testing::{FrameState, Injected, MockDriver};
+use dios::{FrameGuard, Get, PageId, PendingToken, Pool, ReaderCtx, ReadyResult};
 
 const GRANULE: u32 = 4096;
 const EIO: i32 = 5;
@@ -372,8 +370,10 @@ fn dropping_a_pending_token_cancels_interest_only_and_the_read_still_completes()
     let reader = pool.register_reader().expect("a reader slot");
     let page = PageId::new(file_id, 3);
 
-    let token = expect_pending(pool.get(&reader, page), "interest get");
-    drop(token);
+    {
+        let token = expect_pending(pool.get(&reader, page), "interest get");
+        assert_eq!(token.page(), page, "the scoped waiter names this miss");
+    }
 
     pool.poll();
     assert_eq!(

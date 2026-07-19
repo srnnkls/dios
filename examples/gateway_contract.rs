@@ -38,8 +38,9 @@
 use std::collections::VecDeque;
 use std::path::Path;
 
-use dios::mock::{Injected, MockDriver};
-use dios::{FileId, FrameGuard, Get, OpenHow, PageId, PendingToken, Pool, ReaderCtx, ReadyResult};
+use dios::driver::OpenHow;
+use dios::testing::{Injected, MockDriver};
+use dios::{FileId, FrameGuard, Get, PageId, PendingToken, Pool, ReaderCtx, ReadyResult};
 
 const FRAME_BYTES: u32 = 4096;
 const READY_POLLS_MAX: u32 = 64;
@@ -224,12 +225,14 @@ fn waiter_interest_drop_still_residents() {
     let reader = pool.register_reader().expect("reader slot is available");
     let page = PageId::new(file, 3);
 
-    let interest = match pool.get(&reader, page) {
-        Get::Pending(token) => token,
-        Get::Hit(_) => panic!("a cold page cannot hit"),
-        Get::Busy => panic!("spare frames exist; a miss submits"),
-    };
-    drop(interest);
+    {
+        let interest = match pool.get(&reader, page) {
+            Get::Pending(token) => token,
+            Get::Hit(_) => panic!("a cold page cannot hit"),
+            Get::Busy => panic!("spare frames exist; a miss submits"),
+        };
+        assert_eq!(interest.page(), page);
+    }
     pool.poll();
 
     match pool.get(&reader, page) {
@@ -276,17 +279,20 @@ fn error_fanout_to_cancelled_and_live_pair() {
     let reader = pool.register_reader().expect("reader slot is available");
     let page = PageId::new(file, 9);
 
-    let cancelled = match pool.get(&reader, page) {
-        Get::Pending(token) => token,
-        Get::Hit(_) => panic!("a cold page cannot hit"),
-        Get::Busy => panic!("spare frames exist; a miss submits"),
+    let live = {
+        let cancelled = match pool.get(&reader, page) {
+            Get::Pending(token) => token,
+            Get::Hit(_) => panic!("a cold page cannot hit"),
+            Get::Busy => panic!("spare frames exist; a miss submits"),
+        };
+        let live = match pool.get(&reader, page) {
+            Get::Pending(token) => token,
+            Get::Hit(_) => panic!("the read is still in flight; a joiner cannot hit"),
+            Get::Busy => panic!("a singleflight joiner submits no new read"),
+        };
+        assert_eq!(cancelled.page(), page);
+        live
     };
-    let live = match pool.get(&reader, page) {
-        Get::Pending(token) => token,
-        Get::Hit(_) => panic!("the read is still in flight; a joiner cannot hit"),
-        Get::Busy => panic!("a singleflight joiner submits no new read"),
-    };
-    drop(cancelled);
 
     pool.driver().inject_next(Injected::Io(EIO));
     let err = drive_err(&pool, &reader, live);

@@ -6,11 +6,19 @@
         reason = "parts of the shared driver core (DST seams, observation surfaces) are reachable only through the mock backend, so a mock-less build sees them as dead"
     )
 )]
+#![cfg_attr(
+    not(any(feature = "mock", feature = "bench")),
+    expect(
+        unreachable_pub,
+        unnameable_types,
+        reason = "structural pool probes are public only through the feature-gated testing module"
+    )
+)]
 
 mod alignment;
 mod backend;
 mod completion;
-mod driver;
+pub mod driver;
 mod error;
 mod open;
 mod pool;
@@ -24,23 +32,37 @@ pub use pool::loom_model;
 #[doc(hidden)]
 pub mod mock;
 
+/// Deterministic backends and structural observation seams for tests.
+#[cfg(any(feature = "mock", feature = "bench"))]
+pub mod testing {
+    /// Read-frame observation used by backend tests and read-bracketing benches.
+    pub trait DriverObservation {
+        /// Copies one completed frame into `out`.
+        fn copy_frame(&self, frame: crate::driver::ReadFrameIdx, out: &mut [u8]) -> usize;
+    }
+
+    impl DriverObservation for crate::driver::Driver {
+        fn copy_frame(&self, frame: crate::driver::ReadFrameIdx, out: &mut [u8]) -> usize {
+            self.copy_frame_testing(frame, out)
+        }
+    }
+
+    #[cfg(feature = "mock")]
+    pub use crate::mock::{
+        DirectIoSupport, Injected, MockDriver, MockDriverBuilder, MockRingDriver,
+        MockRingDriverBuilder, MockRingObservation, ReadAttempt,
+    };
+    #[cfg(any(feature = "mock", feature = "bench"))]
+    pub use crate::pool::{Clock, FrameState, Frames, PageTable, PoolBackend, ReaderCounters};
+}
+
 #[cfg(feature = "bench")]
 pub mod bench;
 
-pub use alignment::{Alignment, Unaligned};
-pub use completion::{Completion, CompletionBatch};
-pub use driver::{
-    Backend, Driver, DriverBuilder, FileHandle, FileId, IoMode, OpKind, OpToken, OpenHow,
-    ReadFrameIdx, SyncMode,
-};
-pub use error::{IoError, SubmitError};
+pub use driver::FileId;
+pub use error::IoError;
+pub use open::DirectIo;
 pub use pool::{
-    FrameGuard, GRANULE_DEFAULT, Get, PageId, PendingToken, Pool, PoolBuilder, PoolConfigError,
-    ReaderCtx, ReadyResult, RegisterError, WriteArena, WriteSlot,
+    FrameGuard, Get, PageId, PendingToken, Pool, PoolBuildError, PoolBuilder, PoolConfigError,
+    ReaderCtx, ReadyResult, RegisterError, GRANULE_DEFAULT,
 };
-
-/// Internal pool building blocks the T006 tests reach through the crate root.
-/// They are not part of the documented pool surface; the composed pool entry
-/// points (T007/T008) subsume them.
-#[doc(hidden)]
-pub use pool::{Clock, FrameState, Frames, PageTable, PoolBackend, ReaderCounters};

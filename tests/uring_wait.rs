@@ -15,12 +15,12 @@
 #![cfg(target_os = "linux")]
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use dios::{CompletionBatch, Driver, OpenHow, ReadFrameIdx};
+use dios::driver::{CompletionBatch, Driver, OpenHow, ReadFrameIdx};
 
 const FRAME_BYTES: u32 = 4096;
 const DRAIN_DEADLINE: Duration = Duration::from_secs(5);

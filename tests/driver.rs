@@ -11,8 +11,10 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use dios::mock::{Injected, MockDriver};
-use dios::{CompletionBatch, OpKind, OpToken, OpenHow, ReadFrameIdx, SubmitError, SyncMode};
+use dios::driver::{
+    CompletionBatch, OpKind, OpToken, OpenHow, ReadFrameIdx, SubmitError, SyncMode,
+};
+use dios::testing::{Injected, MockDriver};
 
 const FRAME_BYTES: u32 = 4096;
 const EINTR: i32 = 4;
@@ -32,7 +34,7 @@ fn mock(seed: u64, queue_capacity: u32, frames: u32) -> MockDriver {
         .build()
 }
 
-fn open(m: &MockDriver) -> dios::FileHandle {
+fn open(m: &MockDriver) -> dios::driver::FileHandle {
     m.open(Path::new("seg-000000"), OpenHow::read_write())
         .expect("mock open never touches disk")
 }
@@ -531,8 +533,8 @@ fn poll_is_non_blocking_and_poll_wait_bounds_its_idle_wait() {
 
 #[test]
 fn submit_does_not_wait_on_a_poller_parked_in_poll_wait() {
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
     use std::thread;
 
     let m = Arc::new(mock(1, 4, 4));

@@ -18,8 +18,9 @@ use std::os::unix::fs::FileExt;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
-use dios::mock::MockDriver;
-use dios::{Get, OpenHow, PageId, PendingToken, Pool, ReaderCtx, ReadyResult};
+use dios::driver::OpenHow;
+use dios::testing::MockDriver;
+use dios::{Get, PageId, PendingToken, Pool, ReaderCtx, ReadyResult};
 
 const GRANULE: usize = 4096;
 const RESIDENT_PAGES: u32 = 65_536;

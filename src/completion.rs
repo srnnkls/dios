@@ -22,11 +22,13 @@ impl Completion {
     }
 
     #[must_use]
+    /// Returns the token issued when this operation was admitted.
     pub fn token(&self) -> OpToken {
         self.token
     }
 
     #[must_use]
+    /// Returns the completed operation kind.
     pub fn kind(&self) -> OpKind {
         self.kind
     }
@@ -49,6 +51,7 @@ pub struct CompletionBatch {
 }
 
 impl CompletionBatch {
+    /// Allocates a completion batch with a fixed maximum capacity.
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
@@ -56,6 +59,7 @@ impl CompletionBatch {
         }
     }
 
+    /// Iterates over completions drained by the latest poll.
     pub fn iter(&self) -> std::slice::Iter<'_, Completion> {
         self.items.iter()
     }

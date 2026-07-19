@@ -21,8 +21,9 @@
 
 use std::path::Path;
 
-use dios::mock::MockDriver;
-use dios::{FileId, FrameGuard, Get, OpenHow, PageId, PendingToken, Pool, ReaderCtx, ReadyResult};
+use dios::driver::OpenHow;
+use dios::testing::MockDriver;
+use dios::{FileId, FrameGuard, Get, PageId, PendingToken, Pool, ReaderCtx, ReadyResult};
 
 const FRAME_BYTES: u32 = 4096;
 const READY_POLLS_MAX: u32 = 64;
@@ -148,12 +149,14 @@ fn gateway_loop_shape() {
     assert_frame_fill(&resumed, 0xAA);
     drop(resumed);
 
-    let interest = match pool.get(&reader, page_dropped) {
-        Get::Pending(token) => token,
-        Get::Hit(_) => panic!("a cold page cannot hit"),
-        Get::Busy => panic!("spare frames exist; a miss submits"),
-    };
-    drop(interest);
+    {
+        let interest = match pool.get(&reader, page_dropped) {
+            Get::Pending(token) => token,
+            Get::Hit(_) => panic!("a cold page cannot hit"),
+            Get::Busy => panic!("spare frames exist; a miss submits"),
+        };
+        assert_eq!(interest.page(), page_dropped);
+    }
     pool.poll();
     match pool.get(&reader, page_dropped) {
         Get::Hit(guard) => assert_frame_fill(&guard, 0xCC),

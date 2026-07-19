@@ -5,7 +5,7 @@
 //! injection, seed-derived completion reordering, and simulated (instant)
 //! execution. Admission, lease tracking, the retry policy, and finalization all
 //! live in the core. Backend behaviour is never selected by matching
-//! [`Backend`](crate::Backend) (AD-1); the mock is a distinct type.
+//! [`Backend`](crate::driver::Backend) (AD-1); the mock is a distinct type.
 
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
@@ -16,10 +16,11 @@ use std::time::Duration;
 
 use crate::completion::CompletionBatch;
 use crate::driver::{
-    Attempt, CompletionSlab, DriverCore, EagerExecutor, Executor, FileHandle, FileId, MAX_FILES,
-    OpContext, OpKind, OpToken, OpenHow, ReadFrameIdx, RingExecutor, Shared, SyncMode,
+    Attempt, CompletionSlab, DriverCore, EagerExecutor, Executor, FileHandle, FileId, OpContext,
+    OpKind, OpToken, OpenHow, ReadFrameIdx, RingExecutor, Shared, SyncMode, MAX_FILES,
 };
 use crate::error::{IoError, SubmitError};
+use crate::open::DirectIo;
 use crate::pool::write_arena::{WriteArena, WriteSlot};
 use crate::pool::{Frames, PoolBackend};
 
@@ -35,7 +36,17 @@ const EAGAIN: i32 = 35;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReadAttempt {
     pub file_offset: u64,
+    pub destination_offset: u32,
     pub requested_len: u32,
+}
+
+/// Direct-I/O capability reported by a deterministic mock file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectIoSupport {
+    /// The mock file supports direct transfers.
+    Supported,
+    /// The mock file supports buffered transfers only.
+    Unsupported,
 }
 
 /// A fault the mock injects into the next resolved op, mimicking a syscall
@@ -60,6 +71,7 @@ pub struct MockDriverBuilder {
     frames: u32,
     frame_bytes: u32,
     retry_bound: u32,
+    direct_io_support: DirectIoSupport,
 }
 
 impl Default for MockDriverBuilder {
@@ -70,6 +82,7 @@ impl Default for MockDriverBuilder {
             frames: 1,
             frame_bytes: 4096,
             retry_bound: 0,
+            direct_io_support: DirectIoSupport::Supported,
         }
     }
 }
@@ -105,6 +118,13 @@ impl MockDriverBuilder {
         self
     }
 
+    /// Selects the direct-I/O capability exposed by newly opened mock files.
+    #[must_use]
+    pub fn direct_io_support(mut self, support: DirectIoSupport) -> Self {
+        self.direct_io_support = support;
+        self
+    }
+
     /// # Panics
     ///
     /// If any capacity is zero — capacities are fixed and positive at init.
@@ -118,6 +138,7 @@ impl MockDriverBuilder {
             self.frames,
             self.frame_bytes,
             self.queue_capacity,
+            self.direct_io_support,
         );
         let shared = Shared::new(
             CompletionSlab::with_capacity(self.queue_capacity),
@@ -148,8 +169,31 @@ impl MockDriver {
     /// # Errors
     ///
     /// Returns `EMFILE` when the fixed fd table is exhausted.
-    pub fn open(&self, path: &Path, how: OpenHow) -> Result<FileHandle, IoError> {
-        self.0.open(path, how)
+    pub fn open(&self, path: &Path, direct_io: impl Into<DirectIo>) -> Result<FileHandle, IoError> {
+        self.open_with_direct_io(path, direct_io.into())
+    }
+
+    fn open_with_direct_io(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, IoError> {
+        if direct_io == DirectIo::Required
+            && self.0.executor().direct_io_support == DirectIoSupport::Unsupported
+        {
+            let error = std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "direct IO is unsupported for this mock file",
+            );
+            return Err(IoError::from(error));
+        }
+        let handle = self.0.open(path, OpenHow::read_write())?;
+        let io_mode = if direct_io != DirectIo::Disabled
+            && self.0.executor().direct_io_support == DirectIoSupport::Supported
+        {
+            let alignment = crate::alignment::Alignment::new(4096)
+                .expect("the mock direct alignment is a power of two");
+            crate::driver::IoMode::Direct(alignment)
+        } else {
+            crate::driver::IoMode::Buffered
+        };
+        Ok(FileHandle::from_parts(handle.file_id(), io_mode))
     }
 
     /// Consumes the handle; the deferred close(2) is observable once the fd's
@@ -177,7 +221,8 @@ impl MockDriver {
         frame: ReadFrameIdx,
         offset: u64,
     ) -> Result<OpToken, SubmitError> {
-        self.0.submit_read(fd, frame, offset)
+        self.0
+            .submit_read(fd, frame, offset, 0, self.0.executor().frame_bytes, true)
     }
 
     /// # Errors
@@ -302,18 +347,25 @@ impl MockDriver {
 }
 
 impl PoolBackend for MockDriver {
+    fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, IoError> {
+        self.open_with_direct_io(path, direct_io)
+    }
+
     fn submit_read(
         &self,
         fd: &FileHandle,
         frame: ReadFrameIdx,
         file_offset: u64,
+        destination_offset: u32,
         len: u32,
     ) -> Result<OpToken, SubmitError> {
         self.0.executor().record_attempt(ReadAttempt {
             file_offset,
+            destination_offset,
             requested_len: len,
         });
-        self.0.submit_read(fd, frame, file_offset)
+        self.0
+            .submit_read(fd, frame, file_offset, destination_offset, len, false)
     }
 
     fn poll(&self, out: &mut CompletionBatch) -> usize {
@@ -325,6 +377,8 @@ impl PoolBackend for MockDriver {
     }
 }
 
+impl crate::pool::PoolBackendSealed for MockDriver {}
+
 /// The mock backend's own state: injected faults and the reordering PRNG behind
 /// an internal mutex (the execute phase runs outside the core's submit lock),
 /// plus the immutable clean transfer size. Admission, leases, retries, and
@@ -335,6 +389,7 @@ struct MockExecutor {
     arena: OnceLock<Arc<Frames>>,
     frames: u32,
     frame_bytes: u32,
+    direct_io_support: DirectIoSupport,
 }
 
 #[derive(Debug)]
@@ -346,7 +401,13 @@ struct MockState {
 }
 
 impl MockExecutor {
-    fn new(seed: u64, frames: u32, frame_bytes: u32, injected_capacity: u32) -> Self {
+    fn new(
+        seed: u64,
+        frames: u32,
+        frame_bytes: u32,
+        injected_capacity: u32,
+        direct_io_support: DirectIoSupport,
+    ) -> Self {
         Self {
             state: Mutex::new(MockState {
                 injected: VecDeque::with_capacity(injected_capacity as usize),
@@ -357,6 +418,7 @@ impl MockExecutor {
             arena: OnceLock::new(),
             frames,
             frame_bytes,
+            direct_io_support,
         }
     }
 
@@ -387,11 +449,16 @@ impl MockExecutor {
     /// Fills the destination pool frame with the seeded byte for a clean read,
     /// modelling the disk transferring the granule's contents into the buffer.
     fn fill_read(&self, context: &OpContext<'_>) {
-        let granule_idx = u32::try_from(context.offset / u64::from(self.frame_bytes))
+        let granule_idx = u32::try_from(context.file_offset / u64::from(self.frame_bytes))
             .expect("granule index fits u32");
         let fill = self.lock().seeds.get(&(context.fd, granule_idx)).copied();
         if let (Some(arena), Some(fill)) = (self.arena.get(), fill) {
-            arena.fill_inflight(context.frame, fill);
+            arena.with_transfer_range_mut(
+                context.frame,
+                context.destination_offset,
+                context.requested_len,
+                |destination| destination.fill(fill),
+            );
         }
     }
 }
@@ -412,7 +479,10 @@ impl EagerExecutor for MockExecutor {
                 "a read attempt carries no write payload"
             ),
             OpKind::Fsync => {
-                debug_assert!(context.offset == 0, "an fsync attempt carries no offset");
+                debug_assert!(
+                    context.file_offset == 0,
+                    "an fsync attempt carries no offset"
+                );
                 debug_assert!(
                     context.write_buf.is_empty(),
                     "an fsync attempt carries no payload"
@@ -453,6 +523,14 @@ impl Executor for MockExecutor {
     }
 
     fn retire_file(&self, _slot: u32) {}
+
+    #[cfg(any(feature = "mock", feature = "bench"))]
+    fn copy_frame(&self, frame: ReadFrameIdx, out: &mut [u8]) -> usize {
+        self.arena
+            .get()
+            .expect("the mock is composed with a frame arena before reads")
+            .copy_frame(frame, out)
+    }
 }
 
 /// Builds a [`MockRingDriver`] with all capacities fixed up front.
@@ -610,7 +688,9 @@ impl MockRingDriver {
         frame: ReadFrameIdx,
         offset: u64,
     ) -> Result<OpToken, SubmitError> {
-        let token = self.0.submit_read(fd, frame, offset)?;
+        let token =
+            self.0
+                .submit_read(fd, frame, offset, 0, self.0.executor().frame_bytes, true)?;
         self.0.executor().bind_pending(u64::from(token.slot()));
         Ok(token)
     }
@@ -777,23 +857,42 @@ impl Executor for MockRingExecutor {
     fn retire_file(&self, _slot: u32) {
         self.observation.retired.fetch_add(1, Ordering::AcqRel);
     }
+
+    #[cfg(any(feature = "mock", feature = "bench"))]
+    fn copy_frame(&self, _frame: ReadFrameIdx, _out: &mut [u8]) -> usize {
+        panic!("the ring mock carries completion ordering, not frame bytes")
+    }
 }
 
 impl RingExecutor for MockRingExecutor {
-    fn read_len(&self) -> u32 {
-        self.frame_bytes
-    }
-
     fn push_read(
         &self,
         user_data: u64,
         _fd_slot: u32,
         _frame: ReadFrameIdx,
-        _offset: u64,
+        _file_offset: u64,
+        _destination_offset: u32,
         len: u32,
     ) {
         let mut state = self.lock();
         let raw = Self::next_raw(&mut state, user_data, len);
+        state.cqes.push_back((user_data, raw));
+    }
+
+    fn push_write(
+        &self,
+        user_data: u64,
+        _fd_slot: u32,
+        source: *const u8,
+        _file_offset: u64,
+        requested_len: u32,
+    ) {
+        assert!(
+            !source.is_null(),
+            "a mock write receives a live staging slot"
+        );
+        let mut state = self.lock();
+        let raw = Self::next_raw(&mut state, user_data, requested_len);
         state.cqes.push_back((user_data, raw));
     }
 

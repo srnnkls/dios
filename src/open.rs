@@ -14,29 +14,33 @@ use crate::error::IoError;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::ffi::c_int;
 
-/// Which data plane an open requests, before the probe reports what the file can
-/// actually support as an [`IoMode`]. An explicit two-variant request, never a
-/// bare bool across the open API.
+/// Direct-I/O policy for an opened data file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum IoRequest {
-    Buffered,
-    Direct,
+pub enum DirectIo {
+    /// Use the buffered page-cache path.
+    Disabled,
+    /// Prefer direct I/O, falling back to buffered I/O when unsupported.
+    Preferred,
+    /// Require direct I/O and reject files that cannot provide it.
+    Required,
 }
 
-#[cfg_attr(
-    not(target_os = "linux"),
-    expect(
-        clippy::unnecessary_wraps,
-        reason = "probe returns a uniform Result across platforms; only the linux O_DIRECT-apply fcntl path is fallible"
-    )
-)]
-pub(crate) fn probe(file: &File, request: IoRequest) -> Result<IoMode, IoError> {
-    match request {
-        IoRequest::Buffered => Ok(IoMode::Buffered),
-        #[cfg(target_os = "linux")]
-        IoRequest::Direct => probe_direct(file),
-        #[cfg(not(target_os = "linux"))]
-        IoRequest::Direct => Ok(probe_direct(file)),
+pub(crate) fn probe(file: &File, policy: DirectIo) -> Result<IoMode, IoError> {
+    if policy == DirectIo::Disabled {
+        return Ok(IoMode::Buffered);
+    }
+    #[cfg(target_os = "linux")]
+    let mode = probe_direct(file)?;
+    #[cfg(not(target_os = "linux"))]
+    let mode = probe_direct(file);
+    if policy == DirectIo::Required && mode == IoMode::Buffered {
+        let error = std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "direct IO is unsupported for this file",
+        );
+        Err(IoError::from(error))
+    } else {
+        Ok(mode)
     }
 }
 

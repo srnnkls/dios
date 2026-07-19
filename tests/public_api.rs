@@ -122,11 +122,20 @@ fn public_signatures_preserve_the_existing_residency_adt() {
         }
     }
 
-    let _inspect: fn(Get<'_>) = inspect;
-    let _driver_contract: fn(&Driver, &FileHandle, &WriteArena) = advanced_driver_contract;
-    let _build_pool: fn() -> Result<Pool, PoolBuildError> = configured_pool;
-    let _open_pool_file: fn(&Pool, &Path) -> Result<FileId, IoError> = open_pool_file;
-    let _build_driver: fn() -> Result<Driver, IoError> = configured_driver;
-    let _construct_page: fn(FileId, u32) -> PageId = PageId::new;
-    let _io_error_is_typed: Option<IoError> = None;
+    let inspect_signature: fn(Get<'_>) = inspect;
+    let driver_contract_signature: fn(&Driver, &FileHandle, &WriteArena) = advanced_driver_contract;
+    let build_pool_signature: fn() -> Result<Pool, PoolBuildError> = configured_pool;
+    let open_pool_file_signature: fn(&Pool, &Path) -> Result<FileId, IoError> = open_pool_file;
+    let build_driver_signature: fn() -> Result<Driver, IoError> = configured_driver;
+    let construct_page_signature: fn(FileId, u32) -> PageId = PageId::new;
+    let io_error_type: Option<IoError> = None;
+    std::hint::black_box((
+        inspect_signature,
+        driver_contract_signature,
+        build_pool_signature,
+        open_pool_file_signature,
+        build_driver_signature,
+        construct_page_signature,
+        io_error_type,
+    ));
 }

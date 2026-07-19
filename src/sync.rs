@@ -16,13 +16,13 @@ pub(crate) use std::sync::atomic::Ordering;
 #[cfg(not(loom))]
 pub(crate) use std::hint::spin_loop;
 #[cfg(not(loom))]
-pub(crate) use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, fence};
+pub(crate) use std::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, AtomicU8};
 #[cfg(not(loom))]
 pub(crate) use std::sync::{Mutex, MutexGuard};
 
 #[cfg(loom)]
 pub(crate) use loom::hint::spin_loop;
 #[cfg(loom)]
-pub(crate) use loom::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, fence};
+pub(crate) use loom::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, AtomicU8};
 #[cfg(loom)]
 pub(crate) use loom::sync::{Arc, Mutex, MutexGuard};

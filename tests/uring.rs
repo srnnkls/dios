@@ -13,10 +13,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-use dios::{
+use dios::driver::{
     CompletionBatch, Driver, FileHandle, IoMode, OpToken, OpenHow, ReadFrameIdx, SubmitError,
     SyncMode,
 };
+use dios::testing::DriverObservation;
 
 const FRAME_BYTES: u32 = 4096;
 const ENOENT: i32 = 2;

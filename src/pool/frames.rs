@@ -4,7 +4,7 @@
 
 #[cfg(target_os = "linux")]
 use core::ffi::{c_int, c_void};
-use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
+use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
 use std::ptr::NonNull;
 
 use crate::driver::ReadFrameIdx;
@@ -154,6 +154,62 @@ impl Frames {
         self.count
     }
 
+    pub(crate) fn granule(&self) -> u32 {
+        self.granule
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn span_len(&self) -> usize {
+        self.layout.size()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn base_ptr(&self) -> *mut u8 {
+        self.base.as_ptr()
+    }
+
+    pub(crate) fn frame_ptr(
+        &self,
+        frame: ReadFrameIdx,
+        destination_offset: u32,
+        requested_len: u32,
+    ) -> *mut u8 {
+        let index = self.checked_index(frame);
+        assert!(
+            destination_offset <= self.granule,
+            "destination offset lies within the frame"
+        );
+        assert!(
+            requested_len <= self.granule - destination_offset,
+            "requested range lies within the frame"
+        );
+        let frame_offset = index * self.granule as usize;
+        let offset = frame_offset + destination_offset as usize;
+        // SAFETY: the checked frame index and range assertions keep `offset`
+        // within this allocation. The returned pointer does not create a Rust
+        // reference; the backend's in-flight protocol governs access.
+        unsafe { self.base.as_ptr().add(offset) }
+    }
+
+    pub(crate) fn with_transfer_range_mut<T>(
+        &self,
+        frame: ReadFrameIdx,
+        destination_offset: u32,
+        requested_len: u32,
+        write: impl FnOnce(&mut [u8]) -> T,
+    ) -> T {
+        assert!(
+            matches!(self.state(frame), FrameState::Free | FrameState::InFlight),
+            "only an unobserved raw frame or unpublished pool frame accepts a transfer"
+        );
+        let start = self.frame_ptr(frame, destination_offset, requested_len);
+        // SAFETY: `frame_ptr` proves this range lies within the allocation. An
+        // InFlight frames are absent from the page table; Free frames belong to
+        // a standalone driver whose fixed raw-frame lease permits one writer.
+        let destination = unsafe { std::slice::from_raw_parts_mut(start, requested_len as usize) };
+        write(destination)
+    }
+
     /// The `granule`-byte region backing `frame`. The base never moves.
     ///
     /// # Panics
@@ -168,6 +224,14 @@ impl Frames {
         // SAFETY: the region is initialised (zeroed at construction) and lives as
         // long as `&self`.
         unsafe { std::slice::from_raw_parts(start, self.granule as usize) }
+    }
+
+    #[cfg(any(feature = "mock", feature = "bench"))]
+    pub(crate) fn copy_frame(&self, frame: ReadFrameIdx, out: &mut [u8]) -> usize {
+        let source = self.frame_bytes(frame);
+        let copied = out.len().min(source.len());
+        out[..copied].copy_from_slice(&source[..copied]);
+        copied
     }
 
     /// The residency state of `frame`.

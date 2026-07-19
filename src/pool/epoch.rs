@@ -13,7 +13,7 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 
 use crate::driver::ReadFrameIdx;
-use crate::sync::{AtomicBool, AtomicU64, Ordering, fence};
+use crate::sync::{fence, AtomicBool, AtomicU64, Ordering};
 
 /// A reader publishes this sentinel as its `local_epoch` while it holds no guard;
 /// the advance check reads it as "no constraint on the global epoch".

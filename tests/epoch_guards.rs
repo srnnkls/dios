@@ -30,7 +30,9 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use dios::{Driver, FileId, FrameState, OpenHow, PageId, Pool};
+use dios::driver::{Driver, OpenHow};
+use dios::testing::FrameState;
+use dios::{FileId, PageId, Pool};
 
 static FILE_SEQ: AtomicU32 = AtomicU32::new(0);
 
@@ -43,6 +45,7 @@ fn a_file_id() -> FileId {
     let path = std::env::temp_dir().join(format!("dios_epoch_t007_{}_{n}.bin", std::process::id()));
     std::fs::write(&path, [0u8; 64]).expect("temp file writable");
     let driver = Driver::builder().build();
+    let driver = driver.expect("the test driver initializes");
     driver
         .open(&path, OpenHow::read_write())
         .expect("open temp file")

@@ -23,8 +23,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 #[cfg(not(target_os = "linux"))]
-use dios::{CompletionBatch, ReadFrameIdx, SyncMode};
-use dios::{Driver, FileHandle, IoMode, OpenHow};
+use dios::driver::{CompletionBatch, Driver, FileHandle, IoMode, OpenHow, ReadFrameIdx, SyncMode};
+use dios::testing::DriverObservation;
 
 const FRAME_BYTES: u32 = 4096;
 #[cfg(not(target_os = "linux"))]
@@ -48,6 +48,7 @@ fn driver(frames: u32, frame_bytes: u32, queue_capacity: u32) -> Driver {
         .frame_bytes(frame_bytes)
         .retry_bound(3)
         .build()
+        .expect("the eager driver initializes")
 }
 
 fn open_existing(drv: &Driver, path: &Path, how: OpenHow) -> FileHandle {

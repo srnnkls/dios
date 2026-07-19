@@ -5,6 +5,12 @@
 pub struct IoError(std::io::Error);
 
 impl IoError {
+    /// Classifies this failure using the standard I/O error taxonomy.
+    #[must_use]
+    pub fn kind(&self) -> std::io::ErrorKind {
+        self.0.kind()
+    }
+
     /// Returns the raw OS error code, when the failure carries one.
     #[must_use]
     pub fn raw_os_error(&self) -> Option<i32> {
@@ -28,7 +34,11 @@ impl std::fmt::Display for IoError {
     }
 }
 
-impl std::error::Error for IoError {}
+impl std::error::Error for IoError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
 
 /// Why a submission was refused: backpressure, never a block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

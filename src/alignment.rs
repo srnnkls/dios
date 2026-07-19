@@ -16,6 +16,7 @@ impl Alignment {
     }
 
     #[must_use]
+    /// Returns the alignment in bytes.
     pub const fn get(self) -> u32 {
         self.0
     }
@@ -47,11 +48,13 @@ pub struct Unaligned {
 
 impl Unaligned {
     #[must_use]
+    /// Returns the rejected byte offset.
     pub fn offset_bytes(self) -> u64 {
         self.offset_bytes
     }
 
     #[must_use]
+    /// Returns the required alignment.
     pub fn alignment(self) -> Alignment {
         self.alignment
     }

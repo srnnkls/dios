@@ -9,11 +9,13 @@
 //! [`Mutex`]. The miss singleflight and the backend seam live in [`miss`].
 
 use std::cell::Cell;
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::completion::CompletionBatch;
-use crate::driver::{Driver, FileHandle, FileId, MAX_FILES, OpKind, OpToken, ReadFrameIdx};
+use crate::driver::{Driver, FileHandle, FileId, OpKind, OpToken, ReadFrameIdx, MAX_FILES};
 use crate::error::{IoError, SubmitError};
+use crate::open::DirectIo;
 use crate::sync::{AtomicU64, Mutex, MutexGuard, Ordering};
 
 #[cfg(test)]
@@ -27,15 +29,15 @@ mod miss;
 mod table;
 pub(crate) mod write_arena;
 
-use epoch::{EvictQueue, ReaderSlot, advance_epoch};
+use epoch::{advance_epoch, EvictQueue, ReaderSlot};
 use miss::{MissOutcome, MissTable};
 
 pub use clock::Clock;
 pub use epoch::{FrameGuard, ReaderCtx};
 pub use frames::{FrameState, Frames};
+pub(crate) use miss::sealed::Sealed as PoolBackendSealed;
 pub use miss::PoolBackend;
 pub use table::PageTable;
-pub use write_arena::{WriteArena, WriteSlot};
 
 /// Default frame granule, fixed per store at open and never below the `O_DIRECT`
 /// sector floor. AD-6 bounds the encoded BLOCK size (keys plus headers), not raw
@@ -63,16 +65,19 @@ pub struct PageId {
 }
 
 impl PageId {
+    /// Creates an extent identity from a file and granule index.
     #[must_use]
     pub fn new(file: FileId, granule_idx: u32) -> Self {
         Self { file, granule_idx }
     }
 
+    /// Returns the opened file identity.
     #[must_use]
     pub fn file(self) -> FileId {
         self.file
     }
 
+    /// Returns the zero-based granule index within the file.
     #[must_use]
     pub fn granule_idx(self) -> u32 {
         self.granule_idx
@@ -83,8 +88,11 @@ impl PageId {
 /// backpressure. `Busy` is retriable via `poll`, never a block.
 #[derive(Debug)]
 pub enum Get<'pool> {
+    /// The extent is resident and borrowed for the guard lifetime.
     Hit(FrameGuard<'pool>),
+    /// One read is in flight; the token can be checked with [`Pool::ready`].
     Pending(PendingToken),
+    /// No frame can be admitted within the bounded reclaim pass.
     Busy,
 }
 
@@ -92,8 +100,11 @@ pub enum Get<'pool> {
 /// non-consuming poll-again; `Err` frees the frame and surfaces the failure.
 #[derive(Debug)]
 pub enum ReadyResult<'pool> {
+    /// The read completed and the extent is now borrowed.
     Ready(FrameGuard<'pool>),
+    /// The read remains in flight and returns its waiter token.
     NotYet(PendingToken),
+    /// The read failed and its frame was returned to the pool.
     Err(IoError),
 }
 
@@ -111,13 +122,10 @@ impl PendingToken {
     }
 
     #[must_use]
+    /// Returns the page this waiter observes.
     pub fn page(&self) -> PageId {
         self.page
     }
-}
-
-impl Drop for PendingToken {
-    fn drop(&mut self) {}
 }
 
 /// Why a pool configuration is rejected at build, before any frame is allocated
@@ -125,14 +133,32 @@ impl Drop for PendingToken {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PoolConfigError {
     /// `frame_count` is below the deadlock-freedom watermark.
-    BelowWatermark { frame_count: u32, watermark: u32 },
+    BelowWatermark {
+        /// Configured frame count.
+        frame_count: u32,
+        /// Minimum frame count required by the watermark.
+        watermark: u32,
+    },
     /// `miss_headroom` is below `3 × max_inflight_reads` (one `InFlight` frame
     /// per concurrent miss plus two grace periods).
-    MissHeadroomTooSmall { miss_headroom: u32, minimum: u32 },
+    MissHeadroomTooSmall {
+        /// Configured miss headroom.
+        miss_headroom: u32,
+        /// Minimum headroom required by the in-flight bound.
+        minimum: u32,
+    },
     /// `granule` is not a power of two.
-    GranuleNotPowerOfTwo { granule: u32 },
+    GranuleNotPowerOfTwo {
+        /// Rejected granule size.
+        granule: u32,
+    },
     /// `granule` is below the `sector` floor required by `O_DIRECT`.
-    GranuleBelowSector { granule: u32, sector: u32 },
+    GranuleBelowSector {
+        /// Rejected granule size.
+        granule: u32,
+        /// Minimum sector size.
+        sector: u32,
+    },
 }
 
 impl std::fmt::Display for PoolConfigError {
@@ -164,11 +190,41 @@ impl std::fmt::Display for PoolConfigError {
 
 impl std::error::Error for PoolConfigError {}
 
+/// Failure to construct the default pool.
+#[derive(Debug)]
+pub enum PoolBuildError {
+    /// The fixed capacities violate a pool invariant.
+    Configuration(PoolConfigError),
+    /// The selected driver could not initialize its operating resources.
+    Driver(IoError),
+}
+
+impl std::fmt::Display for PoolBuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Configuration(error) => write!(f, "invalid pool configuration: {error}"),
+            Self::Driver(error) => write!(f, "driver initialization failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for PoolBuildError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Configuration(error) => Some(error),
+            Self::Driver(error) => Some(error),
+        }
+    }
+}
+
 /// Why a reader registration is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegisterError {
     /// Every registration slot (`max_concurrent_readers`) is occupied.
-    AtCapacity { max_concurrent_readers: u32 },
+    AtCapacity {
+        /// Configured registration capacity.
+        max_concurrent_readers: u32,
+    },
 }
 
 impl std::fmt::Display for RegisterError {
@@ -248,36 +304,42 @@ impl Default for PoolBuilder {
 }
 
 impl PoolBuilder {
+    /// Sets the total number of resident frames.
     #[must_use]
     pub fn frame_count(mut self, frame_count: u32) -> Self {
         self.frame_count = frame_count;
         self
     }
 
+    /// Sets the power-of-two bytes per file extent and frame.
     #[must_use]
     pub fn granule(mut self, granule: u32) -> Self {
         self.granule = granule;
         self
     }
 
+    /// Sets the fixed number of reader registration slots.
     #[must_use]
     pub fn max_concurrent_readers(mut self, max_concurrent_readers: u32) -> Self {
         self.max_concurrent_readers = max_concurrent_readers;
         self
     }
 
+    /// Sets the maximum simultaneous guards held by one reader.
     #[must_use]
     pub fn peak_guards_per_reader(mut self, peak_guards_per_reader: u32) -> Self {
         self.peak_guards_per_reader = peak_guards_per_reader;
         self
     }
 
+    /// Sets the maximum reads admitted concurrently.
     #[must_use]
     pub fn max_inflight_reads(mut self, max_inflight_reads: u32) -> Self {
         self.max_inflight_reads = max_inflight_reads;
         self
     }
 
+    /// Sets the frames reserved for misses and epoch reclamation.
     #[must_use]
     pub fn miss_headroom(mut self, miss_headroom: u32) -> Self {
         self.miss_headroom = miss_headroom;
@@ -331,14 +393,16 @@ impl PoolBuilder {
     /// `miss_headroom` below `3 × max_inflight_reads`, or a `frame_count` below
     /// the watermark `max_concurrent_readers × peak_guards_per_reader +
     /// miss_headroom` (INV-9).
-    pub fn build(self) -> Result<Pool<Driver>, PoolConfigError> {
-        self.validate()?;
+    pub fn build(self) -> Result<Pool<Driver>, PoolBuildError> {
+        self.validate().map_err(PoolBuildError::Configuration)?;
+        let frames = Arc::new(Frames::preallocated(self.frame_count, self.granule));
         let driver = Driver::builder()
             .frames(self.frame_count)
             .frame_bytes(self.granule)
             .queue_capacity(self.max_inflight_reads.max(1))
-            .build();
-        Ok(Pool::preallocated(self, driver))
+            .build_with_frames(Arc::clone(&frames))
+            .map_err(PoolBuildError::Driver)?;
+        Ok(Pool::preallocated(self, driver, frames))
     }
 
     /// Preallocates a pool composed over the supplied `driver`, unifying its read
@@ -350,7 +414,9 @@ impl PoolBuilder {
     #[doc(hidden)]
     pub fn build_on<D: PoolBackend>(self, driver: D) -> Result<Pool<D>, PoolConfigError> {
         self.validate()?;
-        Ok(Pool::preallocated(self, driver))
+        let frames = Arc::new(Frames::preallocated(self.frame_count, self.granule));
+        driver.share_frames(Arc::clone(&frames));
+        Ok(Pool::preallocated(self, driver, frames))
     }
 }
 
@@ -388,6 +454,7 @@ pub struct Pool<D = Driver> {
 }
 
 impl Pool<Driver> {
+    /// Returns a builder for the default platform driver.
     #[must_use]
     pub fn builder() -> PoolBuilder {
         PoolBuilder::default()
@@ -395,9 +462,17 @@ impl Pool<Driver> {
 }
 
 impl<D: PoolBackend> Pool<D> {
-    fn preallocated(config: PoolBuilder, driver: D) -> Self {
-        let frames = Arc::new(Frames::preallocated(config.frame_count, config.granule));
-        driver.share_frames(Arc::clone(&frames));
+    fn preallocated(config: PoolBuilder, driver: D, frames: Arc<Frames>) -> Self {
+        assert_eq!(
+            frames.count(),
+            config.frame_count,
+            "pool and arena counts match"
+        );
+        assert_eq!(
+            frames.granule(),
+            config.granule,
+            "pool and arena sizes match"
+        );
         let slots = (0..config.max_concurrent_readers)
             .map(|_| ReaderSlot::vacant())
             .collect();
@@ -463,6 +538,18 @@ impl<D: PoolBackend> Pool<D> {
     pub fn register_file(&self, fd: FileHandle) {
         let slot = fd.file_id().slot() as usize;
         self.control().files[slot] = Some(fd);
+    }
+
+    /// Opens a data file and registers its owned handle with this pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns the open, direct-I/O policy, or fixed-file registration failure.
+    pub fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileId, IoError> {
+        let handle = self.driver.open(path, direct_io)?;
+        let file = handle.file_id();
+        self.register_file(handle);
+        Ok(file)
     }
 
     /// Residency lookup: a warm hit borrows the frame; a miss submits a singleflight
@@ -643,7 +730,7 @@ impl<D: PoolBackend> Pool<D> {
         let fd = control.files[page.file().slot() as usize]
             .as_ref()
             .expect("a registered file backs every requested page");
-        self.driver.submit_read(fd, frame, offset, len)
+        self.driver.submit_read(fd, frame, offset, filled, len)
     }
 
     /// Finds a `Free` frame, or runs one bounded reclaim attempt (drain, advance,
@@ -722,7 +809,10 @@ impl<D: PoolBackend> Pool<D> {
                         let fd = files[entry.page().file().slot() as usize]
                             .as_ref()
                             .expect("a registered file backs every in-flight miss");
-                        if let Ok(token) = self.driver.submit_read(fd, entry.frame(), offset, len) {
+                        if let Ok(token) =
+                            self.driver
+                                .submit_read(fd, entry.frame(), offset, filled, len)
+                        {
                             miss.advance_remainder(index, filled, token);
                         } else {
                             self.frames.abort_inflight(entry.frame());
@@ -765,19 +855,28 @@ fn read_span(page: PageId, granule: u32, filled: u32) -> (u64, u32) {
 }
 
 impl PoolBackend for Driver {
+    fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, IoError> {
+        self.open_with_direct_io(path, direct_io)
+    }
+
     fn submit_read(
         &self,
         fd: &FileHandle,
         frame: ReadFrameIdx,
         file_offset: u64,
-        _len: u32,
+        destination_offset: u32,
+        len: u32,
     ) -> Result<OpToken, SubmitError> {
-        // The production driver reads the whole registered granule; the reslice
-        // `len` binds only once the ring reads into the shared arena (T014).
-        Driver::submit_read(self, fd, frame, file_offset)
+        self.submit_read_range(fd, frame, file_offset, destination_offset, len)
     }
 
     fn poll(&self, out: &mut CompletionBatch) -> usize {
         Driver::poll(self, out)
     }
+
+    fn share_frames(&self, _frames: Arc<Frames>) {
+        unreachable!("the default pool constructs its driver with the shared arena")
+    }
 }
+
+impl PoolBackendSealed for Driver {}

@@ -29,10 +29,9 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use dios::{
-    Clock, Driver, FileId, FrameState, Frames, GRANULE_DEFAULT, OpenHow, PageId, PageTable, Pool,
-    PoolConfigError, ReadFrameIdx, ReaderCounters, WriteArena,
-};
+use dios::driver::{Driver, OpenHow, ReadFrameIdx, WriteArena};
+use dios::testing::{Clock, FrameState, Frames, PageTable, ReaderCounters};
+use dios::{FileId, PageId, Pool, PoolConfigError, GRANULE_DEFAULT};
 
 const SECTOR: usize = 4096;
 
@@ -45,6 +44,7 @@ fn a_file_id() -> FileId {
     let path = std::env::temp_dir().join(format!("dios_pool_t006_{}_{n}.bin", std::process::id()));
     std::fs::write(&path, [0u8; 64]).expect("temp file writable");
     let driver = Driver::builder().build();
+    let driver = driver.expect("the test driver initializes");
     driver
         .open(&path, OpenHow::read_write())
         .expect("open temp file")
@@ -86,7 +86,7 @@ fn try_pool(
     peak: u32,
     inflight: u32,
     headroom: u32,
-) -> Result<Pool, PoolConfigError> {
+) -> Result<Pool, dios::PoolBuildError> {
     Pool::builder()
         .frame_count(frame_count)
         .granule(4096)
@@ -411,7 +411,10 @@ fn watermark_is_readers_times_peak_plus_configured_headroom() {
 fn pool_below_watermark_fails_open_with_a_typed_config_error() {
     let err = try_pool(11, 2, 3, 2, 6).expect_err("11 < 2*3+6=12 must fail open");
     assert!(
-        matches!(err, PoolConfigError::BelowWatermark { .. }),
+        matches!(
+            err,
+            dios::PoolBuildError::Configuration(PoolConfigError::BelowWatermark { .. })
+        ),
         "open-fail is a typed config error, not a runtime deadlock: {err:?}"
     );
 }
@@ -420,7 +423,10 @@ fn pool_below_watermark_fails_open_with_a_typed_config_error() {
 fn pool_miss_headroom_below_three_times_inflight_is_rejected() {
     let err = try_pool(100, 2, 3, 2, 5).expect_err("headroom 5 < 3*inflight(2)=6 must fail");
     assert!(
-        matches!(err, PoolConfigError::MissHeadroomTooSmall { .. }),
+        matches!(
+            err,
+            dios::PoolBuildError::Configuration(PoolConfigError::MissHeadroomTooSmall { .. })
+        ),
         "insufficient miss headroom is a typed config error: {err:?}"
     );
 }

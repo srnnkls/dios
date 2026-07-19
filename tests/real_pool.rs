@@ -2,7 +2,7 @@
 //! through the residency ADTs and the borrowed frame.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use dios::{DirectIo, FileId, FrameGuard, Get, PageId, PendingToken, Pool, ReaderCtx, ReadyResult};
@@ -95,7 +95,7 @@ fn assert_extent_eq(actual: &[u8], expected: &[u8], contract: &str) {
     }
 }
 
-fn open_file(pool: &Pool, path: &PathBuf, direct_io: DirectIo) -> FileId {
+fn open_file(pool: &Pool, path: &Path, direct_io: DirectIo) -> FileId {
     pool.open(path, direct_io)
         .expect("the pool opens and retains the fixture")
 }

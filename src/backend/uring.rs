@@ -10,20 +10,18 @@
 
 #![cfg(target_os = "linux")]
 
-use std::alloc::{self, Layout};
 use std::fs::File;
 use std::os::unix::fs::FileExt;
 use std::os::unix::io::AsRawFd;
-use std::ptr::NonNull;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use io_uring::{IoUring, opcode, squeue, types};
+use io_uring::{opcode, squeue, types, IoUring};
 
-use crate::driver::{Backend, Executor, MAX_FILES, OpKind, ReadFrameIdx, RingExecutor};
+use crate::driver::{Backend, Executor, OpKind, ReadFrameIdx, RingExecutor, MAX_FILES};
 use crate::error::IoError;
+use crate::pool::Frames;
 
-const SLAB_ALIGN: usize = 4096;
 const EINTR: i32 = 4;
 const EAGAIN: i32 = 11;
 const EBADF: i32 = 9;
@@ -40,7 +38,7 @@ struct Iovec {
 
 pub(crate) struct Uring {
     ring: IoUring,
-    slab: FrameSlab,
+    frames: Arc<Frames>,
     files: Mutex<Box<[Option<File>]>>,
     frame_bytes: u32,
 }
@@ -56,21 +54,20 @@ impl std::fmt::Debug for Uring {
 impl Uring {
     pub(crate) const KIND: Backend = Backend::Uring;
 
-    pub(crate) fn new(frames: u32, frame_bytes: u32, queue_capacity: u32) -> Self {
-        assert!(frames > 0, "frame count must be positive");
+    pub(crate) fn new(frames: Arc<Frames>, queue_capacity: u32) -> Result<Self, IoError> {
+        assert!(frames.count() > 0, "frame count must be positive");
+        let frame_bytes = frames.granule();
         assert!(frame_bytes > 0, "frame size must be positive");
         assert!(queue_capacity > 0, "queue capacity must be positive");
 
-        let ring = IoUring::new(queue_capacity.next_power_of_two())
-            .expect("io_uring init on a supported kernel");
-        let slab = FrameSlab::new(frames as usize * frame_bytes as usize);
+        let ring = IoUring::new(queue_capacity.next_power_of_two()).map_err(IoError::from)?;
 
         ring.submitter()
             .register_files_sparse(MAX_FILES)
-            .expect("register a sparse fixed-file table");
+            .map_err(IoError::from)?;
         let iov = Iovec {
-            iov_base: slab.as_ptr().cast(),
-            iov_len: slab.len(),
+            iov_base: frames.base_ptr().cast(),
+            iov_len: frames.span_len(),
         };
         // SAFETY: a one-element slice over the on-stack iovec; `register_buffers`
         // reads it only for the duration of the call.
@@ -78,25 +75,20 @@ impl Uring {
         // SAFETY: `Iovec` is layout-compatible with `libc::iovec`; the slab keeps a
         // fixed address and the ring drops before it (declaration order), so the
         // registered buffer stays valid for every op the ring issues.
-        unsafe { ring.submitter().register_buffers(bufs) }
-            .expect("register the frame slab as a fixed buffer");
+        unsafe { ring.submitter().register_buffers(bufs) }.map_err(IoError::from)?;
 
         let mut files = Vec::with_capacity(MAX_FILES as usize);
         files.resize_with(MAX_FILES as usize, || None);
-        Self {
+        Ok(Self {
             ring,
-            slab,
+            frames,
             files: Mutex::new(files.into_boxed_slice()),
             frame_bytes,
-        }
+        })
     }
 
     fn lock_files(&self) -> MutexGuard<'_, Box<[Option<File>]>> {
         self.files.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    pub(crate) fn copy_frame(&self, frame: ReadFrameIdx, out: &mut [u8]) -> usize {
-        self.slab.copy_frame(frame, self.frame_bytes, out)
     }
 
     fn push_sqe(&self, entry: &squeue::Entry) {
@@ -171,22 +163,60 @@ impl Executor for Uring {
         debug_assert!(file.is_some(), "retire of a slot that holds no live file");
         drop(file);
     }
+
+    #[cfg(any(feature = "mock", feature = "bench"))]
+    fn copy_frame(&self, frame: ReadFrameIdx, out: &mut [u8]) -> usize {
+        self.frames.copy_frame(frame, out)
+    }
 }
 
 impl RingExecutor for Uring {
-    fn read_len(&self) -> u32 {
-        self.frame_bytes
-    }
-
-    fn push_read(&self, user_data: u64, fd_slot: u32, frame: ReadFrameIdx, offset: u64, len: u32) {
+    fn push_read(
+        &self,
+        user_data: u64,
+        fd_slot: u32,
+        frame: ReadFrameIdx,
+        file_offset: u64,
+        destination_offset: u32,
+        requested_len: u32,
+    ) {
         assert!(
             (fd_slot as usize) < MAX_FILES as usize,
             "read targets a table slot"
         );
-        assert!(len <= self.frame_bytes, "a read spans at most one frame");
-        let buf = self.slab.frame_ptr(frame, self.frame_bytes);
-        let entry = opcode::ReadFixed::new(types::Fixed(fd_slot), buf, len, 0)
-            .offset(offset)
+        assert!(
+            requested_len <= self.frame_bytes,
+            "a read spans at most one frame"
+        );
+        let destination = self
+            .frames
+            .frame_ptr(frame, destination_offset, requested_len);
+        let entry = opcode::ReadFixed::new(types::Fixed(fd_slot), destination, requested_len, 0)
+            .offset(file_offset)
+            .build()
+            .user_data(user_data);
+        self.push_sqe(&entry);
+    }
+
+    fn push_write(
+        &self,
+        user_data: u64,
+        fd_slot: u32,
+        source: *const u8,
+        file_offset: u64,
+        requested_len: u32,
+    ) {
+        assert!(
+            (fd_slot as usize) < MAX_FILES as usize,
+            "write targets a table slot"
+        );
+        assert!(
+            !source.is_null(),
+            "a leased staging slot has a live pointer"
+        );
+        assert!(requested_len > 0, "a write transfers a non-empty slot");
+        let entry = opcode::Write::new(types::Fixed(fd_slot), source, requested_len)
+            .offset(file_offset)
             .build()
             .user_data(user_data);
         self.push_sqe(&entry);
@@ -251,85 +281,5 @@ impl RingExecutor for Uring {
         };
         file.sync_all()
             .map_err(|error| error.raw_os_error().unwrap_or(EIO))
-    }
-}
-
-/// The registered read-buffer backing: a fixed-address, page-aligned byte
-/// region carved into frames. Alignment satisfies both `O_DIRECT` sector rules
-/// and the registered-buffer contract; the address never moves after init.
-#[derive(Debug)]
-struct FrameSlab {
-    ptr: NonNull<u8>,
-    len: usize,
-    layout: Layout,
-}
-
-// SAFETY: the slab is a plain byte region reached only through the completion
-// protocol — the kernel writes a frame solely while its op is in flight, and a
-// reader touches a frame solely after that op's completion has drained — so no
-// two accesses to one frame race across threads.
-unsafe impl Send for FrameSlab {}
-// SAFETY: see the `Send` justification above.
-unsafe impl Sync for FrameSlab {}
-
-impl FrameSlab {
-    fn new(bytes: usize) -> Self {
-        assert!(bytes > 0, "the slab spans at least one frame");
-        let layout = Layout::from_size_align(bytes, SLAB_ALIGN).expect("a valid slab layout");
-        // SAFETY: `layout` has non-zero size (asserted above).
-        let raw = unsafe { alloc::alloc_zeroed(layout) };
-        let ptr = NonNull::new(raw).unwrap_or_else(|| alloc::handle_alloc_error(layout));
-        Self {
-            ptr,
-            len: bytes,
-            layout,
-        }
-    }
-
-    fn as_ptr(&self) -> *mut u8 {
-        self.ptr.as_ptr()
-    }
-
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    fn frame_ptr(&self, frame: ReadFrameIdx, frame_bytes: u32) -> *mut u8 {
-        let start = frame.get() as usize * frame_bytes as usize;
-        assert!(
-            start + frame_bytes as usize <= self.len,
-            "the frame region lies within the slab"
-        );
-        // SAFETY: `start + frame_bytes <= len` (asserted), so the offset stays in
-        // the allocation.
-        unsafe { self.ptr.as_ptr().add(start) }
-    }
-
-    fn copy_frame(&self, frame: ReadFrameIdx, frame_bytes: u32, out: &mut [u8]) -> usize {
-        let start = frame.get() as usize * frame_bytes as usize;
-        let count = out.len().min(frame_bytes as usize);
-        assert!(start < self.len, "the frame starts within the slab");
-        assert!(
-            start + count <= self.len,
-            "the frame region lies within the slab"
-        );
-        // SAFETY: `start + count <= len` (asserted), so the offset stays in the
-        // allocation.
-        let src = unsafe { self.ptr.as_ptr().add(start) };
-        // SAFETY: `[src, src+count)` is in-bounds; `out` is a caller buffer that
-        // cannot overlap the slab.
-        unsafe {
-            std::ptr::copy_nonoverlapping(src, out.as_mut_ptr(), count);
-        }
-        count
-    }
-}
-
-impl Drop for FrameSlab {
-    fn drop(&mut self) {
-        // SAFETY: `ptr` came from `alloc_zeroed` with `layout` and is freed once.
-        unsafe {
-            alloc::dealloc(self.ptr.as_ptr(), self.layout);
-        }
     }
 }

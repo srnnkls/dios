@@ -5,7 +5,7 @@
 //! (INV-11). Slots hand out `DerefMut<Target = [u8]>` views into disjoint
 //! regions of the shared backing.
 
-use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
+use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::sync::Arc;
@@ -184,6 +184,18 @@ pub(crate) struct WriteLease {
 }
 
 impl WriteLease {
+    pub(crate) fn region(&self) -> (*const u8, u32) {
+        let offset = self.slot as usize * self.state.granule as usize;
+        assert!(
+            offset + self.state.granule as usize <= self.state.layout.size(),
+            "leased write region lies within its arena"
+        );
+        // SAFETY: the asserted range lies within the arena allocation. The
+        // consumed lease keeps the slot occupied and the allocation alive.
+        let source = unsafe { self.state.base.as_ptr().add(offset) };
+        (source.cast_const(), self.state.granule)
+    }
+
     pub(crate) fn release(mut self) {
         self.free_once();
     }

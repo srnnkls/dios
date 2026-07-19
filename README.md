@@ -5,9 +5,50 @@ Completion-based async direct-IO driver plus a userspace frame pool:
 cfg-selected backends — io_uring on Linux, eager-inline elsewhere. No
 futures, no executor, no allocation on the hot path.
 
-Status: pre-implementation. Architecture, invariants, and perf gates are
-owned by the active scope under `scopes/`; process and style live in
-`AGENTS.md`.
+The pool and both platform backends are implemented. Linux uses registered
+`io_uring` buffers; other platforms execute queued file operations when the
+caller polls. Architecture, invariants, and perf gates are owned by the active
+scope under `scopes/`; process and style live in `AGENTS.md`.
+
+## API
+
+`Pool` is the product surface. It owns opened files, coalesces concurrent
+misses, and lends resident bytes through a `FrameGuard`:
+
+```rust,no_run
+use std::path::Path;
+
+use dios::{DirectIo, Get, PageId, Pool, ReadyResult};
+
+let pool = Pool::builder()
+    .frame_count(16)
+    .max_concurrent_readers(1)
+    .peak_guards_per_reader(1)
+    .max_inflight_reads(1)
+    .miss_headroom(3)
+    .build()?;
+let file = pool.open(Path::new("segment.data"), DirectIo::Preferred)?;
+let reader = pool.register_reader()?;
+let page = PageId::new(file, 0);
+
+if let Get::Pending(mut token) = pool.get(&reader, page) {
+    loop {
+        pool.poll();
+        match pool.ready(&reader, token) {
+            ReadyResult::Ready(frame) => {
+                std::hint::black_box(&*frame);
+                break;
+            }
+            ReadyResult::NotYet(pending) => token = pending,
+            ReadyResult::Err(error) => return Err(error.into()),
+        }
+    }
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The explicit completion driver and write-staging vocabulary live under
+`dios::driver`. See `examples/quickstart.rs` for the bounded polling form.
 
 ## Development
 

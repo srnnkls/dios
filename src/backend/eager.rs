@@ -6,12 +6,11 @@
 
 use std::fs::File;
 use std::os::unix::fs::FileExt;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use crate::driver::{
-    Attempt, Backend, EagerExecutor, Executor, MAX_FILES, OpContext, OpKind, ReadFrameIdx,
-};
+use crate::driver::{Attempt, Backend, EagerExecutor, Executor, OpContext, OpKind, MAX_FILES};
 use crate::error::IoError;
+use crate::pool::Frames;
 
 const EINTR: i32 = 4;
 const EAGAIN: i32 = 35;
@@ -21,29 +20,29 @@ const EIO: i32 = 5;
 #[derive(Debug)]
 pub(crate) struct Eager {
     state: Mutex<EagerState>,
+    frames: Arc<Frames>,
     frame_bytes: u32,
 }
 
 #[derive(Debug)]
 struct EagerState {
     files: Box<[Option<File>]>,
-    slab: Box<[u8]>,
 }
 
 impl Eager {
     pub(crate) const KIND: Backend = Backend::Eager;
 
-    pub(crate) fn new(frames: u32, frame_bytes: u32, _queue_capacity: u32) -> Self {
-        assert!(frames > 0, "frame count must be positive");
+    pub(crate) fn new(frames: Arc<Frames>, _queue_capacity: u32) -> Self {
+        assert!(frames.count() > 0, "frame count must be positive");
+        let frame_bytes = frames.granule();
         assert!(frame_bytes > 0, "frame size must be positive");
-        let slab_bytes = frames as usize * frame_bytes as usize;
         let mut files = Vec::with_capacity(MAX_FILES as usize);
         files.resize_with(MAX_FILES as usize, || None);
         Self {
             state: Mutex::new(EagerState {
                 files: files.into_boxed_slice(),
-                slab: vec![0u8; slab_bytes].into_boxed_slice(),
             }),
+            frames,
             frame_bytes,
         }
     }
@@ -51,30 +50,12 @@ impl Eager {
     fn lock(&self) -> MutexGuard<'_, EagerState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
-
-    pub(crate) fn copy_frame(&self, frame: ReadFrameIdx, out: &mut [u8]) -> usize {
-        let state = self.lock();
-        let frame_bytes = self.frame_bytes as usize;
-        let frames = state.slab.len() / frame_bytes;
-        assert!(
-            (frame.get() as usize) < frames,
-            "copy_frame index out of range for the configured frame count"
-        );
-        let start = frame.get() as usize * frame_bytes;
-        let count = out.len().min(frame_bytes);
-        assert!(
-            start + count <= state.slab.len(),
-            "frame region within the slab"
-        );
-        out[..count].copy_from_slice(&state.slab[start..start + count]);
-        count
-    }
 }
 
 impl EagerExecutor for Eager {
     fn attempt(&self, kind: OpKind, clean_bytes: u32, context: OpContext<'_>) -> Attempt {
         let mut guard = self.lock();
-        let EagerState { files, slab } = &mut *guard;
+        let EagerState { files } = &mut *guard;
         let slot = context.fd.slot() as usize;
         let Some(file) = files.get(slot).and_then(Option::as_ref) else {
             return Attempt::Failed(EBADF);
@@ -85,14 +66,17 @@ impl EagerExecutor for Eager {
                     clean_bytes <= self.frame_bytes,
                     "a read transfer spans at most one frame"
                 );
-                let start = context.frame.get() as usize * self.frame_bytes as usize;
-                let end = start + clean_bytes as usize;
-                assert!(start < slab.len(), "read frame start within the slab");
-                assert!(end <= slab.len(), "read frame region within the slab");
-                attempt_map_transfer(
-                    file.read_at(&mut slab[start..end], context.offset),
-                    clean_bytes,
-                )
+                assert_eq!(
+                    clean_bytes, context.requested_len,
+                    "the eager attempt receives the admitted transfer length"
+                );
+                let result = self.frames.with_transfer_range_mut(
+                    context.frame,
+                    context.destination_offset,
+                    context.requested_len,
+                    |destination| file.read_at(destination, context.file_offset),
+                );
+                attempt_map_transfer(result, context.requested_len)
             }
             OpKind::Write => {
                 debug_assert!(
@@ -101,7 +85,10 @@ impl EagerExecutor for Eager {
                 );
                 let requested =
                     u32::try_from(context.write_buf.len()).expect("write length within u32 bound");
-                attempt_map_transfer(file.write_at(context.write_buf, context.offset), requested)
+                attempt_map_transfer(
+                    file.write_at(context.write_buf, context.file_offset),
+                    requested,
+                )
             }
             OpKind::Fsync => match crate::open::full_fsync(file) {
                 Ok(()) => Attempt::Done(0),
@@ -146,6 +133,11 @@ impl Executor for Eager {
         let file = state.files[slot as usize].take();
         debug_assert!(file.is_some(), "retire of a slot that holds no live file");
         drop(file);
+    }
+
+    #[cfg(any(feature = "mock", feature = "bench"))]
+    fn copy_frame(&self, frame: crate::driver::ReadFrameIdx, out: &mut [u8]) -> usize {
+        self.frames.copy_frame(frame, out)
     }
 }
 

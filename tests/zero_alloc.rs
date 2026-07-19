@@ -23,7 +23,7 @@ use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use dios::{CompletionBatch, Driver, FileHandle, OpenHow, ReadFrameIdx, SyncMode};
+use dios::driver::{CompletionBatch, Driver, FileHandle, OpenHow, ReadFrameIdx, SyncMode};
 
 const FRAME_BYTES: u32 = 4096;
 const DRAIN_POLLS_MAX: u32 = 1_000_000;
@@ -92,6 +92,7 @@ fn driver() -> Driver {
         .frame_bytes(FRAME_BYTES)
         .retry_bound(3)
         .build()
+        .expect("the test driver initializes")
 }
 
 fn open(drv: &Driver, path: &Path) -> FileHandle {
@@ -219,8 +220,9 @@ fn a_deferred_close_retiring_during_a_poll_drain_allocates_nothing() {
 mod pool_gates {
     use std::path::Path;
 
-    use dios::mock::MockDriver;
-    use dios::{FrameGuard, FrameState, Get, OpenHow, PageId, Pool, ReadFrameIdx, ReaderCtx};
+    use dios::driver::{OpenHow, ReadFrameIdx};
+    use dios::testing::{FrameState, MockDriver};
+    use dios::{FrameGuard, Get, PageId, Pool, ReaderCtx};
 
     use super::armed_allocations;
 
