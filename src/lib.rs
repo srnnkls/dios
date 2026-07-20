@@ -21,6 +21,7 @@ pub mod driver;
 mod error;
 mod open;
 mod pool;
+mod product;
 mod sync;
 
 #[cfg(loom)]
@@ -36,6 +37,10 @@ mod mock;
 pub mod testing {
     use std::cell::Cell;
     use std::marker::PhantomData;
+    #[cfg(feature = "mock")]
+    use std::sync::atomic::Ordering;
+    #[cfg(feature = "mock")]
+    use std::sync::Arc;
 
     pub use crate::pool::ReadFrameIdx;
 
@@ -147,13 +152,13 @@ pub mod testing {
         fn frame_state(&self, frame: ReadFrameIdx) -> FrameState;
         fn pin<'ctx>(
             &'ctx self,
-            reader: &'ctx crate::pool::ReaderCtx<'_>,
+            reader: &'ctx crate::pool::ReaderCtx,
             page: crate::pool::PageId,
         ) -> Option<crate::pool::FrameGuard<'ctx>>;
         fn insert_resident_frame(&self, page: crate::pool::PageId, fill: u8) -> ReadFrameIdx;
         fn evict_frame(&self, page: crate::pool::PageId) -> ReadFrameIdx;
         fn clock_reference_stores(&self) -> u64;
-        fn pending_waiters(&self, token: &crate::pool::PendingToken<'_>) -> u32;
+        fn pending_waiters(&self, token: &crate::pool::PendingToken) -> u32;
     }
 
     macro_rules! impl_pool_testing_ext {
@@ -169,7 +174,7 @@ pub mod testing {
 
                 fn pin<'ctx>(
                     &'ctx self,
-                    reader: &'ctx crate::pool::ReaderCtx<'_>,
+                    reader: &'ctx crate::pool::ReaderCtx,
                     page: crate::pool::PageId,
                 ) -> Option<crate::pool::FrameGuard<'ctx>> {
                     self.pin_internal(reader, page)
@@ -191,7 +196,7 @@ pub mod testing {
                     self.clock_reference_stores_internal()
                 }
 
-                fn pending_waiters(&self, token: &crate::pool::PendingToken<'_>) -> u32 {
+                fn pending_waiters(&self, token: &crate::pool::PendingToken) -> u32 {
                     self.pending_waiters_internal(token)
                 }
             }
@@ -206,6 +211,7 @@ pub mod testing {
     #[cfg(feature = "mock")]
     pub trait MockPoolTestingExt {
         fn driver(&self) -> &MockDriver;
+        fn observe(&self) -> Arc<MockPoolObservation>;
     }
 
     #[cfg(feature = "mock")]
@@ -213,11 +219,123 @@ pub mod testing {
         fn driver(&self) -> &MockDriver {
             self.driver_internal()
         }
+
+        fn observe(&self) -> Arc<MockPoolObservation> {
+            Arc::new(MockPoolObservation {
+                lifecycle: self.lifecycle_internal(),
+            })
+        }
+    }
+
+    /// Exact Arc-backed product lifecycle observation.
+    #[cfg(feature = "mock")]
+    #[derive(Debug)]
+    pub struct MockPoolObservation {
+        lifecycle: Arc<crate::product::LifecycleCounters>,
+    }
+
+    #[cfg(feature = "mock")]
+    impl MockPoolObservation {
+        #[must_use]
+        pub fn registered_readers(&self) -> u32 {
+            self.lifecycle.registered_readers.load(Ordering::Acquire)
+        }
+        #[must_use]
+        pub fn reader_releases(&self) -> u32 {
+            self.lifecycle.reader_releases.load(Ordering::Acquire)
+        }
+        #[must_use]
+        pub fn live_pending_interests(&self) -> u32 {
+            self.lifecycle
+                .live_pending_interests
+                .load(Ordering::Acquire)
+        }
+        #[must_use]
+        pub fn pending_releases(&self) -> u32 {
+            self.lifecycle.pending_releases.load(Ordering::Acquire)
+        }
+        #[must_use]
+        pub fn backend_ops_in_flight(&self) -> u32 {
+            self.lifecycle.backend_ops_in_flight.load(Ordering::Acquire)
+        }
+        #[must_use]
+        pub fn backend_completions(&self) -> u32 {
+            self.lifecycle.backend_completions.load(Ordering::Acquire)
+        }
+        #[must_use]
+        pub fn quiesce_calls(&self) -> u32 {
+            self.lifecycle.quiesce_calls.load(Ordering::Acquire)
+        }
+    }
+
+    #[cfg(feature = "mock")]
+    macro_rules! wait_observation {
+        ($name:ident) => {
+            #[derive(Debug, Clone)]
+            pub struct $name {
+                inner: crate::product::WaitObservation,
+            }
+
+            impl $name {
+                pub(crate) fn from_state(state: Arc<crate::product::WaitState>) -> Self {
+                    Self {
+                        inner: crate::product::WaitObservation { state },
+                    }
+                }
+
+                #[must_use]
+                pub fn wait_until_parked(&self, timeout: std::time::Duration) -> bool {
+                    self.inner.wait_until_parked(timeout)
+                }
+
+                #[must_use]
+                pub fn parks_entered(&self) -> u32 {
+                    self.inner.parks_entered()
+                }
+
+                #[must_use]
+                pub fn parks_in_progress(&self) -> u32 {
+                    self.inner.parks_in_progress()
+                }
+
+                #[must_use]
+                pub fn parks_exited(&self) -> u32 {
+                    self.inner.parks_exited()
+                }
+
+                #[must_use]
+                pub fn wake_exits(&self) -> u32 {
+                    self.inner.wake_exits()
+                }
+
+                #[must_use]
+                pub fn timeout_exits(&self) -> u32 {
+                    self.inner.timeout_exits()
+                }
+            }
+        };
+    }
+
+    #[cfg(feature = "mock")]
+    wait_observation!(MockWaitObservation);
+    #[cfg(feature = "mock")]
+    wait_observation!(ShippingWaitObservation);
+
+    #[cfg(feature = "mock")]
+    pub trait ShippingWaitTestingExt {
+        fn observe_shipping_waits(&self) -> ShippingWaitObservation;
+    }
+
+    #[cfg(feature = "mock")]
+    impl ShippingWaitTestingExt for crate::pool::Pool<crate::driver::Driver> {
+        fn observe_shipping_waits(&self) -> ShippingWaitObservation {
+            ShippingWaitObservation::from_state(self.wait_internal())
+        }
     }
 
     #[cfg(feature = "mock")]
     pub use crate::mock::{
-        DirectIoSupport, Injected, MockDriver, MockDriverBuilder, MockRingDriver,
+        DirectIoSupport, Injected, MockDriver, MockDriverBuilder, MockIoEvent, MockRingDriver,
         MockRingDriverBuilder, MockRingObservation, MockWriteArena, ReadAttempt, WriteAttempt,
     };
     #[cfg(any(feature = "mock", feature = "bench"))]
@@ -228,9 +346,14 @@ pub mod testing {
 pub mod bench;
 
 pub use driver::FileId;
+pub use driver::SyncMode;
 pub use error::IoError;
 pub use open::DirectIo;
 pub use pool::{
-    FrameGuard, Get, PageId, PendingToken, Pool, PoolBuildError, PoolBuilder, PoolConfigError,
-    ReaderCtx, ReadyResult, RegisterError, GRANULE_DEFAULT,
+    FrameGuard, Get, GetError, PageId, PendingToken, Pool, PoolBuildError, PoolBuilder,
+    PoolConfigError, ReaderCtx, ReadyResult, RegisterError, GRANULE_DEFAULT,
+};
+pub use product::{
+    PollReport, PoolCompletion, PoolCompletionBatch, PoolSubmitError, PoolToken, PoolWakeHandle,
+    PoolWriteArena, PoolWriteSlot, RetireStatus,
 };

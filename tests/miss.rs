@@ -26,8 +26,8 @@
 //! }
 //! impl<D: PoolBackend> Pool<D> {
 //!     pub fn register_file(&self, fd: FileHandle);   // route PageId.file() -> this handle (+ base offset)
-//!     pub fn get<'p>(&'p self, reader: &'p ReaderCtx<'p>, page: PageId) -> Get<'p>;
-//!     pub fn ready<'p>(&'p self, reader: &'p ReaderCtx<'p>, token: PendingToken<'p>) -> ReadyResult<'p>;
+//!     pub fn get<'p>(&'p self, reader: &'p ReaderCtx, page: PageId) -> Result<Get<'p>, GetError>;
+//!     pub fn ready<'p>(&'p self, reader: &'p ReaderCtx, token: PendingToken) -> ReadyResult<'p>;
 //!     pub fn poll(&self) -> usize;   // extends T007 poll: drain driver, InFlight->Resident + map, ready
 //!                                    // tokens (or record fault/short), THEN epoch-advance/reclaim.
 //!     pub fn driver(&self) -> &D;    // borrow the composed driver for test observation
@@ -37,12 +37,28 @@
 //! // simulated disk. A clean read completion for (fd, granule_idx) fills the
 //! // destination pool frame with `fill` bytes; the pool's job is only to route
 //! // that completion into the RIGHT frame for the RIGHT page.
-//! pub struct ReadAttempt { pub file_offset: u64, pub requested_len: u32 }
+//! pub struct ReadAttempt {
+//!     pub file_offset: u64,
+//!     pub destination_offset: u32,
+//!     pub requested_len: u32,
+//! }
+//! pub enum MockIoEvent {
+//!     ReadAttempt {
+//!         file: FileId,
+//!         file_offset: u64,
+//!         destination_offset: u32,
+//!         requested_len: u32,
+//!     },
+//!     // write/fsync attempts, all completions, and closes omitted here
+//! }
 //! impl MockDriver {
 //!     pub fn seed_page(&self, fd: &FileHandle, granule_idx: u32, fill: u8);
 //!     pub fn read_attempts_in_order(&self) -> Vec<ReadAttempt>;
 //! }
 //! ```
+//! `MockIoEvent` is the sole chronological recorder. The frozen
+//! `read_attempts_in_order` and `write_attempts_in_order` accessors are derived
+//! typed projections of that stream; they do not maintain parallel logs.
 //!
 //! Setup order every test uses: build the mock, open its file(s), seed page
 //! content, inject faults — all BEFORE `build_on` moves the mock into the pool —
@@ -77,7 +93,9 @@ use dios::testing::{
     FrameState, Injected, MockDriver, MockPoolTestingExt, PoolBuilderTestingExt, PoolTestingExt,
     ReadFrameIdx,
 };
-use dios::{DirectIo, FrameGuard, Get, PageId, PendingToken, Pool, ReaderCtx, ReadyResult};
+use dios::{
+    DirectIo, FrameGuard, Get, GetError, PageId, PendingToken, Pool, ReaderCtx, ReadyResult,
+};
 
 const GRANULE: u32 = 4096;
 const EIO: i32 = 5;
@@ -151,8 +169,8 @@ fn assert_page_bytes(guard: &FrameGuard<'_>, fill: u8) {
 /// assert `Err` directly.
 fn drive_ready<'pool>(
     pool: &'pool Pool<MockDriver>,
-    reader: &'pool ReaderCtx<'pool>,
-    token: PendingToken<'pool>,
+    reader: &'pool ReaderCtx,
+    token: PendingToken,
 ) -> FrameGuard<'pool> {
     let mut token = token;
     for _ in 0..READY_POLLS_MAX {
@@ -168,14 +186,18 @@ fn drive_ready<'pool>(
     panic!("a submitted miss never readied within the bounded poll budget");
 }
 
-fn expect_pending<'pool>(outcome: Get<'pool>, whose: &str) -> PendingToken<'pool> {
-    match outcome {
+fn expect_pending(outcome: Result<Get<'_>, GetError>, whose: &str) -> PendingToken {
+    match outcome.unwrap_or_else(|error| panic!("{whose}: the registered file is live: {error}")) {
         Get::Pending(token) => token,
         Get::Hit(_) => panic!("{whose}: a cold page cannot hit"),
         Get::Busy => {
             panic!("{whose}: spare frames exist; a miss submits, it does not backpressure")
         }
     }
+}
+
+fn expect_live<'pool>(outcome: Result<Get<'pool>, GetError>, whose: &str) -> Get<'pool> {
+    outcome.unwrap_or_else(|error| panic!("{whose}: the registered file is live: {error}"))
 }
 
 #[test]
@@ -208,7 +230,7 @@ fn a_cold_get_misses_then_readies_its_seeded_content_and_a_warm_re_get_hits() {
     );
     drop(guard);
 
-    match pool.get(&reader, page) {
+    match expect_live(pool.get(&reader, page), "warm re-get") {
         Get::Hit(guard) => assert_page_bytes(&guard, 0xC4),
         Get::Pending(_) => panic!("a resident page must hit — re-submitting would block a worker"),
         Get::Busy => panic!("a resident page is never Busy"),
@@ -273,7 +295,7 @@ fn n_gets_for_one_missing_page_issue_exactly_one_read_under_a_single_slot_queue(
 
     let mut tokens = Vec::with_capacity(waiters as usize);
     for waiter in 0..waiters {
-        match pool.get(&reader, page) {
+        match expect_live(pool.get(&reader, page), "singleflight get") {
             Get::Pending(token) => tokens.push(token),
             Get::Hit(_) => panic!("waiter {waiter}: the page is still in flight, it cannot hit"),
             Get::Busy => panic!(
@@ -352,7 +374,7 @@ fn a_faulted_miss_fans_the_error_to_all_waiters_then_a_fresh_read_of_the_same_pa
     let guard = drive_ready(&pool, &reader, retry);
     assert_page_bytes(&guard, 0x55);
     drop(guard);
-    match pool.get(&reader, page) {
+    match expect_live(pool.get(&reader, page), "warm get after retry") {
         Get::Hit(guard) => assert_page_bytes(&guard, 0x55),
         Get::Pending(_) => panic!("the retried page is resident and must hit"),
         Get::Busy => panic!("a resident page is never Busy"),
@@ -429,7 +451,10 @@ fn retained_failures_saturate_the_fixed_miss_table_then_recover_after_interest_d
     let attempts_before = pool.driver().read_attempts_in_order().len();
     let recovery_page = PageId::new(file_id, frames);
     assert!(
-        matches!(pool.get(&reader, recovery_page), Get::Busy),
+        matches!(
+            expect_live(pool.get(&reader, recovery_page), "saturated get"),
+            Get::Busy
+        ),
         "live terminal interests consume the fixed miss-record capacity"
     );
     assert_eq!(
@@ -601,7 +626,7 @@ fn a_cross_pool_reader_panics_before_ready_pins_the_target_frame() {
         let _ = target.ready(&source_reader, token);
     }));
     assert!(panic.is_err(), "ready rejects a reader from another pool");
-    match target.get(&target_reader, page) {
+    match expect_live(target.get(&target_reader, page), "target re-get") {
         Get::Hit(guard) => assert_page_bytes(&guard, 0x72),
         Get::Pending(_) => panic!("reader rejection cannot lose the resident target frame"),
         Get::Busy => panic!("reader rejection cannot make a resident target page Busy"),
@@ -644,7 +669,7 @@ fn a_foreign_page_file_identity_panics_before_admission_or_frame_mutation() {
 }
 
 #[test]
-fn a_stale_page_file_generation_panics_before_reusing_its_live_slot() {
+fn a_stale_page_file_generation_returns_the_exact_error_before_reusing_its_live_slot() {
     let frames = 4u32;
     let mock = a_mock(0x57_A1_E0, frames, frames);
     let stale_file = mock
@@ -663,13 +688,13 @@ fn a_stale_page_file_generation_panics_before_reusing_its_live_slot() {
     let pool = pool_on(mock, frames, 1, 1, 3);
     pool.register_file(live_file);
     let reader = pool.register_reader().expect("a reader slot");
-    let panic = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        let _ = pool.get(&reader, PageId::new(stale_id, 1));
-    }));
+    let page = PageId::new(stale_id, 1);
 
-    assert!(
-        panic.is_err(),
-        "a stale generation cannot route through the live handle in its reused slot"
+    assert_eq!(
+        pool.get(&reader, page)
+            .expect_err("a stale generation is an expected product error"),
+        GetError::StaleFile { page },
+        "the stale generation cannot route through the live handle in its reused slot"
     );
     assert_eq!(
         frames_in_state(&pool, frames, FrameState::Free),
@@ -707,7 +732,7 @@ fn a_successful_unconsumed_token_protects_its_exact_frame_until_drop() {
     for granule_idx in 1..=frames {
         let page = PageId::new(file_id, granule_idx);
         let token = loop {
-            match pool.get(&reader, page) {
+            match expect_live(pool.get(&reader, page), "pressure get") {
                 Get::Pending(token) => break token,
                 Get::Busy => {
                     pool.poll();
@@ -718,7 +743,7 @@ fn a_successful_unconsumed_token_protects_its_exact_frame_until_drop() {
         drop(drive_ready(&pool, &reader, token));
     }
 
-    match pool.get(&reader, held_page) {
+    match expect_live(pool.get(&reader, held_page), "protected-page get") {
         Get::Hit(guard) => assert_page_bytes(&guard, 0x40),
         Get::Pending(_) => panic!("CLOCK evicted a frame protected by terminal waiter interest"),
         Get::Busy => panic!("a protected resident page cannot be Busy"),
@@ -728,7 +753,7 @@ fn a_successful_unconsumed_token_protects_its_exact_frame_until_drop() {
     for granule_idx in (frames + 1)..=(frames * 2) {
         let page = PageId::new(file_id, granule_idx);
         let token = loop {
-            match pool.get(&reader, page) {
+            match expect_live(pool.get(&reader, page), "post-drop pressure get") {
                 Get::Pending(token) => break token,
                 Get::Busy => {
                     pool.poll();
@@ -740,7 +765,10 @@ fn a_successful_unconsumed_token_protects_its_exact_frame_until_drop() {
     }
 
     assert!(
-        !matches!(pool.get(&reader, held_page), Get::Hit(_)),
+        !matches!(
+            expect_live(pool.get(&reader, held_page), "post-pressure held-page get"),
+            Get::Hit(_)
+        ),
         "after the last token drops, the successful frame returns to normal CLOCK eviction"
     );
 }
@@ -771,7 +799,7 @@ fn dropping_a_pending_token_cancels_interest_only_and_the_read_still_completes()
         "dropping the token is waiter-interest only — the in-flight read still completed Resident"
     );
 
-    match pool.get(&reader, page) {
+    match expect_live(pool.get(&reader, page), "completed dropped-interest get") {
         Get::Hit(guard) => assert_page_bytes(&guard, 0x3D),
         Get::Pending(_) => {
             panic!("dropping a PendingToken must not cancel the read — the page is resident")
@@ -809,7 +837,7 @@ fn a_miss_is_pending_within_the_watermark_and_busy_leaves_pinned_frames_untouche
     let mut guards: Vec<FrameGuard<'_>> = Vec::with_capacity(frames as usize);
     for index in 0..frames {
         let page = PageId::new(file_id, index);
-        match pool.get(&reader, page) {
+        match expect_live(pool.get(&reader, page), "watermark get") {
             Get::Pending(token) => guards.push(drive_ready(&pool, &reader, token)),
             Get::Hit(_) => panic!("frame {index}: a distinct cold page cannot hit"),
             Get::Busy => panic!(
@@ -827,7 +855,7 @@ fn a_miss_is_pending_within_the_watermark_and_busy_leaves_pinned_frames_untouche
     );
 
     let absent = PageId::new(file_id, frames + 1);
-    match pool.get(&reader, absent) {
+    match expect_live(pool.get(&reader, absent), "pinned-capacity get") {
         Get::Busy => {}
         Get::Pending(_) => panic!(
             "with every frame pinned and none evictable, a further miss must backpressure Busy, not submit"
@@ -852,7 +880,7 @@ fn a_miss_is_pending_within_the_watermark_and_busy_leaves_pinned_frames_untouche
     drop(guards);
     let mut recovered = false;
     for _ in 0..READY_POLLS_MAX {
-        match pool.get(&reader, absent) {
+        match expect_live(pool.get(&reader, absent), "recovery get") {
             Get::Pending(_) | Get::Hit(_) => {
                 recovered = true;
                 break;

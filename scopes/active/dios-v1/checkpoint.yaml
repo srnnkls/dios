@@ -16,6 +16,59 @@ checkpoint:
     pre-batch-7 warm-hit/poll baselines are stale — T014's
     characterization runs against fenced code.
 
+  api_evolution_state:
+    revision: 10
+    task: T017
+    branch: feat/dios-api
+    worktree: /private/tmp/dios-feat-dios-api
+    timestamp: 2026-07-20
+    status: review_in_progress
+    implementation: phase_c_dispatched
+    phase_b_green: >-
+      GREEN 2026-07-20 on Darwin and the repository Linux Docker gate. Darwin:
+      cargo test --all-features, focused T017 suites (55 tests), loom 4/4,
+      zero_alloc 12/12, clippy all targets bench,mock -D warnings, rustdoc,
+      fmt, and diff-check. Linux Docker: full bench,mock suite including uring
+      9/9, uring_wait 3/3, shipping real_pool 4/4, pool_progress 9/9,
+      zero_alloc 12/12 and docs; clippy all targets -D warnings. Phase C uses
+      codex-native via the orchestrator and Opus/Sonnet/Gemini via peer.
+    review_gate: >-
+      A.5 APPROVED 2026-07-20 on the current revision-10 RED tree after ten
+      adversarial rounds. Final current-diff reports are clean from native
+      (`.peer/sira-fit/a5-round-10/codex-native.yaml`), Sonnet
+      (`.peer/sira-fit/a5-round-10/external/claude-sonnet-cli.yaml`), and the
+      focused Opus/Gemini incremental review of the five round-9 corrections
+      (`.peer/sira-fit/a5-round-10/focused-external/`). Expected RED remains
+      confined to missing T017 production/test seams and the legacy bare-Get
+      signature; frozen driver+scaffold baseline is 35/35.
+    position: >-
+      Post-v1 Sira-fit product API is normative in scope.md/design.md and its
+      Phase A RED contract is frozen after the clean A.5 gate. Phase B owns the
+      product implementation plus every listed doctest/example/bench migration;
+      tests may be mechanically migrated only where T017 explicitly requires
+      it and may not be weakened. T010-T014 remain separately deferred in the
+      sira repository.
+    required_migrations:
+      tests:
+        - tests/embedded_owner.rs
+        - tests/pool_progress.rs
+        - tests/pool_write.rs
+        - tests/pool_retire.rs
+        - tests/public_api.rs
+        - tests/guard_compile_fail.rs
+        - tests/miss.rs
+        - tests/real_pool.rs
+        - tests/zero_alloc.rs
+      library_doctests: [src/pool/epoch.rs]
+      examples:
+        - examples/api_fit_spike.rs
+        - examples/gateway_contract.rs
+        - examples/quickstart.rs
+      benches:
+        - benches/overlap.rs
+        - benches/mmap_warm_path.rs
+        - benches/mmap_tlb_pressure.rs
+
   commits:
     - { batch: 1, sha: 8706fb0, tasks: [T001], note: "scaffold — backend seam, error values, Alignment newtype" }
     - { batch: 2, sha: 1cef8c3, tasks: [T002], note: "DriverCore<E: Executor> (locked-prepare/unlocked-execute/locked-publish), generational FileTable, INV-11 leases, seeded DST mock, 24 contract tests" }
@@ -27,7 +80,7 @@ checkpoint:
 
   tasks:
     done: [T001, T002, T003, T016, T006, T004, T007, T005, T008, T009, T015]
-    in_progress: []
+    in_progress: [T017]
     pending: []
     deferred_external:
       tasks: [T010, T011, T012, T013, T014]
@@ -290,4 +343,4 @@ checkpoint:
 
   review_config:
     reasoning_effort: high
-    reviewers: [opus, sonnet, gpt, gemini]
+    reviewers: [codex-native, opus-cli, sonnet-cli, gemini]

@@ -4,12 +4,27 @@
 //! consumers that need explicit slots and batches, but its vocabulary lives in
 //! `dios::driver` instead of competing at the crate root.
 
+#![expect(
+    clippy::elidable_lifetime_names,
+    clippy::match_same_arms,
+    reason = "explicit lifetimes and separate exhaustive arms pin the frozen public contract"
+)]
+
+use std::any::TypeId;
 use std::path::Path;
 
-use dios::driver::{CompletionBatch, Driver, FileHandle, OpToken, SubmitError, WriteSlot};
+use dios::driver::{
+    Completion, CompletionBatch, Driver, FileHandle, OpKind, OpToken, SubmitError, WriteArena,
+    WriteSlot,
+};
 #[cfg(feature = "mock")]
 use dios::testing::{DirectIoSupport, MockDriver, PoolBuilderTestingExt};
-use dios::{DirectIo, FileId, Get, IoError, PageId, Pool, PoolBuildError, PoolConfigError};
+use dios::{
+    DirectIo, FileId, Get, GetError, IoError, PageId, PendingToken, PollReport, Pool,
+    PoolBuildError, PoolBuilder, PoolCompletion, PoolCompletionBatch, PoolConfigError,
+    PoolSubmitError, PoolToken, PoolWakeHandle, PoolWriteArena, PoolWriteSlot, ReaderCtx,
+    ReadyResult, RegisterError, RetireStatus, SyncMode,
+};
 
 const GRANULE: u32 = 4096;
 
@@ -22,6 +37,10 @@ fn configured_pool() -> Result<Pool, PoolBuildError> {
         .max_inflight_reads(1)
         .miss_headroom(3)
         .build()
+}
+
+fn configure_product_capacity(builder: PoolBuilder) -> PoolBuilder {
+    builder.write_slots(2).max_inflight_product_ops(3)
 }
 
 fn configured_driver() -> Result<Driver, IoError> {
@@ -46,17 +65,130 @@ fn open_driver_file(
 }
 
 fn advanced_driver_contract(driver: &Driver, file: &FileHandle) {
-    let arena = driver.write_arena();
+    let kind: OpKind = OpKind::Read;
+    std::hint::black_box(kind);
+    let completion: Option<Completion> = None;
+    std::hint::black_box(completion);
+    let arena: WriteArena<'_> = driver.write_arena();
     let slot = arena.alloc().expect("the fixture reserves a staging slot");
     let submitted: Result<OpToken, (SubmitError, WriteSlot<'_>)> =
         driver.submit_write(file, slot, 0);
     if let Err((_error, recovered_slot)) = submitted {
         assert_eq!(recovered_slot.len(), GRANULE as usize);
     }
+    let _barrier: Result<OpToken, SubmitError> = driver.submit_fsync(file, SyncMode::Full);
 
     let mut completions = CompletionBatch::with_capacity(1);
     let drained = driver.poll(&mut completions);
     assert!(drained <= 1);
+}
+
+fn product_pool_write_contract(
+    pool: &Pool,
+    file: FileId,
+    completions: &mut PoolCompletionBatch,
+) -> PollReport {
+    let arena: PoolWriteArena<'_> = pool.write_arena();
+    let slot = arena.alloc().expect("the fixture reserves pool staging");
+    let submitted: Result<PoolToken, (PoolSubmitError, PoolWriteSlot<'_>)> =
+        pool.submit_write(file, slot, 0);
+    if let Err((_error, returned)) = submitted {
+        assert_eq!(returned.len(), GRANULE as usize);
+    }
+    let _barrier: Result<PoolToken, PoolSubmitError> = pool.submit_fsync(file, SyncMode::Full);
+    pool.poll_report(completions)
+}
+
+fn default_pool_write_arena(pool: &Pool) -> PoolWriteArena<'_> {
+    pool.write_arena()
+}
+
+// PoolWriteArena and PoolWriteSlot are opaque product wrappers over
+// crate-owned backend arenas. Both shipping and mock pools expose this same
+// closed wrapper type; no backend trait or associated arena type is public.
+#[cfg(feature = "mock")]
+fn mock_pool_write_arena(pool: &Pool<MockDriver>) -> PoolWriteArena<'_> {
+    pool.write_arena()
+}
+
+fn default_pool_write_slot<'pool>(pool: &'pool Pool) -> Option<PoolWriteSlot<'pool>> {
+    pool.write_arena().alloc()
+}
+
+fn inspect_get_error(error: &GetError) {
+    match error {
+        GetError::StaleFile { page } => {
+            let page: PageId = *page;
+            std::hint::black_box(page);
+        }
+    }
+}
+
+fn inspect_retire_status(status: RetireStatus) {
+    match status {
+        RetireStatus::Retiring => {}
+        RetireStatus::Retired => {}
+    }
+}
+
+fn inspect_pool_submit_error(error: &PoolSubmitError) {
+    match error {
+        PoolSubmitError::Full => {}
+        PoolSubmitError::StaleFile { file } => {
+            let file: FileId = *file;
+            std::hint::black_box(file);
+        }
+        PoolSubmitError::ForeignPool => {}
+    }
+}
+
+fn assert_clone_send_sync<T: Clone + Send + Sync>() {}
+
+#[test]
+fn product_tokens_batches_and_slots_are_not_advanced_driver_types() {
+    assert_ne!(TypeId::of::<PoolToken>(), TypeId::of::<OpToken>());
+    assert_ne!(
+        TypeId::of::<PoolCompletionBatch>(),
+        TypeId::of::<CompletionBatch>()
+    );
+    assert_ne!(
+        TypeId::of::<PoolWriteSlot<'static>>(),
+        TypeId::of::<WriteSlot<'static>>()
+    );
+    assert_ne!(
+        TypeId::of::<PoolWriteArena<'static>>(),
+        TypeId::of::<WriteArena<'static>>()
+    );
+}
+
+fn inspect_pool_completion(completion: &PoolCompletion) {
+    match completion {
+        PoolCompletion::Write { token, result } => {
+            let token: PoolToken = *token;
+            std::hint::black_box(token);
+            match result {
+                Ok(bytes) => {
+                    let bytes: u32 = *bytes;
+                    std::hint::black_box(bytes);
+                }
+                Err(error) => {
+                    let error: &IoError = error;
+                    std::hint::black_box(error);
+                }
+            }
+        }
+        PoolCompletion::Fsync { token, result } => {
+            let token: PoolToken = *token;
+            std::hint::black_box(token);
+            match result {
+                Ok(()) => {}
+                Err(error) => {
+                    let error: &IoError = error;
+                    std::hint::black_box(error);
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -82,6 +214,24 @@ fn pool_build_errors_distinguish_configuration_from_driver_initialization() {
         "configuration rejection and backend initialization failure are distinct values"
     );
     assert!(matches!(driver, PoolBuildError::Driver(_)));
+
+    let capacity_overflow = Pool::builder()
+        .frame_count(4)
+        .granule(GRANULE)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .max_inflight_product_ops(u32::MAX)
+        .build()
+        .expect_err("read and product queue reservation must add without wrapping");
+    assert!(matches!(
+        capacity_overflow,
+        PoolBuildError::Configuration(PoolConfigError::QueueCapacityOverflow {
+            max_inflight_reads: 1,
+            max_inflight_product_ops: u32::MAX,
+        })
+    ));
 }
 
 #[cfg(feature = "mock")]
@@ -120,8 +270,8 @@ fn required_direct_io_refuses_unsupported_files_while_preferred_falls_back() {
 
 #[test]
 fn public_signatures_preserve_the_existing_residency_adt() {
-    fn inspect(outcome: Get<'_>) {
-        match outcome {
+    fn inspect(outcome: Result<Get<'_>, GetError>) {
+        match outcome.expect("the file is live") {
             Get::Hit(frame) => assert!(!frame.is_empty()),
             Get::Pending(token) => {
                 let _page = token.page();
@@ -130,8 +280,43 @@ fn public_signatures_preserve_the_existing_residency_adt() {
         }
     }
 
-    let inspect_signature: fn(Get<'_>) = inspect;
+    let inspect_signature: fn(Result<Get<'_>, GetError>) = inspect;
     let driver_contract_signature: fn(&Driver, &FileHandle) = advanced_driver_contract;
+    let configure_product_capacity_signature: fn(PoolBuilder) -> PoolBuilder =
+        configure_product_capacity;
+    let write_slots_signature: fn(PoolBuilder, u32) -> PoolBuilder = PoolBuilder::write_slots;
+    let max_inflight_product_ops_signature: fn(PoolBuilder, u32) -> PoolBuilder =
+        PoolBuilder::max_inflight_product_ops;
+    let pool_write_contract_signature: fn(&Pool, FileId, &mut PoolCompletionBatch) -> PollReport =
+        product_pool_write_contract;
+    let default_pool_write_arena_signature: fn(&Pool) -> PoolWriteArena<'_> =
+        default_pool_write_arena;
+    let default_pool_write_slot_signature: for<'pool> fn(
+        &'pool Pool,
+    ) -> Option<PoolWriteSlot<'pool>> = default_pool_write_slot;
+    #[cfg(feature = "mock")]
+    let mock_pool_write_arena_signature: fn(&Pool<MockDriver>) -> PoolWriteArena<'_> =
+        mock_pool_write_arena;
+    let inspect_pool_completion_signature: fn(&PoolCompletion) = inspect_pool_completion;
+    let inspect_get_error_signature: fn(&GetError) = inspect_get_error;
+    let inspect_retire_status_signature: fn(RetireStatus) = inspect_retire_status;
+    let inspect_pool_submit_error_signature: fn(&PoolSubmitError) = inspect_pool_submit_error;
+    let register_reader_signature: fn(&Pool) -> Result<ReaderCtx, RegisterError> =
+        Pool::register_reader;
+    let retire_file_signature: fn(&Pool, FileId) -> RetireStatus = Pool::retire_file;
+    let pool_get_signature: for<'pool> fn(
+        &'pool Pool,
+        &'pool ReaderCtx,
+        PageId,
+    ) -> Result<Get<'pool>, GetError> = Pool::get;
+    let pool_ready_signature: for<'pool> fn(
+        &'pool Pool,
+        &'pool ReaderCtx,
+        PendingToken,
+    ) -> ReadyResult<'pool> = Pool::ready;
+    let wake_handle_signature: fn(&Pool) -> PoolWakeHandle = Pool::wake_handle;
+    let wake_signature: fn(&PoolWakeHandle) = PoolWakeHandle::wake;
+    assert_clone_send_sync::<PoolWakeHandle>();
     let build_pool_signature: fn() -> Result<Pool, PoolBuildError> = configured_pool;
     let open_pool_file_signature: fn(&Pool, &Path) -> Result<FileId, IoError> = open_pool_file;
     let open_driver_file_signature: fn(&Driver, &Path, DirectIo) -> Result<FileHandle, IoError> =
@@ -142,6 +327,24 @@ fn public_signatures_preserve_the_existing_residency_adt() {
     std::hint::black_box((
         inspect_signature,
         driver_contract_signature,
+        configure_product_capacity_signature,
+        write_slots_signature,
+        max_inflight_product_ops_signature,
+        pool_write_contract_signature,
+        default_pool_write_arena_signature,
+        default_pool_write_slot_signature,
+        #[cfg(feature = "mock")]
+        mock_pool_write_arena_signature,
+        inspect_pool_completion_signature,
+        inspect_get_error_signature,
+        inspect_retire_status_signature,
+        inspect_pool_submit_error_signature,
+        register_reader_signature,
+        retire_file_signature,
+        pool_get_signature,
+        pool_ready_signature,
+        wake_handle_signature,
+        wake_signature,
         build_pool_signature,
         open_pool_file_signature,
         open_driver_file_signature,
@@ -155,4 +358,9 @@ fn public_signatures_preserve_the_existing_residency_adt() {
 #[should_panic(expected = "completion batch capacity must be positive")]
 fn completion_batches_reject_zero_capacity_at_construction() {
     let _ = CompletionBatch::with_capacity(0);
+}
+
+#[test]
+fn zero_capacity_pool_completion_batches_construct_without_panicking() {
+    let _batch = PoolCompletionBatch::with_capacity(0);
 }

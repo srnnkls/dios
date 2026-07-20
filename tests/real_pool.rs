@@ -1,11 +1,25 @@
 //! Real-backend pool contract: file ownership and reads are observable only
 //! through the residency ADTs and the borrowed frame.
 
+#[cfg(not(target_os = "linux"))]
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+#[cfg(feature = "mock")]
+use std::sync::{mpsc, Arc};
+#[cfg(feature = "mock")]
+use std::thread;
+#[cfg(feature = "mock")]
+use std::time::{Duration, Instant};
 
-use dios::{DirectIo, FileId, FrameGuard, Get, PageId, PendingToken, Pool, ReaderCtx, ReadyResult};
+#[cfg(feature = "mock")]
+use dios::testing::{ShippingWaitObservation, ShippingWaitTestingExt};
+#[cfg(feature = "mock")]
+use dios::PoolWakeHandle;
+use dios::{
+    DirectIo, FileId, FrameGuard, Get, GetError, PageId, PendingToken, Pool, PoolCompletion,
+    PoolCompletionBatch, PoolSubmitError, ReaderCtx, ReadyResult,
+};
 
 const GRANULE: u32 = 4096;
 const POLLS_MAX: u32 = 256;
@@ -32,21 +46,32 @@ fn pool() -> Pool {
         .expect("a watermark-satisfying real pool")
 }
 
-fn pending(outcome: Get<'_>) -> PendingToken<'_> {
-    match outcome {
+fn product_pool_for_checked_queue_sum() -> Pool {
+    Pool::builder()
+        .frame_count(4)
+        .granule(GRANULE)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .write_slots(3)
+        .max_inflight_product_ops(2)
+        .build()
+        .expect("the shipping pool reserves read plus product queue capacity")
+}
+
+fn pending(outcome: Result<Get<'_>, GetError>) -> PendingToken {
+    match outcome.expect("the registered file is live") {
         Get::Pending(token) => token,
         Get::Hit(_) => panic!("a first lookup of an uncached extent cannot hit"),
         Get::Busy => panic!("the configured pool has miss headroom"),
     }
 }
 
-fn admit_pending<'pool>(
-    pool: &'pool Pool,
-    reader: &'pool ReaderCtx<'pool>,
-    page: PageId,
-) -> PendingToken<'pool> {
+#[cfg(not(target_os = "linux"))]
+fn admit_pending(pool: &Pool, reader: &ReaderCtx, page: PageId) -> PendingToken {
     for _ in 0..POLLS_MAX {
-        match pool.get(reader, page) {
+        match pool.get(reader, page).expect("the registered file is live") {
             Get::Pending(token) => return token,
             Get::Hit(_) => panic!("a first lookup of an uncached extent cannot hit"),
             Get::Busy => {
@@ -59,8 +84,8 @@ fn admit_pending<'pool>(
 
 fn ready<'pool>(
     pool: &'pool Pool,
-    reader: &'pool ReaderCtx<'pool>,
-    mut token: PendingToken<'pool>,
+    reader: &'pool ReaderCtx,
+    mut token: PendingToken,
 ) -> FrameGuard<'pool> {
     for _ in 0..POLLS_MAX {
         match pool.ready(reader, token) {
@@ -102,6 +127,213 @@ fn assert_extent_eq(actual: &[u8], expected: &[u8], contract: &str) {
 fn open_file(pool: &Pool, path: &Path, direct_io: DirectIo) -> FileId {
     pool.open(path, direct_io)
         .expect("the pool opens and retains the fixture")
+}
+
+#[cfg(feature = "mock")]
+struct WakeOnDrop(Option<PoolWakeHandle>);
+
+#[cfg(feature = "mock")]
+impl WakeOnDrop {
+    fn wake(&self) {
+        if let Some(wake) = &self.0 {
+            wake.wake();
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.0.take();
+    }
+}
+
+#[cfg(feature = "mock")]
+impl Drop for WakeOnDrop {
+    fn drop(&mut self) {
+        self.wake();
+    }
+}
+
+#[cfg(feature = "mock")]
+#[test]
+fn shipping_pool_external_wake_interrupts_the_actual_backend_park() {
+    const LONG_WAIT: Duration = Duration::from_secs(10);
+    const OBSERVE_PARK: Duration = Duration::from_secs(1);
+    const PROMPT_WAKE: Duration = Duration::from_secs(2);
+
+    let pool = Arc::new(pool());
+    let observation: ShippingWaitObservation = pool.observe_shipping_waits();
+    let wake = pool.wake_handle();
+    let mut cleanup = WakeOnDrop(Some(wake.clone()));
+    let (report_tx, report_rx) = mpsc::sync_channel(1);
+    let waiter = {
+        let pool = Arc::clone(&pool);
+        thread::spawn(move || {
+            let mut completions = PoolCompletionBatch::with_capacity(0);
+            let started = Instant::now();
+            let report = pool.poll_wait(&mut completions, LONG_WAIT);
+            report_tx
+                .send((
+                    report.backend_completions(),
+                    report.reclaimed_frames(),
+                    completions.iter().count(),
+                    started.elapsed(),
+                ))
+                .expect("the shipping-wait report receiver remains live");
+        })
+    };
+
+    if !observation.wait_until_parked(OBSERVE_PARK) {
+        cleanup.wake();
+        waiter
+            .join()
+            .expect("the cleanup wake releases the shipping waiter");
+        panic!("the shipping backend never entered its actual blocking wait hook");
+    }
+    assert_eq!(observation.parks_entered(), 1);
+    assert_eq!(observation.parks_in_progress(), 1);
+    assert_eq!(observation.parks_exited(), 0);
+    assert_eq!(observation.wake_exits(), 0);
+    assert_eq!(observation.timeout_exits(), 0);
+    assert!(matches!(
+        report_rx.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+
+    let wake_started = Instant::now();
+    wake.wake();
+    let report = match report_rx.recv_timeout(PROMPT_WAKE) {
+        Ok(report) => report,
+        Err(error) => {
+            cleanup.wake();
+            waiter
+                .join()
+                .expect("the cleanup wake releases the shipping waiter");
+            panic!("the real backend wait ignored PoolWakeHandle: {error}");
+        }
+    };
+    let wake_elapsed = wake_started.elapsed();
+    waiter.join().expect("the shipping waiter joins");
+    cleanup.disarm();
+
+    let (backend, reclaimed, delivered, elapsed) = report;
+    assert_eq!(backend, 0, "an external wake is not a backend completion");
+    assert_eq!(reclaimed, 0, "an idle external wake reclaims no frame");
+    assert_eq!(delivered, 0, "an idle external wake delivers no result");
+    assert!(
+        wake_elapsed < PROMPT_WAKE,
+        "the observed shipping park exits promptly after its signal: {wake_elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "signal-driven exit occurs well before the ten-second deadline: {elapsed:?}"
+    );
+    assert_eq!(observation.parks_entered(), 1);
+    assert_eq!(observation.parks_in_progress(), 0);
+    assert_eq!(observation.parks_exited(), 1);
+    assert_eq!(observation.wake_exits(), 1);
+    assert_eq!(observation.timeout_exits(), 0);
+}
+
+#[test]
+fn shipping_pool_reserves_the_checked_sum_for_reads_and_product_writes() {
+    let path = temp_path("checked-queue-sum");
+    let read_extent = patterned_extent(0x37);
+    let mut file_bytes = Vec::with_capacity((GRANULE * 3) as usize);
+    file_bytes.extend_from_slice(&read_extent);
+    file_bytes.resize((GRANULE * 3) as usize, 0);
+    std::fs::write(&path, &file_bytes).expect("seed three complete extents");
+
+    let pool = product_pool_for_checked_queue_sum();
+    let file = open_file(&pool, &path, DirectIo::Disabled);
+    let reader = pool.register_reader().expect("one reader slot");
+    let read = pending(pool.get(&reader, PageId::new(file, 0)));
+
+    let arena = pool.write_arena();
+    let mut first_slot = arena.alloc().expect("first configured staging slot");
+    first_slot.fill(0xA1);
+    let mut second_slot = arena.alloc().expect("second configured staging slot");
+    second_slot.fill(0xB2);
+    let mut refused_slot = arena.alloc().expect("third configured staging slot");
+    refused_slot.fill(0xC3);
+
+    let first_write = pool
+        .submit_write(file, first_slot, GRANULE.into())
+        .expect("one read plus the first product write fit concurrently");
+    let second_write = pool
+        .submit_write(file, second_slot, u64::from(GRANULE) * 2)
+        .expect("one read plus both configured product writes fit concurrently");
+    let (error, returned) = pool
+        .submit_write(file, refused_slot, 0)
+        .expect_err("the next product operation reaches the exact configured bound");
+    assert!(matches!(error, PoolSubmitError::Full));
+    assert!(returned.iter().all(|&byte| byte == 0xC3));
+    drop(returned);
+
+    let mut completions = PoolCompletionBatch::with_capacity(2);
+    let mut backend_completions = 0u32;
+    let mut first_seen = false;
+    let mut second_seen = false;
+    for _ in 0..POLLS_MAX {
+        let report = pool.poll_report(&mut completions);
+        backend_completions += report.backend_completions();
+        assert_eq!(report.reclaimed_frames(), 0);
+        for completion in completions.iter() {
+            match completion {
+                PoolCompletion::Write {
+                    token,
+                    result: Ok(bytes),
+                } if *token == first_write => {
+                    assert_eq!(*bytes, GRANULE);
+                    assert!(!first_seen, "the first write completes exactly once");
+                    first_seen = true;
+                }
+                PoolCompletion::Write {
+                    token,
+                    result: Ok(bytes),
+                } if *token == second_write => {
+                    assert_eq!(*bytes, GRANULE);
+                    assert!(!second_seen, "the second write completes exactly once");
+                    second_seen = true;
+                }
+                PoolCompletion::Write {
+                    token,
+                    result: Ok(_),
+                } => panic!("an unknown write token completed: {token:?}"),
+                PoolCompletion::Write {
+                    result: Err(error), ..
+                } => panic!("a shipping queue-sum write failed: {error}"),
+                PoolCompletion::Fsync { .. } => {
+                    panic!("the queue-sum fixture admitted no fsync operation")
+                }
+            }
+        }
+        if backend_completions == 3 && first_seen && second_seen {
+            break;
+        }
+    }
+    assert_eq!(
+        backend_completions, 3,
+        "one read and two writes occupied the checked-sum shipping queue"
+    );
+    assert!(first_seen);
+    assert!(second_seen);
+
+    match pool.ready(&reader, read) {
+        ReadyResult::Ready(frame) => assert_extent_eq(
+            &frame,
+            &read_extent,
+            "the concurrently admitted shipping read readies exactly",
+        ),
+        ReadyResult::NotYet(_) => panic!("the drained shipping read must be ready"),
+        ReadyResult::Err(error) => panic!("the complete shipping read failed: {error}"),
+    }
+
+    let stored = std::fs::read(&path).expect("read the completed shipping writes");
+    assert!(stored[GRANULE as usize..(GRANULE * 2) as usize]
+        .iter()
+        .all(|&byte| byte == 0xA1));
+    assert!(stored[(GRANULE * 2) as usize..(GRANULE * 3) as usize]
+        .iter()
+        .all(|&byte| byte == 0xB2));
 }
 
 #[test]
@@ -180,7 +412,10 @@ fn eager_short_read_preserves_prefix_and_reads_only_the_extent_remainder() {
     );
     drop(guard);
 
-    let canary = match pool.get(&reader, PageId::new(canary_file, 1)) {
+    let canary = match pool
+        .get(&reader, PageId::new(canary_file, 1))
+        .expect("the canary file is live")
+    {
         Get::Hit(guard) => guard,
         Get::Pending(_) => panic!("the continuation over-read into a resident neighbor"),
         Get::Busy => panic!("a resident canary lookup cannot backpressure"),
@@ -197,7 +432,8 @@ mod portable_read_ranges {
     use std::path::Path;
 
     use dios::testing::{
-        Injected, MockDriver, MockPoolTestingExt, PoolBuilderTestingExt, PoolTestingExt,
+        Injected, MockDriver, MockIoEvent, MockPoolTestingExt, PoolBuilderTestingExt,
+        PoolTestingExt, ReadAttempt,
     };
 
     use super::*;
@@ -250,6 +486,28 @@ mod portable_read_ranges {
         }
 
         let attempts = pool.driver().read_attempts_in_order();
+        let projected_attempts: Vec<ReadAttempt> = pool
+            .driver()
+            .io_events_in_order()
+            .iter()
+            .filter_map(|event| match event {
+                MockIoEvent::ReadAttempt {
+                    file: attempted_file,
+                    file_offset,
+                    destination_offset,
+                    requested_len,
+                } if *attempted_file == file => Some(ReadAttempt {
+                    file_offset: *file_offset,
+                    destination_offset: *destination_offset,
+                    requested_len: *requested_len,
+                }),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            attempts, projected_attempts,
+            "the frozen read-attempt accessor is the typed projection of the unified event stream"
+        );
         assert_eq!(attempts.len(), 2, "one full read and one exact remainder");
         let base = u64::from(GRANULE) * 2;
         assert_eq!(

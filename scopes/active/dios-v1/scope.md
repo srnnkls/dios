@@ -2,11 +2,18 @@
 created: 2026-07-07
 status: active
 issue_type: Feature
+revision: 10
 parent: sira-read-concurrency
 blocked_by: [sira-point-format]  # sira-read-perf, sira-read-concurrency, sira-read-hotpath (PR #5) all done; sira-point-format batch 1 converges the cache onto this scope's seam
 ---
 
 # Scope: dios-v1
+
+> **Revision 10 — post-v1 Sira-fit API evolution (2026-07-20).** The
+> completed v1 batches and their review evidence remain historical facts. This
+> revision adds pending task T017 and supersedes the original public pool
+> signatures where they conflict with the product API below. Its RED tests are
+> still in A.5 review; no implementation or review gate is claimed green.
 
 Async direct-IO layer + userspace buffer pool, built as the standalone
 crate `dios` (this repository); sira consumes it as a dependency. Both
@@ -326,7 +333,29 @@ scope.
 - `submit` never blocks; kernel ops always drain (no kernel-op cancel in
   v1 — shutdown quiesces in-flight ops before frame teardown). Dropping
   a `PendingToken` cancels WAITER INTEREST only: the in-flight read
-  still completes and the frame becomes Resident under CLOCK.
+  still completes and the frame becomes Resident under CLOCK. The token
+  is lifetime-free, `Send + !Clone` with `Sync` deliberately unspecified,
+  and retains only bounded
+  `Arc`-backed interest/identity state; moving it does not move a guard or
+  reader epoch slot.
+- Every `Pool` submit/poll path allocates its staging, raw completion
+  batch, caller-completion backlog, and wake state at construction. A
+  caller batch's capacity limits delivery only: it never limits backend
+  CQ draining, internal read routing, epoch advancement, or reclamation.
+  An admitted product operation continues to occupy its configured slot after
+  backend completion until its owned caller result is delivered.
+- `Pool::poll_wait` arms a generation-tracked wait outside pool control.
+  A `PoolWakeHandle` signal immediately before or during the actual park
+  is observed; signals may coalesce because the ingress/completion queues
+  retain the work, but no arm/park race loses the transition. I/O
+  completion and external owner-loop ingress wake the same product wait. The
+  shipping backend integrates a private platform wake primitive into its real
+  blocking wait; no raw descriptor or unsafe/backend handle is public. A
+  observation-only `dios::testing` seam under the existing non-default `mock`
+  feature reports actual mock and shipping wait entry/in-progress/exit cause
+  without gating, releasing, or shortening that wait, using counters allocated
+  at Pool construction. Its separate Arc-backed pool-lifecycle observation
+  remains exact and readable after the observed `Pool` value is dropped.
 - Sealed-segment immutability and the existing snapshot discipline
   (Arc-clone under brief state lock, `storage.rs:1556-1671`) are
   unchanged.
@@ -354,9 +383,15 @@ scope.
 | `Frame` | Preallocated, sector-aligned buffer slot; ring-registered on uring, unregistered on eager | `data: [u8; GRANULE]` (aligned 4096), `state: Free\|InFlight\|Resident\|Evicting`, `page: PageId`, clock bit (set check-then-set on hit) |
 | `PageTable` | PageId → frame lookup | open-addressed, fixed capacity = 2× frame count rounded up to a power of two (≤ 50% occupancy at full pool, bounding negative-probe length); lock-free probes are advisory — the miss path re-probes authoritatively under the AD-4 lock before submitting, guard-create recheck catches stale hits; insert/delete only under the lock, delete by backward-shift (no tombstones); no rehash ever |
 | `CompletionSlab` | Op slots at fixed capacity from open — `frame_count + write_slots + metadata_headroom` bounds in-flight ops, so no growth path exists (a lazily-growing slab is amortized-zero, not zero); slots acquired at submit (issuing an `OpToken` = slot + generation, generation bumped at reclaim so a reused slot never aliases a stale token) and reclaimed at completion drain — never caller-chosen (INV-11); `user_data` = slot index | op kind, fd, offset, frame index, waker/callback token |
-| `FrameGuard<'pool>` | Epoch-pinned read access, `Deref<Target=[u8]>`, `!Send` | frame index, epoch ticket |
-| `WriteArena` / `WriteSlot` | Granule-aligned write staging — registered O_DIRECT (Linux) / aligned F_NOCACHE (darwin) — for segment writer and compaction; separate from the read pool, outside the watermark | slot count (config), `DerefMut` slots |
-| `Driver` | cfg-selected backend | `Uring` (Linux) / `Eager` (portable, AD-7) |
+| `ReaderCtx` | Lifetime-free affine registration; owns an `Arc` to the reader registry plus its slot identity; `!Send + !Sync`; may outlive the `Pool` value and releases exactly its slot on Drop | pool identity, reader slot, thread-affinity marker |
+| `PendingToken` | Lifetime-free single-owner miss interest; `Send + !Clone`, with `Sync` deliberately unspecified; owns an `Arc` to interest state plus pool identity, so it may cross a work-steal boundary and resolve using the destination thread's `ReaderCtx` | page, miss slot + generation, pool identity, active-interest bit |
+| `FrameGuard<'pool>` | Borrowed epoch-pinned read access, `Deref<Target=[u8]>`, `!Send + !Sync`; remains bounded by the `Pool` and destination `ReaderCtx` borrows | frame index, epoch ticket |
+| `PoolWriteArena<'pool>` / `PoolWriteSlot<'pool>` | Closed crate-root product staging types, backend-erased and distinct from `dios::driver` staging vocabulary; registered O_DIRECT (Linux) / aligned F_NOCACHE (darwin), outside the read watermark | pool identity, exactly `PoolBuilder::write_slots` reusable slots (default 0), `DerefMut` slot |
+| `PoolToken` / `PoolCompletion` | Pool-minted operation identity and owned caller result; completions are exactly typed `Write` or `Fsync`, never `Read`/close or raw driver kinds | pool identity, slab slot + generation, typed owned result; admitted + retained population bounded by `max_inflight_product_ops` (default 0) |
+| `PoolWakeHandle` | Cloneable external wake capability, `Send + Sync`; shares a monotonic wake generation with `Pool::poll_wait` | pool identity, wake generation/event source |
+| `Pool` | Product API and sole owner of read placement, writes, fsync, progress, and file retirement | frames, page table, one composed driver, bounded caller-completion backlog |
+| `dios::driver::Driver` | Advanced cfg-selected completion driver, namespaced below the product API | `Uring` (Linux) / `Eager` (portable, AD-7) |
+| `dios::testing::MockIoEvent` | Feature-gated sole chronological mock recorder; read/write/fsync attempts, completions, and closes | `ReadAttempt { file, file_offset, destination_offset, requested_len }`; frozen read/write attempt accessors are derived projections, never parallel logs |
 
 Frame granule: fixed per store at open. GRANULE is a hard upper bound on
 encoded block size (AD-5); the default is fixed during T006 from a
@@ -378,24 +413,32 @@ deliverable, reviewed before implementation):
 
 ### Functional Requirements
 
-- DIO-R1 crate: `dios` standalone crate exposing the completion driver
-  (read/write/fsync/open/close), both backends, and the frame pool. No
-  sira types in its public API; no `sira` dependency (structural —
-  separate repository).
+- DIO-R1 crate: `dios` is a standalone crate whose primary API is the
+  frame `Pool`; the lower completion driver
+  (read/write/fsync/open/close) remains available explicitly under
+  `dios::driver`. No sira types enter either public layer and there is no
+  `sira` dependency (structural — separate repository).
 - DIO-R2 pool: preallocated registered frames, PageTable, CLOCK eviction,
-  epoch pin guards, singleflight misses with error fanout. `get(page)`
-  returns `Hit(FrameGuard)`, `Pending(token)`, or `Busy`; `poll()` drains
-  completions and readies pending tokens; `ready(token)` surfaces IO
-  errors. The pool is a raw granule cache and knows nothing of blocks or
-  CRCs — per-block CRC verification stays in sira above the seam
-  (existing `segment::block_storage::verify_and_strip_crc`), exactly as
-  today.
-- DIO-R2b write staging: a `WriteArena` of registered, granule-aligned
-  staging buffers for the O_DIRECT data plane (segment writer,
-  compaction), separate from the read pool — not CLOCK-managed, not
-  counted in the watermark. Metadata writes use blocking convenience
-  wrappers over the driver (`write_all_blocking`/`fsync_blocking`;
-  buffer stability guaranteed by the blocking call).
+  epoch pin guards, and singleflight misses with error fanout.
+  `get(page)` returns `Result<Get<'_>, GetError>`; the residency ADT
+  remains exactly `Hit(FrameGuard)`, `Pending(PendingToken)`, or `Busy`,
+  while a retired/stale file is
+  `GetError::StaleFile { page }`. `ReaderCtx` and `PendingToken` are
+  lifetime-free owned capabilities; `FrameGuard` remains borrowed.
+  `poll_report`/`poll_wait` route reads privately and report typed
+  progress. The pool is a raw granule cache and knows nothing of blocks
+  or CRCs — per-block CRC verification stays in sira above the seam.
+- DIO-R2b product write staging: `PoolWriteArena` and `PoolWriteSlot` are
+  closed crate-root staging types for the O_DIRECT data plane, separate
+  from the read pool and outside its watermark. The same `Pool` submits
+  writes and fsync barriers and returns `PoolToken`; caller-visible
+  outcomes arrive only as owned `PoolCompletion::{Write,Fsync}` values.
+  `write_slots` and `max_inflight_product_ops` are explicit fixed builder
+  capacities and both default to zero, so read-only Pools pay for and admit no
+  product writes. The shipping queue reserves their checked sum with
+  `max_inflight_reads`; arithmetic overflow is a typed configuration error.
+  Metadata-only users may still choose the explicit blocking convenience
+  wrappers under `dios::driver`.
 - DIO-R3 sira reads: both backends behind the `BlockSource` seam at the
   two choke points, selected by store config; defaults Linux=pool,
   macOS=mmap (AD-2). Store open rejects non-current segment format
@@ -410,6 +453,14 @@ deliverable, reviewed before implementation):
   Gateway contract — async submit → resident borrowed buffer, worker
   never blocks on a miss, waiter-interest drop on pending tokens —
   without any nmnm wiring.
+- DIO-R6 Sira owner-loop fit: a lifetime-free owner can store `Pool`,
+  `ReaderCtx`, and pending misses without self-reference or unsafe
+  lifetime extension; pending interests may cross threads without moving
+  guards; external ingress and I/O share a lossless wait/wake boundary;
+  one `Pool` owns reads, writes, fsync, and typed retirement. Raw
+  `driver::OpKind`, `driver::OpToken`, `driver::CompletionBatch`, raw
+  read/close completions, and backend-specific arena types never occur in
+  a product signature.
 
 ### Technical Requirements (gates)
 
@@ -457,6 +508,24 @@ deliverable, reviewed before implementation):
   owner. The journal arm has no lever beyond wrapper thinning — the
   syscall sequence is identical by design (AD-3), so its regression
   blocks outright.
+- DIO-G9 Sira-fit product contract: the T017 RED suite pins lifetime-free
+  owned capabilities, cross-pool identity rejection, product-only typed
+  completions, truthful progress independent of caller batch capacity,
+  external and I/O wakeups without an arm/park race, write-before-fsync
+  execution, and deferred typed file retirement across every admitted
+  read/write/fsync/token/guard. The post-warmup pool submit/poll/overflow
+  path records zero allocations. It also pins default-disabled product
+  capacities, exact configured saturation, checked read+product queue
+  reservation proven both at overflow and by one concurrently admitted read plus
+  the full configured product-operation bound on the shipping backend,
+  capacity-zero progress whose retained results continue to hold admission
+  capacity until delivery, distinct caller-supplied timeout deadlines, and both
+  timeout- and signal-driven exits of the actual product wait. Mock lifecycle
+  and wait observations are read-only exact counters; the Arc-backed lifecycle
+  observation remains readable after Pool drop.
+  This gate remains pending until A.5,
+  GREEN implementation, full-suite/doctest/example/bench migrations, and
+  Phase C review complete.
 
 ## Acceptance Criteria
 
@@ -513,6 +582,52 @@ deliverable, reviewed before implementation):
   then the one-sided 95% CI upper bound of each ratio is ≤ 1.02
   (DIO-G8).
 
+- [ ] Given a Sira-shaped owner storing `Pool`, `ReaderCtx`, and an
+  unresolved `PendingToken`, when the pool is dropped before the two
+  owned capabilities and the token is alternatively moved to a
+  destination thread, then backend I/O quiesces exactly once, each
+  capability releases exactly once, the destination `ReaderCtx` can
+  resolve the token, and no guard crosses either lifetime/thread
+  boundary (DIO-R6/DIO-G9).
+
+- [ ] Given a caller completion batch smaller than the ready backend
+  completion set, when `poll_report` drains, then every backend CQE is
+  counted in that pass, internal reads/reclamation progress regardless
+  of caller capacity, overflow write/fsync results remain in a bounded
+  preallocated backlog while continuing to occupy admission capacity,
+  and later calls deliver every exact token/result once, releasing one
+  capacity slot per delivery with no allocation after warmup
+  (DIO-G4/DIO-G9).
+
+- [ ] Given a shipping Pool configured with one in-flight read and two
+  in-flight product operations, when one cold read and two product writes are
+  submitted without an intervening poll, then all three admit concurrently,
+  the next product submit returns `Full` with its unchanged staging slot, and
+  draining yields the exact read bytes and both exact write tokens/results
+  (DIO-G9).
+
+- [ ] Given a shard owner parked in `Pool::poll_wait`, when either I/O
+  completes or a cloned `PoolWakeHandle` signals Sira ingress immediately
+  before/during the park, then the wait returns without consuming its
+  deadline, no pool-control lock is held while parked, and no wake is
+  lost; the shipping-backend case is proven only after a read-only test
+  observation reports its actual wait hook in progress, with a signal exit and
+  no timeout exit (DIO-R6/DIO-G9).
+
+- [ ] Given two idle product waits with materially different deadlines, when
+  each reaches its deadline, then their elapsed brackets distinguish the
+  supplied durations and the read-only observation reports exactly two entries,
+  two exits, two timeout exits, zero wake exits, and zero waits in progress
+  (DIO-R6/DIO-G9).
+
+- [ ] Given a file with admitted reads, writes, fsyncs, pending/terminal
+  tokens, or live guards, when `retire_file` begins, then all new
+  get/write/fsync admission rejects the exact stale file immediately,
+  old capabilities and typed completions drain exactly once, frames
+  reclaim and the fd closes before `Retired`, repeated calls are
+  idempotent, and the old generation remains stale after slot reuse
+  (INV-11/DIO-G9).
+
 - [ ] Given a pool sized below the declared watermark,
   when the store opens,
   then open fails with a configuration error (DIO-G7); and given a
@@ -523,10 +638,13 @@ deliverable, reviewed before implementation):
 
 ## API Contract
 
-Crate surface to pin during T002/T006 (signatures indicative):
+Revision-10 crate surface pinned by T017. The Pool layer is the product
+API; the previously shipped completion layer remains explicitly advanced
+under `dios::driver`:
 
 ```rust
-// driver — no allocation after init; op state lives in the CompletionSlab
+// dios::driver — advanced leaf API; no allocation after init
+pub mod driver {
 pub struct Driver(backend::Impl);           // cfg: Uring | Eager (portable)
 pub struct FileHandle { /* fd index + generation */ }  // driver-owned; !Copy
 pub struct OpToken(u64);                     // slab slot + generation, issued by submit, echoed
@@ -542,12 +660,13 @@ impl Driver {
                                              // acknowledged data. Operating failures (EIO-class) are
                                              // logged, never surfaced; only EBADF asserts — a
                                              // double-close is a driver state bug, not an operating error
-    pub fn submit_read(&self, fd: &FileHandle, frame: ReadFrameIdx, off: u64) -> Result<OpToken, SubmitErr>;
-    pub fn submit_write<'a>(&self, fd: &FileHandle, buf: WriteSlot<'a>, off: u64) -> Result<OpToken, (SubmitErr, WriteSlot<'a>)>;
-    pub fn submit_fsync(&self, fd: &FileHandle, barrier: SyncMode) -> Result<OpToken, SubmitErr>;
+    pub fn submit_read(&self, fd: &FileHandle, frame: ReadFrameIdx, off: u64) -> Result<OpToken, SubmitError>;
+    pub fn submit_write<'a>(&self, fd: &FileHandle, buf: WriteSlot<'a>, off: u64) -> Result<OpToken, (SubmitError, WriteSlot<'a>)>;
+    pub fn submit_fsync(&self, fd: &FileHandle, barrier: crate::SyncMode) -> Result<OpToken, SubmitError>;
     pub fn poll(&self, out: &mut CompletionBatch) -> usize;
     pub fn poll_wait(&self, out: &mut CompletionBatch, timeout: Duration) -> usize;
 }
+} // end dios::driver
 // poll never sleeps awaiting events — uring: non-blocking CQ drain; eager:
 // executes queued syscalls inline on the calling thread (AD-7). poll_wait's
 // kernel wait happens OUTSIDE the AD-4 mutex (lock boundary stated in AD-4).
@@ -559,52 +678,149 @@ impl Driver {
 // is drained; the Err arm hands the slot back to the caller).
 // the kernel writes only into ReadFrameIdx buffers and reads only from
 // WriteSlot buffers — the two registered sets are disjoint by type
-// SubmitErr::Full = SQ/queue full after one flush-retry — backpressure, never a block
+// SubmitError::Full = SQ/queue full after one flush-retry — backpressure, never a block
 
-// pool — warm hit: page-table probe + epoch pin, zero syscalls/allocs
-pub struct Pool { /* frames, page table, driver */ }
-pub enum Get<'p> {
-    Hit(FrameGuard<'p>),
-    Pending(PendingToken),   // miss submitted (or joined via singleflight)
-    Busy,                    // no evictable frame after get()'s bounded reclaim attempt —
-                             // within the watermark only under reclaim lag or a stalled
-                             // reader (INV-9); retriable via poll()
+// crate root — closed product API; no driver token/kind/batch/arena aliases
+pub struct Pool<D = driver::Driver> { /* frames, one D, bounded state */ }
+pub struct PoolBuilder { /* fixed resource configuration */ }
+pub struct ReaderCtx { /* Arc<ReaderRegistry>, slot, identity; !Send + !Sync */ }
+pub struct PendingToken { /* Arc<MissInterests>, generation, identity; Send + !Clone; Sync deliberately unspecified */ }
+pub struct FrameGuard<'pool>; // borrowed from Pool + ReaderCtx; Deref<[u8]>; !Send + !Sync
+
+pub enum Get<'pool> {
+    Hit(FrameGuard<'pool>),
+    Pending(PendingToken),
+    Busy,
 }
-pub struct ReaderCtx<'pool>;                  // per-thread epoch slot: !Send + !Sync, cannot
-                                              // outlive the pool — the EBR restrictions are in
-                                              // the type, not a usage rule
-impl Pool {
-    pub fn register_reader(&self) -> Result<ReaderCtx<'_>, RegistrationExhausted>;
-    pub fn get(&self, r: &ReaderCtx<'_>, page: PageId) -> Get<'_>;
-    pub fn poll(&self) -> usize;              // drain + ready pending tokens + advance epoch
-    pub fn ready(&self, r: &ReaderCtx<'_>, t: PendingToken) -> ReadyResult<'_>;
+pub enum GetError {
+    StaleFile { page: PageId },
 }
-// reader-slot exhaustion is a typed registration-time error, never a
-// mid-read failure
-pub enum ReadyResult<'p> {
-    Ready(FrameGuard<'p>),
+pub enum PoolConfigError {
+    // existing granule/watermark variants omitted
+    QueueCapacityOverflow {
+        max_inflight_reads: u32,
+        max_inflight_product_ops: u32,
+    },
+}
+pub enum ReadyResult<'pool> {
+    Ready(FrameGuard<'pool>),
     NotYet(PendingToken),
-    Err(IoError),            // IO error or short-read-at-EOF; fanned out to all singleflight waiters, frame freed
+    Err(IoError),
 }
-pub struct FrameGuard<'p>;                    // Deref<Target = [u8]>, !Send
-// CRC is NOT the pool's job: frames hold raw granules; sira's BlockSource
-// verifies per requested block via segment::block_storage, as today.
 
-// write plane — O_DIRECT staging separate from the read pool
-pub struct WriteArena { /* registered, granule-aligned staging buffers */ }
-pub struct WriteSlot<'a>;                     // DerefMut<Target = [u8]>, granule-aligned
-// dropped unsubmitted → slot freed; consumed by submit_write → slot freed
-// only at completion drain (INV-11)
-impl WriteArena {
-    pub fn alloc(&self) -> Option<WriteSlot<'_>>;         // None = exhausted
-    pub fn alloc_wait(&self, timeout: Duration) -> Option<WriteSlot<'_>>;
-    // uring: parks on a wait queue, a reaped write completion wakes one
-    // waiter — no spin. Eager: pumps the driver (executes queued writes
-    // via poll) to free a slot — parking would self-wait, since only
-    // poll() produces completions on this backend.
+pub struct PoolWriteArena<'pool> { /* backend-erased pool staging view */ }
+pub struct PoolWriteSlot<'pool>; // DerefMut<[u8]>, carries pool identity
+pub struct PoolToken(u64);       // opaque pool slot + generation; not driver::OpToken
+pub enum PoolSubmitError {
+    Full,
+    StaleFile { file: FileId },
+    ForeignPool,
 }
-// metadata plane (manifest, CURRENT, journal): blocking convenience wrappers
-impl Driver {
+pub enum SyncMode { Full }
+pub enum PoolCompletion {
+    Write { token: PoolToken, result: Result<u32, IoError> },
+    Fsync { token: PoolToken, result: Result<(), IoError> },
+}
+pub struct PoolCompletionBatch { /* fixed-capacity owned results */ }
+pub struct PollReport { /* u32 backend_completions + reclaimed_frames */ }
+pub struct PoolWakeHandle { /* Clone + Send + Sync, generation tracked */ }
+pub enum RetireStatus { Retiring, Retired }
+
+impl PoolBuilder {
+    pub fn write_slots(self, slots: u32) -> Self;
+    pub fn max_inflight_product_ops(self, operations: u32) -> Self;
+}
+impl PoolCompletionBatch {
+    // capacity 0 is valid: advance/retain without caller delivery
+    pub fn with_capacity(capacity: usize) -> Self;
+    pub fn iter(&self) -> impl Iterator<Item = &PoolCompletion>;
+}
+impl PoolWakeHandle {
+    pub fn wake(&self);
+}
+impl<D: PoolBackend> Pool<D> {
+    pub fn register_reader(&self) -> Result<ReaderCtx, RegisterError>;
+    pub fn get<'pool>(&'pool self, r: &'pool ReaderCtx, page: PageId)
+        -> Result<Get<'pool>, GetError>;
+    pub fn ready<'pool>(&'pool self, r: &'pool ReaderCtx, token: PendingToken)
+        -> ReadyResult<'pool>;
+
+    pub fn write_arena(&self) -> PoolWriteArena<'_>;
+    pub fn submit_write<'pool>(
+        &'pool self,
+        file: FileId,
+        slot: PoolWriteSlot<'pool>,
+        offset: u64,
+    ) -> Result<PoolToken, (PoolSubmitError, PoolWriteSlot<'pool>)>;
+    pub fn submit_fsync(
+        &self,
+        file: FileId,
+        mode: SyncMode,
+    ) -> Result<PoolToken, PoolSubmitError>;
+
+    pub fn poll_report(&self, out: &mut PoolCompletionBatch) -> PollReport;
+    pub fn poll_wait(
+        &self,
+        out: &mut PoolCompletionBatch,
+        timeout: Duration,
+    ) -> PollReport;
+    pub fn wake_handle(&self) -> PoolWakeHandle;
+    pub fn retire_file(&self, file: FileId) -> RetireStatus;
+}
+
+// existing non-default `mock` feature; no production/backend primitive is exposed
+pub mod testing {
+    pub enum MockIoEvent {
+        ReadAttempt {
+            file: FileId,
+            file_offset: u64,
+            destination_offset: u32,
+            requested_len: u32,
+        },
+        // write/fsync attempts, all completions, and closes omitted
+    }
+    pub struct MockPoolObservation { /* Arc-backed exact counters, read-only */ }
+    impl MockPoolObservation {
+        pub fn registered_readers(&self) -> u32;
+        pub fn reader_releases(&self) -> u32;
+        pub fn live_pending_interests(&self) -> u32;
+        pub fn pending_releases(&self) -> u32;
+        pub fn backend_ops_in_flight(&self) -> u32;
+        pub fn backend_completions(&self) -> u32;
+        pub fn quiesce_calls(&self) -> u32;
+    }
+    pub struct MockWaitObservation { /* fixed counters, read-only */ }
+    impl MockWaitObservation {
+        pub fn wait_until_parked(&self, timeout: Duration) -> bool;
+        pub fn parks_entered(&self) -> u32;
+        pub fn parks_in_progress(&self) -> u32;
+        pub fn parks_exited(&self) -> u32;
+        pub fn wake_exits(&self) -> u32;
+        pub fn timeout_exits(&self) -> u32;
+    }
+    pub struct ShippingWaitObservation { /* fixed counters, read-only */ }
+    impl ShippingWaitObservation {
+        pub fn wait_until_parked(&self, timeout: Duration) -> bool;
+        pub fn parks_entered(&self) -> u32;
+        pub fn parks_in_progress(&self) -> u32;
+        pub fn parks_exited(&self) -> u32;
+        pub fn wake_exits(&self) -> u32;
+        pub fn timeout_exits(&self) -> u32;
+    }
+    pub trait ShippingWaitTestingExt {
+        fn observe_shipping_waits(&self) -> ShippingWaitObservation;
+    }
+    pub trait MockPoolTestingExt {
+        fn driver(&self) -> &MockDriver;
+        fn observe(&self) -> Arc<MockPoolObservation>;
+    }
+    impl MockDriver {
+        pub fn observe_waits(&self) -> MockWaitObservation;
+    }
+}
+
+// Metadata-only advanced use remains namespaced rather than growing Pool.
+impl driver::Driver {
     pub fn write_all_blocking(&self, fd: Fd, buf: &[u8], off: u64) -> Result<(), IoError>;
     pub fn fsync_blocking(&self, fd: Fd, barrier: SyncMode) -> Result<(), IoError>;
 }
@@ -621,14 +837,78 @@ loudly. "Never blocks" for `submit_*` means
 no waiting on kernel completion or queue space — the AD-4 submit mutex
 is a bounded SQE-fill critical section, not an IO wait; the blocking
 wrappers are the explicit exception, used only on the metadata plane.
-Kernel ops always drain; dropping a `PendingToken` drops waiter interest
-only (the read completes, frame becomes Resident); `Pool::drop`
-quiesces. File close is deferred, never racy: `close` consumes the
-`FileHandle` immediately and the driver issues close(2) once the fd's
-in-flight count reaches zero — on the eager backend this is what makes
-queued-but-unexecuted ops safe against fd-number recycling. The pool
-addresses files by generational `FileId` (inside `PageId`); a stale
-generation is rejected at miss submit, before an op is issued.
+Kernel ops always drain. Dropping a `PendingToken` drops waiter interest
+only; its owned interest state makes Drop safe after the `Pool` value is
+gone, while a moved token can resolve only against a destination
+`ReaderCtx` carrying the same pool identity. `Pool::drop` quiesces the
+backend exactly once even if reader/token capability metadata outlives
+it. `FrameGuard` remains borrowed, so bytes never outlive either Pool or
+the reader epoch pin.
+
+`PollReport::backend_completions` counts every CQE drained in that call,
+including private reads, regardless of `PoolCompletionBatch` capacity.
+The caller batch is reset/refilled with owned write/fsync results only;
+overflow stays in a preallocated pool backlog and later delivery reports
+no fictitious backend completion. Read routing, epoch advancement, and
+reclamation therefore cannot be starved by a full caller batch. Capacity zero
+is a valid progress-only batch: it drains and retains within the configured
+product bound, and subsequent capacity-one polls deliver exactly one retained
+result apiece with zero new backend completions. Retained results continue to
+occupy `max_inflight_product_ops` capacity through caller delivery; draining a
+CQE alone does not release admission, while delivering one result releases
+exactly one slot.
+`poll_wait` performs the same routing/report pass after waking and parks
+outside pool control. Its generation protocol closes wake-before-park
+and wake-during-park races for both I/O and `PoolWakeHandle` ingress. The real
+shipping backend wait is interruptible through a private platform primitive.
+Under the existing non-default `mock` feature, `MockWaitObservation` and
+`ShippingWaitObservation` expose exactly five actual-wait counters plus
+`wait_until_parked`; the observations are read-only and cannot release, gate,
+or shorten a wait. `MockPoolObservation` exposes exactly the seven lifecycle
+counters above through an Arc-backed snapshot handle: all remain exact and
+readable after the observed Pool drops, including later reader/pending releases,
+without retaining its driver. No observation exposes a raw/unsafe platform
+handle or participates in production synchronization.
+
+One Pool owns one driver for reads, writes, and fsync. Product capacities are
+opt-in: `write_slots` and `max_inflight_product_ops` both default to zero.
+The former bounds reusable staging slots; the latter bounds all admitted
+write/fsync operations including completed results retained for caller
+delivery, and the next submission returns `PoolSubmitError::Full`. The
+shipping backend queue reservation is the checked sum of
+`max_inflight_reads + max_inflight_product_ops`; overflow returns
+`PoolConfigError::QueueCapacityOverflow` with both operands. Implementations
+may use an internal minimum queue depth of one when the sum is zero, without
+enabling product admission.
+
+A per-file fsync is not submitted to a reordering backend until all preceding
+writes for that file have completed; this may require multiple bounded
+`poll_report` passes and no single-poll co-completion is promised. CQE delivery
+order remains unconstrained. Write and fsync failures remain independent owned
+completion values, and every terminal write releases its staging slot. A
+foreign `FileId` is a programmer error and panics before write/fsync admission;
+`PoolSubmitError::ForeignPool` applies only to a staging slot minted by another
+Pool. Panic while consuming a write slot drops that RAII value and immediately
+restores the originating Pool's reusable slot capacity.
+
+Submit checks have one observable precedence: write-slot Pool identity first
+(`ForeignPool` with the exact slot returned), then file/driver identity
+(programmer panic), then live-generation and retirement state (`StaleFile`),
+then product capacity (`Full`). Fsync omits only the first step. Consequently a
+stale/retired generation wins over saturation, while a foreign slot wins over
+both foreign-file misuse and saturation. Foreign driver identity also wins when
+the source Pool has already retired that `FileId`: presenting that retired
+foreign identity to a saturated target still panics before either source
+generation state or target capacity can affect the outcome.
+
+`retire_file` atomically closes get/write/fsync admission for that exact
+generation, then returns `Retiring` until admitted backend ops, caller
+completion delivery, pending/terminal interests, borrowed guards, EBR
+reclamation, and the deferred fd close have all completed. Already-minted
+capabilities remain valid. Repeated calls are idempotent; `Retired` is
+terminal, and reopening a reused slot never makes the old generation
+live. The advanced driver's by-value `close(FileHandle)` retains its
+existing lower-level deferred-drain guarantee.
 
 ## Dependency Graph
 
@@ -639,12 +919,15 @@ Phase 1 (crate core)      T001 scaffold → T002 driver surface → {T003 eager,
 Phase 2 (pool)            T006 frames/table/CLOCK/granule (gated by T016) → T007 epoch guards → {T008 miss+overlap, T009 zero-alloc+loom}
 Phase 3 (sira wiring)     T010 BlockSource seam → T011 read routing; T012 vNext format → T013 write plane → T014 gates
 Phase 4 (nmnm-readiness)  T015 contract example (extends the T016 spike) + extraction checklist
+Post-v1 API evolution     {T002,T008,T009,T015} → T017 Sira-fit Pool product API (independent of deferred sira wiring)
 ```
 
 Phase labels group by concern, not sequencing: T010 (seam refactor, no
 behavior change) runs in batch 1 alongside T001. Phases 1, 2, and 4
 land in this repository; Phase 3 (sira wiring) lands in the sira
 repository against `dios` as a dependency.
+T017 is a repository-local follow-up on `feat/dios-api`; it does not
+unblock or silently start T010–T014 in the sira repository.
 
 ## Non-Goals
 
@@ -678,6 +961,33 @@ repository against `dios` as a dependency.
   re-read-after-eviction CRC case (DIO-G5).
 - backend×platform matrix tests (incl. pool-on-macOS full suite) +
   old-format open-rejection test (DIO-R3).
+- T017 Sira-fit RED/GREEN targets:
+  `tests/embedded_owner.rs`, `tests/pool_progress.rs`,
+  `tests/pool_write.rs`, `tests/pool_retire.rs`, and
+  `tests/public_api.rs`, with capability/identity migrations in
+  `tests/guard_compile_fail.rs`, `tests/miss.rs`,
+  `tests/real_pool.rs`, and `tests/zero_alloc.rs`. The complete suite,
+  not a prose migration note, must compile against one API. These targets pin
+  capacity through caller delivery, explicit submit-check precedence, PoolToken
+  generation on slot reuse, the single chronological `MockIoEvent` recorder,
+  a positive shipping checked-sum admission/drain, disjoint short/long timeout
+  brackets with exact causes, retired-foreign identity precedence, exact
+  Arc-backed lifecycle counters readable after Pool drop, and external wake of
+  observed actual mock and `Pool<Driver>` backend parks through the read-only
+  `mock`-feature seam.
+- Mandatory executable documentation/examples migration in the same
+  GREEN change: rewrite `src/pool/epoch.rs` library `compile_fail`
+  doctests (remove the obsolete ReaderCtx-cannot-outlive-Pool case;
+  retain guard-borrow escape and ReaderCtx thread-affinity; add the
+  PendingToken Send/non-Clone and product/driver separation pins), plus
+  `examples/api_fit_spike.rs`, `examples/gateway_contract.rs`, and
+  `examples/quickstart.rs`.
+- Mandatory bench migration: `benches/overlap.rs`,
+  `benches/mmap_warm_path.rs`, and `benches/mmap_tlb_pressure.rs` use
+  lifetime-free capabilities and `Result<Get, GetError>`. The existing
+  overlap/parity plans retain their thresholds; T017 adds no new
+  performance claim, while its pool write/fsync/report/overflow
+  alloc-count gate extends DIO-G4.
 
 ## Gotchas & Learnings
 

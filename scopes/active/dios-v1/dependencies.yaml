@@ -67,6 +67,39 @@ phases:
         files: [examples/gateway_contract.rs, scopes/draft/dios-v1/resources/extraction.md]
         depends_on: [T008]
 
+  - id: sira-fit-api
+    name: Post-v1 Sira owner-loop product API
+    tasks:
+      - id: T017
+        files:
+          - src/lib.rs
+          - src/pool/mod.rs
+          - src/pool/epoch.rs
+          - src/pool/miss.rs
+          - src/pool/write_arena.rs
+          - src/driver.rs
+          - src/backend/eager.rs
+          - src/backend/uring.rs
+          - src/sync.rs
+          - src/completion.rs
+          - src/mock.rs
+          - tests/embedded_owner.rs
+          - tests/pool_progress.rs
+          - tests/pool_write.rs
+          - tests/pool_retire.rs
+          - tests/public_api.rs
+          - tests/guard_compile_fail.rs
+          - tests/miss.rs
+          - tests/real_pool.rs
+          - tests/zero_alloc.rs
+          - examples/api_fit_spike.rs
+          - examples/gateway_contract.rs
+          - examples/quickstart.rs
+          - benches/overlap.rs
+          - benches/mmap_warm_path.rs
+          - benches/mmap_tlb_pressure.rs
+        depends_on: [T002, T008, T009, T015]
+
 batches:
   - batch: 1
     tasks: [T001, T010]
@@ -84,5 +117,13 @@ batches:
     tasks: [T011, T015]
   - batch: 8
     tasks: [T014]
+
+follow_up_batches:
+  - batch: api-1
+    tasks: [T017]
+    note: >-
+      Repository-local post-v1 follow-up on feat/dios-api. It may proceed
+      independently of deferred external sira-wiring tasks T010-T014, but
+      not before its own A.5 RED review clears.
 
 actions: []

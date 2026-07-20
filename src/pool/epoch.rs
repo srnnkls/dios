@@ -11,8 +11,10 @@
 use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::ops::Deref;
+use std::sync::Arc;
 
 use crate::pool::ReadFrameIdx;
+use crate::product::LifecycleCounters;
 use crate::sync::{fence, AtomicBool, AtomicU64, Ordering};
 
 /// A reader publishes this sentinel as its `local_epoch` while it holds no guard;
@@ -29,6 +31,39 @@ pub(crate) struct ReaderSlot {
     occupied: AtomicBool,
     local_epoch: AtomicU64,
     guard_count: AtomicU64,
+}
+
+/// Arc-owned reader registration table. It deliberately retains no frames,
+/// driver, or Pool control state, so a registration can safely outlive Pool.
+#[derive(Debug)]
+pub(crate) struct ReaderRegistry {
+    slots: Box<[ReaderSlot]>,
+    lifecycle: Arc<LifecycleCounters>,
+}
+
+impl ReaderRegistry {
+    pub(crate) fn with_capacity(capacity: u32, lifecycle: Arc<LifecycleCounters>) -> Self {
+        Self {
+            slots: (0..capacity).map(|_| ReaderSlot::vacant()).collect(),
+            lifecycle,
+        }
+    }
+
+    pub(crate) fn slots(&self) -> &[ReaderSlot] {
+        &self.slots
+    }
+
+    pub(crate) fn register(self: &Arc<Self>) -> Option<ReaderCtx> {
+        self.slots.iter().enumerate().find_map(|(index, slot)| {
+            slot.try_occupy().then(|| {
+                self.lifecycle.register_reader();
+                ReaderCtx::new(
+                    Arc::clone(self),
+                    u32::try_from(index).expect("reader registry indexes by u32"),
+                )
+            })
+        })
+    }
 }
 
 impl ReaderSlot {
@@ -228,38 +263,37 @@ impl EvictQueue {
     }
 }
 
-/// Per-reader epoch handle: `!Send` + `!Sync` and lifetime-bound to the pool, so
-/// the EBR restriction that a slot belongs to exactly one thread that cannot
-/// outlive the pool lives in the type rather than a usage rule. Dropping it
-/// releases the registration slot (RAII deregistration).
+/// Lifetime-free per-reader epoch handle. The small registry is Arc-owned while
+/// Pool bytes and driver resources remain exclusively Pool-owned.
 #[derive(Debug)]
-pub struct ReaderCtx<'pool> {
-    slot: &'pool ReaderSlot,
-    pool_identity: &'pool AtomicU64,
+pub struct ReaderCtx {
+    registry: Arc<ReaderRegistry>,
+    slot: u32,
     _thread_bound: PhantomData<*const ()>,
 }
 
-impl<'pool> ReaderCtx<'pool> {
-    pub(crate) fn new(slot: &'pool ReaderSlot, pool_identity: &'pool AtomicU64) -> Self {
+impl ReaderCtx {
+    fn new(registry: Arc<ReaderRegistry>, slot: u32) -> Self {
         Self {
+            registry,
             slot,
-            pool_identity,
             _thread_bound: PhantomData,
         }
     }
 
-    pub(crate) fn slot(&self) -> &'pool ReaderSlot {
-        self.slot
+    pub(crate) fn slot(&self) -> &ReaderSlot {
+        &self.registry.slots[self.slot as usize]
     }
 
-    pub(crate) fn belongs_to(&self, pool_identity: &AtomicU64) -> bool {
-        std::ptr::eq(self.pool_identity, pool_identity)
+    pub(crate) fn belongs_to(&self, registry: &Arc<ReaderRegistry>) -> bool {
+        Arc::ptr_eq(&self.registry, registry)
     }
 }
 
-impl Drop for ReaderCtx<'_> {
+impl Drop for ReaderCtx {
     fn drop(&mut self) {
-        self.slot.vacate();
+        self.slot().vacate();
+        self.registry.lifecycle.release_reader();
     }
 }
 
@@ -277,10 +311,10 @@ impl Drop for ReaderCtx<'_> {
 /// use dios::{FrameGuard, Get, PageId, Pool, ReaderCtx};
 /// fn escapes<'pool>(
 ///     pool: &'pool Pool,
-///     reader: &'pool ReaderCtx<'pool>,
+///     reader: &'pool ReaderCtx,
 ///     page: PageId,
 /// ) -> FrameGuard<'static> {
-///     match pool.get(reader, page) {
+///     match pool.get(reader, page).expect("the file remains live") {
 ///         Get::Hit(guard) => guard, // borrows `pool`; cannot escape as 'static
 ///         Get::Pending(_) | Get::Busy => panic!("the lifetime is the contract"),
 ///     }
@@ -302,17 +336,18 @@ impl Drop for ReaderCtx<'_> {
 /// });
 /// ```
 ///
-/// A `ReaderCtx` cannot outlive the pool it was registered against:
+/// A `ReaderCtx` owns its bounded registration metadata and may outlive the
+/// pool it was registered against:
 ///
-/// ```compile_fail
+/// ```no_run
 /// use dios::{Pool, ReaderCtx};
-/// fn outlives() -> ReaderCtx<'static> {
+/// fn outlives() -> ReaderCtx {
 ///     let pool = Pool::builder()
 ///         .frame_count(16).granule(4096)
 ///         .max_concurrent_readers(1).peak_guards_per_reader(1)
 ///         .max_inflight_reads(1).miss_headroom(3)
 ///         .build().unwrap();
-///     pool.register_reader().unwrap() // borrows `pool`; cannot escape as 'static
+///     pool.register_reader().unwrap()
 /// }
 /// ```
 #[derive(Debug)]

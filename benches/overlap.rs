@@ -30,8 +30,8 @@ fn next_page(counter: &Cell<u32>, file: FileId) -> PageId {
 
 fn drive_ready<'pool>(
     pool: &'pool Pool<MockDriver>,
-    reader: &'pool ReaderCtx<'pool>,
-    token: PendingToken<'pool>,
+    reader: &'pool ReaderCtx,
+    token: PendingToken,
 ) -> Option<()> {
     let mut token = token;
     for _ in 0..READY_POLLS_MAX {
@@ -50,8 +50,11 @@ fn drive_ready<'pool>(
     None
 }
 
-fn cold_miss(pool: &Pool<MockDriver>, reader: &ReaderCtx<'_>, counter: &Cell<u32>, file: FileId) {
-    match pool.get(reader, next_page(counter, file)) {
+fn cold_miss(pool: &Pool<MockDriver>, reader: &ReaderCtx, counter: &Cell<u32>, file: FileId) {
+    match pool
+        .get(reader, next_page(counter, file))
+        .expect("the registered file is live")
+    {
         Get::Pending(token) => {
             drive_ready(pool, reader, token);
         }
@@ -66,13 +69,16 @@ fn cold_miss(pool: &Pool<MockDriver>, reader: &ReaderCtx<'_>, counter: &Cell<u32
 
 fn overlapped_misses(
     pool: &Pool<MockDriver>,
-    reader: &ReaderCtx<'_>,
+    reader: &ReaderCtx,
     counter: &Cell<u32>,
     file: FileId,
 ) {
     let mut tokens = Vec::with_capacity(CONCURRENT as usize);
     for _ in 0..CONCURRENT {
-        match pool.get(reader, next_page(counter, file)) {
+        match pool
+            .get(reader, next_page(counter, file))
+            .expect("the registered file is live")
+        {
             Get::Pending(token) => tokens.push(token),
             Get::Hit(guard) => {
                 black_box(guard.len());

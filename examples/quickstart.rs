@@ -6,9 +6,9 @@ use dios::{DirectIo, Get, IoError, PageId, PendingToken, Pool, ReaderCtx, ReadyR
 
 const POLLS_MAX: u32 = 64;
 
-enum ReadState<'pool> {
+enum ReadState {
     Lookup,
-    Waiting(PendingToken<'pool>),
+    Waiting(PendingToken),
 }
 
 enum ReadError {
@@ -59,13 +59,13 @@ fn main() {
 
 fn read_page<'pool>(
     pool: &'pool Pool,
-    reader: &'pool ReaderCtx<'pool>,
+    reader: &'pool ReaderCtx,
     page: PageId,
 ) -> Result<(), ReadError> {
     let mut state = ReadState::Lookup;
     for _ in 0..POLLS_MAX {
         state = match state {
-            ReadState::Lookup => match pool.get(reader, page) {
+            ReadState::Lookup => match pool.get(reader, page).expect("the opened file is live") {
                 Get::Hit(frame) => {
                     std::hint::black_box(&*frame);
                     return Ok(());

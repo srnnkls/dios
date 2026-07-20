@@ -162,7 +162,8 @@ mod bracket {
             .frames(FRAMES)
             .frame_bytes(u32::try_from(GRANULE).expect("granule fits u32"))
             .retry_bound(RETRY_BOUND)
-            .build();
+            .build()
+            .expect("the io_uring driver initializes");
         let fd = drv
             .open(&path, DirectIo::Preferred)
             .expect("open the ring O_DIRECT fd");

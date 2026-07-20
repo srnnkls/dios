@@ -44,6 +44,7 @@ fn driver(frames: u32, frame_bytes: u32, queue_capacity: u32) -> Driver {
         .write_slots(queue_capacity)
         .retry_bound(3)
         .build()
+        .expect("the io_uring driver initializes")
 }
 
 fn open_existing(drv: &Driver, path: &Path, direct_io: DirectIo) -> FileHandle {

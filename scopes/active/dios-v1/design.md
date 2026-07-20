@@ -124,6 +124,150 @@ round-trips.
 
 ---
 
+## Post-v1 Sira-fit product boundary (revision 10)
+
+The completed v1 implementation exposed the right completion machinery
+but left its Pool ownership seams too closely tied to that machinery.
+Revision 10 makes `Pool` the crate-root product API and retains the leaf
+completion API explicitly under `dios::driver`. Product callers never
+name a driver op kind/token/completion batch, a raw read/close completion,
+or a backend-specific arena.
+
+The Pool owns one composed driver and all four product concerns:
+residency, write/fsync admission, progress/waiting, and file retirement.
+Its closed root vocabulary is `PoolWriteArena`, `PoolWriteSlot`,
+`PoolToken`, `PoolCompletion::{Write,Fsync}`,
+`PoolCompletionBatch`, `PoolSubmitError`, `SyncMode`, `PollReport`,
+`PoolWakeHandle`, `GetError`, and `RetireStatus`. These are product types,
+not aliases that permit accidental interchange with `dios::driver`
+tokens, kinds, batches, or staging slots.
+
+### Owned capabilities, borrowed bytes
+
+- `ReaderCtx` owns `Arc<ReaderRegistry>` plus one slot and pool identity.
+  It is lifetime-free and `!Send + !Sync`: it can be stored beside or
+  outlive the Pool value, but its epoch slot never changes threads.
+- `PendingToken` owns `Arc<MissInterests>` plus miss generation and pool
+  identity. It is affine (`!Clone`) and `Send`; `Sync` is deliberately
+  unspecified. A work item may
+  move it to another thread, whose local `ReaderCtx` supplies the epoch
+  pin when `ready` produces a guard. Drop releases waiter interest only.
+- `FrameGuard<'pool>` remains a borrow of Pool bytes and the destination
+  reader epoch slot and is `!Send + !Sync`. No owned capability turns a
+  frame borrow into owned or `'static` bytes.
+- Every `get`/`ready` checks Pool identity before observing target-pool
+  state. A cross-pool reader/token is a programmer error. Retired file
+  identity is an expected value: `GetError::StaleFile { page }`.
+
+Pool Drop quiesces and releases the backend even when ReaderCtx or
+PendingToken metadata remains alive. Their small Arc-owned registries
+survive only long enough to make later capability Drop safe; they do not
+retain the complete Pool/driver. This is the ownership shape required by
+an embedding owner without self-reference or unsafe lifetime extension.
+
+### Truthful progress and a composable wait
+
+`poll_report` drains a preallocated raw backend batch, routes every read
+completion privately, advances/reclaims epochs, and copies only owned
+write/fsync results into the caller's fixed-capacity
+`PoolCompletionBatch`. `PollReport::backend_completions` is the number of
+CQEs actually drained in that invocation, independent of how many caller
+results fit. Overflow caller results remain in a preallocated internal
+backlog bounded by `PoolBuilder::max_inflight_product_ops`; later delivery
+does not increment the backend count again. A full caller batch therefore
+cannot stall internal reads or reclamation. A zero-capacity product batch is
+valid and requests progress without delivery: completions are retained inside
+the configured bound and delivered by later nonzero-capacity polls. Product-op
+capacity remains occupied until the owned caller result is delivered, not merely
+until its backend CQE is drained; after one retained result is delivered exactly
+one admission slot becomes available.
+
+`poll_wait` arms and parks outside the pool control lock, then performs
+the same routing/report pass. A cloneable `PoolWakeHandle: Send + Sync`
+shares a monotonic generation/event source with the wait. The owner
+checks ingress, captures/arms the generation, rechecks, and parks; a
+wake immediately before or during the park changes the generation and
+must return the wait. Signals may coalesce because ingress and completion
+queues retain the work, but the arm/park transition loses none. The same
+wait returns for backend I/O completion or external Sira ingress, so the
+owner neither busy-polls nor sleeps through new requests.
+
+The shipping backend integrates a private platform wake primitive with its
+actual blocking wait, so `PoolWakeHandle` interrupts the same wait hook as I/O;
+no raw descriptor, unsafe handle, or backend primitive enters the public API.
+Under the existing non-default `mock` feature, `dios::testing` exposes only a read-only
+`ShippingWaitObservation`: fixed-at-construction counters and
+`wait_until_parked`, which can neither release nor shorten the real wait. Tests
+use it to distinguish signal-driven exit from deadline expiry on
+`Pool<driver::Driver>` without substituting a mock wait.
+
+The same feature exposes two distinct mock observations rather than overloading
+the shipping hook. `MockWaitObservation` has exactly five actual-wait counters
+(`parks_entered`, `parks_in_progress`, `parks_exited`, `wake_exits`, and
+`timeout_exits`) plus `wait_until_parked`; it is read-only, non-gating, and
+cannot release or shorten the mock backend's real blocking wait.
+`MockPoolObservation` is an Arc-backed lifecycle handle with exactly seven
+counters: registered readers, reader releases, live pending interests, pending
+releases, backend operations in flight, backend completions, and quiesce calls.
+It remains exact and readable after Pool drop, including capability releases
+that happen later, without retaining the driver or changing lifecycle progress.
+
+### One I/O owner and typed retirement
+
+Pool write/fsync submissions use Pool-minted tokens and owned typed
+completions. The pool holds a per-file fsync behind all previously
+admitted writes for that file, because the lower driver deliberately
+permits adversarial execution/CQE ordering. Unrelated files remain
+independent. Terminal success or failure releases staging exactly once;
+write and fsync failures remain distinct results.
+
+Product resources are explicit and disabled by default.
+`PoolBuilder::write_slots(n)` reserves exactly `n` staging slots and
+`PoolBuilder::max_inflight_product_ops(n)` bounds the total admitted plus
+retained write/fsync operations; both default to zero. At the latter bound a
+further product submit returns `Full`. The shipping backend queue reservation
+is the checked sum `max_inflight_reads + max_inflight_product_ops`; overflow is
+a typed `PoolConfigError::QueueCapacityOverflow`. A zero-total configuration
+may still use a private minimum backend queue depth of one, but it admits no
+product operation. A shipping conformance case also exercises the positive sum:
+one cold read and the full product bound admit concurrently before any poll,
+the next product submit is `Full`, and all exact results drain. A `FileId`
+minted by another Pool is a programmer identity
+violation and panics before admission; `PoolSubmitError::ForeignPool` is
+reserved for a staging slot presented to the wrong Pool.
+
+Submit validation order is contractual. For writes, staging-slot Pool identity
+is checked first and returns the unchanged slot with `ForeignPool`; next, a
+foreign driver/FileId identity panics as programmer misuse; next, the live file
+generation and retirement state return `StaleFile`; product capacity is checked
+last and returns `Full`. Fsync follows the same order without the staging-slot
+step. Thus a retired generation returns `StaleFile` even while product capacity
+is saturated, and a foreign staging slot remains recoverable even when its file
+identity and capacity would also fail. Driver identity remains prior even when
+the foreign source has retired the `FileId`: using that retired foreign identity
+on a saturated target is still a programmer panic, and write-slot unwind still
+returns the target's staging capacity.
+
+The deterministic test utility has one chronological recorder:
+`MockIoEvent`, including `ReadAttempt { file, file_offset,
+destination_offset, requested_len }` alongside write/fsync attempts,
+completions, and closes. The frozen `read_attempts_in_order` and
+`write_attempts_in_order` accessors are derived typed projections of that event
+stream; no parallel attempt log exists.
+
+`retire_file` moves the exact generational file identity through
+`Live -> Retiring -> Retired`. The first transition closes all new
+get/write/fsync admission immediately. Already-admitted backend ops,
+pending or terminal interests, caller completion delivery, and live
+guards remain valid. Retiring invalidates resident mappings, lets EBR
+reclaim their frames after pins drain, delivers every admitted product
+completion once, and defers fd close until backend in-flight reaches
+zero. `Retired` is returned only after those obligations, reclamation,
+and close finish. Repeated calls are idempotent and slot reuse never
+revives an old generation.
+
+---
+
 ## Epoch reclamation (EBR) — algorithm
 
 Specified here so INV-1/INV-9 are testable rather than asserted.
@@ -134,10 +278,11 @@ State per pool: `global_epoch: AtomicU64`; per registered reader thread a
 
 - Reader registration: fixed slot table sized `max_concurrent_readers`;
   registration beyond capacity fails at registration time. The returned
-  `ReaderCtx<'pool>` is `!Send + !Sync` and cannot outlive the pool — an
-  epoch slot belongs to exactly one thread, enforced by the type. Slots
-  deregister via TLS destructor/RAII on thread exit — a dead thread's
-  stale epoch must not stall reclamation.
+  lifetime-free `ReaderCtx` owns an `Arc` to the registry plus its slot
+  and pool identity. It is `!Send + !Sync`, so an epoch slot belongs to
+  exactly one thread, but it may outlive the Pool value and release its
+  slot safely after Pool Drop. RAII deregistration remains exact; a dead
+  thread's stale epoch must not stall reclamation.
 - Guard create: reader publishes `local_epoch = global_epoch` (Acquire
   load, Release store), then a `SeqCst` fence before validating residency,
   BEFORE validating the frame — then re-checks the frame is still Resident
@@ -177,9 +322,12 @@ State per pool: `global_epoch: AtomicU64`; per registered reader thread a
   keeps the frequency observable, and `miss_headroom ≥ 3 ×
   max_inflight_reads` covers InFlight frames plus two grace periods of
   Evicting limbo (each miss admits at most one eviction).
-- Shutdown: `Pool::drop` requires live-guard count 0 (debug panic /
-  release block-and-drain), then quiesces in-flight ops, deregisters
-  buffers, tears down.
+- Shutdown: the borrowed `FrameGuard` type prevents a live guard from
+  outliving Pool. `Pool::drop` quiesces in-flight ops, deregisters
+  buffers, and tears down the backend exactly once. ReaderCtx and
+  PendingToken may remain as small Arc-backed capability metadata and
+  later release their slot/interest without retaining or touching the
+  destroyed backend.
 
 Warm-hit cost: one Acquire load + one Release store + one `SeqCst` fence
 on the FIRST guard create (a nested or repeat pin under a live guard skips
@@ -199,16 +347,16 @@ the first-touch bit store rides in the DIO-G1 parity bench.
 | ID | Invariant | Enforcement |
 |----|-----------|-------------|
 | INV-1 | A frame is never reused while pinned or in-flight | frame state machine (Free→InFlight→Resident→Evicting→Free); Evicting→Free only after two epoch advances (EBR above); loom test |
-| INV-2 | Zero allocation on get/submit/poll after warmup | alloc-count harness (nmnm `zero_alloc.rs` pattern) in CI |
-| INV-3 | `submit` never waits on kernel completion or queue space (the AD-4 submit mutex is a bounded SQE-fill critical section; `poll_wait` parks in the kernel outside the mutex — the lock covers SQE fill + CQ drain only; blocking wrappers are metadata-plane-only; eager backend runs syscalls at poll, not submit) | uring: SQ-full → flush-and-retry-once then `SubmitErr::Full`; eager: bounded queue → `Full`; test with saturated queue; submit-while-poller-parked test |
+| INV-2 | Zero allocation on get/submit/poll after warmup, including Pool write/fsync completion conversion and bounded overflow retention | alloc-count harness (nmnm `zero_alloc.rs` pattern) in CI |
+| INV-3 | `submit` never waits on kernel completion or queue space; `poll_wait` parks outside pool/driver control and is losslessly wakeable by I/O or `PoolWakeHandle` ingress | uring: SQ-full → flush-and-retry-once then `SubmitError::Full`; eager: bounded queue → `Full`; saturated-submit, submit-while-parked, wake-before-park, and wake-during-park tests |
 | INV-4 | Kernel never writes into memory Rust may free | frames registered at pool init (uring only; eager uses the same non-moving slab unregistered), deregistered only in `Pool::drop` after quiesce on both backends; ops address frames by index, not pointer-lifetime |
 | INV-5 | Journal one-barrier-per-micro-commit preserved | metadata plane stays buffered+fsync (AD-3); existing journal/crash suite runs through the new write plane unmodified (DIO-G5) |
-| INV-6 | `FrameGuard` borrows cannot outlive residency | `&[u8]` tied to guard lifetime; guard `!Send`; compile-fail test |
+| INV-6 | Owned reader/pending capabilities cannot turn a residency borrow into transferable or `'static` bytes | `ReaderCtx: !Send + !Sync`; `PendingToken: Send + !Clone`, with `Sync` deliberately unspecified; `FrameGuard<'pool>: !Send + !Sync`, tied to Pool + destination ReaderCtx borrows; executable compile-fail/trait tests |
 | INV-7 | Resident frame content is immutable until Evicting; frames hold raw granules — per-block CRC lives above the seam in `segment::block_storage`, per fetch, as today | frames read-only until Evicting; eviction-re-read corruption test through BlockSource (DIO-G5) |
-| INV-8 | Kernel ops always drain; shutdown quiesces | `Pool::drop`/`close` polls until in-flight count is 0; PendingToken drop is waiter-interest only |
+| INV-8 | Kernel ops always drain; Pool shutdown quiesces exactly once even when lifetime-free reader/token metadata outlives the Pool value | `Pool::drop` polls until backend in-flight count is 0; PendingToken drop is waiter-interest only; drop-order observation test |
 | INV-9 | Deadlock freedom: pool sized ≥ watermark (max concurrent readers × peak guards per reader + miss_headroom, miss_headroom ≥ 3 × max_inflight_reads); within the watermark `Busy` is bounded, retriable backpressure — reachable only under reclamation lag or a stalled reader, never deadlock | peak guards per reader = static max merge fan-out `f(ln_runs [20] + levels)`; compaction counts as a reader at peak fan-out; reader slots capped at registration; under-watermark config fails open; get() runs one bounded reclaim attempt before returning Busy; Busy-rate counter; open-fail test + DIO-G7 recovery + loom |
 | INV-10 | Encoded block size ≤ GRANULE | `ValueTooLarge` at the write path (AD-6); vNext writer padding (AD-5); cap-rejection test |
-| INV-11 | No op references a closed fd, a reused op slot, or a reused write buffer | ownership: `close(FileHandle)` by value, close(2) deferred past drain; generational `FileId` checked at miss submit; `OpToken` issued by submit, slot reclaimed only at completion drain; `submit_write` consumes `WriteSlot`, arena slot freed at completion drain; close-with-in-flight and stale-generation fault tests |
+| INV-11 | No op references a closed fd, reused op slot, reused write buffer, or retired/reused product file generation | advanced ownership remains `close(FileHandle)` by value with deferred close; Pool closes get/write/fsync admission on `Retiring`, returns rejected `PoolWriteSlot`, drains admitted reads/writes/fsyncs and owned completions, waits for tokens/guards/EBR, and reaches `Retired` only after close; stale-generation and retirement matrix tests |
 
 ---
 
@@ -235,14 +383,16 @@ the first-touch bit store rides in the DIO-G1 parity bench.
 | loom: concurrent get/evict/complete on one frame | INV-1 | no interleaving reuses a pinned or in-flight frame |
 | loom: guard held across evict + two epoch advances | INV-1, EBR | frame not freed until second advance after last drop |
 | loom: probe/publish-epoch/evict interleave on guard create | INV-1, EBR | reader observing Evicting or removed mapping takes the miss path, never derefs |
-| zero_alloc harness: warm get, miss submit, drain | INV-2 | 0 allocs both backends |
+| zero_alloc harness: warm get/miss plus Pool write/fsync/report/overflow drain | INV-2 | 0 allocs after warmup on both backends |
 | saturate SQ / eager queue, then submit | INV-3 | `SubmitErr::Full`, no block, recovery after poll |
 | single-thread writer exhausts WriteArena, alloc_wait (eager backend, no external poller) | write-plane liveness | slot freed by driver pump, no self-wait, no timeout |
 | drop Pool with in-flight reads | INV-4, INV-8 | quiesce completes, no UAF under miri/asan run |
 | crash suite through write plane | INV-5 | torn-tail replay + manifest swap pins green |
 | crash suite on mock driver with seeded completion reordering | INV-5, write-plane ordering | dependent-step sequencing survives adversarial completion schedules; any submission-order assumption fails loudly |
-| compile-fail: guard slice outlives guard | INV-6 | does not compile |
-| compile-fail: ReaderCtx sent/shared across threads or outliving the pool | EBR per-thread epoch slots | does not compile |
+| compile-fail: guard slice outlives guard/Pool/ReaderCtx or crosses a thread | INV-6 | does not compile |
+| trait pins: ReaderCtx !Send+!Sync; PendingToken Send+!Clone with Sync deliberately unspecified; FrameGuard !Send+!Sync | owned capability boundary | exact required traits compile; forbidden traits do not |
+| drop Pool before live ReaderCtx/PendingToken metadata | INV-8, embedding ownership | backend quiesces once; later slot/interest drops release once without retaining the driver |
+| move PendingToken to destination thread and resolve with its ReaderCtx | Sira/nmnm work stealing | token resolves exact seeded page; no reader/guard crosses threads |
 | IO error on cold read | pool error channel | `ReadyResult::Err`, frame freed, all singleflight waiters get the error |
 | corrupt block on disk, cold + re-read after eviction | INV-7 | CRC error surfaces from BlockSource verify on each fetch |
 | pool sized below watermark | INV-9 | store open fails with config error |
@@ -256,6 +406,17 @@ the first-touch bit store rides in the DIO-G1 parity bench.
 | close(FileHandle) with ops in flight (both backends) | INV-11 | ops complete on the old fd; close(2) observed only after drain; no fd-number recycling race on eager |
 | submit_read with a stale-generation FileId | INV-11 | rejected before an op is issued |
 | submit while another thread is parked in poll_wait | INV-3 | submit returns without waiting on the poller's timeout |
+| two idle product poll_wait calls use distinct short and long deadlines | INV-3 | each exact empty report lands in its own elapsed bracket (the long lower bound exceeds the short upper bound); cumulative counters are exactly two entries/exits/timeouts, zero wakes, zero in progress |
+| external wake immediately before and during actual mock poll_wait park | INV-3, Sira ingress composition | wait returns promptly with zero backend completions; no missed wake or periodic polling |
+| external wake during an observed shipping-backend park | INV-3, shipping Sira ingress composition | read-only test observation proves the real wait hook is in progress; wake returns promptly with zero results/CQEs, one signal exit, and zero timeout exits |
+| caller completion capacity 0 then 1 with multiple write/fsync CQEs plus an internal read | truthful progress | zero-capacity poll drains/retains without delivery and capacity remains Full; report counts all drained CQEs; read readies/reclamation advances; one capacity-1 delivery releases exactly one admission slot; retained results deliver once without fictitious CQEs |
+| default product capacities, exact configured saturation, and positive shipping sum | bounded product resources | defaults admit no staging/write/fsync; configured `write_slots` and `max_inflight_product_ops` bounds are exact; one cold read + the full product bound admit concurrently without polling, bound + 1 returns `Full`, exact read/write results drain; checked reservation cannot wrap |
+| Pool write followed by fsync under adversarial lower-driver scheduling | durability ordering | fsync is withheld until the preceding write completes across bounded poll passes; CQE delivery order may vary; tokens/results remain exact; bytes match staging |
+| cross-Pool FileId and staging slot submissions, including a source-retired foreign id on a saturated target | product identity | foreign FileId panics before source-generation or target-capacity checks; foreign slot returns `ForeignPool`; write-panic unwind drops its consumed RAII slot and the same Pool can immediately allocate/reuse that capacity |
+| unified mock read/write attempt projections | deterministic observation | `MockIoEvent` contains every chronological attempt; frozen typed accessors equal projections of that one stream |
+| independent injected Pool write and fsync failures | product error channel | exact owned typed failure per token; no cross-poison; staging released |
+| retire file across in-flight read/write/fsync, pending/terminal token, live guard, and unpinned resident frame | INV-1, INV-8, INV-11 | new admission is typed stale immediately; old operations/capabilities finish once; frames Free and fd closed before idempotent Retired |
+| reopen a retired file-table slot and use the old generation | INV-11 | old get/write/fsync identities remain typed stale; new generation works |
 | negative probe on a full pool (steady-state table occupancy) | PageTable sizing | probe terminates at an Empty slot (≤ 50% load), never a full-table scan |
 | repeat hits on a hot frame after first touch | CLOCK ref bit, warm-hit budget | no per-frame store once the bit is set; eviction victims reflect reference bits, not round-robin order |
 
@@ -327,3 +488,12 @@ the first-touch bit store rides in the DIO-G1 parity bench.
   on macOS overlap exactly as concurrent mmap faults do. macOS remains a
   correctness target with an advisory (non-gating) pool-vs-mmap
   measurement in T011; the perf gates stay Linux-only.
+- Revision-10 migration is atomic at the crate API boundary. The
+  executable library doctests in `src/pool/epoch.rs`, all affected tests,
+  `examples/{api_fit_spike,gateway_contract,quickstart}.rs`, and
+  `benches/{overlap,mmap_warm_path,mmap_tlb_pressure}.rs` move to the
+  lifetime-free/Result-returning surface in T017. The obsolete
+  ReaderCtx-cannot-outlive-Pool doctest is removed, not copied into inert
+  integration-test prose. The guard escape and reader thread-affinity
+  doctests remain executable. This document records the selected design;
+  T017 implementation and its A.5/Phase-C reviews are still pending.

@@ -22,7 +22,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 #[cfg(not(target_os = "linux"))]
-use dios::driver::{CompletionBatch, Driver, FileHandle, IoMode, SubmitError, SyncMode};
+use dios::driver::{CompletionBatch, SubmitError, SyncMode};
+use dios::driver::{Driver, FileHandle, IoMode};
+#[cfg(not(target_os = "linux"))]
 use dios::testing::{DriverObservation, DriverReadTestingExt, ReadFrameIdx};
 use dios::DirectIo;
 

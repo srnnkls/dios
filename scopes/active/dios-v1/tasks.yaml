@@ -1,6 +1,6 @@
 scope: dios-v1
 code: DIO
-next_id: 17
+next_id: 18
 tasks:
   - id: T001
     content: Scaffold the `dios` crate (skeleton, cfg backend selection, error types, alignment newtypes)
@@ -27,7 +27,21 @@ tasks:
     files: [src/backend/uring.rs]
     depends_on: [T002]
   - id: T005
-    content: Alloc-count harness + fault-injection tests (short read, EAGAIN, EINVAL alignment, fd exhaustion, drop-with-in-flight quiesce, close-with-in-flight deferred close, stale-generation FileId rejection, submit-while-poller-parked); no-sira-dependency (DIO-R1) is structural — separate repository. The ring path has no fault-injection seam (MockDriver drives only the eager-shaped poll): add an injectable mock RingExecutor feeding reap's sink with deterministic out-of-order/faulted CQEs, or record an explicit decision accepting real-IO-only ring fault coverage (batch-5 architecture review). Also owns the batch-5 follow-up ring pins: EXT_ARG-wait-outside-mutex, INV-3 submit-while-parked, deferred-close-through-the-ring on the now-forwarded Driver::poll_wait/close/is_closed. Consider newtyping user_data/fd_slot at the RingExecutor seam while reshaping it (deferred from batch 5)
+    content: >-
+      Alloc-count harness + fault-injection tests (short read, EAGAIN,
+      EINVAL alignment, fd exhaustion, drop-with-in-flight quiesce,
+      close-with-in-flight deferred close, stale-generation FileId
+      rejection, submit-while-poller-parked); no-sira-dependency (DIO-R1)
+      is structural — separate repository. The ring path has no
+      fault-injection seam (MockDriver drives only the eager-shaped poll):
+      add an injectable mock RingExecutor feeding reap's sink with
+      deterministic out-of-order/faulted CQEs, or record an explicit
+      decision accepting real-IO-only ring fault coverage (batch-5
+      architecture review). Also owns the batch-5 follow-up ring pins:
+      EXT_ARG-wait-outside-mutex, INV-3 submit-while-parked,
+      deferred-close-through-the-ring on the now-forwarded
+      Driver::poll_wait/close/is_closed. Consider newtyping user_data/fd_slot
+      at the RingExecutor seam while reshaping it (deferred from batch 5)
     status: done
     phase: crate-core
     files: [tests/zero_alloc.rs, tests/faults.rs]
@@ -51,7 +65,26 @@ tasks:
     files: [src/pool/miss.rs, benches/overlap.rs]
     depends_on: [T007, T004]
   - id: T009
-    content: Pool concurrency proofs — loom frame-state + EBR grace-period tests, zero-alloc gates on get/submit/poll, backpressure test (watermark-sized pool, all spare frames pinned). Also owns the CLOCK store-elision proof deferred from T006's test gate — a repeat hit on an already-set reference bit performs NO store (the DIO-G1 hot-path invariant); T006's unit test pins only the return-value contract, which an always-store impl satisfies. Batch-5 obligations — the loom suite must model the AD-4 lock/single-caller discipline advance()/advance_epoch() depend on (bare-store races are spurious otherwise) and explicitly exercise the publish/advance/evict store-buffer interleaving that the begin_pin SeqCst fence closes; the zero-alloc gate must include a close-during-drain case (deferred retire on the reap path). Also owns folding the InFlight->Free abort edge into FrameState::advance's legal table: the batch-6 adjudication wanted it folded, but the frozen batch-4 transition-matrix test (tests/pool.rs) pins that edge as must-panic — T009's tester amends the matrix to admit the abort edge, then the implementer routes abort_inflight through advance (the current documented bypass is sound but splits the legal-edge set)
+    content: >-
+      Pool concurrency proofs — loom frame-state + EBR grace-period tests,
+      zero-alloc gates on get/submit/poll, backpressure test
+      (watermark-sized pool, all spare frames pinned). Also owns the CLOCK
+      store-elision proof deferred from T006's test gate — a repeat hit on
+      an already-set reference bit performs NO store (the DIO-G1 hot-path
+      invariant); T006's unit test pins only the return-value contract,
+      which an always-store impl satisfies. Batch-5 obligations — the loom
+      suite must model the AD-4 lock/single-caller discipline
+      advance()/advance_epoch() depend on (bare-store races are spurious
+      otherwise) and explicitly exercise the publish/advance/evict
+      store-buffer interleaving that the begin_pin SeqCst fence closes; the
+      zero-alloc gate must include a close-during-drain case (deferred retire
+      on the reap path). Also owns folding the InFlight->Free abort edge into
+      FrameState::advance's legal table: the batch-6 adjudication wanted it
+      folded, but the frozen batch-4 transition-matrix test (tests/pool.rs)
+      pins that edge as must-panic — T009's tester amends the matrix to admit
+      the abort edge, then the implementer routes abort_inflight through
+      advance (the current documented bypass is sound but splits the
+      legal-edge set)
     status: done
     phase: pool
     files: [tests/loom_pool.rs, tests/zero_alloc.rs]
@@ -81,7 +114,37 @@ tasks:
     files: [sira/src/manifest.rs, sira/src/journal.rs]
     depends_on: [T012, T004]
   - id: T014
-    content: Linux gates — validate bench host first (Phase 3 entry gate; O_DIRECT probe green, protocol documented, fio QD64 random-read device floor recorded for the DIO-G3 lever), then strict parity (non-inferiority CI-upper-bound <= 1.02, block-fetch layer, decoded cache bypassed), RC-R2 scaling, overlap gate, write-plane A/B vs the RealFs baseline arm (DIO-G8), the scan-workload observation (sweep > pool size interleaved with point-gets; per-ReaderCtx hit/eviction counters recorded in measurements.md — S3-FIFO escalation evidence), and the FULL regression sweep on both platforms (DIO-G6 - poison oracles, laziness pins, routing contract, RC-R1..R3). BLOCKER carried from batch 6 (general review adjudication e): real-backend ring arena unification — the pool's Arc<Frames> becomes the uring registered fixed buffers (share_frames is a no-op on the real Driver today, so Pool<Driver> read routing is inert); when it lands, RingExecutor::push_read needs a destination-buffer-offset parameter and PoolBackend::submit_read for Driver must honor the reslice len — the current full-granule re-read would clobber the filled prefix and over-read past the extent bound (scope.md:601). The same unification eliminates the double allocation (PoolBuilder::build currently allocates both the pool Arc<Frames> and the Driver's private FrameSlab) and threads the frame-write offset through the seam; the parity/overlap gates CANNOT run until Pool<Driver>'s real read path fills the pool's own frames (batch-6 architecture review). TWO batch-7 additions: (a) the poll path and the quiescent-reader FIRST-pin warm-hit path gained a SeqCst fence in batch 7 (the loom-found grace-protocol fix) — all pre-batch-7 baselines are stale and the DIO-G1 parity + overlap characterization runs against fenced code; (b) touching begin_pin/advance_epoch/FrameState::advance/the PageTable seqlock requires updating src/pool/loom_model.rs and re-running the loom suite (the model holds real components but composes them itself — it drifts silently otherwise)
+    content: >-
+      Linux gates — validate bench host first (Phase 3 entry gate; O_DIRECT
+      probe green, protocol documented, fio QD64 random-read device floor
+      recorded for the DIO-G3 lever), then strict parity (non-inferiority
+      CI-upper-bound <= 1.02, block-fetch layer, decoded cache bypassed),
+      RC-R2 scaling, overlap gate, write-plane A/B vs the RealFs baseline arm
+      (DIO-G8), the scan-workload observation (sweep > pool size interleaved
+      with point-gets; per-ReaderCtx hit/eviction counters recorded in
+      measurements.md — S3-FIFO escalation evidence), and the FULL
+      regression sweep on both platforms (DIO-G6 - poison oracles, laziness
+      pins, routing contract, RC-R1..R3). BLOCKER carried from batch 6
+      (general review adjudication e): real-backend ring arena unification —
+      the pool's Arc<Frames> becomes the uring registered fixed buffers
+      (share_frames is a no-op on the real Driver today, so Pool<Driver> read
+      routing is inert); when it lands, RingExecutor::push_read needs a
+      destination-buffer-offset parameter and PoolBackend::submit_read for
+      Driver must honor the reslice len — the current full-granule re-read
+      would clobber the filled prefix and over-read past the extent bound
+      (scope.md:601). The same unification eliminates the double allocation
+      (PoolBuilder::build currently allocates both the pool Arc<Frames> and
+      the Driver's private FrameSlab) and threads the frame-write offset
+      through the seam; the parity/overlap gates CANNOT run until
+      Pool<Driver>'s real read path fills the pool's own frames (batch-6
+      architecture review). TWO batch-7 additions: (a) the poll path and the
+      quiescent-reader FIRST-pin warm-hit path gained a SeqCst fence in batch
+      7 (the loom-found grace-protocol fix) — all pre-batch-7 baselines are
+      stale and the DIO-G1 parity + overlap characterization runs against
+      fenced code; (b) touching begin_pin/advance_epoch/FrameState::advance/
+      the PageTable seqlock requires updating src/pool/loom_model.rs and
+      re-running the loom suite (the model holds real components but composes
+      them itself — it drifts silently otherwise)
     status: pending
     phase: sira-wiring
     files: [sira/benches/, scopes/draft/dios-v1/resources/measurements.md]
@@ -98,11 +161,100 @@ tasks:
     phase: crate-core
     files: [examples/api_fit_spike.rs]
     depends_on: [T002]
+  - id: T017
+    content: >-
+      Post-v1 Sira-fit Pool API (revision 10) — make Pool the crate-root
+      product while keeping the advanced leaf API under dios::driver.
+      ReaderCtx becomes lifetime-free Arc-backed !Send+!Sync and may
+      outlive Pool; PendingToken becomes lifetime-free affine/non-Clone
+      and Send (with Sync deliberately unspecified), owns Arc interest +
+      Pool identity, and resolves on a
+      destination thread through its ReaderCtx; FrameGuard stays borrowed
+      !Send+!Sync. Pool::get returns Result<Get<'_>,
+      GetError::StaleFile { page }. Add closed non-driver-alias root types
+      PoolWriteArena/PoolWriteSlot, PoolToken,
+      PoolCompletion::{Write,Fsync} with owned typed results,
+      PoolCompletionBatch, PoolSubmitError::{Full,StaleFile,ForeignPool},
+      root SyncMode, PollReport, PoolWakeHandle, and RetireStatus. Every
+      backend CQE is counted independently of caller batch capacity;
+      preallocated bounded overflow cannot starve private read routing,
+      epoch advancement, or reclamation, and a capacity-zero product batch
+      advances while retaining results for later exact delivery; each retained
+      result continues to occupy product-op capacity until caller delivery, and
+      each delivery releases exactly one slot. Add explicit
+      PoolBuilder::write_slots and max_inflight_product_ops capacities, both
+      defaulting to zero; the latter bounds admitted plus retained product
+      operations, and the shipping queue reserves the checked sum with
+      max_inflight_reads, reporting typed QueueCapacityOverflow. Prove the
+      positive shipping sum by admitting one cold read plus the full configured
+      product bound without polling, rejecting the next product operation, and
+      draining the exact read and write results. Delivered
+      results borrow no Pool. Foreign FileId submission is a programmer panic;
+      ForeignPool is the recoverable wrong-staging-slot error. poll_wait parks
+      outside control and shares a generation-safe
+      I/O/external-ingress wake source. The shipping backend integrates a
+      private wake primitive with its actual wait; an observation-only
+      ShippingWaitObservation under the existing non-default mock feature proves signal versus timeout
+      exit without releasing or shortening that wait. Under that feature,
+      MockWaitObservation exposes exactly five real-wait counters plus
+      wait_until_parked, and the Arc-backed MockPoolObservation exposes exactly
+      seven lifecycle counters that remain exact/readable after Pool drop; all
+      observations are read-only and non-gating. Distinct short and long idle
+      deadlines must produce disjoint elapsed brackets and exact cumulative
+      timeout counters. The mock uses one
+      chronological MockIoEvent recorder, including complete ReadAttempt
+      fields; frozen read/write attempt accessors are projections, not parallel
+      logs. Submit validation order is slot identity, file/driver identity,
+      generation/retirement, then capacity; a source-retired foreign FileId
+      presented to a saturated target still panics at foreign identity, with
+      RAII staging recovery. One Pool owns read/write/fsync;
+      per-file fsync reaches the backend only after preceding writes complete,
+      potentially across multiple bounded polls under adversarial lower-driver
+      scheduling; warmed submit/drain/retained-delivery paths allocate zero.
+      retire_file
+      closes get/write/fsync admission immediately and reaches idempotent
+      Retired only after admitted read/write/fsync ops, caller results,
+      pending/terminal tokens, guards, EBR frames, and fd close drain;
+      reused slots never revive stale generations. Migrate executable
+      epoch doctests (remove only ReaderCtx-cannot-outlive), all affected
+      tests, quickstart/API-fit/Gateway examples, and overlap/mmap benches
+      in the same GREEN change. RED A.5 and Phase C must clear before any
+      green/review claim.
+    status: pending
+    phase: sira-fit-api
+    files:
+      - src/lib.rs
+      - src/pool/mod.rs
+      - src/pool/epoch.rs
+      - src/pool/miss.rs
+      - src/pool/write_arena.rs
+      - src/driver.rs
+      - src/backend/eager.rs
+      - src/backend/uring.rs
+      - src/sync.rs
+      - src/completion.rs
+      - src/mock.rs
+      - tests/embedded_owner.rs
+      - tests/pool_progress.rs
+      - tests/pool_write.rs
+      - tests/pool_retire.rs
+      - tests/public_api.rs
+      - tests/guard_compile_fail.rs
+      - tests/miss.rs
+      - tests/real_pool.rs
+      - tests/zero_alloc.rs
+      - examples/api_fit_spike.rs
+      - examples/gateway_contract.rs
+      - examples/quickstart.rs
+      - benches/overlap.rs
+      - benches/mmap_warm_path.rs
+      - benches/mmap_tlb_pressure.rs
+    depends_on: [T002, T008, T009, T015]
 
 meta:
   created: 2026-07-07
-  last_updated: 2026-07-10
-  progress: 11/16
+  last_updated: 2026-07-20
+  progress: 11/17
   blocked_by: [sira-read-perf, sira-read-concurrency]
 
 phases:
@@ -114,3 +266,5 @@ phases:
     name: sira integration + gates (sira repository, dios as dependency)
   - id: nmnm-readiness
     name: nmnm API-fit proof
+  - id: sira-fit-api
+    name: Post-v1 Sira owner-loop product API

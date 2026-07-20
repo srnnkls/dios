@@ -41,6 +41,10 @@ impl Completion {
     pub fn result(&self) -> Result<u32, &IoError> {
         self.result.as_ref().map(|&bytes| bytes)
     }
+
+    pub(crate) fn into_parts(self) -> (OpToken, OpKind, Result<u32, IoError>) {
+        (self.token, self.kind, self.result)
+    }
 }
 
 /// A caller-owned, fixed-capacity buffer that `poll` drains completions into.
@@ -79,6 +83,10 @@ impl CompletionBatch {
 
     pub(crate) fn capacity(&self) -> usize {
         self.items.capacity()
+    }
+
+    pub(crate) fn pop(&mut self) -> Option<Completion> {
+        self.items.pop()
     }
 }
 

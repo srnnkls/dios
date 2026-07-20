@@ -213,10 +213,10 @@ fn resident_pool() -> (Pool<MockDriver>, dios::FileId) {
     (pool, file_id)
 }
 
-fn warm_all_pages(pool: &Pool<MockDriver>, reader: &ReaderCtx<'_>, file_id: dios::FileId) {
+fn warm_all_pages(pool: &Pool<MockDriver>, reader: &ReaderCtx, file_id: dios::FileId) {
     for idx in 0..RESIDENT_PAGES {
         let page = PageId::new(file_id, idx);
-        match pool.get(reader, page) {
+        match pool.get(reader, page).expect("the registered file is live") {
             Get::Pending(token) => {
                 drive_ready(pool, reader, token);
             }
@@ -228,8 +228,8 @@ fn warm_all_pages(pool: &Pool<MockDriver>, reader: &ReaderCtx<'_>, file_id: dios
 
 fn drive_ready<'pool>(
     pool: &'pool Pool<MockDriver>,
-    reader: &'pool ReaderCtx<'pool>,
-    token: PendingToken<'pool>,
+    reader: &'pool ReaderCtx,
+    token: PendingToken,
 ) {
     let mut token = token;
     for _ in 0..READY_POLLS_MAX {
@@ -268,7 +268,10 @@ fn main() {
         },
         || {
             let idx = next_index(&pool_cursor, &indices);
-            match pool.get(&reader, PageId::new(file_id, idx)) {
+            match pool
+                .get(&reader, PageId::new(file_id, idx))
+                .expect("the registered file is live")
+            {
                 Get::Hit(guard) => {
                     black_box(scan_granule(&guard));
                 }

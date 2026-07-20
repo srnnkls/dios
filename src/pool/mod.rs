@@ -12,11 +12,16 @@ use std::cell::Cell;
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::completion::CompletionBatch;
 use crate::driver::{Driver, FileHandle, FileId, OpKind, OpToken, MAX_FILES};
 use crate::error::{IoError, SubmitError};
 use crate::open::DirectIo;
+use crate::product::{
+    LifecycleCounters, PollReport, PoolCompletion, PoolCompletionBatch, PoolSubmitError, PoolToken,
+    PoolWakeHandle, PoolWriteArena, PoolWriteSlot, RetireStatus, WaitState,
+};
 use crate::sync::{AtomicU64, Mutex, MutexGuard, Ordering};
 
 #[cfg(test)]
@@ -30,7 +35,7 @@ mod miss;
 mod table;
 pub(crate) mod write_arena;
 
-use epoch::{advance_epoch, EvictQueue, ReaderSlot};
+use epoch::{advance_epoch, EvictQueue, ReaderRegistry};
 use miss::{MissEntry, MissInterests, MissOutcome, MissSlot, MissTable};
 
 pub use clock::Clock;
@@ -93,10 +98,27 @@ pub enum Get<'pool> {
     /// The extent is resident and borrowed for the guard lifetime.
     Hit(FrameGuard<'pool>),
     /// One read is in flight; the token can be checked with [`Pool::ready`].
-    Pending(PendingToken<'pool>),
+    Pending(PendingToken),
     /// No frame can be admitted within the bounded reclaim pass.
     Busy,
 }
+
+/// Expected refusal of a residency lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GetError {
+    /// The file generation is retired or has been replaced.
+    StaleFile { page: PageId },
+}
+
+impl std::fmt::Display for GetError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StaleFile { page } => write!(f, "stale file for page {page:?}"),
+        }
+    }
+}
+
+impl std::error::Error for GetError {}
 
 /// Re-check outcome of a pending miss: `NotYet` hands the token back for a
 /// non-consuming poll-again; `Err` frees the frame and surfaces the failure.
@@ -105,7 +127,7 @@ pub enum ReadyResult<'pool> {
     /// The read completed and the extent is now borrowed.
     Ready(FrameGuard<'pool>),
     /// The read remains in flight and returns its waiter token.
-    NotYet(PendingToken<'pool>),
+    NotYet(PendingToken),
     /// The read failed and its frame was returned to the pool.
     Err(IoError),
 }
@@ -114,26 +136,30 @@ pub enum ReadyResult<'pool> {
 /// interest only — the in-flight read still completes and the page becomes
 /// resident. Minted only by the pool's miss path.
 #[derive(Debug)]
-pub struct PendingToken<'pool> {
+pub struct PendingToken {
     page: PageId,
     slot: MissSlot,
     generation: NonZeroU64,
-    interests: &'pool MissInterests,
+    interests: Arc<MissInterests>,
+    lifecycle: Arc<LifecycleCounters>,
     active: bool,
 }
 
-impl<'pool> PendingToken<'pool> {
+impl PendingToken {
     fn new(
         page: PageId,
         slot: MissSlot,
         generation: NonZeroU64,
-        interests: &'pool MissInterests,
+        interests: Arc<MissInterests>,
+        lifecycle: Arc<LifecycleCounters>,
     ) -> Self {
+        lifecycle.register_pending();
         Self {
             page,
             slot,
             generation,
             interests,
+            lifecycle,
             active: true,
         }
     }
@@ -147,15 +173,17 @@ impl<'pool> PendingToken<'pool> {
     fn consume(mut self) -> u32 {
         let remaining = self.interests.release(self.slot, self.generation);
         self.active = false;
+        self.lifecycle.release_pending();
         remaining
     }
 }
 
-impl Drop for PendingToken<'_> {
+impl Drop for PendingToken {
     fn drop(&mut self) {
         if self.active {
             self.interests.release(self.slot, self.generation);
             self.active = false;
+            self.lifecycle.release_pending();
         }
     }
 }
@@ -191,6 +219,11 @@ pub enum PoolConfigError {
         /// Minimum sector size.
         sector: u32,
     },
+    /// Read and product queue reservations overflowed their fixed u32 bound.
+    QueueCapacityOverflow {
+        max_inflight_reads: u32,
+        max_inflight_product_ops: u32,
+    },
 }
 
 impl std::fmt::Display for PoolConfigError {
@@ -216,6 +249,13 @@ impl std::fmt::Display for PoolConfigError {
             Self::GranuleBelowSector { granule, sector } => {
                 write!(f, "granule {granule} below the sector floor {sector}")
             }
+            Self::QueueCapacityOverflow {
+                max_inflight_reads,
+                max_inflight_product_ops,
+            } => write!(
+                f,
+                "read capacity {max_inflight_reads} plus product capacity {max_inflight_product_ops} overflows"
+            ),
         }
     }
 }
@@ -320,6 +360,8 @@ pub struct PoolBuilder {
     peak_guards_per_reader: u32,
     max_inflight_reads: u32,
     miss_headroom: u32,
+    write_slots: u32,
+    max_inflight_product_ops: u32,
 }
 
 impl Default for PoolBuilder {
@@ -331,6 +373,8 @@ impl Default for PoolBuilder {
             peak_guards_per_reader: 0,
             max_inflight_reads: 0,
             miss_headroom: 0,
+            write_slots: 0,
+            max_inflight_product_ops: 0,
         }
     }
 }
@@ -378,8 +422,32 @@ impl PoolBuilder {
         self
     }
 
+    /// Sets the exact number of product write staging slots.
+    #[must_use]
+    pub fn write_slots(mut self, write_slots: u32) -> Self {
+        self.write_slots = write_slots;
+        self
+    }
+
+    /// Sets the total admitted plus retained product-operation bound.
+    #[must_use]
+    pub fn max_inflight_product_ops(mut self, operations: u32) -> Self {
+        self.max_inflight_product_ops = operations;
+        self
+    }
+
     /// Validates the granule and the deadlock-freedom watermark (INV-9).
     fn validate(self) -> Result<(), PoolConfigError> {
+        if self
+            .max_inflight_reads
+            .checked_add(self.max_inflight_product_ops)
+            .is_none()
+        {
+            return Err(PoolConfigError::QueueCapacityOverflow {
+                max_inflight_reads: self.max_inflight_reads,
+                max_inflight_product_ops: self.max_inflight_product_ops,
+            });
+        }
         if !self.granule.is_power_of_two() {
             return Err(PoolConfigError::GranuleNotPowerOfTwo {
                 granule: self.granule,
@@ -425,13 +493,22 @@ impl PoolBuilder {
     /// `miss_headroom` below `3 × max_inflight_reads`, or a `frame_count` below
     /// the watermark `max_concurrent_readers × peak_guards_per_reader +
     /// miss_headroom` (INV-9).
+    ///
+    /// # Panics
+    ///
+    /// If internally validated capacities are changed before driver construction.
     pub fn build(self) -> Result<Pool<Driver>, PoolBuildError> {
         self.validate().map_err(PoolBuildError::Configuration)?;
         let frames = Arc::new(Frames::preallocated(self.frame_count, self.granule));
         let driver = Driver::builder()
             .frames(self.frame_count)
             .frame_bytes(self.granule)
-            .queue_capacity(self.max_inflight_reads.max(1))
+            .queue_capacity(
+                self.max_inflight_reads
+                    .saturating_add(self.max_inflight_product_ops)
+                    .max(1),
+            )
+            .write_slots(self.write_slots.max(1))
             .build_with_frames(Arc::clone(&frames))
             .map_err(PoolBuildError::Driver)?;
         Ok(Pool::preallocated(self, driver, frames))
@@ -464,8 +541,65 @@ struct Control {
     evict_queue: EvictQueue,
     miss: MissTable,
     frame_pages: Box<[Option<PageId>]>,
-    files: Box<[Option<FileHandle>]>,
+    files: Box<[Option<PoolFile>]>,
     batch: CompletionBatch,
+    product_ops: Box<[ProductOpSlot]>,
+    product_sequence: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PoolFileState {
+    Live,
+    Retiring,
+    Retired,
+}
+
+#[derive(Debug)]
+struct PoolFile {
+    id: FileId,
+    handle: Option<FileHandle>,
+    state: PoolFileState,
+}
+
+#[derive(Debug)]
+struct ProductOpSlot {
+    generation: u32,
+    operation: Option<ProductOp>,
+}
+
+#[derive(Debug)]
+enum ProductOp {
+    Write {
+        token: PoolToken,
+        driver_token: OpToken,
+        file: FileId,
+        order: u64,
+    },
+    FsyncHeld {
+        token: PoolToken,
+        file: FileId,
+        order: u64,
+    },
+    Fsync {
+        token: PoolToken,
+        driver_token: OpToken,
+        file: FileId,
+    },
+    Completed {
+        file: FileId,
+        completion: PoolCompletion,
+    },
+}
+
+impl ProductOp {
+    fn file(&self) -> FileId {
+        match self {
+            Self::Write { file, .. }
+            | Self::FsyncHeld { file, .. }
+            | Self::Fsync { file, .. }
+            | Self::Completed { file, .. } => *file,
+        }
+    }
 }
 
 /// The userspace frame pool: preallocated frames shared with the composed driver,
@@ -493,13 +627,18 @@ pub struct Pool<D = Driver> {
     table: PageTable,
     clock: Clock,
     global_epoch: AtomicU64,
-    slots: Box<[ReaderSlot]>,
-    miss_interests: MissInterests,
+    readers: Arc<ReaderRegistry>,
+    miss_interests: Arc<MissInterests>,
+    lifecycle: Arc<LifecycleCounters>,
+    wake: Arc<WaitState>,
+    wait_batch: Mutex<CompletionBatch>,
     control: Mutex<Control>,
     driver: D,
     granule: u32,
     frame_count: u32,
     max_concurrent_readers: u32,
+    write_slots: u32,
+    identity: u64,
 }
 
 impl Pool<Driver> {
@@ -526,28 +665,50 @@ impl<D: PoolBackend> Pool<D> {
             config.granule,
             "pool and arena sizes match"
         );
-        let slots = (0..config.max_concurrent_readers)
-            .map(|_| ReaderSlot::vacant())
-            .collect();
+        let lifecycle = Arc::new(LifecycleCounters::default());
+        let readers = Arc::new(ReaderRegistry::with_capacity(
+            config.max_concurrent_readers,
+            Arc::clone(&lifecycle),
+        ));
+        let wake = Arc::new(WaitState::default());
+        let pool_identity = driver.identity();
+        driver.attach_pool_state(Arc::clone(&lifecycle), Arc::clone(&wake));
+        let backend_capacity = config
+            .max_inflight_reads
+            .checked_add(config.max_inflight_product_ops)
+            .expect("validated queue capacity")
+            .max(1) as usize;
         let control = Control {
             evict_queue: EvictQueue::with_capacity(config.frame_count),
             miss: MissTable::with_capacity(config.frame_count),
             frame_pages: (0..config.frame_count).map(|_| None).collect(),
             files: (0..MAX_FILES).map(|_| None).collect(),
-            batch: CompletionBatch::with_capacity(config.frame_count as usize),
+            batch: CompletionBatch::with_capacity(backend_capacity),
+            product_ops: (0..config.max_inflight_product_ops)
+                .map(|_| ProductOpSlot {
+                    generation: 0,
+                    operation: None,
+                })
+                .collect(),
+            product_sequence: 0,
         };
         Self {
             frames,
             table: PageTable::with_frame_count(config.frame_count),
             clock: Clock::with_frame_count(config.frame_count),
             global_epoch: AtomicU64::new(0),
-            slots,
-            miss_interests: MissInterests::with_capacity(config.frame_count),
+            readers,
+            miss_interests: Arc::new(MissInterests::with_capacity(config.frame_count)),
+            lifecycle,
+            wake,
+            wait_batch: Mutex::new(CompletionBatch::with_capacity(backend_capacity)),
             control: Mutex::new(control),
             driver,
             granule: config.granule,
             frame_count: config.frame_count,
             max_concurrent_readers: config.max_concurrent_readers,
+            write_slots: config.write_slots,
+            identity: pool_identity,
         }
     }
 
@@ -555,6 +716,16 @@ impl<D: PoolBackend> Pool<D> {
     #[must_use]
     pub(crate) fn driver_internal(&self) -> &D {
         &self.driver
+    }
+
+    #[cfg(feature = "mock")]
+    pub(crate) fn lifecycle_internal(&self) -> Arc<LifecycleCounters> {
+        Arc::clone(&self.lifecycle)
+    }
+
+    #[cfg(feature = "mock")]
+    pub(crate) fn wait_internal(&self) -> Arc<WaitState> {
+        Arc::clone(&self.wake)
     }
 
     #[cfg(not(loom))]
@@ -569,19 +740,28 @@ impl<D: PoolBackend> Pool<D> {
         self.control.lock().expect("loom mutex is never poisoned")
     }
 
+    #[cfg(not(loom))]
+    fn wait_batch(&self) -> MutexGuard<'_, CompletionBatch> {
+        self.wait_batch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[cfg(loom)]
+    fn wait_batch(&self) -> MutexGuard<'_, CompletionBatch> {
+        self.wait_batch
+            .lock()
+            .expect("loom mutex is never poisoned")
+    }
+
     /// Claims a reader registration slot.
     ///
     /// # Errors
     ///
     /// [`RegisterError::AtCapacity`] once `max_concurrent_readers` slots are
     /// held — registration beyond capacity fails rather than deadlocking.
-    pub fn register_reader(&self) -> Result<ReaderCtx<'_>, RegisterError> {
-        for slot in &self.slots {
-            if slot.try_occupy() {
-                return Ok(ReaderCtx::new(slot, &self.global_epoch));
-            }
-        }
-        Err(RegisterError::AtCapacity {
+    pub fn register_reader(&self) -> Result<ReaderCtx, RegisterError> {
+        self.readers.register().ok_or(RegisterError::AtCapacity {
             max_concurrent_readers: self.max_concurrent_readers,
         })
     }
@@ -590,7 +770,12 @@ impl<D: PoolBackend> Pool<D> {
     /// page issue against `fd` at `granule_idx × granule`.
     pub(crate) fn register_file_internal(&self, fd: FileHandle) {
         let slot = fd.file_id().slot() as usize;
-        self.control().files[slot] = Some(fd);
+        let id = fd.file_id();
+        self.control().files[slot] = Some(PoolFile {
+            id,
+            handle: Some(fd),
+            state: PoolFileState::Live,
+        });
     }
 
     /// Opens a data file and registers its owned handle with this pool.
@@ -608,9 +793,28 @@ impl<D: PoolBackend> Pool<D> {
     /// Residency lookup: a warm hit borrows the frame; a miss submits a singleflight
     /// read (or joins one in flight); no evictable frame after one bounded reclaim
     /// attempt is `Busy`.
-    pub fn get<'pool>(&'pool self, reader: &'pool ReaderCtx<'pool>, page: PageId) -> Get<'pool> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GetError::StaleFile`] for a retired or reused file generation.
+    ///
+    /// # Panics
+    ///
+    /// If `reader` or the page's file identity belongs to another pool.
+    pub fn get<'pool>(
+        &'pool self,
+        reader: &'pool ReaderCtx,
+        page: PageId,
+    ) -> Result<Get<'pool>, GetError> {
+        self.assert_reader_owner(reader);
+        {
+            let control = self.control();
+            if !file_is_live(&control.files, page.file(), self.identity) {
+                return Err(GetError::StaleFile { page });
+            }
+        }
         if let Some(guard) = self.pin_internal(reader, page) {
-            return Get::Hit(guard);
+            return Ok(Get::Hit(guard));
         }
         let mut control = self.control();
         let _ = registered_file(&control.files, page);
@@ -620,40 +824,43 @@ impl<D: PoolBackend> Pool<D> {
             .is_some_and(|frame| self.frames.state(frame) == FrameState::Resident)
         {
             drop(control);
-            return match self.pin_internal(reader, page) {
+            return Ok(match self.pin_internal(reader, page) {
                 Some(guard) => Get::Hit(guard),
                 None => Get::Busy,
-            };
+            });
         }
         if let Some(index) = control.miss.find_pending(page) {
             let (slot, generation) = control.miss.join(index, &self.miss_interests);
-            return Get::Pending(PendingToken::new(
+            return Ok(Get::Pending(PendingToken::new(
                 page,
                 slot,
                 generation,
-                &self.miss_interests,
-            ));
+                Arc::clone(&self.miss_interests),
+                Arc::clone(&self.lifecycle),
+            )));
         }
         let Some(miss_slot) = control.miss.admission_slot(&self.miss_interests) else {
-            return Get::Busy;
+            return Ok(Get::Busy);
         };
         let Some(frame) = self.claim_frame(&mut control) else {
-            return Get::Busy;
+            return Ok(Get::Busy);
         };
         self.frames.advance(frame, FrameState::InFlight);
         let Ok(token) = self.submit_page_read(&control, page, frame, 0) else {
             self.frames.abort_inflight(frame);
-            return Get::Busy;
+            return Ok(Get::Busy);
         };
         let generation = control
             .miss
             .admit(miss_slot, page, frame, token, &self.miss_interests);
-        Get::Pending(PendingToken::new(
+        self.wake.wake();
+        Ok(Get::Pending(PendingToken::new(
             page,
             miss_slot,
             generation,
-            &self.miss_interests,
-        ))
+            Arc::clone(&self.miss_interests),
+            Arc::clone(&self.lifecycle),
+        )))
     }
 
     /// Re-checks a pending miss: `Ready` once its page is resident, `Err` on a
@@ -666,12 +873,12 @@ impl<D: PoolBackend> Pool<D> {
     /// live miss generation.
     pub fn ready<'pool>(
         &'pool self,
-        reader: &'pool ReaderCtx<'pool>,
-        token: PendingToken<'pool>,
+        reader: &'pool ReaderCtx,
+        token: PendingToken,
     ) -> ReadyResult<'pool> {
         self.assert_reader_owner(reader);
         assert!(
-            std::ptr::eq(token.interests, &raw const self.miss_interests),
+            Arc::ptr_eq(&token.interests, &self.miss_interests),
             "a pending capability cannot cross pool identity"
         );
         let mut control = self.control();
@@ -714,14 +921,325 @@ impl<D: PoolBackend> Pool<D> {
         }
     }
 
+    /// Borrows this pool's closed product staging arena.
+    #[must_use]
+    pub fn write_arena(&self) -> PoolWriteArena<'_> {
+        PoolWriteArena {
+            state: self.driver.write_arena_state(),
+            pool_identity: self.identity,
+            enabled_slots: self.write_slots,
+        }
+    }
+
+    /// Admits a positional product write without blocking.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged slot with [`PoolSubmitError`] on fixed-capacity,
+    /// stale-file, or foreign-slot refusal.
+    ///
+    /// # Panics
+    ///
+    /// If `file` belongs to another pool, or the operation generation exhausts.
+    pub fn submit_write<'pool>(
+        &'pool self,
+        file: FileId,
+        slot: PoolWriteSlot<'pool>,
+        offset: u64,
+    ) -> Result<PoolToken, (PoolSubmitError, PoolWriteSlot<'pool>)> {
+        if slot.pool_identity != self.identity {
+            return Err((PoolSubmitError::ForeignPool, slot));
+        }
+        let mut control = self.control();
+        let handle = match live_file_handle(&control.files, file, self.identity) {
+            Ok(handle) => handle,
+            Err(error) => return Err((error, slot)),
+        };
+        let Some(index) = control
+            .product_ops
+            .iter()
+            .position(|entry| entry.operation.is_none())
+        else {
+            return Err((PoolSubmitError::Full, slot));
+        };
+        let PoolWriteSlot {
+            slot,
+            pool_identity,
+        } = slot;
+        let driver_token = match self.driver.submit_write(handle, slot, offset) {
+            Ok(token) => token,
+            Err((SubmitError::Full, slot)) => {
+                return Err((
+                    PoolSubmitError::Full,
+                    PoolWriteSlot {
+                        slot,
+                        pool_identity,
+                    },
+                ));
+            }
+            Err((SubmitError::StaleHandle, slot)) => {
+                return Err((
+                    PoolSubmitError::StaleFile { file },
+                    PoolWriteSlot {
+                        slot,
+                        pool_identity,
+                    },
+                ));
+            }
+        };
+        control.product_sequence = control
+            .product_sequence
+            .checked_add(1)
+            .expect("product submission order exhausted before wraparound");
+        let order = control.product_sequence;
+        let product_slot = &mut control.product_ops[index];
+        product_slot.generation = product_slot
+            .generation
+            .checked_add(1)
+            .expect("product operation generation exhausted before ABA");
+        let token = PoolToken::new(
+            u32::try_from(index).expect("product op table indexes by u32"),
+            product_slot.generation,
+        );
+        product_slot.operation = Some(ProductOp::Write {
+            token,
+            driver_token,
+            file,
+            order,
+        });
+        self.wake.wake();
+        Ok(token)
+    }
+
+    /// Admits a durability barrier, withholding it behind prior writes to the
+    /// same file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PoolSubmitError::Full`] at fixed capacity or
+    /// [`PoolSubmitError::StaleFile`] for a retired generation.
+    ///
+    /// # Panics
+    ///
+    /// If `file` belongs to another pool, or the operation generation exhausts.
+    pub fn submit_fsync(
+        &self,
+        file: FileId,
+        mode: crate::driver::SyncMode,
+    ) -> Result<PoolToken, PoolSubmitError> {
+        let crate::driver::SyncMode::Full = mode;
+        let mut control = self.control();
+        let _ = live_file_handle(&control.files, file, self.identity)?;
+        let Some(index) = control
+            .product_ops
+            .iter()
+            .position(|entry| entry.operation.is_none())
+        else {
+            return Err(PoolSubmitError::Full);
+        };
+        control.product_sequence = control
+            .product_sequence
+            .checked_add(1)
+            .expect("product submission order exhausted before wraparound");
+        let order = control.product_sequence;
+        let product_slot = &mut control.product_ops[index];
+        product_slot.generation = product_slot
+            .generation
+            .checked_add(1)
+            .expect("product operation generation exhausted before ABA");
+        let token = PoolToken::new(
+            u32::try_from(index).expect("product op table indexes by u32"),
+            product_slot.generation,
+        );
+        product_slot.operation = Some(ProductOp::FsyncHeld { token, file, order });
+        self.submit_held_fsyncs(&mut control);
+        self.wake.wake();
+        Ok(token)
+    }
+
+    /// Drains and routes backend completions, advances reclamation, and delivers
+    /// as many owned product results as the caller batch can hold.
+    ///
+    /// # Panics
+    ///
+    /// If a backend completion violates its admitted identity or capacity.
+    pub fn poll_report(&self, out: &mut PoolCompletionBatch) -> PollReport {
+        out.reset();
+        let mut control = self.control();
+        let backend = self.drain_completions(&mut control);
+        let reclaimed = self.advance_and_reclaim(&mut control);
+        Self::deliver_product_completions(&mut control, out);
+        self.progress_retirements(&mut control);
+        if backend > 0 || reclaimed > 0 || out.iter().next().is_some() {
+            self.wake.consume_current();
+        }
+        PollReport::new(
+            backend,
+            u32::try_from(reclaimed).expect("reclaimed frame count fits u32"),
+        )
+    }
+
+    /// Waits for I/O or external owner-loop ingress, then performs one truthful
+    /// progress pass. The wait latch is independent of the pool control mutex.
+    ///
+    /// # Panics
+    ///
+    /// If a backend completion violates its admitted identity or capacity.
+    pub fn poll_wait(&self, out: &mut PoolCompletionBatch, timeout: Duration) -> PollReport {
+        let report = self.poll_report(out);
+        if report.backend_completions() > 0
+            || report.reclaimed_frames() > 0
+            || out.iter().next().is_some()
+        {
+            return report;
+        }
+        let mut waited = self.wait_batch();
+        let backend = self.driver.poll_wait(&mut waited, timeout);
+        let mut control = self.control();
+        while let Some(completion) = waited.pop() {
+            control.batch.push(completion);
+        }
+        drop(waited);
+        self.route_completion_batch(&mut control);
+        let reclaimed = self.advance_and_reclaim(&mut control);
+        Self::deliver_product_completions(&mut control, out);
+        self.progress_retirements(&mut control);
+        if backend > 0 || reclaimed > 0 || out.iter().next().is_some() {
+            self.wake.consume_current();
+        }
+        PollReport::new(
+            u32::try_from(backend).expect("backend completion count fits u32"),
+            u32::try_from(reclaimed).expect("reclaimed frame count fits u32"),
+        )
+    }
+
+    /// Clones the thread-safe external ingress wake capability.
+    #[must_use]
+    pub fn wake_handle(&self) -> PoolWakeHandle {
+        PoolWakeHandle {
+            state: Arc::clone(&self.wake),
+        }
+    }
+
+    /// Starts or advances typed file retirement.
+    ///
+    /// # Panics
+    ///
+    /// If `file` belongs to another pool.
+    pub fn retire_file(&self, file: FileId) -> RetireStatus {
+        assert_eq!(
+            file.driver(),
+            self.identity,
+            "file identity used with a foreign pool"
+        );
+        let mut control = self.control();
+        let index = file.slot() as usize;
+        let Some(entry) = control.files[index].as_mut() else {
+            return RetireStatus::Retired;
+        };
+        if entry.id != file {
+            return RetireStatus::Retired;
+        }
+        if entry.state == PoolFileState::Retired {
+            return RetireStatus::Retired;
+        }
+        let started = entry.state == PoolFileState::Live;
+        entry.state = PoolFileState::Retiring;
+        self.progress_retirements(&mut control);
+        if started {
+            RetireStatus::Retiring
+        } else if control.files[index]
+            .as_ref()
+            .is_some_and(|entry| entry.state == PoolFileState::Retired)
+        {
+            RetireStatus::Retired
+        } else {
+            RetireStatus::Retiring
+        }
+    }
+
+    fn deliver_product_completions(control: &mut Control, out: &mut PoolCompletionBatch) {
+        for slot in &mut control.product_ops {
+            if out.remaining() == 0 {
+                break;
+            }
+            let Some(operation) = slot.operation.take() else {
+                continue;
+            };
+            match operation {
+                ProductOp::Completed { completion, .. } => out.push(completion),
+                operation => slot.operation = Some(operation),
+            }
+        }
+    }
+
+    fn progress_retirements(&self, control: &mut Control) {
+        for index in 0..control.files.len() {
+            let Some(file) = control.files[index]
+                .as_ref()
+                .filter(|entry| entry.state == PoolFileState::Retiring)
+                .map(|entry| entry.id)
+            else {
+                continue;
+            };
+            self.retire_file_frames(control, file);
+            let miss_live = control.miss.has_live_for_file(file, &self.miss_interests);
+            let frames_live = control.frame_pages.iter().enumerate().any(|(frame, page)| {
+                page.is_some_and(|page| page.file() == file)
+                    && self.frames.state(ReadFrameIdx::new(
+                        u32::try_from(frame).expect("frame index fits u32"),
+                    )) != FrameState::Free
+            });
+            let product_live = control.product_ops.iter().any(|slot| {
+                slot.operation
+                    .as_ref()
+                    .is_some_and(|operation| operation.file() == file)
+            });
+            if !miss_live && !frames_live && !product_live {
+                let entry = control.files[index]
+                    .as_mut()
+                    .expect("the retiring file remains registered");
+                if let Some(handle) = entry.handle.take() {
+                    self.driver.close(handle);
+                }
+                if self.driver.is_closed(file) {
+                    entry.state = PoolFileState::Retired;
+                }
+            }
+        }
+    }
+
+    fn retire_file_frames(&self, control: &mut Control, file: FileId) {
+        let epoch = self.global_epoch.load(Ordering::Acquire);
+        for index in 0..control.frame_pages.len() {
+            let Some(page) = control.frame_pages[index] else {
+                continue;
+            };
+            if page.file() != file {
+                continue;
+            }
+            let frame = ReadFrameIdx::new(u32::try_from(index).expect("frame index fits u32"));
+            if self.frames.state(frame) != FrameState::Resident {
+                continue;
+            }
+            if !control.miss.prepare_eviction(frame, &self.miss_interests) {
+                continue;
+            }
+            let _ = self.table.remove_shared(page);
+            self.frames.advance(frame, FrameState::Evicting);
+            control.evict_queue.push(frame, epoch);
+        }
+    }
+
     /// The poll-boundary pass: drain the driver's completions (routing each into
     /// its frame, reslicing a short read, or failing the miss), then advance the
     /// global epoch and reclaim matured `Evicting` frames. Returns the number
     /// reclaimed.
     pub fn poll(&self) -> usize {
         let mut control = self.control();
-        self.drain_completions(&mut control);
+        let _ = self.drain_completions(&mut control);
         let reclaimed = self.advance_and_reclaim(&mut control);
+        self.progress_retirements(&mut control);
         debug_assert!(
             reclaimed <= self.frame_count as usize,
             "a poll reclaims at most every frame"
@@ -741,7 +1259,7 @@ impl<D: PoolBackend> Pool<D> {
     /// than handing back reclaimable bytes.
     pub(crate) fn pin_internal<'ctx>(
         &'ctx self,
-        reader: &'ctx ReaderCtx<'_>,
+        reader: &'ctx ReaderCtx,
         page: PageId,
     ) -> Option<FrameGuard<'ctx>> {
         self.assert_reader_owner(reader);
@@ -750,7 +1268,7 @@ impl<D: PoolBackend> Pool<D> {
 
     fn pin_owned<'ctx>(
         &'ctx self,
-        reader: &'ctx ReaderCtx<'_>,
+        reader: &'ctx ReaderCtx,
         page: PageId,
     ) -> Option<FrameGuard<'ctx>> {
         let slot = reader.slot();
@@ -770,9 +1288,9 @@ impl<D: PoolBackend> Pool<D> {
         Some(FrameGuard::new(self.frames.frame_bytes(frame), slot))
     }
 
-    fn assert_reader_owner(&self, reader: &ReaderCtx<'_>) {
+    fn assert_reader_owner(&self, reader: &ReaderCtx) {
         assert!(
-            reader.belongs_to(&self.global_epoch),
+            reader.belongs_to(&self.readers),
             "a reader capability cannot cross pool identity"
         );
     }
@@ -822,7 +1340,6 @@ impl<D: PoolBackend> Pool<D> {
             "the control lock keeps the eviction mapping stable"
         );
         self.frames.advance(frame, FrameState::Evicting);
-        control.frame_pages[frame.get() as usize] = None;
         control
             .evict_queue
             .push(frame, self.global_epoch.load(Ordering::Acquire));
@@ -862,7 +1379,7 @@ impl<D: PoolBackend> Pool<D> {
         if let Some(frame) = self.first_free_frame() {
             return Some(frame);
         }
-        self.drain_completions(control);
+        let _ = self.drain_completions(control);
         self.advance_and_reclaim(control);
         if let Some(frame) = self.first_free_frame() {
             return Some(frame);
@@ -882,7 +1399,7 @@ impl<D: PoolBackend> Pool<D> {
             if !control.miss.prepare_eviction(victim, &self.miss_interests) {
                 continue;
             }
-            if let Some(page) = control.frame_pages[victim.get() as usize].take() {
+            if let Some(page) = control.frame_pages[victim.get() as usize] {
                 self.table.remove_shared(page);
             }
             self.frames.advance(victim, FrameState::Evicting);
@@ -891,42 +1408,52 @@ impl<D: PoolBackend> Pool<D> {
         }
     }
 
-    fn drain_completions(&self, control: &mut Control) {
-        self.driver.poll(&mut control.batch);
-        let Control {
-            batch,
-            miss,
-            frame_pages,
-            files,
-            ..
-        } = control;
-        for completion in batch.iter() {
-            if completion.kind() != OpKind::Read {
+    fn drain_completions(&self, control: &mut Control) -> u32 {
+        let drained = self.driver.poll(&mut control.batch);
+        self.route_completion_batch(control);
+        u32::try_from(drained).expect("backend completion count fits u32")
+    }
+
+    fn route_completion_batch(&self, control: &mut Control) {
+        while let Some(completion) = control.batch.pop() {
+            let (driver_token, kind, result) = completion.into_parts();
+            if kind != OpKind::Read {
+                Self::finish_product_completion(control, driver_token, kind, result);
                 continue;
             }
-            let Some(index) = miss.find_by_token(completion.token()) else {
+            let Some(index) = control.miss.find_by_token(driver_token) else {
                 continue;
             };
-            let entry = miss.entry(index);
-            match completion.result() {
+            let entry = control.miss.entry(index);
+            match result {
                 Ok(0) => {
-                    self.drain_completions_finish_failure(miss, index, entry, SHORT_READ_EOF_ERRNO);
+                    self.drain_completions_finish_failure(
+                        &mut control.miss,
+                        index,
+                        entry,
+                        SHORT_READ_EOF_ERRNO,
+                    );
                 }
                 Ok(bytes) => {
                     let filled = entry.filled() + bytes;
                     if filled >= self.granule {
-                        self.drain_completions_finish_success(miss, frame_pages, index, entry);
+                        self.drain_completions_finish_success(
+                            &mut control.miss,
+                            &mut control.frame_pages,
+                            index,
+                            entry,
+                        );
                     } else {
                         let (offset, len) = read_span(entry.page(), self.granule, filled);
-                        let fd = registered_file(files, entry.page());
+                        let fd = registered_file(&control.files, entry.page());
                         if let Ok(token) =
                             self.driver
                                 .submit_read(fd, entry.frame(), offset, filled, len)
                         {
-                            miss.advance_remainder(index, filled, token);
+                            control.miss.advance_remainder(index, filled, token);
                         } else {
                             self.drain_completions_finish_failure(
-                                miss,
+                                &mut control.miss,
                                 index,
                                 entry,
                                 SHORT_READ_EOF_ERRNO,
@@ -936,7 +1463,94 @@ impl<D: PoolBackend> Pool<D> {
                 }
                 Err(err) => {
                     let errno = err.raw_os_error().unwrap_or(SHORT_READ_EOF_ERRNO);
-                    self.drain_completions_finish_failure(miss, index, entry, errno);
+                    self.drain_completions_finish_failure(&mut control.miss, index, entry, errno);
+                }
+            }
+        }
+        self.submit_held_fsyncs(control);
+    }
+
+    fn finish_product_completion(
+        control: &mut Control,
+        driver_token: OpToken,
+        kind: OpKind,
+        result: Result<u32, IoError>,
+    ) {
+        let slot = control
+            .product_ops
+            .iter_mut()
+            .find(|slot| {
+                slot.operation
+                    .as_ref()
+                    .is_some_and(|operation| match operation {
+                        ProductOp::Write {
+                            driver_token: expected,
+                            ..
+                        }
+                        | ProductOp::Fsync {
+                            driver_token: expected,
+                            ..
+                        } => *expected == driver_token,
+                        ProductOp::FsyncHeld { .. } | ProductOp::Completed { .. } => false,
+                    })
+            })
+            .expect("every product backend completion names an admitted operation");
+        let operation = slot.operation.take().expect("the product slot is occupied");
+        slot.operation = Some(match (operation, kind) {
+            (ProductOp::Write { token, file, .. }, OpKind::Write) => ProductOp::Completed {
+                file,
+                completion: PoolCompletion::Write { token, result },
+            },
+            (ProductOp::Fsync { token, file, .. }, OpKind::Fsync) => ProductOp::Completed {
+                file,
+                completion: PoolCompletion::Fsync {
+                    token,
+                    result: result.map(|_| ()),
+                },
+            },
+            _ => panic!("product completion kind matches its admitted operation"),
+        });
+    }
+
+    fn submit_held_fsyncs(&self, control: &mut Control) {
+        for index in 0..control.product_ops.len() {
+            let Some(ProductOp::FsyncHeld { token, file, order }) =
+                control.product_ops[index].operation.as_ref()
+            else {
+                continue;
+            };
+            let token = *token;
+            let file = *file;
+            let barrier_order = *order;
+            let prior_write = control.product_ops.iter().any(|slot| {
+                matches!(
+                    slot.operation,
+                    Some(ProductOp::Write {
+                        file: write_file,
+                        order: write_order,
+                        ..
+                    }) if write_file == file && write_order < barrier_order
+                )
+            });
+            if prior_write {
+                continue;
+            }
+            let handle = registered_file(&control.files, PageId::new(file, 0));
+            match self
+                .driver
+                .submit_fsync(handle, crate::driver::SyncMode::Full)
+            {
+                Ok(driver_token) => {
+                    control.product_ops[index].operation = Some(ProductOp::Fsync {
+                        token,
+                        driver_token,
+                        file,
+                    });
+                    self.wake.wake();
+                }
+                Err(SubmitError::Full) => {}
+                Err(SubmitError::StaleHandle) => {
+                    panic!("a held product fsync retains its live backend file")
                 }
             }
         }
@@ -978,10 +1592,12 @@ impl<D: PoolBackend> Pool<D> {
     }
 
     fn advance_and_reclaim(&self, control: &mut Control) -> usize {
-        let global_epoch = advance_epoch(&self.global_epoch, &self.slots);
+        let global_epoch = advance_epoch(&self.global_epoch, self.readers.slots());
         let frames = &self.frames;
+        let frame_pages = &mut control.frame_pages;
         control.evict_queue.drain_matured(global_epoch, |frame| {
             frames.advance(frame, FrameState::Free);
+            frame_pages[frame.get() as usize] = None;
         })
     }
 
@@ -993,9 +1609,9 @@ impl<D: PoolBackend> Pool<D> {
     }
 
     #[must_use]
-    pub(crate) fn pending_waiters_internal(&self, token: &PendingToken<'_>) -> u32 {
+    pub(crate) fn pending_waiters_internal(&self, token: &PendingToken) -> u32 {
         assert!(
-            std::ptr::eq(token.interests, &raw const self.miss_interests),
+            Arc::ptr_eq(&token.interests, &self.miss_interests),
             "pending waiter observation uses its owning pool"
         );
         self.miss_interests
@@ -1012,19 +1628,57 @@ fn read_span(page: PageId, granule: u32, filled: u32) -> (u64, u32) {
     (base + u64::from(filled), granule - filled)
 }
 
-fn registered_file(files: &[Option<FileHandle>], page: PageId) -> &FileHandle {
+fn registered_file(files: &[Option<PoolFile>], page: PageId) -> &FileHandle {
     let file = files[page.file().slot() as usize]
         .as_ref()
         .expect("a registered file backs every requested page");
     assert_eq!(
-        file.file_id(),
+        file.id,
         page.file(),
         "a page capability must name the exact registered file identity"
     );
-    file
+    file.handle
+        .as_ref()
+        .expect("an admitted read retains its backend handle")
+}
+
+fn file_is_live(files: &[Option<PoolFile>], file: FileId, pool_identity: u64) -> bool {
+    assert_eq!(
+        file.driver(),
+        pool_identity,
+        "file identity used with a foreign pool"
+    );
+    files[file.slot() as usize]
+        .as_ref()
+        .is_some_and(|entry| entry.id == file && entry.state == PoolFileState::Live)
+}
+
+fn live_file_handle(
+    files: &[Option<PoolFile>],
+    file: FileId,
+    pool_identity: u64,
+) -> Result<&FileHandle, PoolSubmitError> {
+    assert_eq!(
+        file.driver(),
+        pool_identity,
+        "file identity used with a foreign pool"
+    );
+    files[file.slot() as usize]
+        .as_ref()
+        .filter(|entry| entry.id == file && entry.state == PoolFileState::Live)
+        .and_then(|entry| entry.handle.as_ref())
+        .ok_or(PoolSubmitError::StaleFile { file })
 }
 
 impl PoolBackend for Driver {
+    fn identity(&self) -> u64 {
+        self.identity()
+    }
+
+    fn attach_pool_state(&self, _lifecycle: Arc<LifecycleCounters>, wake: Arc<WaitState>) {
+        self.attach_pool_wait(wake);
+    }
+
     fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, IoError> {
         self.open_with_direct_io(path, direct_io)
     }
@@ -1042,6 +1696,39 @@ impl PoolBackend for Driver {
 
     fn poll(&self, out: &mut CompletionBatch) -> usize {
         Driver::poll(self, out)
+    }
+
+    fn poll_wait(&self, out: &mut CompletionBatch, timeout: Duration) -> usize {
+        self.poll_wait_for_pool(out, timeout)
+    }
+
+    fn write_arena_state(&self) -> &write_arena::ArenaState {
+        self.write_arena_state()
+    }
+
+    fn submit_write<'arena>(
+        &self,
+        fd: &FileHandle,
+        slot: write_arena::WriteSlot<'arena>,
+        offset: u64,
+    ) -> Result<OpToken, (SubmitError, write_arena::WriteSlot<'arena>)> {
+        Driver::submit_write(self, fd, slot, offset)
+    }
+
+    fn submit_fsync(
+        &self,
+        fd: &FileHandle,
+        mode: crate::driver::SyncMode,
+    ) -> Result<OpToken, SubmitError> {
+        Driver::submit_fsync(self, fd, mode)
+    }
+
+    fn close(&self, fd: FileHandle) {
+        Driver::close(self, fd);
+    }
+
+    fn is_closed(&self, file: FileId) -> bool {
+        Driver::is_closed(self, file)
     }
 }
 

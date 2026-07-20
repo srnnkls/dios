@@ -85,8 +85,8 @@ fn assert_frame_fill(guard: &FrameGuard<'_>, fill: u8) {
 
 fn drive_ready<'pool>(
     pool: &'pool Pool<MockDriver>,
-    reader: &'pool ReaderCtx<'pool>,
-    token: PendingToken<'pool>,
+    reader: &'pool ReaderCtx,
+    token: PendingToken,
 ) -> FrameGuard<'pool> {
     let mut token = token;
     for _ in 0..READY_POLLS_MAX {
@@ -102,13 +102,8 @@ fn drive_ready<'pool>(
     panic!("token never readied under bounded polling");
 }
 
-fn warm<'pool>(
-    pool: &'pool Pool<MockDriver>,
-    reader: &'pool ReaderCtx<'pool>,
-    page: PageId,
-    fill: u8,
-) {
-    match pool.get(reader, page) {
+fn warm<'pool>(pool: &'pool Pool<MockDriver>, reader: &'pool ReaderCtx, page: PageId, fill: u8) {
+    match pool.get(reader, page).expect("the registered file is live") {
         Get::Pending(token) => {
             let guard = drive_ready(pool, reader, token);
             assert_frame_fill(&guard, fill);
@@ -130,13 +125,19 @@ fn gateway_loop_shape() {
 
     warm(&pool, &reader, page_resident, 0xBB);
 
-    let pending = match pool.get(&reader, page_miss) {
+    let pending = match pool
+        .get(&reader, page_miss)
+        .expect("the registered file is live")
+    {
         Get::Pending(token) => token,
         Get::Hit(_) => panic!("a cold page cannot hit"),
         Get::Busy => panic!("spare frames exist; a miss submits, it does not backpressure"),
     };
 
-    match pool.get(&reader, page_resident) {
+    match pool
+        .get(&reader, page_resident)
+        .expect("the registered file is live")
+    {
         Get::Hit(guard) => assert_frame_fill(&guard, 0xBB),
         Get::Pending(_) => {
             panic!("a resident page must hit — re-submitting would block the worker")
@@ -149,7 +150,10 @@ fn gateway_loop_shape() {
     drop(resumed);
 
     {
-        let interest = match pool.get(&reader, page_dropped) {
+        let interest = match pool
+            .get(&reader, page_dropped)
+            .expect("the registered file is live")
+        {
             Get::Pending(token) => token,
             Get::Hit(_) => panic!("a cold page cannot hit"),
             Get::Busy => panic!("spare frames exist; a miss submits"),
@@ -157,7 +161,10 @@ fn gateway_loop_shape() {
         assert_eq!(interest.page(), page_dropped);
     }
     pool.poll();
-    match pool.get(&reader, page_dropped) {
+    match pool
+        .get(&reader, page_dropped)
+        .expect("the registered file is live")
+    {
         Get::Hit(guard) => assert_frame_fill(&guard, 0xCC),
         Get::Pending(_) => {
             panic!(
@@ -183,7 +190,10 @@ fn k_way_merge_suspend_shape() {
 
     let mut pending = Vec::with_capacity(sources.len());
     for (page, _) in sources {
-        match pool.get(&reader, page) {
+        match pool
+            .get(&reader, page)
+            .expect("the registered file is live")
+        {
             Get::Pending(token) => pending.push(token),
             Get::Hit(_) => panic!("a cold source cannot hit"),
             Get::Busy => panic!("k < frame count; every source must submit"),
@@ -198,7 +208,10 @@ fn k_way_merge_suspend_shape() {
     }
 
     let next_block = PageId::new(file, 20);
-    let suspended = match pool.get(&reader, next_block) {
+    let suspended = match pool
+        .get(&reader, next_block)
+        .expect("the registered file is live")
+    {
         Get::Pending(token) => token,
         Get::Hit(_) => panic!("the next block is cold"),
         Get::Busy => panic!("still within the frame budget"),

@@ -28,7 +28,7 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 pub use crate::alignment::{Alignment, Unaligned};
@@ -39,6 +39,7 @@ use crate::open::DirectIo;
 use crate::pool::write_arena::{shared as shared_write_arena, ArenaState};
 pub use crate::pool::write_arena::{WriteArena, WriteSlot};
 use crate::pool::{Frames, ReadFrameIdx};
+use crate::product::WaitState;
 
 pub(crate) const MAX_FILES: u32 = 64;
 const EINTR: i32 = 4;
@@ -211,6 +212,18 @@ impl Driver {
         self.0.write_arena.alloc()
     }
 
+    pub(crate) fn identity(&self) -> u64 {
+        self.0.id
+    }
+
+    pub(crate) fn write_arena_state(&self) -> &ArenaState {
+        self.0.write_arena_state()
+    }
+
+    pub(crate) fn attach_pool_wait(&self, wait: Arc<WaitState>) {
+        self.0.attach_pool_wait(wait);
+    }
+
     pub(crate) fn alloc_write_slot_wait(&self, timeout: Duration) -> Option<WriteSlot<'_>> {
         #[cfg(target_os = "linux")]
         {
@@ -357,6 +370,17 @@ impl Driver {
         #[cfg(not(target_os = "linux"))]
         {
             self.0.poll_wait(out, timeout)
+        }
+    }
+
+    pub(crate) fn poll_wait_for_pool(&self, out: &mut CompletionBatch, timeout: Duration) -> usize {
+        #[cfg(target_os = "linux")]
+        {
+            self.0.poll_wait_ring_for_pool(out, timeout)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.0.poll_wait_eager_for_pool(out, timeout)
         }
     }
 
@@ -690,6 +714,17 @@ pub(crate) trait Executor {
     /// reuse; the mock keeps no per-file state and no-ops.
     fn retire_file(&self, slot: u32);
 
+    fn on_op_submitted(&self) {}
+
+    fn on_op_completed(&self, _file: FileId, _kind: OpKind, _result: &Result<u32, IoError>) {}
+
+    fn on_file_closed(&self, _file: FileId) {}
+
+    fn on_quiesce(&self) {}
+
+    #[cfg(target_os = "linux")]
+    fn attach_pool_wait(&self, _wait: &Arc<WaitState>) {}
+
     #[cfg(any(feature = "mock", feature = "bench"))]
     fn copy_frame(&self, frame: ReadFrameIdx, out: &mut [u8]) -> usize;
 }
@@ -884,6 +919,7 @@ pub(crate) struct DriverCore<E> {
     retry_bound: u32,
     queue_capacity: u32,
     raw_read_inflight: Box<[AtomicBool]>,
+    pool_wait: OnceLock<Arc<WaitState>>,
     id: u64,
 }
 
@@ -905,6 +941,7 @@ impl<E> DriverCore<E> {
             retry_bound,
             queue_capacity,
             raw_read_inflight: (0..frames).map(|_| AtomicBool::new(false)).collect(),
+            pool_wait: OnceLock::new(),
             id,
         }
     }
@@ -917,8 +954,37 @@ impl<E> DriverCore<E> {
         &self.executor
     }
 
+    pub(crate) fn identity(&self) -> u64 {
+        self.id
+    }
+
     pub(crate) fn write_arena_state(&self) -> &ArenaState {
         &self.write_arena
+    }
+
+    pub(crate) fn attach_pool_wait(&self, wait: Arc<WaitState>)
+    where
+        E: Executor,
+    {
+        #[cfg(target_os = "linux")]
+        self.executor.attach_pool_wait(&wait);
+        if let Err(wait) = self.pool_wait.set(wait) {
+            assert!(
+                Arc::ptr_eq(
+                    self.pool_wait
+                        .get()
+                        .expect("an occupied pool wait slot has a value"),
+                    &wait,
+                ),
+                "one Driver can be attached to only one Pool"
+            );
+        }
+    }
+
+    fn signal_pool_wait(&self) {
+        if let Some(wait) = self.pool_wait.get() {
+            wait.wake();
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, Shared> {
@@ -1000,6 +1066,7 @@ impl<E: Executor> DriverCore<E> {
     fn retire(&self, fd: FileId) {
         self.executor.retire_file(fd.slot());
         self.lock().files.finish_retire(fd);
+        self.executor.on_file_closed(fd);
     }
 
     pub(crate) fn submit_read(
@@ -1149,6 +1216,7 @@ impl<E: Executor> DriverCore<E> {
             "schedule position in bounds"
         );
         shared.ready.insert(position, slot);
+        self.executor.on_op_submitted();
         token
     }
 }
@@ -1170,6 +1238,18 @@ impl<E: EagerExecutor> DriverCore<E> {
             drained += 1;
         }
         drained
+    }
+
+    pub(crate) fn poll_wait_eager_for_pool(
+        &self,
+        out: &mut CompletionBatch,
+        timeout: Duration,
+    ) -> usize {
+        self.pool_wait
+            .get()
+            .expect("the shipping or mock driver is attached before Pool wait")
+            .wait(timeout);
+        self.poll(out)
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -1324,9 +1404,11 @@ impl<E: EagerExecutor> DriverCore<E> {
             self.release_raw_frame(&entry);
             self.release_write_slot(&entry);
             let result = outcome.map_err(IoError::from_raw);
+            self.executor.on_op_completed(entry.fd, entry.kind, &result);
             out.push(Completion::new(token, entry.kind, result));
             retire_due.then_some(entry.fd)
         };
+        self.signal_pool_wait();
         if let Some(fd) = retiring {
             self.retire(fd);
         }
@@ -1354,13 +1436,14 @@ impl<E: EagerExecutor> DriverCore<E> {
                 shared.completion_backlog.len() < self.queue_capacity as usize,
                 "completion backlog stays within the init-time admission bound"
             );
-            shared.completion_backlog.push_back(Completion::new(
-                token,
-                entry.kind,
-                outcome.map_err(IoError::from_raw),
-            ));
+            let result = outcome.map_err(IoError::from_raw);
+            self.executor.on_op_completed(entry.fd, entry.kind, &result);
+            shared
+                .completion_backlog
+                .push_back(Completion::new(token, entry.kind, result));
             retire_due.then_some(entry.fd)
         };
+        self.signal_pool_wait();
         if let Some(fd) = retiring {
             self.retire(fd);
         }
@@ -1461,6 +1544,51 @@ impl<E: RingExecutor> DriverCore<E> {
     }
 
     #[cfg(target_os = "linux")]
+    pub(crate) fn poll_wait_ring_for_pool(
+        &self,
+        out: &mut CompletionBatch,
+        timeout: Duration,
+    ) -> usize {
+        let wait = self
+            .pool_wait
+            .get()
+            .expect("the shipping driver is attached before Pool wait");
+        let Some(armed) = wait.begin_platform_wait() else {
+            return self.poll_ring(out);
+        };
+        let deadline = Instant::now() + timeout;
+        let drained = loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break 0;
+            }
+            let drained = self.poll_wait_ring_one(out, remaining);
+            if drained > 0 || wait.platform_woken(armed) {
+                break drained;
+            }
+        };
+        wait.finish_platform_wait(armed);
+        drained
+    }
+
+    #[cfg(target_os = "linux")]
+    fn poll_wait_ring_one(&self, out: &mut CompletionBatch, timeout: Duration) -> usize {
+        assert!(
+            out.capacity() > 0,
+            "pool wait requires a non-empty private completion batch"
+        );
+        out.reset();
+        let backlog = self.drain_completion_backlog(out);
+        if backlog > 0 {
+            return backlog;
+        }
+        let cap = u32::try_from(out.capacity()).expect("batch capacity fits u32");
+        let _ = self.fill_ring(cap);
+        self.executor.submit_and_wait(1, timeout);
+        self.reap_ring(out, cap)
+    }
+
+    #[cfg(target_os = "linux")]
     pub(crate) fn alloc_write_slot_wait_ring(&self, timeout: Duration) -> Option<WriteSlot<'_>> {
         let deadline = Instant::now() + timeout;
         loop {
@@ -1550,6 +1678,7 @@ impl<E: RingExecutor> DriverCore<E> {
                 let retire_due = shared.files.on_complete(entry.fd);
                 self.release_raw_frame(&entry);
                 self.release_write_slot(&entry);
+                self.executor.on_op_completed(entry.fd, entry.kind, &result);
                 out.push(Completion::new(token, entry.kind, result));
                 if retire_due {
                     assert!(retire_len < retire.len(), "at most one retire per open fd");
@@ -1559,6 +1688,9 @@ impl<E: RingExecutor> DriverCore<E> {
                 self.executor.on_op_finalized();
                 drained += 1;
             });
+        }
+        if drained > 0 {
+            self.signal_pool_wait();
         }
         for fd in &retire[..retire_len] {
             self.retire(*fd);

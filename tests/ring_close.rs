@@ -65,7 +65,8 @@ fn deferred_close_through_the_ring_flips_is_closed_only_after_the_in_flight_read
         .frames(1)
         .frame_bytes(FRAME_BYTES)
         .retry_bound(3)
-        .build();
+        .build()
+        .expect("the io_uring driver initializes");
     let fd = drv
         .open(&path, DirectIo::Disabled)
         .expect("open the seeded file");

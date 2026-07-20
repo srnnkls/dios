@@ -110,8 +110,8 @@ fn assert_frame_fill(guard: &FrameGuard<'_>, fill: u8) {
 
 fn drive_ready<'pool>(
     pool: &'pool Pool<MockDriver>,
-    reader: &'pool ReaderCtx<'pool>,
-    token: PendingToken<'pool>,
+    reader: &'pool ReaderCtx,
+    token: PendingToken,
 ) -> FrameGuard<'pool> {
     let mut token = token;
     for _ in 0..READY_POLLS_MAX {
@@ -127,13 +127,8 @@ fn drive_ready<'pool>(
     panic!("token never readied under bounded polling");
 }
 
-fn warm<'pool>(
-    pool: &'pool Pool<MockDriver>,
-    reader: &'pool ReaderCtx<'pool>,
-    page: PageId,
-    fill: u8,
-) {
-    match pool.get(reader, page) {
+fn warm<'pool>(pool: &'pool Pool<MockDriver>, reader: &'pool ReaderCtx, page: PageId, fill: u8) {
+    match pool.get(reader, page).expect("the registered file is live") {
         Get::Pending(token) => {
             let guard = drive_ready(pool, reader, token);
             assert_frame_fill(&guard, fill);
@@ -156,13 +151,16 @@ struct WorkItem {
 /// kernel immediately; `get`-`Pending` items park and let the worker take other
 /// ready work; a bounded `poll`/`ready` drain resumes the parked ones. Returns
 /// the fills in the order items COMPLETED — the interleaving oracle.
-fn drain_gateway(pool: &Pool<MockDriver>, reader: &ReaderCtx<'_>, items: &[WorkItem]) -> Vec<u8> {
+fn drain_gateway(pool: &Pool<MockDriver>, reader: &ReaderCtx, items: &[WorkItem]) -> Vec<u8> {
     let mut ready_queue: VecDeque<WorkItem> = items.iter().copied().collect();
-    let mut parked: Vec<(u8, PendingToken<'_>)> = Vec::with_capacity(items.len());
+    let mut parked: Vec<(u8, PendingToken)> = Vec::with_capacity(items.len());
     let mut completed: Vec<u8> = Vec::with_capacity(items.len());
 
     while let Some(item) = ready_queue.pop_front() {
-        match pool.get(reader, item.page) {
+        match pool
+            .get(reader, item.page)
+            .expect("the registered file is live")
+        {
             Get::Hit(guard) => {
                 assert_frame_fill(&guard, item.fill);
                 completed.push(item.fill);
@@ -227,7 +225,10 @@ fn waiter_interest_drop_still_residents() {
     let page = PageId::new(file, 3);
 
     {
-        let interest = match pool.get(&reader, page) {
+        let interest = match pool
+            .get(&reader, page)
+            .expect("the registered file is live")
+        {
             Get::Pending(token) => token,
             Get::Hit(_) => panic!("a cold page cannot hit"),
             Get::Busy => panic!("spare frames exist; a miss submits"),
@@ -236,7 +237,7 @@ fn waiter_interest_drop_still_residents() {
     }
     pool.poll();
 
-    match pool.get(&reader, page) {
+    match pool.get(&reader, page).expect("the registered file is live") {
         Get::Hit(guard) => assert_frame_fill(&guard, 0xCC),
         Get::Pending(_) => panic!(
             "dropping a PendingToken cancels waiter interest only — the read still completed and made the page resident"
@@ -257,7 +258,10 @@ fn multiple_inflight_misses_do_not_clobber() {
 
     let mut pending = Vec::with_capacity(sources.len());
     for (page, _) in sources {
-        match pool.get(&reader, page) {
+        match pool
+            .get(&reader, page)
+            .expect("the registered file is live")
+        {
             Get::Pending(token) => pending.push(token),
             Get::Hit(_) => panic!("a cold source cannot hit"),
             Get::Busy => panic!("three misses sit within max_inflight_reads"),
@@ -281,12 +285,18 @@ fn error_fanout_to_cancelled_and_live_pair() {
     let page = PageId::new(file, 9);
 
     let live = {
-        let cancelled = match pool.get(&reader, page) {
+        let cancelled = match pool
+            .get(&reader, page)
+            .expect("the registered file is live")
+        {
             Get::Pending(token) => token,
             Get::Hit(_) => panic!("a cold page cannot hit"),
             Get::Busy => panic!("spare frames exist; a miss submits"),
         };
-        let live = match pool.get(&reader, page) {
+        let live = match pool
+            .get(&reader, page)
+            .expect("the registered file is live")
+        {
             Get::Pending(token) => token,
             Get::Hit(_) => panic!("the read is still in flight; a joiner cannot hit"),
             Get::Busy => panic!("a singleflight joiner submits no new read"),
@@ -308,8 +318,8 @@ fn error_fanout_to_cancelled_and_live_pair() {
 
 fn drive_err<'pool>(
     pool: &'pool Pool<MockDriver>,
-    reader: &'pool ReaderCtx<'pool>,
-    token: PendingToken<'pool>,
+    reader: &'pool ReaderCtx,
+    token: PendingToken,
 ) -> dios::IoError {
     let mut token = token;
     for _ in 0..READY_POLLS_MAX {
@@ -349,7 +359,10 @@ fn residency_lease_steal_boundary_stand_in() {
     let reader = pool.register_reader().expect("reader slot is available");
     let page = PageId::new(file, 7);
 
-    let token = match pool.get(&reader, page) {
+    let token = match pool
+        .get(&reader, page)
+        .expect("the registered file is live")
+    {
         Get::Pending(token) => token,
         Get::Hit(_) => panic!("a cold page cannot hit"),
         Get::Busy => panic!("spare frames exist; a miss submits"),
@@ -362,7 +375,10 @@ fn residency_lease_steal_boundary_stand_in() {
     drop(guard);
     pool.poll();
 
-    match pool.get(&reader, stolen.page) {
+    match pool
+        .get(&reader, stolen.page)
+        .expect("the registered file is live")
+    {
         Get::Hit(guard) => assert_frame_fill(&guard, 0x77),
         Get::Pending(_) => panic!(
             "resume re-missed — the residency lease (extraction.md) must keep the page resident across the steal so the destination worker Hits"
@@ -380,5 +396,5 @@ fn assert_send<T: Send>(_value: &T) {}
 fn send_able_handles_cross_the_steal_boundary() {
     fn require_send<T: Send>() {}
     require_send::<PageId>();
-    require_send::<PendingToken<'static>>();
+    require_send::<PendingToken>();
 }

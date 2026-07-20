@@ -1,6 +1,8 @@
 metadata:
   issue_type: Feature
   created: 2026-07-07
+  last_updated: 2026-07-20
+  revision: 10
   questions_used: 5
   questions_limit: 5
   approach: "Completion reactor (TigerBeetle-shaped) + registered frame pool; platform-split defaults (pool on Linux, mmap on macOS)"
@@ -103,6 +105,30 @@ clarification_log:
     answer: "Both backends work on both platforms behind config; platform split is defaults only (Linux=pool, macOS=mmap). Pool-on-macOS is supported + full-suite tested; advisory pool-vs-mmap measurement in T011 informs any future default flip"
     impact_uncertainty: high
     integration: scope.md AD-2, DIO-R3, T011, Non-Goals
+  - id: C009
+    area: integration
+    question: "Does the shipped v1 Pool ownership/progress surface fit Sira's lifetime-free shard owner without exposing the lower completion protocol?"
+    answer: >-
+      Not as shipped. Revision 10 makes Pool the root product API and
+      namespaces the advanced Driver; ReaderCtx and PendingToken own bounded
+      Arc-backed capability state while FrameGuard remains borrowed;
+      PendingToken is affine Send and resolves with a destination ReaderCtx;
+      product write/fsync completions are closed typed values; backend progress
+      is counted independently of caller capacity, including a valid
+      capacity-zero retain-only pass; explicit write-slot and product-operation
+      capacities default to zero and their checked queue reservation cannot
+      wrap, with the positive shipping sum admitting one cold read plus the full
+      product bound before polling, while retained caller results hold admission
+      capacity until delivery; PoolWakeHandle composes I/O with external ingress
+      through the actual shipping wait. Exact read-only mock wait/lifecycle and
+      shipping wait observations cannot gate or shorten progress; the Arc-backed
+      lifecycle handle remains readable after Pool drop. Distinct supplied idle
+      deadlines produce distinct elapsed brackets and exact timeout causes; and typed
+      retirement closes all new admission then drains every retained capability
+      and operation. T017 implements this
+      owner-directed evolution after its RED review clears.
+    impact_uncertainty: high
+    integration: scope.md revision 10 API Contract/DIO-R6/DIO-G9; design.md post-v1 Sira-fit product boundary; tasks.yaml T017
 
 markers:
   - id: M001
@@ -135,6 +161,21 @@ markers:
     area: constraints
     description: "If DIO-G1 strict parity fails after memoization lever, Linux default flip blocked — decision returns to scope owner"
     doc_ref: "scope.md#constraints"
+    status: open
+    resolution: null
+  - id: M005
+    area: integration
+    description: >-
+      Revision-10 Sira-fit Pool API, including explicit default-zero product
+      capacities, checked queue reservation, capacity-zero retained progress,
+      capacity held through result delivery, multi-poll barriers, submit-check
+      precedence including a source-retired foreign identity on a saturated
+      target, the unified mock event recorder, exact post-drop lifecycle and
+      actual-wait observations, the observed shipping wake, the positive
+      shipping checked-sum case, distinct idle deadlines, and the FileId/slot
+      identity split, must clear T017
+      A.5, GREEN, migration, zero-allocation, and Phase-C gates
+    doc_ref: "scope.md#api-contract"
     status: open
     resolution: null
 
@@ -174,7 +215,7 @@ clarification_sessions:
     findings_folded:
       - "high (sonnet, opus, codex — same residual): AD-5 heading + Data Model bullet retained version-routing language -> AD-5 retitled, bullet rewritten to open-time rejection; rg sweep confirms no residual outside audit trail"
       - "high (codex): submit_write took read-pool FrameIdx despite separate WriteArena -> typed buffer identity ReadFrameIdx vs WriteSlotIdx; registered sets disjoint by type"
-      - "medium folds: register_reader -> Result<ReaderCtx, RegistrationExhausted> typed registration-time error, get() takes &ReaderCtx (gemini); WriteArena::alloc_wait park/wake instead of spin (gemini); macOS F_NOCACHE-write vs mmap-read coherency gotcha — map only after finalize+F_FULLFSYNC+manifest publish (gemini); WriteArena wording registered(Linux)/aligned(darwin) (opus low); ValueTooLarge AC reworded to before-block-formation, grounded at block.rs:40 (opus low); S002 superseded-by-S003 annotation (opus low)"
+      - "medium folds: register_reader -> Result<ReaderCtx, RegisterError> typed registration-time error, get() takes &ReaderCtx (gemini); WriteArena::alloc_wait park/wake instead of spin (gemini); macOS F_NOCACHE-write vs mmap-read coherency gotcha — map only after finalize+F_FULLFSYNC+manifest publish (gemini); WriteArena wording registered(Linux)/aligned(darwin) (opus low); ValueTooLarge AC reworded to before-block-formation, grounded at block.rs:40 (opus low); S002 superseded-by-S003 annotation (opus low)"
       - "owner decisions this round: hard value-size cap accepted (breaking OK); backward compatibility dropped entirely — store open trips on non-current format version, old stores rebuild (AD-5 simplified, version routing removed)"
   - id: S005
     timestamp: 2026-07-10
@@ -241,16 +282,29 @@ readiness:
   edge_cases_addressed: true
 
 loqui_check:
-  present: false
+  present: true
   language: rust
-  status: pending
+  status: applied-to-revision-10-contract; production-review-pending
   violations: []
   adherence_notes: |
-    Consult /loqui rust guidelines at implementation time; no code in scope yet.
+    Revision 10 applies ownership-is-design, newtype/product-boundary,
+    illegal-state elimination, and expected-failures-as-Result guidance.
+    Production conformance remains a T017 Phase-C obligation.
 
 review_config:
   reasoning_effort: high
-  reviewers: [opus, sonnet, gpt, gemini]
+  reviewers: [codex-native, opus-cli, sonnet-cli, gemini]
+
+api_evolution_gate:
+  revision: 10
+  task: T017
+  status: pending
+  test_review: issues_found
+  implementation: not_started
+  phase_c: not_started
+  note: >-
+    The original review_gate pass covers revisions 1-9 only. Revision 10
+    cannot inherit it; A.5 must clear on the coherent RED suite before GREEN.
 
 review_gate:
   status: passed
@@ -335,6 +389,34 @@ review_gate:
         - "design.md test table"
         - "tasks.yaml T006/T010/T013/T014"
       confirmation: "adds one gate (owner-directed); no existing gate numbers changed"
+    - id: R10
+      date: 2026-07-20
+      decisions:
+        - "owner-directed post-v1 Sira-fit API evolution: Pool is the crate-root product API; the advanced completion Driver remains under dios::driver and no driver token/kind/batch/arena vocabulary appears in a product signature"
+        - "ReaderCtx is lifetime-free Arc-backed !Send+!Sync and may outlive Pool; PendingToken is lifetime-free affine/non-Clone and Send, with Sync deliberately unspecified, owns Arc interest + Pool identity, and resolves on a destination thread through its ReaderCtx; FrameGuard stays borrowed !Send+!Sync"
+        - "Pool::get returns Result<Get<'_>, GetError::StaleFile { page } without adding stale state to the three-way residency ADT"
+        - "closed root Pool write/fsync/completion types own results; every backend CQE is counted independently of caller output capacity; bounded preallocated overflow cannot starve reads or reclamation"
+        - "Pool product resources are explicit and disabled by default: write_slots and max_inflight_product_ops default to zero; the latter bounds admitted plus retained results; shipping queue capacity is their checked sum with max_inflight_reads"
+        - "the positive shipping checked sum is executable: one cold read plus the full product-op bound admit concurrently before polling, the next product submit is Full, and exact read/write results drain"
+        - "capacity-zero PoolCompletionBatch is a progress-only drain; retained results continue occupying admission capacity until delivery; per-file fsync stays withheld until earlier writes complete across as many bounded polls as required"
+        - "submit validation order is foreign slot, foreign file/driver identity, generation/retirement, then capacity; foreign FileId submission is a programmer panic even when its source retired it and the target is saturated, while ForeignPool remains the recoverable wrong-staging-slot error"
+        - "Pool<Driver> external wake is proved at the actual shipping wait hook through a read-only observation seam under the existing non-default mock feature; the private platform primitive never enters the public product API"
+        - "MockWaitObservation exposes five exact actual-wait counters plus wait_until_parked; Arc-backed MockPoolObservation exposes seven exact lifecycle counters after Pool drop; observations are read-only, non-gating, and cannot shorten or release waits"
+        - "distinct short and long idle deadlines have disjoint elapsed brackets and exact cumulative timeout/wake counters"
+        - "MockIoEvent is the single chronological recorder, including complete read attempts; frozen read/write attempt accessors are derived projections"
+        - "PoolWakeHandle supplies lossless wake-before/during-park composition for I/O and external Sira ingress while poll_wait parks outside control"
+        - "one Pool owns reads, writes, and fsync with per-file write-before-barrier execution; retire_file closes all admission immediately and defers terminal Retired until admitted I/O, caller results, token/guard interests, EBR reclaim, and fd close drain"
+      touched:
+        - "scope.md revision note/Data Model/Constraints/DIO-R1,R2,R2b,R6/DIO-G9/Acceptance/API Contract/Dependency Graph/Verification"
+        - "design.md post-v1 product boundary/EBR/INV-2,3,6,8,11/test table/migration note"
+        - "tasks.yaml T017 + sira-fit-api phase"
+        - "dependencies.yaml sira-fit-api follow-up batch"
+        - "validation.yaml C009/M005/R10/current reviewer config"
+        - "checkpoint.yaml api_evolution_state"
+      confirmation: >-
+        Specification recorded only. T017 RED tests remain under A.5 review;
+        implementation, full migrations, zero-allocation evidence, and Phase C
+        are not green and the original v1 review pass does not approve R10.
 
 notes: |
   User decisions deliberately exceed the assistant's recommendations on three

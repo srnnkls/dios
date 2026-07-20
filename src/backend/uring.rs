@@ -23,12 +23,15 @@ use crate::error::IoError;
 use crate::pool::write_arena::ArenaState;
 use crate::pool::Frames;
 use crate::pool::ReadFrameIdx;
+use crate::product::{PlatformWake, WaitState};
 
 const EINTR: i32 = 4;
 const EAGAIN: i32 = 11;
 const EBADF: i32 = 9;
 const EIO: i32 = 5;
 const ETIME: i32 = 62;
+const POLLIN: u32 = 0x0001;
+const WAKE_USER_DATA: u64 = u64::MAX;
 
 /// Layout-compatible mirror of `libc::iovec` (the sole `register_buffers`
 /// argument type), so the crate needs no direct `libc` dependency.
@@ -43,6 +46,7 @@ pub(crate) struct Uring {
     frames: Arc<Frames>,
     _write_arena: Arc<ArenaState>,
     files: Mutex<Box<[Option<File>]>>,
+    platform_wake: Arc<PlatformWake>,
     frame_bytes: u32,
 }
 
@@ -67,7 +71,12 @@ impl Uring {
         assert!(frame_bytes > 0, "frame size must be positive");
         assert!(queue_capacity > 0, "queue capacity must be positive");
 
-        let ring = IoUring::new(queue_capacity.next_power_of_two()).map_err(IoError::from)?;
+        let ring_entries = queue_capacity
+            .checked_add(1)
+            .expect("the product queue sum leaves room for one private wake request")
+            .next_power_of_two();
+        let ring = IoUring::new(ring_entries).map_err(IoError::from)?;
+        let platform_wake = PlatformWake::new().map_err(IoError::from)?;
 
         ring.submitter()
             .register_files_sparse(MAX_FILES)
@@ -91,13 +100,16 @@ impl Uring {
 
         let mut files = Vec::with_capacity(MAX_FILES as usize);
         files.resize_with(MAX_FILES as usize, || None);
-        Ok(Self {
+        let backend = Self {
             ring,
             frames,
             _write_arena: write_arena,
             files: Mutex::new(files.into_boxed_slice()),
+            platform_wake,
             frame_bytes,
-        })
+        };
+        backend.arm_wake();
+        Ok(backend)
     }
 
     fn lock_files(&self) -> MutexGuard<'_, Box<[Option<File>]>> {
@@ -124,6 +136,13 @@ impl Uring {
             "io_uring_enter returned an unexpected errno {code}: EBUSY is unreachable given \
              the slab gates admission at queue_capacity and CQ >= SQ >= in-flight ({error})"
         );
+    }
+
+    fn arm_wake(&self) {
+        let entry = opcode::PollAdd::new(types::Fd(self.platform_wake.raw_fd()), POLLIN)
+            .build()
+            .user_data(WAKE_USER_DATA);
+        self.push_sqe(&entry);
     }
 }
 
@@ -175,6 +194,10 @@ impl Executor for Uring {
         let file = files[slot as usize].take();
         debug_assert!(file.is_some(), "retire of a slot that holds no live file");
         drop(file);
+    }
+
+    fn attach_pool_wait(&self, wait: &Arc<WaitState>) {
+        wait.attach_platform(Arc::clone(&self.platform_wake));
     }
 
     #[cfg(any(feature = "mock", feature = "bench"))]
@@ -268,10 +291,21 @@ impl RingExecutor for Uring {
         // mutex; no second completion handle exists concurrently.
         let mut cq = unsafe { self.ring.completion_shared() };
         let mut reaped = 0u32;
+        let mut woke = false;
         while reaped < limit {
             let Some(cqe) = cq.next() else { break };
+            if cqe.user_data() == WAKE_USER_DATA {
+                woke = true;
+                continue;
+            }
             sink(cqe.user_data(), cqe.result());
             reaped += 1;
+        }
+        drop(cq);
+        if woke {
+            self.platform_wake.drain();
+            self.arm_wake();
+            self.submit();
         }
         reaped
     }

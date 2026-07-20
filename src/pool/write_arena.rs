@@ -62,7 +62,14 @@ impl ArenaState {
     }
 
     pub(crate) fn alloc(&self) -> Option<WriteSlot<'_>> {
+        self.alloc_within(u32::try_from(self.free.len()).expect("arena slot count fits u32"))
+    }
+
+    pub(crate) fn alloc_within(&self, limit: u32) -> Option<WriteSlot<'_>> {
         for (index, cell) in self.free.iter().enumerate() {
+            if index >= limit as usize {
+                break;
+            }
             if cell.swap(false, Ordering::AcqRel) {
                 return Some(WriteSlot {
                     state: self,

@@ -14,14 +14,18 @@
 //! the failure to every waiter and frees the frame.
 
 use crate::completion::CompletionBatch;
-use crate::driver::{FileHandle, OpToken};
+use crate::driver::{FileHandle, FileId, OpToken, SyncMode};
 use crate::error::IoError;
 use crate::error::SubmitError;
 use crate::open::DirectIo;
+use crate::pool::write_arena::{ArenaState, WriteSlot};
 use crate::pool::{PageId, ReadFrameIdx};
+use crate::product::{LifecycleCounters, WaitState};
 use crate::sync::{AtomicU32, AtomicU64, Ordering};
 use std::num::NonZeroU64;
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
 
 pub(super) mod sealed {
     pub(crate) trait Sealed {}
@@ -30,6 +34,10 @@ pub(super) mod sealed {
 /// The read-submit + drain seam the pool composes over. Sealed to the crate's own
 /// driver types; carried `#[doc(hidden)]` so it is not documented public API.
 pub(crate) trait PoolBackend: sealed::Sealed {
+    fn identity(&self) -> u64;
+
+    fn attach_pool_state(&self, lifecycle: Arc<LifecycleCounters>, wake: Arc<WaitState>);
+
     /// Opens and retains a data file according to `direct_io`.
     fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, IoError>;
 
@@ -52,6 +60,25 @@ pub(crate) trait PoolBackend: sealed::Sealed {
 
     /// Drains ready completions into `out`, returning the count.
     fn poll(&self, out: &mut CompletionBatch) -> usize;
+
+    /// Parks through the backend's real wait source, outside pool control, then
+    /// drains ready completions into `out`.
+    fn poll_wait(&self, out: &mut CompletionBatch, timeout: Duration) -> usize;
+
+    fn write_arena_state(&self) -> &ArenaState;
+
+    fn submit_write<'arena>(
+        &self,
+        fd: &FileHandle,
+        slot: WriteSlot<'arena>,
+        offset: u64,
+    ) -> Result<OpToken, (SubmitError, WriteSlot<'arena>)>;
+
+    fn submit_fsync(&self, fd: &FileHandle, mode: SyncMode) -> Result<OpToken, SubmitError>;
+
+    fn close(&self, fd: FileHandle);
+
+    fn is_closed(&self, file: FileId) -> bool;
 }
 
 /// One fixed miss-record index carried by every waiter capability.
@@ -373,6 +400,16 @@ impl MissTable {
             "zero-interest success protection clears before frame reuse"
         );
         true
+    }
+
+    pub(crate) fn has_live_for_file(&self, file: FileId, interests: &MissInterests) -> bool {
+        self.slots.iter().enumerate().any(|(index, entry)| {
+            entry.is_some_and(|entry| {
+                entry.page.file() == file
+                    && (entry.outcome == MissOutcome::Pending
+                        || interests.waiters(MissSlot::new(index), entry.generation) != Some(0))
+            })
+        })
     }
 }
 

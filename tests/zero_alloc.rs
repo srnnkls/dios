@@ -1,4 +1,5 @@
-//! T005 alloc-count harness (INV-2 / DIO-G4), driver-scoped.
+//! T005 alloc-count harness (INV-2 / DIO-G4), covering both the advanced
+//! driver and the crate-root Pool product path.
 //!
 //! A thread-local counting `#[global_allocator]` records allocations only inside
 //! an armed window on the measuring thread, so parallel libtest threads never
@@ -14,18 +15,21 @@
 //! `Pool::clock_reference_stores(&self) -> u64` — cumulative CLOCK reference-bit
 //! stores, observed across the real `get()` hit path. The close-during-drain
 //! gate needs no new seam; it asserts the batch-5 deferred-retire path stays
-//! alloc-free. Pool gates are `feature = "mock"` because `Pool<MockDriver>` is
-//! the only working read path until the T014 arena unification wires
-//! `Pool<Driver>`.
+//! alloc-free. The real `Pool<Driver>` write/fsync/report gate runs on the
+//! cfg-selected shipping backend; deterministic read/backpressure and bounded
+//! overflow gates additionally run on `Pool<MockDriver>` under `feature =
+//! "mock"`.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use dios::driver::{CompletionBatch, Driver, FileHandle, SyncMode};
+use dios::driver::{CompletionBatch, Driver, FileHandle};
 use dios::testing::{DriverReadTestingExt, ReadFrameIdx};
-use dios::DirectIo;
+use dios::{
+    DirectIo, Pool, PoolCompletion, PoolCompletionBatch, PoolToken, PoolWriteArena, SyncMode,
+};
 
 const FRAME_BYTES: u32 = 4096;
 const DRAIN_POLLS_MAX: u32 = 1_000_000;
@@ -98,6 +102,20 @@ fn driver() -> Driver {
         .expect("the test driver initializes")
 }
 
+fn product_pool() -> Pool<Driver> {
+    Pool::builder()
+        .frame_count(4)
+        .granule(FRAME_BYTES)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .write_slots(1)
+        .max_inflight_product_ops(2)
+        .build()
+        .expect("the cfg-selected shipping pool initializes")
+}
+
 fn open(drv: &Driver, path: &Path) -> FileHandle {
     drv.open(path, DirectIo::Disabled)
         .expect("open the seeded file")
@@ -111,6 +129,53 @@ fn drain_one(drv: &Driver, out: &mut CompletionBatch) {
         }
     }
     panic!("poll made no progress draining a completion");
+}
+
+fn drain_product_write_and_fsync(
+    pool: &Pool<Driver>,
+    out: &mut PoolCompletionBatch,
+    write: PoolToken,
+    fsync: PoolToken,
+) -> u32 {
+    let mut backend_completions = 0u32;
+    let mut write_seen = false;
+    let mut fsync_seen = false;
+    for _ in 0..DRAIN_POLLS_MAX {
+        let report = pool.poll_report(out);
+        backend_completions += report.backend_completions();
+        assert_eq!(report.reclaimed_frames(), 0);
+        for completion in out.iter() {
+            match completion {
+                PoolCompletion::Write {
+                    token,
+                    result: Ok(bytes),
+                } => {
+                    assert_eq!(*token, write);
+                    assert_eq!(*bytes, FRAME_BYTES);
+                    assert!(!write_seen, "the write result is delivered once");
+                    write_seen = true;
+                }
+                PoolCompletion::Fsync {
+                    token,
+                    result: Ok(()),
+                } => {
+                    assert_eq!(*token, fsync);
+                    assert!(!fsync_seen, "the fsync result is delivered once");
+                    fsync_seen = true;
+                }
+                PoolCompletion::Write {
+                    result: Err(error), ..
+                } => panic!("the real product write failed: {error}"),
+                PoolCompletion::Fsync {
+                    result: Err(error), ..
+                } => panic!("the real product fsync failed: {error}"),
+            }
+        }
+        if write_seen && fsync_seen {
+            return backend_completions;
+        }
+    }
+    panic!("the real product write/fsync did not drain within the bounded poll budget");
 }
 
 #[test]
@@ -246,6 +311,52 @@ fn a_deferred_close_retiring_during_a_poll_drain_allocates_nothing() {
     );
 }
 
+#[test]
+fn a_warmed_real_pool_write_fsync_and_bounded_report_drain_allocate_nothing() {
+    let path = temp_frame("real-pool-product-write");
+    let pool = product_pool();
+    let file = pool
+        .open(&path, DirectIo::Disabled)
+        .expect("the real product pool opens the fixture");
+    let arena: PoolWriteArena<'_> = pool.write_arena();
+    let mut completions = PoolCompletionBatch::with_capacity(2);
+
+    let mut warm_slot = arena.alloc().expect("one warmup product staging slot");
+    warm_slot.fill(0x51);
+    let warm_write = pool
+        .submit_write(file, warm_slot, 0)
+        .expect("the warmup product write admits");
+    let warm_fsync = pool
+        .submit_fsync(file, SyncMode::Full)
+        .expect("the warmup product fsync admits");
+    assert_eq!(
+        drain_product_write_and_fsync(&pool, &mut completions, warm_write, warm_fsync),
+        2
+    );
+
+    let mut measured_backend_completions = 0u32;
+    let allocations = armed_allocations(|| {
+        let mut slot = arena
+            .alloc()
+            .expect("the warmed PoolWriteArena reuses its staging slot");
+        slot.fill(0xA3);
+        let write = pool
+            .submit_write(file, slot, 0)
+            .expect("the measured product write admits");
+        let fsync = pool
+            .submit_fsync(file, SyncMode::Full)
+            .expect("the measured product fsync admits");
+        measured_backend_completions =
+            drain_product_write_and_fsync(&pool, &mut completions, write, fsync);
+    });
+
+    assert_eq!(measured_backend_completions, 2);
+    assert_eq!(
+        allocations, 0,
+        "the warmed shipping PoolWriteArena + submit_write + submit_fsync + bounded poll_report path allocates nothing"
+    );
+}
+
 #[cfg(feature = "mock")]
 mod pool_gates {
     use std::path::Path;
@@ -253,7 +364,7 @@ mod pool_gates {
     use dios::testing::{
         FrameState, MockDriver, PoolBuilderTestingExt, PoolTestingExt, ReadFrameIdx,
     };
-    use dios::{DirectIo, FrameGuard, Get, PageId, Pool, ReaderCtx};
+    use dios::{DirectIo, FrameGuard, Get, PageId, Pool, PoolCompletionBatch, ReaderCtx, SyncMode};
 
     use super::armed_allocations;
 
@@ -266,11 +377,23 @@ mod pool_gates {
             .queue_capacity(frames)
             .frames(frames)
             .frame_bytes(GRANULE)
+            .write_slots(1)
             .retry_bound(0)
             .build()
     }
 
     fn pool_on(mock: MockDriver, frames: u32, peak: u32, headroom: u32) -> Pool<MockDriver> {
+        pool_on_with_product_capacity(mock, frames, peak, headroom, 0, 0)
+    }
+
+    fn pool_on_with_product_capacity(
+        mock: MockDriver,
+        frames: u32,
+        peak: u32,
+        headroom: u32,
+        write_slots: u32,
+        max_inflight_product_ops: u32,
+    ) -> Pool<MockDriver> {
         Pool::builder()
             .frame_count(frames)
             .granule(GRANULE)
@@ -278,16 +401,18 @@ mod pool_gates {
             .peak_guards_per_reader(peak)
             .max_inflight_reads(1)
             .miss_headroom(headroom)
+            .write_slots(write_slots)
+            .max_inflight_product_ops(max_inflight_product_ops)
             .build_on(mock)
             .expect("a watermark-satisfying pool composes over the mock driver")
     }
 
     fn resolve<'pool>(
         pool: &'pool Pool<MockDriver>,
-        reader: &'pool ReaderCtx<'pool>,
+        reader: &'pool ReaderCtx,
         page: PageId,
     ) -> FrameGuard<'pool> {
-        let token = match pool.get(reader, page) {
+        let token = match pool.get(reader, page).expect("the registered file is live") {
             Get::Pending(token) => token,
             Get::Hit(guard) => return guard,
             Get::Busy => {
@@ -308,6 +433,23 @@ mod pool_gates {
         panic!("miss never readied within the bounded poll budget");
     }
 
+    fn drain_backend_and_retain_pair(
+        pool: &Pool<MockDriver>,
+        retain_all: &mut PoolCompletionBatch,
+    ) -> u32 {
+        let mut backend_completions = 0u32;
+        for _ in 0..READY_POLLS_MAX {
+            let report = pool.poll_report(retain_all);
+            backend_completions += report.backend_completions();
+            assert_eq!(report.reclaimed_frames(), 0);
+            assert_eq!(retain_all.iter().count(), 0);
+            if backend_completions == 2 {
+                return backend_completions;
+            }
+        }
+        panic!("the write and withheld fsync drain within the bounded poll budget");
+    }
+
     #[test]
     fn a_warm_pool_hit_allocates_nothing() {
         let frames = 8u32;
@@ -324,10 +466,15 @@ mod pool_gates {
 
         drop(resolve(&pool, &reader, page));
 
-        let allocations = armed_allocations(|| match pool.get(&reader, page) {
-            Get::Hit(guard) => assert_eq!(guard.len(), GRANULE as usize),
-            Get::Pending(_) => panic!("a resident page hits, it does not re-submit"),
-            Get::Busy => panic!("a resident page is never Busy"),
+        let allocations = armed_allocations(|| {
+            match pool
+                .get(&reader, page)
+                .expect("the registered file is live")
+            {
+                Get::Hit(guard) => assert_eq!(guard.len(), GRANULE as usize),
+                Get::Pending(_) => panic!("a resident page hits, it does not re-submit"),
+                Get::Busy => panic!("a resident page is never Busy"),
+            }
         });
 
         assert_eq!(
@@ -354,10 +501,15 @@ mod pool_gates {
         drop(resolve(&pool, &reader, PageId::new(file_id, 0)));
 
         let cold = PageId::new(file_id, 1);
-        let allocations = armed_allocations(|| match pool.get(&reader, cold) {
-            Get::Pending(_) => {}
-            Get::Hit(_) => panic!("an unfetched page cannot hit"),
-            Get::Busy => panic!("a spare frame exists; the miss submits"),
+        let allocations = armed_allocations(|| {
+            match pool
+                .get(&reader, cold)
+                .expect("the registered file is live")
+            {
+                Get::Pending(_) => {}
+                Get::Hit(_) => panic!("an unfetched page cannot hit"),
+                Get::Busy => panic!("a spare frame exists; the miss submits"),
+            }
         });
 
         assert_eq!(
@@ -383,7 +535,10 @@ mod pool_gates {
         drop(resolve(&pool, &reader, PageId::new(file_id, 2)));
 
         let cold = PageId::new(file_id, 3);
-        let _token = match pool.get(&reader, cold) {
+        let _token = match pool
+            .get(&reader, cold)
+            .expect("the registered file is live")
+        {
             Get::Pending(token) => token,
             other => panic!("expected a fresh miss to submit, got {other:?}"),
         };
@@ -417,9 +572,13 @@ mod pool_gates {
             guards.push(resolve(&pool, &reader, PageId::new(file_id, idx)));
         }
         let absent = PageId::new(file_id, frames + 1);
-        matches!(pool.get(&reader, absent), Get::Busy)
-            .then_some(())
-            .expect("warmup: every spare frame pinned, an absent get backpressures Busy");
+        matches!(
+            pool.get(&reader, absent)
+                .expect("the registered file is live"),
+            Get::Busy
+        )
+        .then_some(())
+        .expect("warmup: every spare frame pinned, an absent get backpressures Busy");
 
         let count_state = |state| {
             (0..frames)
@@ -427,10 +586,17 @@ mod pool_gates {
                 .count()
         };
         let free_before = count_state(FrameState::Free);
-        let allocations = armed_allocations(|| match pool.get(&reader, absent) {
-            Get::Busy => {}
-            Get::Pending(_) => panic!("no evictable frame exists — a further miss must be Busy"),
-            Get::Hit(_) => panic!("an unfetched page cannot hit"),
+        let allocations = armed_allocations(|| {
+            match pool
+                .get(&reader, absent)
+                .expect("the registered file is live")
+            {
+                Get::Busy => {}
+                Get::Pending(_) => {
+                    panic!("no evictable frame exists — a further miss must be Busy")
+                }
+                Get::Hit(_) => panic!("an unfetched page cannot hit"),
+            }
         });
 
         assert_eq!(
@@ -474,16 +640,26 @@ mod pool_gates {
         let baseline = pool.clock_reference_stores();
         drop(resolve(&pool, &reader, page));
 
-        drop(match pool.get(&reader, page) {
-            Get::Hit(guard) => guard,
-            other => panic!("first warm get must hit: {other:?}"),
-        });
+        drop(
+            match pool
+                .get(&reader, page)
+                .expect("the registered file is live")
+            {
+                Get::Hit(guard) => guard,
+                other => panic!("first warm get must hit: {other:?}"),
+            },
+        );
         let after_first_hit = pool.clock_reference_stores();
 
-        drop(match pool.get(&reader, page) {
-            Get::Hit(guard) => guard,
-            other => panic!("repeat warm get must hit: {other:?}"),
-        });
+        drop(
+            match pool
+                .get(&reader, page)
+                .expect("the registered file is live")
+            {
+                Get::Hit(guard) => guard,
+                other => panic!("repeat warm get must hit: {other:?}"),
+            },
+        );
         let after_repeat_hit = pool.clock_reference_stores();
 
         assert_eq!(
@@ -497,6 +673,71 @@ mod pool_gates {
             0,
             "a repeat hit on an already-referenced frame stores nothing — the DIO-G1 hot-path invariant \
              (an always-store impl, which T006's return-value test admits, records one here)"
+        );
+    }
+
+    #[test]
+    fn warm_pool_write_fsync_and_overflow_drain_allocate_nothing() {
+        let frames = 4u32;
+        let mock = a_mock(frames);
+        let file = mock
+            .open(Path::new("za-pool-write"), DirectIo::Disabled)
+            .expect("mock open");
+        let file_id = file.file_id();
+        let pool = pool_on_with_product_capacity(mock, frames, 1, 3, 1, 2);
+        pool.register_file(file);
+        let mut retain_all = PoolCompletionBatch::with_capacity(0);
+        let mut completions = PoolCompletionBatch::with_capacity(1);
+
+        let warm_slot = pool.write_arena().alloc().expect("one staging slot");
+        pool.submit_write(file_id, warm_slot, 0)
+            .expect("warmup write admits");
+        pool.submit_fsync(file_id, SyncMode::Full)
+            .expect("warmup barrier admits");
+        assert_eq!(drain_backend_and_retain_pair(&pool, &mut retain_all), 2);
+        for _ in 0..2 {
+            let report = pool.poll_report(&mut completions);
+            assert_eq!(report.backend_completions(), 0);
+            assert_eq!(report.reclaimed_frames(), 0);
+            assert_eq!(completions.iter().count(), 1);
+        }
+
+        let mut backend_completions = 0u32;
+        let mut first_backend_completions = 0u32;
+        let mut second_backend_completions = 0u32;
+        let mut first_delivered = 0usize;
+        let mut second_delivered = 0usize;
+        let allocations = armed_allocations(|| {
+            let slot = pool
+                .write_arena()
+                .alloc()
+                .expect("warm staging reuses storage");
+            pool.submit_write(file_id, slot, GRANULE.into())
+                .expect("armed write admits");
+            pool.submit_fsync(file_id, SyncMode::Full)
+                .expect("armed barrier admits");
+
+            backend_completions = drain_backend_and_retain_pair(&pool, &mut retain_all);
+
+            let report = pool.poll_report(&mut completions);
+            first_backend_completions = report.backend_completions();
+            assert_eq!(report.reclaimed_frames(), 0);
+            first_delivered = completions.iter().count();
+
+            let report = pool.poll_report(&mut completions);
+            second_backend_completions = report.backend_completions();
+            assert_eq!(report.reclaimed_frames(), 0);
+            second_delivered = completions.iter().count();
+        });
+
+        assert_eq!(backend_completions, 2);
+        assert_eq!(first_backend_completions, 0);
+        assert_eq!(first_delivered, 1, "caller capacity limits delivery only");
+        assert_eq!(second_backend_completions, 0);
+        assert_eq!(second_delivered, 1, "the overflow completion is retained");
+        assert_eq!(
+            allocations, 0,
+            "the warmed product write path is fixed-capacity"
         );
     }
 }

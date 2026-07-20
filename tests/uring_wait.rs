@@ -44,6 +44,7 @@ fn driver(frames: u32, frame_bytes: u32, queue_capacity: u32) -> Driver {
         .frame_bytes(frame_bytes)
         .retry_bound(3)
         .build()
+        .expect("the io_uring driver initializes")
 }
 
 fn seed_frame(tag: &str) -> PathBuf {

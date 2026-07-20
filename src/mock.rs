@@ -23,6 +23,7 @@ use crate::error::{IoError, SubmitError};
 use crate::open::DirectIo;
 use crate::pool::write_arena::{shared as shared_write_arena, ArenaState, WriteSlot};
 use crate::pool::{Frames, PoolBackend, ReadFrameIdx};
+use crate::product::{LifecycleCounters, WaitState};
 
 const EINTR: i32 = 4;
 #[cfg(target_os = "linux")]
@@ -47,6 +48,41 @@ pub struct WriteAttempt {
     pub file_offset: u64,
     pub source_offset: u32,
     pub requested_len: u32,
+}
+
+/// Sole chronological deterministic I/O recorder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MockIoEvent {
+    ReadAttempt {
+        file: FileId,
+        file_offset: u64,
+        destination_offset: u32,
+        requested_len: u32,
+    },
+    WriteAttempt {
+        file: FileId,
+        file_offset: u64,
+        source_offset: u32,
+        requested_len: u32,
+    },
+    FsyncAttempt {
+        file: FileId,
+    },
+    ReadCompletion {
+        file: FileId,
+        result: Result<u32, i32>,
+    },
+    WriteCompletion {
+        file: FileId,
+        result: Result<u32, i32>,
+    },
+    FsyncCompletion {
+        file: FileId,
+        result: Result<(), i32>,
+    },
+    Close {
+        file: FileId,
+    },
 }
 
 /// Direct-I/O capability reported by a deterministic mock file.
@@ -183,6 +219,7 @@ pub struct MockDriver(DriverCore<MockExecutor>);
 impl Drop for MockDriver {
     fn drop(&mut self) {
         self.0.quiesce();
+        self.0.executor().on_quiesce();
     }
 }
 
@@ -194,6 +231,10 @@ impl MockDriver {
 
     pub(crate) fn share_frames_for_pool(&self, frames: Arc<Frames>) {
         self.0.executor().set_arena(frames);
+    }
+
+    pub(crate) fn identity(&self) -> u64 {
+        self.0.identity()
     }
 
     /// Opens a fresh generational handle. Never touches disk.
@@ -303,6 +344,11 @@ impl MockDriver {
         self.0.poll_wait(out, timeout)
     }
 
+    #[must_use]
+    pub fn observe_waits(&self) -> crate::testing::MockWaitObservation {
+        crate::testing::MockWaitObservation::from_state(self.0.executor().observe_waits())
+    }
+
     /// Blocking metadata-plane write: loops the remainder past short transfers
     /// until the whole buffer is written or an operating failure surfaces;
     /// retries `EINTR` up to the init-time bound.
@@ -384,6 +430,16 @@ impl MockDriver {
     pub fn write_attempts_in_order(&self) -> Vec<WriteAttempt> {
         self.0.executor().write_attempts()
     }
+
+    #[must_use]
+    pub fn io_events_in_order(&self) -> Vec<MockIoEvent> {
+        self.0.executor().io_events()
+    }
+
+    #[must_use]
+    pub fn copy_stored_bytes(&self, file: FileId, offset: u64, out: &mut [u8]) -> usize {
+        self.0.executor().copy_stored_bytes(file, offset, out)
+    }
 }
 
 /// A borrowing view of a [`MockDriver`]'s fixed staging slots.
@@ -401,6 +457,17 @@ impl MockWriteArena<'_> {
 }
 
 impl PoolBackend for MockDriver {
+    fn identity(&self) -> u64 {
+        self.identity()
+    }
+
+    fn attach_pool_state(&self, lifecycle: Arc<LifecycleCounters>, wake: Arc<WaitState>) {
+        self.0
+            .executor()
+            .attach_pool_state(lifecycle, Arc::clone(&wake));
+        self.0.attach_pool_wait(wake);
+    }
+
     fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, IoError> {
         self.open_with_direct_io(path, direct_io)
     }
@@ -413,17 +480,49 @@ impl PoolBackend for MockDriver {
         destination_offset: u32,
         len: u32,
     ) -> Result<OpToken, SubmitError> {
-        self.0.executor().record_attempt(ReadAttempt {
-            file_offset,
-            destination_offset,
-            requested_len: len,
-        });
+        self.0.executor().record_read_attempt(
+            fd.file_id(),
+            ReadAttempt {
+                file_offset,
+                destination_offset,
+                requested_len: len,
+            },
+        );
         self.0
             .submit_read(fd, frame, file_offset, destination_offset, len, false)
     }
 
     fn poll(&self, out: &mut CompletionBatch) -> usize {
         self.0.poll(out)
+    }
+
+    fn poll_wait(&self, out: &mut CompletionBatch, timeout: Duration) -> usize {
+        self.0.poll_wait_eager_for_pool(out, timeout)
+    }
+
+    fn write_arena_state(&self) -> &ArenaState {
+        self.0.write_arena_state()
+    }
+
+    fn submit_write<'arena>(
+        &self,
+        fd: &FileHandle,
+        slot: WriteSlot<'arena>,
+        offset: u64,
+    ) -> Result<OpToken, (SubmitError, WriteSlot<'arena>)> {
+        self.submit_write(fd, slot, offset)
+    }
+
+    fn submit_fsync(&self, fd: &FileHandle, mode: SyncMode) -> Result<OpToken, SubmitError> {
+        self.submit_fsync(fd, mode)
+    }
+
+    fn close(&self, fd: FileHandle) {
+        self.close(fd);
+    }
+
+    fn is_closed(&self, file: FileId) -> bool {
+        self.is_closed(file)
     }
 }
 
@@ -440,14 +539,17 @@ struct MockExecutor {
     frames: u32,
     frame_bytes: u32,
     direct_io_support: DirectIoSupport,
+    pool_lifecycle: OnceLock<Arc<LifecycleCounters>>,
+    pool_wait: OnceLock<Arc<WaitState>>,
 }
 
 #[derive(Debug)]
 struct MockState {
     injected: VecDeque<Injected>,
     seeds: HashMap<(FileId, u32), u8>,
-    attempts: Vec<ReadAttempt>,
-    write_attempts: Vec<WriteAttempt>,
+    io_events: Vec<MockIoEvent>,
+    stored: HashMap<FileId, Vec<u8>>,
+    event_capacity: usize,
     rng: u64,
 }
 
@@ -463,19 +565,35 @@ impl MockExecutor {
             state: Mutex::new(MockState {
                 injected: VecDeque::with_capacity(injected_capacity as usize),
                 seeds: HashMap::new(),
-                attempts: Vec::new(),
-                write_attempts: Vec::with_capacity(injected_capacity as usize),
+                io_events: Vec::with_capacity(injected_capacity.saturating_mul(16) as usize),
+                stored: HashMap::with_capacity(MAX_FILES as usize),
+                event_capacity: injected_capacity.saturating_mul(16) as usize,
                 rng: seed,
             }),
             arena: OnceLock::new(),
             frames,
             frame_bytes,
             direct_io_support,
+            pool_lifecycle: OnceLock::new(),
+            pool_wait: OnceLock::new(),
         }
     }
 
     fn lock(&self) -> MutexGuard<'_, MockState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn attach_pool_state(&self, lifecycle: Arc<LifecycleCounters>, wait: Arc<WaitState>) {
+        let _ = self.pool_lifecycle.set(lifecycle);
+        let _ = self.pool_wait.set(wait);
+    }
+
+    fn observe_waits(&self) -> Arc<WaitState> {
+        Arc::clone(
+            self.pool_wait
+                .get()
+                .expect("the mock driver is attached to a Pool before wait observation"),
+        )
     }
 
     fn inject(&self, fault: Injected) {
@@ -487,15 +605,81 @@ impl MockExecutor {
     }
 
     fn attempts(&self) -> Vec<ReadAttempt> {
-        self.lock().attempts.clone()
+        self.lock()
+            .io_events
+            .iter()
+            .filter_map(|event| match event {
+                MockIoEvent::ReadAttempt {
+                    file_offset,
+                    destination_offset,
+                    requested_len,
+                    ..
+                } => Some(ReadAttempt {
+                    file_offset: *file_offset,
+                    destination_offset: *destination_offset,
+                    requested_len: *requested_len,
+                }),
+                _ => None,
+            })
+            .collect()
     }
 
-    fn record_attempt(&self, attempt: ReadAttempt) {
-        self.lock().attempts.push(attempt);
+    fn record_read_attempt(&self, file: FileId, attempt: ReadAttempt) {
+        let mut state = self.lock();
+        Self::push_event(
+            &mut state,
+            MockIoEvent::ReadAttempt {
+                file,
+                file_offset: attempt.file_offset,
+                destination_offset: attempt.destination_offset,
+                requested_len: attempt.requested_len,
+            },
+        );
     }
 
     fn write_attempts(&self) -> Vec<WriteAttempt> {
-        self.lock().write_attempts.clone()
+        self.lock()
+            .io_events
+            .iter()
+            .filter_map(|event| match event {
+                MockIoEvent::WriteAttempt {
+                    file_offset,
+                    source_offset,
+                    requested_len,
+                    ..
+                } => Some(WriteAttempt {
+                    file_offset: *file_offset,
+                    source_offset: *source_offset,
+                    requested_len: *requested_len,
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn io_events(&self) -> Vec<MockIoEvent> {
+        self.lock().io_events.clone()
+    }
+
+    fn push_event(state: &mut MockState, event: MockIoEvent) {
+        assert!(
+            state.io_events.len() < state.event_capacity,
+            "mock event recorder stays within its construction-time bound"
+        );
+        state.io_events.push(event);
+    }
+
+    fn copy_stored_bytes(&self, file: FileId, offset: u64, out: &mut [u8]) -> usize {
+        let state = self.lock();
+        let Some(bytes) = state.stored.get(&file) else {
+            return 0;
+        };
+        let start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(bytes.len());
+        let copied = out.len().min(bytes.len() - start);
+        out[..copied].copy_from_slice(&bytes[start..start + copied]);
+        copied
     }
 
     fn set_arena(&self, arena: Arc<Frames>) {
@@ -548,16 +732,24 @@ impl EagerExecutor for MockExecutor {
         }
         let injected = {
             let mut state = self.lock();
-            if matches!(kind, OpKind::Write) {
-                state.write_attempts.push(WriteAttempt {
-                    file_offset: context.file_offset,
-                    source_offset: context.destination_offset,
-                    requested_len: context.requested_len,
-                });
+            match kind {
+                OpKind::Read => {}
+                OpKind::Write => Self::push_event(
+                    &mut state,
+                    MockIoEvent::WriteAttempt {
+                        file: context.fd,
+                        file_offset: context.file_offset,
+                        source_offset: context.destination_offset,
+                        requested_len: context.requested_len,
+                    },
+                ),
+                OpKind::Fsync => {
+                    Self::push_event(&mut state, MockIoEvent::FsyncAttempt { file: context.fd });
+                }
             }
             state.injected.pop_front()
         };
-        match injected {
+        let attempt = match injected {
             None => {
                 if matches!(kind, OpKind::Read) {
                     self.fill_read(&context);
@@ -568,7 +760,24 @@ impl EagerExecutor for MockExecutor {
             Some(Injected::Short(bytes)) => Attempt::Done(bytes),
             Some(Injected::Eintr) => Attempt::Interrupted,
             Some(Injected::Eagain) => Attempt::WouldBlock,
+        };
+        if let (OpKind::Write, Attempt::Done(bytes)) = (kind, attempt) {
+            let mut state = self.lock();
+            let capacity = state
+                .event_capacity
+                .saturating_mul(self.frame_bytes as usize);
+            let stored = state
+                .stored
+                .entry(context.fd)
+                .or_insert_with(|| Vec::with_capacity(capacity));
+            let start = usize::try_from(context.file_offset).expect("mock offset fits usize");
+            let end = start + bytes as usize;
+            if stored.len() < end {
+                stored.resize(end, 0);
+            }
+            stored[start..end].copy_from_slice(&context.write_buf[..bytes as usize]);
         }
+        attempt
     }
 }
 
@@ -589,6 +798,52 @@ impl Executor for MockExecutor {
     }
 
     fn retire_file(&self, _slot: u32) {}
+
+    fn on_op_submitted(&self) {
+        if let Some(lifecycle) = self.pool_lifecycle.get() {
+            lifecycle
+                .backend_ops_in_flight
+                .fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    fn on_op_completed(&self, file: FileId, kind: OpKind, result: &Result<u32, IoError>) {
+        if let Some(lifecycle) = self.pool_lifecycle.get() {
+            lifecycle
+                .backend_ops_in_flight
+                .fetch_sub(1, Ordering::AcqRel);
+            lifecycle.backend_completions.fetch_add(1, Ordering::AcqRel);
+        }
+        let event_result = result
+            .as_ref()
+            .map(|bytes| *bytes)
+            .map_err(|error| error.raw_os_error().unwrap_or(5));
+        let event = match kind {
+            OpKind::Read => MockIoEvent::ReadCompletion {
+                file,
+                result: event_result,
+            },
+            OpKind::Write => MockIoEvent::WriteCompletion {
+                file,
+                result: event_result,
+            },
+            OpKind::Fsync => MockIoEvent::FsyncCompletion {
+                file,
+                result: event_result.map(|_| ()),
+            },
+        };
+        Self::push_event(&mut self.lock(), event);
+    }
+
+    fn on_file_closed(&self, file: FileId) {
+        Self::push_event(&mut self.lock(), MockIoEvent::Close { file });
+    }
+
+    fn on_quiesce(&self) {
+        if let Some(lifecycle) = self.pool_lifecycle.get() {
+            lifecycle.quiesce_calls.fetch_add(1, Ordering::AcqRel);
+        }
+    }
 
     #[cfg(any(feature = "mock", feature = "bench"))]
     fn copy_frame(&self, frame: ReadFrameIdx, out: &mut [u8]) -> usize {
