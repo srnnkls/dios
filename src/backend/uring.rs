@@ -16,13 +16,13 @@ use std::os::unix::io::AsRawFd;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use io_uring::{opcode, squeue, types, IoUring};
+use io_uring::{IoUring, opcode, squeue, types};
 
-use crate::driver::{Backend, Executor, OpKind, RingExecutor, MAX_FILES};
+use crate::driver::{Backend, Executor, MAX_FILES, OpKind, RingExecutor};
 use crate::error::IoError;
-use crate::pool::write_arena::ArenaState;
 use crate::pool::Frames;
 use crate::pool::ReadFrameIdx;
+use crate::pool::write_arena::ArenaState;
 use crate::product::{PlatformWake, WaitState};
 
 const EINTR: i32 = 4;

@@ -34,7 +34,7 @@ use dios::driver::Driver;
 use dios::testing::{
     Clock, FrameState, PageTable, ReadFrameIdx, ReaderCounters, TestFrames as Frames,
 };
-use dios::{DirectIo, FileId, PageId, Pool, PoolConfigError, GRANULE_DEFAULT};
+use dios::{DirectIo, FileId, GRANULE_DEFAULT, PageId, Pool, PoolConfigError};
 
 const SECTOR: usize = 4096;
 

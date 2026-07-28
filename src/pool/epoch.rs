@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use crate::pool::ReadFrameIdx;
 use crate::product::LifecycleCounters;
-use crate::sync::{fence, AtomicBool, AtomicU64, Ordering};
+use crate::sync::{AtomicBool, AtomicU64, Ordering, fence};
 
 /// A reader publishes this sentinel as its `local_epoch` while it holds no guard;
 /// the advance check reads it as "no constraint on the global epoch".

@@ -1,5 +1,5 @@
-use dios::driver::{Alignment, Backend, Driver, SubmitError, Unaligned};
 use dios::IoError;
+use dios::driver::{Alignment, Backend, Driver, SubmitError, Unaligned};
 
 #[cfg(target_os = "macos")]
 #[test]

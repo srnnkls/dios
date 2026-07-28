@@ -16,7 +16,7 @@ use crate::driver::FileId;
 use crate::pool::ReadFrameIdx;
 use crate::sync::{Arc, AtomicU64, Mutex, MutexGuard, Ordering};
 
-use super::epoch::{advance_epoch, EvictQueue, ReaderSlot};
+use super::epoch::{EvictQueue, ReaderSlot, advance_epoch};
 use super::{Clock, FrameState, Frames, PageId, PageTable, SECTOR_BYTES};
 
 struct Control {

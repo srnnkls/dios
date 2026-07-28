@@ -8,10 +8,10 @@ use std::fs::File;
 use std::os::unix::fs::FileExt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use crate::driver::{Attempt, Backend, EagerExecutor, Executor, OpContext, OpKind, MAX_FILES};
+use crate::driver::{Attempt, Backend, EagerExecutor, Executor, MAX_FILES, OpContext, OpKind};
 use crate::error::IoError;
-use crate::pool::write_arena::ArenaState;
 use crate::pool::Frames;
+use crate::pool::write_arena::ArenaState;
 
 const EINTR: i32 = 4;
 const EAGAIN: i32 = 35;

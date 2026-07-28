@@ -38,9 +38,9 @@ pub mod testing {
     use std::cell::Cell;
     use std::marker::PhantomData;
     #[cfg(feature = "mock")]
-    use std::sync::atomic::Ordering;
-    #[cfg(feature = "mock")]
     use std::sync::Arc;
+    #[cfg(feature = "mock")]
+    use std::sync::atomic::Ordering;
 
     pub use crate::pool::ReadFrameIdx;
 
@@ -350,8 +350,8 @@ pub use driver::SyncMode;
 pub use error::IoError;
 pub use open::DirectIo;
 pub use pool::{
-    FrameGuard, Get, GetError, PageId, PendingToken, Pool, PoolBuildError, PoolBuilder,
-    PoolConfigError, ReaderCtx, ReadyResult, RegisterError, GRANULE_DEFAULT,
+    FrameGuard, GRANULE_DEFAULT, Get, GetError, PageId, PendingToken, Pool, PoolBuildError,
+    PoolBuilder, PoolConfigError, ReaderCtx, ReadyResult, RegisterError,
 };
 pub use product::{
     PollReport, PoolCompletion, PoolCompletionBatch, PoolSubmitError, PoolToken, PoolWakeHandle,

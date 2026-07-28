@@ -76,13 +76,13 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use dios::DirectIo;
 use dios::driver::{Completion, CompletionBatch, FileHandle, OpToken, SubmitError};
 use dios::testing::{Injected, MockRingDriver, ReadFrameIdx, WriteAttempt};
-use dios::DirectIo;
 
 const FRAME_BYTES: u32 = 4096;
 const RETRY_BOUND: u32 = 3;

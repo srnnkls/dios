@@ -6,16 +6,16 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 #[cfg(feature = "mock")]
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 #[cfg(feature = "mock")]
 use std::thread;
 #[cfg(feature = "mock")]
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "mock")]
-use dios::testing::{ShippingWaitObservation, ShippingWaitTestingExt};
-#[cfg(feature = "mock")]
 use dios::PoolWakeHandle;
+#[cfg(feature = "mock")]
+use dios::testing::{ShippingWaitObservation, ShippingWaitTestingExt};
 use dios::{
     DirectIo, FileId, FrameGuard, Get, GetError, PageId, PendingToken, Pool, PoolCompletion,
     PoolCompletionBatch, PoolSubmitError, ReaderCtx, ReadyResult,
@@ -328,12 +328,16 @@ fn shipping_pool_reserves_the_checked_sum_for_reads_and_product_writes() {
     }
 
     let stored = std::fs::read(&path).expect("read the completed shipping writes");
-    assert!(stored[GRANULE as usize..(GRANULE * 2) as usize]
-        .iter()
-        .all(|&byte| byte == 0xA1));
-    assert!(stored[(GRANULE * 2) as usize..(GRANULE * 3) as usize]
-        .iter()
-        .all(|&byte| byte == 0xB2));
+    assert!(
+        stored[GRANULE as usize..(GRANULE * 2) as usize]
+            .iter()
+            .all(|&byte| byte == 0xA1)
+    );
+    assert!(
+        stored[(GRANULE * 2) as usize..(GRANULE * 3) as usize]
+            .iter()
+            .all(|&byte| byte == 0xB2)
+    );
 }
 
 #[test]

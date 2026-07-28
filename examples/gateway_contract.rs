@@ -237,7 +237,10 @@ fn waiter_interest_drop_still_residents() {
     }
     pool.poll();
 
-    match pool.get(&reader, page).expect("the registered file is live") {
+    match pool
+        .get(&reader, page)
+        .expect("the registered file is live")
+    {
         Get::Hit(guard) => assert_frame_fill(&guard, 0xCC),
         Get::Pending(_) => panic!(
             "dropping a PendingToken cancels waiter interest only — the read still completed and made the page resident"

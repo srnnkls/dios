@@ -11,9 +11,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use dios::DirectIo;
 use dios::driver::{CompletionBatch, OpKind, OpToken, SubmitError, SyncMode};
 use dios::testing::{Injected, MockDriver, ReadFrameIdx, WriteAttempt};
-use dios::DirectIo;
 
 const FRAME_BYTES: u32 = 4096;
 const EINTR: i32 = 4;
@@ -651,8 +651,8 @@ fn poll_is_non_blocking_and_poll_wait_bounds_its_idle_wait() {
 
 #[test]
 fn submit_does_not_wait_on_a_poller_parked_in_poll_wait() {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
 
     let m = Arc::new(mock(1, 4, 4));

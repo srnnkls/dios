@@ -12,7 +12,7 @@
 use crate::driver::FileId;
 use crate::pool::PageId;
 use crate::pool::ReadFrameIdx;
-use crate::sync::{fence, spin_loop, AtomicBool, AtomicU32, AtomicU64, Ordering};
+use crate::sync::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence, spin_loop};
 
 /// Under the AD-4 single-writer discipline a read that never observes a stable
 /// even version is a stuck writer — a bug to crash on, not to spin on forever.

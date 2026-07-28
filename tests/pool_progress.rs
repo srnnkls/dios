@@ -13,7 +13,7 @@
 #![cfg(feature = "mock")]
 
 use std::path::Path;
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 

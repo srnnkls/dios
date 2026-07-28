@@ -6,7 +6,7 @@
 //! beyond the driver. An admitted write records a slot index in the driver's
 //! fixed completion slab; no ownership pointer or refcount crosses the hot path.
 
-use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
+use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::sync::{Arc, PoisonError};

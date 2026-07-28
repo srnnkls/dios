@@ -4,7 +4,7 @@
 
 #[cfg(target_os = "linux")]
 use core::ffi::{c_int, c_void};
-use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
+use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 use std::ptr::NonNull;
 
 use crate::pool::SECTOR_BYTES;

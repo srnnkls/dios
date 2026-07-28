@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::completion::CompletionBatch;
-use crate::driver::{Driver, FileHandle, FileId, OpKind, OpToken, MAX_FILES};
+use crate::driver::{Driver, FileHandle, FileId, MAX_FILES, OpKind, OpToken};
 use crate::error::{IoError, SubmitError};
 use crate::open::DirectIo;
 use crate::product::{
@@ -35,15 +35,15 @@ mod miss;
 mod table;
 pub(crate) mod write_arena;
 
-use epoch::{advance_epoch, EvictQueue, ReaderRegistry};
+use epoch::{EvictQueue, ReaderRegistry, advance_epoch};
 use miss::{MissEntry, MissInterests, MissOutcome, MissSlot, MissTable};
 
 pub use clock::Clock;
 pub use epoch::{FrameGuard, ReaderCtx};
 pub(crate) use frames::Frames;
 pub use frames::{FrameState, ReadFrameIdx};
-pub(crate) use miss::sealed::Sealed as PoolBackendSealed;
 pub(crate) use miss::PoolBackend;
+pub(crate) use miss::sealed::Sealed as PoolBackendSealed;
 pub use table::PageTable;
 
 /// Default frame granule, fixed per store at open and never below the `O_DIRECT`

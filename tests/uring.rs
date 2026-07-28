@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
+use dios::DirectIo;
 use dios::driver::{CompletionBatch, Driver, FileHandle, IoMode, OpToken, SubmitError, SyncMode};
 use dios::testing::{DriverObservation, DriverReadTestingExt, ReadFrameIdx};
-use dios::DirectIo;
 
 const FRAME_BYTES: u32 = 4096;
 const ENOENT: i32 = 2;

@@ -17,9 +17,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
+use dios::DirectIo;
 use dios::driver::{CompletionBatch, Driver};
 use dios::testing::{DriverReadTestingExt, ReadFrameIdx};
-use dios::DirectIo;
 
 const FRAME_BYTES: u32 = 4096;
 const DRAIN_DEADLINE: Duration = Duration::from_secs(5);

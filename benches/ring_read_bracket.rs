@@ -18,15 +18,15 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 mod bracket {
-    use std::alloc::{alloc, dealloc, Layout};
+    use std::alloc::{Layout, alloc, dealloc};
     use std::cell::Cell;
     use std::hint::black_box;
     use std::os::unix::fs::{FileExt, OpenOptionsExt};
     use std::path::{Path, PathBuf};
 
+    use dios::DirectIo;
     use dios::driver::{CompletionBatch, Driver};
     use dios::testing::{DriverObservation, DriverReadTestingExt, ReadFrameIdx};
-    use dios::DirectIo;
 
     const GRANULE: usize = 4096;
     const FILE_GRANULES: u32 = 16_384;

@@ -16,12 +16,12 @@ use std::time::Duration;
 
 use crate::completion::CompletionBatch;
 use crate::driver::{
-    next_driver_id, Attempt, CompletionSlab, DriverCore, EagerExecutor, Executor, FileHandle,
-    FileId, OpContext, OpKind, OpToken, RingExecutor, Shared, SyncMode, MAX_FILES,
+    Attempt, CompletionSlab, DriverCore, EagerExecutor, Executor, FileHandle, FileId, MAX_FILES,
+    OpContext, OpKind, OpToken, RingExecutor, Shared, SyncMode, next_driver_id,
 };
 use crate::error::{IoError, SubmitError};
 use crate::open::DirectIo;
-use crate::pool::write_arena::{shared as shared_write_arena, ArenaState, WriteSlot};
+use crate::pool::write_arena::{ArenaState, WriteSlot, shared as shared_write_arena};
 use crate::pool::{Frames, PoolBackend, ReadFrameIdx};
 use crate::product::{LifecycleCounters, WaitState};
 

@@ -12,7 +12,7 @@
     reason = "the frozen adversarial schedule and precedence cases remain intentionally contiguous"
 )]
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 
 use dios::testing::{

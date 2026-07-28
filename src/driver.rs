@@ -36,7 +36,7 @@ use crate::backend;
 pub use crate::completion::{Completion, CompletionBatch};
 pub use crate::error::{IoError, SubmitError};
 use crate::open::DirectIo;
-use crate::pool::write_arena::{shared as shared_write_arena, ArenaState};
+use crate::pool::write_arena::{ArenaState, shared as shared_write_arena};
 pub use crate::pool::write_arena::{WriteArena, WriteSlot};
 use crate::pool::{Frames, ReadFrameIdx};
 use crate::product::WaitState;
