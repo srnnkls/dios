@@ -43,6 +43,8 @@ pub mod testing {
     use std::sync::atomic::Ordering;
 
     pub use crate::pool::ReadFrameIdx;
+    #[cfg(feature = "mock")]
+    pub use crate::pool::{ResidentFileLease, ResidentHint};
 
     /// Feature-gated raw-read admission for backend tests and driver benches.
     pub trait DriverReadTestingExt {
@@ -224,6 +226,59 @@ pub mod testing {
             Arc::new(MockPoolObservation {
                 lifecycle: self.lifecycle_internal(),
             })
+        }
+    }
+
+    /// Experimental native-residency hint surface. Product exposure remains
+    /// blocked on the active scope's retirement and reuse Loom gates.
+    #[cfg(feature = "mock")]
+    pub trait ResidentHintTestingExt {
+        /// Acquires a coarse lease for one live file.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`crate::pool::GetError::StaleFile`] when `file` is stale or not live.
+        fn lease_file(
+            &self,
+            file: crate::driver::FileId,
+        ) -> Result<ResidentFileLease, crate::pool::GetError>;
+        fn resident_hint(
+            &self,
+            lease: &ResidentFileLease,
+            page: crate::pool::PageId,
+        ) -> Option<ResidentHint>;
+        fn pin_resident_hint<'ctx>(
+            &'ctx self,
+            reader: &'ctx crate::pool::ReaderCtx,
+            lease: &'ctx ResidentFileLease,
+            hint: ResidentHint,
+        ) -> Option<crate::pool::FrameGuard<'ctx>>;
+    }
+
+    #[cfg(feature = "mock")]
+    impl ResidentHintTestingExt for crate::pool::Pool<MockDriver> {
+        fn lease_file(
+            &self,
+            file: crate::driver::FileId,
+        ) -> Result<ResidentFileLease, crate::pool::GetError> {
+            self.lease_file_internal(file)
+        }
+
+        fn resident_hint(
+            &self,
+            lease: &ResidentFileLease,
+            page: crate::pool::PageId,
+        ) -> Option<ResidentHint> {
+            self.resident_hint_internal(lease, page)
+        }
+
+        fn pin_resident_hint<'ctx>(
+            &'ctx self,
+            reader: &'ctx crate::pool::ReaderCtx,
+            lease: &'ctx ResidentFileLease,
+            hint: ResidentHint,
+        ) -> Option<crate::pool::FrameGuard<'ctx>> {
+            self.pin_resident_hint_internal(reader, lease, hint)
         }
     }
 

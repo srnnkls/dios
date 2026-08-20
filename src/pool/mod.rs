@@ -22,6 +22,8 @@ use crate::product::{
     LifecycleCounters, PollReport, PoolCompletion, PoolCompletionBatch, PoolSubmitError, PoolToken,
     PoolWakeHandle, PoolWriteArena, PoolWriteSlot, RetireStatus, WaitState,
 };
+#[cfg(feature = "mock")]
+use crate::sync::{AtomicBool, AtomicU32};
 use crate::sync::{AtomicU64, Mutex, MutexGuard, Ordering};
 
 #[cfg(test)]
@@ -119,6 +121,101 @@ impl std::fmt::Display for GetError {
 }
 
 impl std::error::Error for GetError {}
+
+/// Experimental typed capability for one exact pool/file identity.
+///
+/// Retirement closes admission of new leases and hints, but a lease acquired
+/// beforehand remains live until it drops and may validate an already-minted
+/// hint for that same file.
+#[cfg(feature = "mock")]
+#[derive(Debug)]
+pub struct ResidentFileLease {
+    pool_identity: u64,
+    file: FileId,
+    liveness: Arc<ResidentFileLiveness>,
+}
+
+#[cfg(feature = "mock")]
+impl Drop for ResidentFileLease {
+    fn drop(&mut self) {
+        self.liveness.release();
+    }
+}
+
+/// The proof-bearing admission primitive shared by the mock-backed pool and
+/// its bounded Loom model. A typed lease acquired while live may outlast
+/// retirement; retirement closes new lease/hint admission rather than
+/// revoking already-minted capabilities.
+#[cfg(feature = "mock")]
+#[derive(Debug)]
+struct ResidentFileLiveness {
+    accepting: AtomicBool,
+    leases: AtomicU32,
+}
+
+#[cfg(feature = "mock")]
+impl ResidentFileLiveness {
+    fn live() -> Self {
+        Self {
+            accepting: AtomicBool::new(true),
+            leases: AtomicU32::new(0),
+        }
+    }
+
+    fn acquire(&self) -> bool {
+        if !self.accepting.load(Ordering::Acquire) {
+            return false;
+        }
+        let previous = self.leases.fetch_add(1, Ordering::AcqRel);
+        assert!(previous < u32::MAX, "resident file lease count within u32");
+        if self.accepting.load(Ordering::Acquire) {
+            true
+        } else {
+            self.release();
+            false
+        }
+    }
+
+    fn release(&self) {
+        let previous = self.leases.fetch_sub(1, Ordering::AcqRel);
+        assert!(
+            previous > 0,
+            "a resident file lease was previously acquired"
+        );
+    }
+
+    fn retire(&self) {
+        self.accepting.store(false, Ordering::Release);
+    }
+
+    fn accepts_hints(&self) -> bool {
+        self.accepting.load(Ordering::Acquire)
+    }
+
+    fn has_leases(&self) -> bool {
+        self.leases.load(Ordering::Acquire) > 0
+    }
+}
+
+/// Opaque, volatile observation of one exact [`PageId`], frame, and residency
+/// stamp. Every pin validates the supplied lease's pool/file identity and then
+/// revalidates the exact page mapping and stamp.
+#[cfg(feature = "mock")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResidentHint {
+    page: PageId,
+    frame: ReadFrameIdx,
+    stamp: NonZeroU64,
+}
+
+#[cfg(feature = "mock")]
+impl ResidentHint {
+    /// Returns the granule ordinal of the exact page this hint was minted for.
+    #[must_use]
+    pub fn granule_idx(self) -> u32 {
+        self.page.granule_idx()
+    }
+}
 
 /// Re-check outcome of a pending miss: `NotYet` hands the token back for a
 /// non-consuming poll-again; `Err` frees the frame and surfaces the failure.
@@ -559,6 +656,8 @@ struct PoolFile {
     id: FileId,
     handle: Option<FileHandle>,
     state: PoolFileState,
+    #[cfg(feature = "mock")]
+    resident_liveness: Arc<ResidentFileLiveness>,
 }
 
 #[derive(Debug)]
@@ -775,6 +874,8 @@ impl<D: PoolBackend> Pool<D> {
             id,
             handle: Some(fd),
             state: PoolFileState::Live,
+            #[cfg(feature = "mock")]
+            resident_liveness: Arc::new(ResidentFileLiveness::live()),
         });
     }
 
@@ -1123,6 +1224,10 @@ impl<D: PoolBackend> Pool<D> {
 
     /// Starts or advances typed file retirement.
     ///
+    /// Retirement closes admission of new resident leases and hints. A hint
+    /// minted before retirement remains usable while its original typed lease
+    /// is live and its exact page mapping and residency stamp still validate.
+    ///
     /// # Panics
     ///
     /// If `file` belongs to another pool.
@@ -1144,6 +1249,10 @@ impl<D: PoolBackend> Pool<D> {
             return RetireStatus::Retired;
         }
         let started = entry.state == PoolFileState::Live;
+        #[cfg(feature = "mock")]
+        if started {
+            entry.resident_liveness.retire();
+        }
         entry.state = PoolFileState::Retiring;
         self.progress_retirements(&mut control);
         if started {
@@ -1182,6 +1291,13 @@ impl<D: PoolBackend> Pool<D> {
             else {
                 continue;
             };
+            #[cfg(feature = "mock")]
+            if control.files[index]
+                .as_ref()
+                .is_some_and(|entry| entry.resident_liveness.has_leases())
+            {
+                continue;
+            }
             self.retire_file_frames(control, file);
             let miss_live = control.miss.has_live_for_file(file, &self.miss_interests);
             let frames_live = control.frame_pages.iter().enumerate().any(|(frame, page)| {
@@ -1245,6 +1361,108 @@ impl<D: PoolBackend> Pool<D> {
             "a poll reclaims at most every frame"
         );
         reclaimed
+    }
+
+    #[cfg(feature = "mock")]
+    pub(crate) fn lease_file_internal(&self, file: FileId) -> Result<ResidentFileLease, GetError> {
+        assert_eq!(
+            file.driver(),
+            self.identity,
+            "file identity used with a foreign pool"
+        );
+        let control = self.control();
+        let Some(entry) = control.files[file.slot() as usize].as_ref() else {
+            return Err(GetError::StaleFile {
+                page: PageId::new(file, 0),
+            });
+        };
+        if entry.id != file || entry.state != PoolFileState::Live {
+            return Err(GetError::StaleFile {
+                page: PageId::new(file, 0),
+            });
+        }
+        if !entry.resident_liveness.acquire() {
+            return Err(GetError::StaleFile {
+                page: PageId::new(file, 0),
+            });
+        }
+        Ok(ResidentFileLease {
+            pool_identity: self.identity,
+            file,
+            liveness: Arc::clone(&entry.resident_liveness),
+        })
+    }
+
+    #[cfg(feature = "mock")]
+    /// Mints a volatile hint for exactly `page` while the typed file lease still
+    /// admits hints.
+    pub(crate) fn resident_hint_internal(
+        &self,
+        lease: &ResidentFileLease,
+        page: PageId,
+    ) -> Option<ResidentHint> {
+        self.assert_lease_page(lease, page);
+        if !lease.liveness.accepts_hints() {
+            return None;
+        }
+        let frame = self.table.lookup(page)?;
+        let stamp = NonZeroU64::new(self.frames.resident_stamp(frame)?)?;
+        lease
+            .liveness
+            .accepts_hints()
+            .then_some(ResidentHint { page, frame, stamp })
+    }
+
+    #[cfg(feature = "mock")]
+    /// Validates the lease's pool/file identity, the hint's exact page mapping,
+    /// and its current residency stamp before returning stable frame bytes.
+    /// This deliberately does not recheck retirement admission: an
+    /// already-minted hint remains usable under its original live lease.
+    pub(crate) fn pin_resident_hint_internal<'ctx>(
+        &'ctx self,
+        reader: &'ctx ReaderCtx,
+        lease: &'ctx ResidentFileLease,
+        hint: ResidentHint,
+    ) -> Option<FrameGuard<'ctx>> {
+        self.assert_reader_owner(reader);
+        if lease.pool_identity != self.identity
+            || lease.file != hint.page.file()
+            || !lease.liveness.has_leases()
+        {
+            return None;
+        }
+        let slot = reader.slot();
+        let first_guard = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
+        if self.table.lookup(hint.page) != Some(hint.frame)
+            || !self
+                .frames
+                .resident_stamp_matches(hint.frame, hint.stamp.get())
+        {
+            if first_guard {
+                slot.abort_pin();
+            }
+            return None;
+        }
+        let _ = self.clock.reference(hint.frame);
+        slot.commit_pin();
+        Some(FrameGuard::new(self.frames.frame_bytes(hint.frame), slot))
+    }
+
+    #[cfg(feature = "mock")]
+    fn assert_lease_page(&self, lease: &ResidentFileLease, page: PageId) {
+        assert_eq!(
+            lease.pool_identity, self.identity,
+            "a resident file lease cannot cross pool identity"
+        );
+        assert_eq!(
+            lease.file,
+            page.file(),
+            "a resident file lease is file-typed"
+        );
+        assert!(
+            lease.liveness.has_leases(),
+            "a borrowed resident file lease remains live"
+        );
     }
 
     /// The residency state of `frame` — an observation seam for the epoch tests.
