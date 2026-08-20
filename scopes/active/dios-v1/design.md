@@ -13,10 +13,15 @@
 | Eviction control | kernel reclaim + TLB shootdowns | explicit CLOCK, deferred reuse at poll boundaries |
 | nmnm residency layer | specced only (`architecture.md:39-56`, stub `src/io/`) | implementable by this crate unmodified (DIO-R5) |
 
-mmap's miss is a trap: it cannot be batched, made async, or observed by a
-work-stealing scheduler — a stalled worker is a lost core. Under the
-planned nmnm integration (fault → bubble to async → worker takes ready
-work) page faults are the one IO shape that cannot participate. The write
+mmap's miss is a trap: it cannot be batched, made async, or observed by
+the embedding's IO plane — the fault fires inside a sync compute kernel
+and stalls that worker invisibly. Under the planned nmnm integration
+(unresolved `MemHandle` → `Pending` → bubble to the async,
+runtime-agnostic IO side, which issues the IO and re-readies the work
+item; work stealing exists only in nmnm's sans-io compute tier) page
+faults are the one IO shape that cannot participate: residency is driven
+entirely from the IO side, which needs the observable completions mmap
+cannot provide. The write
 plane additionally gains O_DIRECT on segment data (no page-cache dirtying
 by large compactions) and a single IO abstraction for future nmnm
 extraction.
@@ -392,7 +397,7 @@ the first-touch bit store rides in the DIO-G1 parity bench.
 | compile-fail: guard slice outlives guard/Pool/ReaderCtx or crosses a thread | INV-6 | does not compile |
 | trait pins: ReaderCtx !Send+!Sync; PendingToken Send+!Clone with Sync deliberately unspecified; FrameGuard !Send+!Sync | owned capability boundary | exact required traits compile; forbidden traits do not |
 | drop Pool before live ReaderCtx/PendingToken metadata | INV-8, embedding ownership | backend quiesces once; later slot/interest drops release once without retaining the driver |
-| move PendingToken to destination thread and resolve with its ReaderCtx | Sira/nmnm work stealing | token resolves exact seeded page; no reader/guard crosses threads |
+| move PendingToken to destination thread and resolve with its ReaderCtx | Sira routing / nmnm Gateway↔compute handoff | token resolves exact seeded page; no reader/guard crosses threads |
 | IO error on cold read | pool error channel | `ReadyResult::Err`, frame freed, all singleflight waiters get the error |
 | corrupt block on disk, cold + re-read after eviction | INV-7 | CRC error surfaces from BlockSource verify on each fetch |
 | pool sized below watermark | INV-9 | store open fails with config error |
@@ -464,10 +469,16 @@ the first-touch bit store rides in the DIO-G1 parity bench.
   kernel's single-issuer fast path (`SINGLE_ISSUER` + `DEFER_TASKRUN`
   rings; concurrent `io_uring_enter` on one shared ring serializes on
   the kernel's internal lock anyway, so a lock-free shared SQ would
-  only relocate the mutex). What it costs is N× registered-buffer
-  locked-memory accounting and per-ring sizing, both probed at open —
-  which is why it waits for a profile that convicts the mutex, not a
-  hunch (AD-4 trigger).
+  only relocate the mutex). What it costs is per-ring sizing plus a
+  locked-memory route chosen at open: `IORING_REGISTER_CLONE_BUFFERS`
+  (kernel ≥ 6.12) registers the arena once and clones the table into
+  each ring, accounted once; older kernels account the arena per ring
+  against RLIMIT_MEMLOCK (headroom probed, typed error) unless the
+  process holds CAP_IPC_LOCK (TigerBeetle's shipped systemd posture,
+  exempt from accounting); unregistered reads remain the zero-memlock
+  fallback at a per-op pinning cost needing its own gate — which is
+  why the escalation waits for a profile that convicts the mutex, not
+  a hunch (AD-4 trigger).
 - Zero-alloc includes the drop path, unlike op-owns-buffer runtimes:
   monoio must park a dropped in-flight op's owned buffer as
   `Lifecycle::Ignored(Box::new(data))`

@@ -187,10 +187,15 @@ topology if shared-ring contention ever shows):**
   the kernel's intended fast path. No thread ever touches another
   thread's SQ/CQ, so ring serialization disappears rather than moving
   into the kernel's shared-ring `uring_lock`.
-- The frame arena is registered in every ring. Locked-memory accounting
-  is per registration — N rings account the arena N times (the exact
-  limit interface is kernel-version dependent, RLIMIT_MEMLOCK in the
-  common case) — so headroom is probed at open with a typed error.
+- The frame arena reaches every ring by one of three routes probed at
+  open: `IORING_REGISTER_CLONE_BUFFERS` (kernel ≥ 6.12) registers the
+  arena once and clones the table into each ring, accounted once;
+  per-ring registration on older kernels accounts the arena N times
+  against RLIMIT_MEMLOCK — headroom probed at open with a typed error,
+  with CAP_IPC_LOCK (TigerBeetle's shipped systemd posture) exempting
+  the accounting entirely; unregistered reads (plain read ops, zero
+  locked memory) remain the fallback, gated by their own per-op
+  pinning bench.
 - What stays shared: the pool control plane (page table, singleflight,
   CLOCK hand, evict queue, epoch advance) keeps its mutex, but with
   every syscall outside it the critical sections shrink to pure memory
@@ -384,7 +389,7 @@ scope.
 | `PageTable` | PageId → frame lookup | open-addressed, fixed capacity = 2× frame count rounded up to a power of two (≤ 50% occupancy at full pool, bounding negative-probe length); lock-free probes are advisory — the miss path re-probes authoritatively under the AD-4 lock before submitting, guard-create recheck catches stale hits; insert/delete only under the lock, delete by backward-shift (no tombstones); no rehash ever |
 | `CompletionSlab` | Op slots at fixed capacity from open — `frame_count + write_slots + metadata_headroom` bounds in-flight ops, so no growth path exists (a lazily-growing slab is amortized-zero, not zero); slots acquired at submit (issuing an `OpToken` = slot + generation, generation bumped at reclaim so a reused slot never aliases a stale token) and reclaimed at completion drain — never caller-chosen (INV-11); `user_data` = slot index | op kind, fd, offset, frame index, waker/callback token |
 | `ReaderCtx` | Lifetime-free affine registration; owns an `Arc` to the reader registry plus its slot identity; `!Send + !Sync`; may outlive the `Pool` value and releases exactly its slot on Drop | pool identity, reader slot, thread-affinity marker |
-| `PendingToken` | Lifetime-free single-owner miss interest; `Send + !Clone`, with `Sync` deliberately unspecified; owns an `Arc` to interest state plus pool identity, so it may cross a work-steal boundary and resolve using the destination thread's `ReaderCtx` | page, miss slot + generation, pool identity, active-interest bit |
+| `PendingToken` | Lifetime-free single-owner miss interest; `Send + !Clone`, with `Sync` deliberately unspecified; owns an `Arc` to interest state plus pool identity, so it may cross a thread-handoff boundary (sira's routing seam, nmnm's Gateway↔compute seam) and resolve using the destination thread's `ReaderCtx` | page, miss slot + generation, pool identity, active-interest bit |
 | `FrameGuard<'pool>` | Borrowed epoch-pinned read access, `Deref<Target=[u8]>`, `!Send + !Sync`; remains bounded by the `Pool` and destination `ReaderCtx` borrows | frame index, epoch ticket |
 | `PoolWriteArena<'pool>` / `PoolWriteSlot<'pool>` | Closed crate-root product staging types, backend-erased and distinct from `dios::driver` staging vocabulary; registered O_DIRECT (Linux) / aligned F_NOCACHE (darwin), outside the read watermark | pool identity, exactly `PoolBuilder::write_slots` reusable slots (default 0), `DerefMut` slot |
 | `PoolToken` / `PoolCompletion` | Pool-minted operation identity and owned caller result; completions are exactly typed `Write` or `Fsync`, never `Read`/close or raw driver kinds | pool identity, slab slot + generation, typed owned result; admitted + retained population bounded by `max_inflight_product_ops` (default 0) |
@@ -1013,8 +1018,10 @@ unblock or silently start T010–T014 in the sira repository.
   self-impose sector alignment on darwin anyway.
 - Registered buffers are per-ring, but the same arena may be registered
   in multiple rings — keeps the per-worker-ring escalation (AD-4) open.
-  Locked-memory accounting is per registration: N rings account the
-  arena N times — probe headroom before enacting the escalation.
+  Per-registration locked-memory accounting applies only below kernel
+  6.12 (`IORING_REGISTER_CLONE_BUFFERS` clones the table, accounted
+  once) and only without CAP_IPC_LOCK — probe headroom before enacting
+  the escalation.
 - The mmap-soundness.md "per-miss copy" claim does not apply to
   O_DIRECT variants; do not cite it against this design (see Context).
 - EBR reader-thread slots must deregister via TLS destructor/RAII on
