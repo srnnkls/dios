@@ -419,6 +419,13 @@ impl MockDriver {
         self.0.executor().seed(fd.file_id(), granule_idx, fill);
     }
 
+    /// Seeds one simulated page with its exact frame bytes.
+    pub fn seed_page_bytes(&self, fd: &FileHandle, granule_idx: u32, bytes: &[u8]) {
+        self.0
+            .executor()
+            .seed_bytes(fd.file_id(), granule_idx, bytes);
+    }
+
     /// The reads the composed pool issued against this mock, in submission order.
     #[must_use]
     pub fn read_attempts_in_order(&self) -> Vec<ReadAttempt> {
@@ -546,11 +553,17 @@ struct MockExecutor {
 #[derive(Debug)]
 struct MockState {
     injected: VecDeque<Injected>,
-    seeds: HashMap<(FileId, u32), u8>,
+    seeds: HashMap<(FileId, u32), MockPageSeed>,
     io_events: Vec<MockIoEvent>,
     stored: HashMap<FileId, Vec<u8>>,
     event_capacity: usize,
     rng: u64,
+}
+
+#[derive(Debug)]
+enum MockPageSeed {
+    Fill(u8),
+    Bytes(Box<[u8]>),
 }
 
 impl MockExecutor {
@@ -601,7 +614,21 @@ impl MockExecutor {
     }
 
     fn seed(&self, file_id: FileId, granule_idx: u32, fill: u8) {
-        self.lock().seeds.insert((file_id, granule_idx), fill);
+        self.lock()
+            .seeds
+            .insert((file_id, granule_idx), MockPageSeed::Fill(fill));
+    }
+
+    fn seed_bytes(&self, file_id: FileId, granule_idx: u32, bytes: &[u8]) {
+        assert_eq!(
+            bytes.len(),
+            self.frame_bytes as usize,
+            "mock page bytes match the configured frame length"
+        );
+        self.lock().seeds.insert(
+            (file_id, granule_idx),
+            MockPageSeed::Bytes(bytes.to_vec().into_boxed_slice()),
+        );
     }
 
     fn attempts(&self) -> Vec<ReadAttempt> {
@@ -686,18 +713,31 @@ impl MockExecutor {
         let _ = self.arena.set(arena);
     }
 
-    /// Fills the destination pool frame with the seeded byte for a clean read,
-    /// modelling the disk transferring the granule's contents into the buffer.
-    fn fill_read(&self, context: &OpContext<'_>) {
+    /// Copies the seeded source range for a completed clean or partial read.
+    fn fill_read(&self, context: &OpContext<'_>, bytes: u32) {
         let granule_idx = u32::try_from(context.file_offset / u64::from(self.frame_bytes))
             .expect("granule index fits u32");
-        let fill = self.lock().seeds.get(&(context.fd, granule_idx)).copied();
-        if let (Some(arena), Some(fill)) = (self.arena.get(), fill) {
+        let source_offset = usize::try_from(context.file_offset % u64::from(self.frame_bytes))
+            .expect("an offset within one frame fits usize");
+        let source_end = source_offset
+            .checked_add(bytes as usize)
+            .expect("a mock read source range does not overflow");
+        assert!(source_end <= self.frame_bytes as usize);
+        let state = self.lock();
+        if let (Some(arena), Some(seed)) = (
+            self.arena.get(),
+            state.seeds.get(&(context.fd, granule_idx)),
+        ) {
             arena.with_transfer_range_mut(
                 context.frame,
                 context.destination_offset,
-                context.requested_len,
-                |destination| destination.fill(fill),
+                bytes,
+                |destination| match seed {
+                    MockPageSeed::Fill(fill) => destination.fill(*fill),
+                    MockPageSeed::Bytes(source) => {
+                        destination.copy_from_slice(&source[source_offset..source_end]);
+                    }
+                },
             );
         }
     }
@@ -750,17 +790,15 @@ impl EagerExecutor for MockExecutor {
             state.injected.pop_front()
         };
         let attempt = match injected {
-            None => {
-                if matches!(kind, OpKind::Read) {
-                    self.fill_read(&context);
-                }
-                Attempt::Done(clean_bytes)
-            }
+            None => Attempt::Done(clean_bytes),
             Some(Injected::Io(errno)) => Attempt::Failed(errno),
             Some(Injected::Short(bytes)) => Attempt::Done(bytes),
             Some(Injected::Eintr) => Attempt::Interrupted,
             Some(Injected::Eagain) => Attempt::WouldBlock,
         };
+        if let (OpKind::Read, Attempt::Done(bytes)) = (kind, attempt) {
+            self.fill_read(&context, bytes);
+        }
         if let (OpKind::Write, Attempt::Done(bytes)) = (kind, attempt) {
             let mut state = self.lock();
             let capacity = state

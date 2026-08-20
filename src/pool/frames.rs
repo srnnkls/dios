@@ -8,6 +8,8 @@ use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 use std::ptr::NonNull;
 
 use crate::pool::SECTOR_BYTES;
+#[cfg(feature = "mock")]
+use crate::sync::AtomicU64;
 use crate::sync::{AtomicU8, Ordering};
 
 #[cfg(all(test, target_os = "linux"))]
@@ -110,6 +112,8 @@ pub(crate) struct Frames {
     base: NonNull<u8>,
     layout: Layout,
     states: Box<[AtomicU8]>,
+    #[cfg(feature = "mock")]
+    residency_stamps: Box<[AtomicU64]>,
     count: u32,
     granule: u32,
 }
@@ -160,6 +164,10 @@ impl Frames {
             layout,
             states: (0..count)
                 .map(|_| AtomicU8::new(FrameState::Free.to_tag()))
+                .collect(),
+            #[cfg(feature = "mock")]
+            residency_stamps: (0..count)
+                .map(|_| AtomicU64::new(u64::from(FrameState::Free.to_tag())))
                 .collect(),
             count,
             granule,
@@ -274,7 +282,48 @@ impl Frames {
     pub(crate) fn advance(&self, frame: ReadFrameIdx, to: FrameState) {
         let index = self.checked_index(frame);
         let current = FrameState::from_tag(self.states[index].load(Ordering::Relaxed));
-        self.states[index].store(current.advance(to).to_tag(), Ordering::Relaxed);
+        let next = current.advance(to);
+        #[cfg(feature = "mock")]
+        if next != FrameState::Resident {
+            self.advance_residency_stamp(index, current, next);
+        }
+        self.states[index].store(next.to_tag(), Ordering::Relaxed);
+        #[cfg(feature = "mock")]
+        if next == FrameState::Resident {
+            self.advance_residency_stamp(index, current, next);
+        }
+    }
+
+    #[cfg(feature = "mock")]
+    fn advance_residency_stamp(&self, index: usize, from: FrameState, to: FrameState) {
+        let previous = self.residency_stamps[index].load(Ordering::Acquire);
+        assert_eq!(
+            FrameState::from_tag((previous & 0b11) as u8),
+            from,
+            "the hint stamp follows the frame residency state"
+        );
+        let generation = previous >> 2;
+        let generation = if to == FrameState::Resident {
+            generation
+                .checked_add(1)
+                .expect("frame residency generation exhausted before ABA")
+        } else {
+            generation
+        };
+        let next = (generation << 2) | u64::from(to.to_tag());
+        self.residency_stamps[index].store(next, Ordering::Release);
+    }
+
+    #[cfg(feature = "mock")]
+    pub(crate) fn resident_stamp(&self, frame: ReadFrameIdx) -> Option<u64> {
+        let stamp = self.residency_stamps[self.checked_index(frame)].load(Ordering::Acquire);
+        (stamp & 0b11 == u64::from(FrameState::Resident.to_tag())).then_some(stamp)
+    }
+
+    #[cfg(feature = "mock")]
+    pub(crate) fn resident_stamp_matches(&self, frame: ReadFrameIdx, expected: u64) -> bool {
+        let stamp = self.residency_stamps[self.checked_index(frame)].load(Ordering::Acquire);
+        stamp == expected && stamp & 0b11 == u64::from(FrameState::Resident.to_tag())
     }
 
     /// Fills `frame`'s whole granule with `byte`, standing in for a read

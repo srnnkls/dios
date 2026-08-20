@@ -1,7 +1,7 @@
 //! T009 pool concurrency proofs (loom). Compiled only under `--cfg loom`; the
 //! normal build sees an empty crate, so the loom dev-dependency never touches
 //! the shipping build (Cargo.toml gates it on `cfg(loom)`). Run with:
-//!   `RUSTFLAGS="--cfg loom" cargo test --test loom_pool`.
+//!   `RUSTFLAGS="--cfg loom" cargo test --features mock --test loom_pool`.
 //!
 //! ── Why a `loom_model` seam, not `Pool::get`/`poll` directly ────────────────
 //! loom explores interleavings only over ITS atomics. An integration test that
@@ -23,6 +23,8 @@
 //!   pub struct PoolModel;               // one shared control plane, N frames, 1 reader slot
 //!   pub struct Guard;                   // a live epoch pin; unpins on Drop (last-guard -> quiescent)
 //!   pub struct Snapshot;                // one committed seqlock read of a page->(frame,gen) cell
+//!   #[derive(Clone, Copy)]
+//!   pub struct ResidentHint;             // advisory exact-page mapping/stamp for the modeled file
 //!   impl PoolModel {
 //!     pub fn new(frames: u32) -> loom::sync::Arc<Self>;
 //!     // setup, single-threaded, before threads spawn: map `page` Resident in frame 0, granule filled `gen`
@@ -45,6 +47,20 @@
 //!     pub fn remap(&self, page: u32, gen: u8);
 //!     // reader: a lock-free advisory seqlock read; None = empty/retry, Some = a non-torn snapshot.
 //!     pub fn probe(&self, page: u32) -> Option<Snapshot>;
+//!     // These three hint/retirement operations delegate to the mock-gated real
+//!     // production hint/file-liveness, table, frame-state, and EBR primitives;
+//!     // they are not a parallel model-only implementation. The bounded model
+//!     // assumes a live typed lease and represents its exact file/page identity
+//!     // through `page`; it does not model lease guard counters or identity beyond
+//!     // that PageId contract.
+//!     // Hint admission closes when the modeled file retires.
+//!     pub fn resident_hint(&self, page: u32) -> Option<ResidentHint>;
+//!     // Models production pin validation of the typed lease/file, exact PageId
+//!     // mapping, and frame stamp.
+//!     pub fn pin_resident_hint(&self, page: u32, hint: ResidentHint) -> Option<Guard>;
+//!     // An already-minted capability under a live lease remains pinnable while
+//!     // its exact PageId mapping and stamp remain valid.
+//!     pub fn retire_file(&self);
 //!   }
 //!   impl Guard    { pub fn generation(&self) -> u8; }   // re-reads the LIVE frame content, not a pin-time copy
 //!   impl Snapshot { pub fn frame(&self) -> u32; pub fn generation(&self) -> u8; }
@@ -202,5 +218,89 @@ fn a_seqlock_read_racing_the_single_writer_never_returns_a_torn_snapshot() {
         }
 
         writer.join().expect("writer thread");
+    });
+}
+
+#[test]
+fn resident_hint_get_vs_retire() {
+    loom::model(|| {
+        let pool = PoolModel::new(1);
+        pool.make_resident(HELD_PAGE, HELD_GEN);
+        let hint = pool
+            .resident_hint(HELD_PAGE)
+            .expect("the resident page yields an advisory hint");
+        let live = pool
+            .pin_resident_hint(HELD_PAGE, hint)
+            .expect("a live hint deterministically pins before retirement starts");
+        assert_eq!(live.generation(), HELD_GEN);
+        drop(live);
+
+        let reader_pool = pool.clone();
+        let reader = thread::spawn(move || {
+            let guard = reader_pool
+                .pin_resident_hint(HELD_PAGE, hint)
+                .expect("a hint minted before retirement remains pinnable during the race");
+            assert_eq!(
+                guard.generation(),
+                HELD_GEN,
+                "a hint admitted before retirement keeps the exact old bytes stable"
+            );
+        });
+
+        pool.retire_file();
+        reader.join().expect("reader thread");
+        assert!(
+            pool.resident_hint(HELD_PAGE).is_none(),
+            "retirement closes admission of new hints for the modeled file generation"
+        );
+        let retained = pool
+            .pin_resident_hint(HELD_PAGE, hint)
+            .expect("an already-minted hint remains a valid typed capability after retirement");
+        assert_eq!(
+            retained.generation(),
+            HELD_GEN,
+            "a minted capability under its live lease retains the exact-page generation after retirement"
+        );
+    });
+}
+
+#[test]
+fn resident_hint_eviction_reuse() {
+    loom::model(|| {
+        let pool = PoolModel::new(1);
+        pool.make_resident(HELD_PAGE, HELD_GEN);
+        let stale = pool
+            .resident_hint(HELD_PAGE)
+            .expect("the original residency yields a hint");
+
+        let reader_pool = pool.clone();
+        let reader = thread::spawn(move || {
+            if let Some(guard) = reader_pool.pin_resident_hint(HELD_PAGE, stale) {
+                assert_eq!(
+                    guard.generation(),
+                    HELD_GEN,
+                    "a racing pin sees the original generation, never reused frame bytes"
+                );
+            }
+        });
+
+        pool.evict(HELD_PAGE);
+        pool.poll_pass(HELD_PAGE, INTRUDER_GEN);
+        pool.poll_pass(HELD_PAGE, INTRUDER_GEN);
+        reader.join().expect("reader thread");
+        pool.poll_pass(HELD_PAGE, INTRUDER_GEN);
+        pool.poll_pass(HELD_PAGE, INTRUDER_GEN);
+
+        assert!(
+            pool.pin_resident_hint(HELD_PAGE, stale).is_none(),
+            "a stale hint cannot alias a frame after eviction and reuse"
+        );
+        let fresh = pool
+            .resident_hint(HELD_PAGE)
+            .expect("the refilled page yields a fresh stamp for its new generation");
+        let guard = pool
+            .pin_resident_hint(HELD_PAGE, fresh)
+            .expect("the fresh stamp pins the refilled page");
+        assert_eq!(guard.generation(), INTRUDER_GEN);
     });
 }

@@ -15,9 +15,13 @@
 use crate::driver::FileId;
 use crate::pool::ReadFrameIdx;
 use crate::sync::{Arc, AtomicU64, Mutex, MutexGuard, Ordering};
+#[cfg(feature = "mock")]
+use std::num::NonZeroU64;
 
 use super::epoch::{EvictQueue, ReaderSlot, advance_epoch};
 use super::{Clock, FrameState, Frames, PageId, PageTable, SECTOR_BYTES};
+#[cfg(feature = "mock")]
+use super::{ResidentFileLiveness, ResidentHint};
 
 struct Control {
     evict_queue: EvictQueue,
@@ -35,6 +39,8 @@ pub struct PoolModel {
     // would add loom state the proofs never use) and is fully qualified so the
     // sync-alias regression guard allowlists it by name (ARCH-3).
     held_frame: std::sync::atomic::AtomicU32,
+    #[cfg(feature = "mock")]
+    file_liveness: ResidentFileLiveness,
     control: Mutex<Control>,
 }
 
@@ -48,6 +54,8 @@ impl PoolModel {
             global_epoch: AtomicU64::new(0),
             slot: ReaderSlot::vacant(),
             held_frame: std::sync::atomic::AtomicU32::new(0),
+            #[cfg(feature = "mock")]
+            file_liveness: ResidentFileLiveness::live(),
             control: Mutex::new(Control {
                 evict_queue: EvictQueue::with_capacity(frames),
             }),
@@ -182,6 +190,64 @@ impl PoolModel {
             frame: frame.get(),
             generation,
         })
+    }
+
+    /// Captures the exact modeled `PageId`, frame, and residency stamp while
+    /// the file generation still admits new hints. Production additionally
+    /// binds this operation to a typed lease; lease guards are outside this
+    /// bounded model.
+    #[cfg(feature = "mock")]
+    pub fn resident_hint(&self, page: u32) -> Option<ResidentHint> {
+        if !self.file_liveness.accepts_hints() {
+            return None;
+        }
+        let frame = self.table.lookup(Self::page_id(page))?;
+        let stamp = NonZeroU64::new(self.frames.resident_stamp(frame)?)?;
+        self.file_liveness.accepts_hints().then_some(ResidentHint {
+            page: Self::page_id(page),
+            frame,
+            stamp,
+        })
+    }
+
+    /// Publishes the real reader epoch before revalidating the stored exact
+    /// page mapping and residency stamp. A successful guard therefore prevents
+    /// reuse until it drops; every failed path aborts the publication.
+    /// Production also validates the supplied typed lease's pool/file identity;
+    /// lease guards are deliberately unmodeled here rather than replaced by a
+    /// stronger retirement policy.
+    #[cfg(feature = "mock")]
+    pub fn pin_resident_hint(&self, page: u32, hint: ResidentHint) -> Option<Guard<'_>> {
+        let first = self
+            .slot
+            .begin_pin(self.global_epoch.load(Ordering::Acquire));
+        assert!(first, "the one-reader hint model does not nest pins");
+        let valid = hint.page == Self::page_id(page)
+            && self.table.lookup(hint.page) == Some(hint.frame)
+            && self
+                .frames
+                .resident_stamp_matches(hint.frame, hint.stamp.get());
+        if !valid {
+            self.slot.abort_pin();
+            return None;
+        }
+        let _ = self.clock.reference(hint.frame);
+        self.slot.commit_pin();
+        Some(Guard {
+            slot: &self.slot,
+            frames: &self.frames,
+            frame: hint.frame,
+        })
+    }
+
+    /// Closes admission of new hints for the single modeled file generation.
+    /// It does not revoke an already-minted hint: that hint may still pin while
+    /// its exact mapping and stamp remain valid. Production additionally keeps
+    /// the file alive through the original typed lease, which this model does
+    /// not represent.
+    #[cfg(feature = "mock")]
+    pub fn retire_file(&self) {
+        self.file_liveness.retire();
     }
 }
 
