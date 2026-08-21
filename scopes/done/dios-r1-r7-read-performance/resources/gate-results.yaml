@@ -1,0 +1,225 @@
+schema: dios-drp009-gate-results-v1
+status: PASS
+
+host:
+  ssh: nix
+  benchmark_profile: active
+  cpu: AMD Ryzen Threadripper 3970X 32-Core Processor
+  kernel: 6.6.64
+  governor: performance
+  transparent_hugepage: never
+  direct_io: verified
+
+toolchain:
+  mise:
+    path: /home/srnnkls/build/dios-gates/tools/mise-v2026.8.0-linux-x64
+    version: 2026.8.0
+    sha256: dc62954db7ac2c5a37e3c0454d1744d2eb0bec373222cda6219c5ae3704a759c
+  rust: rustc 1.96.0
+
+identities:
+  candidate:
+    commit: 28e57aa2670aec9ee28b95688cff4ad793d3cdd0
+    executable_sha256: ed8eeb324ffa4b2c29ad439cae2543def23fc50f434f64eec04a44094b48a0b1
+    cargo_lock_sha256: 1b42c448538b727e0467382d566d4414b14454da83680bf607a6b304f3a02c51
+  g2_base:
+    commit: a94860f31e9f1649fcb73eccf8c3798c739c64fe
+    executable_sha256: 05634fc7940838b9bb82bdf67fd8cb095eebda8dd2f6dc5fc84f7d37cdbcd995
+    cargo_lock_sha256: 68fcc97026a9a5ef3c8a2ec1c55e0786464301ec7e772ff6744b16ee8359ed2b
+  g4_base:
+    commit: 1004a2e6fcae0bcc9552dc3211c2416e388a250d
+    executable_sha256: 0b49dc7dbe86d89c5390f94d7462818308104b6ce0d2f4ac8d001f9a5b250cfd
+    cargo_lock_sha256: cd49100a5d69bdb6418cc258c840c980ef9acc4caa404515f14cdb6f35a61561
+  runner:
+    source_sha256: 34e376becd9db2abd9de95c53a8fe39b0986dfe64a6a4bf0f4ca1cc5f4c221d6
+    build_sha256: f7ed6e387c206c9a0cdc907c5791311166b63e225442dba894a5fce3479e261f
+  converter_source_sha256: d7b3867c363a4adf95b87b4c2ef83a9e7e63cb96de69d82fc73e357321ad615f
+  input:
+    path: /home/srnnkls/build/dios-gates/artifacts/drp_binding_input.bin
+    bytes: 2101248
+    sha256: 915341006e824c0212e82abc923d5999e34ede24e102ebd821dcc3d4494af37a
+  direct_io_probe:
+    path: /home/srnnkls/build/dios-gates/artifacts/drp009_rerun_28e57aa/direct_io_probe.json
+    sha256: 7b656cb7ea5e51745bbfe5a4067a12bdda479effecbd9a1d7302a66d8caf4ae6
+
+protocol:
+  pairs_per_lane: 30
+  process_isolation: fresh
+  pair_order: alternating base-candidate and candidate-base
+  guard_command: mise run bench-host-guard
+  converter_command: mise run prepare-gate-pairs
+  gate_command: mise run gate
+  ratio_orientation: candidate/base
+  statistic: one-sided 95% CI upper bound
+
+gates:
+  drp_g2_warm_ordinary:
+    cpu_set: "0"
+    command: >-
+      taskset -c 0 env DIOS_BENCH_CPU_SET=0 read_path_product run
+      drp_g2_warm_ordinary ARM PAIR ORDER INPUT PROCESS MANIFEST
+    zero_alloc_command: mise run validate-drp-g2-zero-alloc PROCESS
+    compare_command: mise run gate PAIRED 1.01
+    result:
+      ratio_geomean: 0.9999
+      ci95_upper: 1.0024
+      threshold: 1.0100
+      zero_alloc: PASS
+      gate: PASS
+    artifacts:
+      root: /home/srnnkls/build/dios-gates/artifacts/drp009_rerun_28e57aa/drp_g2_warm_ordinary
+      files:
+        process.csv: c73023791c60ed540972cf0870d7a4940fd7f52948eaa3c24756765f421b5464
+        paired.csv: f7eb1464f76fc1d908b293b9520e57103ce181f99324f278c2a7921aecf706d5
+        provenance.json: 09e9e10b0856884e4ffcf74bf8296daf98b02b15f89cb70b10aae499810b38f3
+        zero_alloc_validator.log: 72c57fadf4a98082c2b913aba6825ee7825562bf9473631049e0e9233160538c
+        gate.log: 6022796b2fab3c0221642d96e104f6e94287295d3ad8eb05e112c461e13419be
+
+  drp_g2_cycling_reuse:
+    cpu_set: "0"
+    command: >-
+      taskset -c 0 env DIOS_BENCH_CPU_SET=0 read_path_product run
+      drp_g2_cycling_reuse ARM PAIR ORDER INPUT PROCESS MANIFEST
+    proof_command: >-
+      taskset -c 0 env DIOS_BENCH_CPU_SET=0 read_path_product smoke
+      drp_g2_cycling_reuse ARM 0 base-candidate xor_le_u64_rotate_v1 192
+      SCHEDULE INPUT PROOF_PROCESS MANIFEST PROOF
+    zero_alloc_command: mise run validate-drp-g2-zero-alloc PROCESS
+    compare_command: mise run gate PAIRED 1.01
+    result:
+      ratio_geomean: 0.9992
+      ci95_upper: 0.9996
+      threshold: 1.0100
+      production_proofs: PASS
+      zero_alloc: PASS
+      gate: PASS
+    artifacts:
+      root: /home/srnnkls/build/dios-gates/artifacts/drp009_rerun_28e57aa/drp_g2_cycling_reuse
+      files:
+        process.csv: 07e082e2e663cb825ecb1bc055eea4c56d2c98db6dacb09f0686c090cdeff3c7
+        paired.csv: d3b0c4611b009e5798f068970a4fc07c104df9a4a2d3a15ff56cf4c8411eb0b7
+        provenance.json: cc5c4431b22dc6c10c98b2eaec6e99579ce587fedc8835321f849f1621dd5ada
+        base_proof.json: 0504c2a181a76d01219b6e99e09efc1469333e8c5f93898960a582ad9f35e718
+        candidate_proof.json: d29462970eaf32eedb03d1da90b2d25cd3426c508e3f009bf3aa7f4f2adcdfd2
+        zero_alloc_validator.log: 72c57fadf4a98082c2b913aba6825ee7825562bf9473631049e0e9233160538c
+        gate.log: c002de2d3339369c6d80affc729471fe0d6ee93378384f644fbcd4e2324ae02e
+
+  drp_g3_hint_materiality:
+    cpu_set: "0"
+    command: >-
+      taskset -c 0 env DIOS_BENCH_CPU_SET=0 read_path_product run
+      drp_g3_hint_materiality ARM PAIR ORDER INPUT PROCESS MANIFEST
+    compare_command: mise run gate PAIRED 0.95
+    result:
+      ratio_geomean: 0.9273
+      ci95_upper: 0.9298
+      threshold: 0.9500
+      gate: PASS
+    artifacts:
+      root: /home/srnnkls/build/dios-gates/artifacts/drp009_rerun_28e57aa/drp_g3_hint_materiality
+      files:
+        process.csv: 0e34f36009348a6365836b2c5dccc84e2651868f6c252ea690116c2b657b4927
+        paired.csv: c93971207861dd867d4fa40480f5de80682ee9e01311bab6f5962c4f7652ef99
+        provenance.json: 4465036319eb22989d8f54e9b5d8b1a150cdd92ec0ecbd4293659c2bbe2aecc6
+        gate.log: 543a21f8ab47cdab73569340da2325555344a2177297bd8e4e7534a53460d11b
+
+  drp_g4_ordinary_base_8t:
+    cpu_set: 0-3,32-35
+    command: >-
+      taskset -c 0-3,32-35 env DIOS_BENCH_CPU_SET=0-3,32-35
+      read_path_product run drp_g4_ordinary_base_8t ARM PAIR ORDER INPUT
+      PROCESS MANIFEST
+    compare_command: mise run gate PAIRED 1.00
+    result:
+      ratio_geomean: 0.8715
+      ci95_upper: 0.9282
+      threshold: 1.0000
+      gate: PASS
+    artifacts:
+      root: /home/srnnkls/build/dios-gates/artifacts/drp009_rerun_28e57aa/drp_g4_ordinary_base_8t
+      files:
+        process.csv: 0d41b52146955c88b1981ec4abea487a2ce08afa477597655c437797608be615
+        paired.csv: 1067e8ed1115ceb21ad7e4e7c55a3aa7a6404699212f17847f1e8a207d79f1cb
+        provenance.json: 9dd71468b33d3b55b4e8d2ac09a41bbd751849a9bd7d4b0f53c4d70ae526981c
+        gate.log: a4655f6557afbc38800b00b3bb4264a3945e9e60e9efaf459f29c611686e15a7
+
+  drp_g4_ordinary_scaling:
+    cpu_sets:
+      one_thread: "0"
+      eight_threads: 0-3,32-35
+    command: >-
+      taskset -c CPU_SET env DIOS_BENCH_CPU_SET=CPU_SET read_path_product run
+      drp_g4_ordinary_scaling ARM PAIR ORDER INPUT PROCESS MANIFEST
+    compare_command: mise run gate PAIRED 0.50
+    result:
+      ratio_geomean: 0.2827
+      ci95_upper: 0.2991
+      threshold: 0.5000
+      gate: PASS
+    artifacts:
+      root: /home/srnnkls/build/dios-gates/artifacts/drp009_rerun_28e57aa/drp_g4_ordinary_scaling
+      files:
+        process.csv: 07a440cd85b571b7c1265c683b1aeb9247d536cad11af8c30cde671ff26776da
+        paired.csv: 0252de9342345b642477e914b350e0722cbcea77431f1a66a36fdd20bfaf3e6a
+        provenance.json: 455c3275114a26cf6847bbeb020d1060c84b67d9967e72224d928e9443d0280e
+        gate.log: 8a2ff60654ca66c4b21a4475d5b6b084e41fd35e2b9916e6be4a41cbb8e65316
+
+  drp_g4_hint_scaling:
+    cpu_sets:
+      one_thread: "0"
+      eight_threads: 0-3,32-35
+    command: >-
+      taskset -c CPU_SET env DIOS_BENCH_CPU_SET=CPU_SET read_path_product run
+      drp_g4_hint_scaling ARM PAIR ORDER INPUT PROCESS MANIFEST
+    compare_command: mise run gate PAIRED 0.50
+    result:
+      ratio_geomean: 0.3393
+      ci95_upper: 0.3558
+      threshold: 0.5000
+      gate: PASS
+    artifacts:
+      root: /home/srnnkls/build/dios-gates/artifacts/drp009_rerun_28e57aa/drp_g4_hint_scaling
+      files:
+        process.csv: 6a7f034bc381b7f8ccc2756af8b9561eb10ee1f98b3412b79ab1e09689ed32c8
+        paired.csv: 633d414b545efade3e9b59109a2ad0b2e36f6ff0927b8f481ddd362fb198e750
+        provenance.json: f6435e6c42750fe9e3b14c0ee467a5766ae964275ed6ae1b40fa9bfca786929d
+        gate.log: 6bb01babd43c8429fdba4ea7b4c66d105bdd247a15541ae503a2fd6547713a0d
+
+retained_inventory:
+  path: /home/srnnkls/build/dios-gates/artifacts/drp009_rerun_28e57aa/final_inventory.sha256
+  sha256: 3790f1480759eeeab88286e53d98576c0da5991334d5734f885b3cc87e64faa4
+
+initial_g2_failure:
+  candidate_product_commit: 65f21d9d9bd84333ee18ed6f53bbfaa20d9fe024
+  benchmark_guard_commit: 90512a9a00ff3c69971d18897abb194e743c0ee9
+  base_commit: a94860f31e9f1649fcb73eccf8c3798c739c64fe
+  thresholds_changed: false
+  lanes:
+    warm_ordinary:
+      ratio_geomean: 1.0386
+      ci95_upper: 1.0774
+      threshold: 1.0100
+      gate: FAIL
+      artifacts: /home/srnnkls/build/dios-gates/artifacts/drp_g2_warm_ordinary
+    cycling_reuse:
+      ratio_geomean: 1.0095
+      ci95_upper: 1.0208
+      threshold: 1.0100
+      gate: FAIL
+      artifacts: /home/srnnkls/build/dios-gates/artifacts/drp_g2_cycling_reuse
+  frozen_escalation:
+    profile:
+      candidate_commit: 6aeeefeab4714a6a2fefe23d52e6f1dd6dbe02c2
+      base_commit: a94860f31e9f1649fcb73eccf8c3798c739c64fe
+      root: /home/srnnkls/build/dios-gates/artifacts/drp009_profiles_6aeeefe_perf
+      runner_sha256: 74b43a32dd076236c1e1c3d90298209a67dbc33c600eae025f1cf76d6fee2b6a
+    diagnosis:
+      - The ordinary timed loop contained a candidate-only hint-access branch.
+      - Ordinary pinning redundantly loaded and checked the packed hint state.
+    redesign:
+      commit: 28e57aa2670aec9ee28b95688cff4ad793d3cdd0
+      action: >-
+        Remove the candidate-only ordinary branch and make the exact page-table
+        mapping under EBR authoritative for ordinary pins; retain packed state
+        for hinted pins and frame transitions.
+    threshold_policy: All frozen thresholds remained unchanged.

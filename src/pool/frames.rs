@@ -5,17 +5,61 @@
 #[cfg(target_os = "linux")]
 use core::ffi::{c_int, c_void};
 use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
+use std::cell::UnsafeCell;
+use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 
-use crate::pool::SECTOR_BYTES;
-#[cfg(feature = "mock")]
-use crate::sync::AtomicU64;
-use crate::sync::{AtomicU8, Ordering};
+use crate::pool::{PageId, SECTOR_BYTES};
+use crate::sync::{AtomicU64, Ordering};
 
 #[cfg(all(test, target_os = "linux"))]
 const SECTOR: usize = SECTOR_BYTES as usize;
 
 const HUGEPAGE_BYTES: usize = 2 * 1024 * 1024;
+const FRAME_STATE_BITS: u32 = 2;
+const FRAME_STATE_MASK: u64 = (1 << FRAME_STATE_BITS) - 1;
+const FRAME_GENERATION_MAX: u64 = u64::MAX >> FRAME_STATE_BITS;
+const FRAME_STATE_TAG_MAX: u64 = 3;
+const _: () = assert!(FRAME_STATE_TAG_MAX <= FRAME_STATE_MASK);
+
+/// One preallocated full-page identity per frame.
+///
+/// The single writer stores an identity while its frame is `InFlight`, then the
+/// Resident word Release-publishes it. Readers load it only after publishing an
+/// epoch and Acquire-validating that exact Resident word. EBR prevents reuse
+/// until every such reader is quiescent, so no read aliases a later write.
+#[derive(Debug)]
+struct ExactPageCells {
+    cells: Box<[UnsafeCell<MaybeUninit<PageId>>]>,
+}
+
+// SAFETY: the residency word and EBR protocol documented above serialize every
+// cell write against readers and defer reuse until all validated readers exit.
+unsafe impl Sync for ExactPageCells {}
+
+impl ExactPageCells {
+    fn preallocated(count: u32) -> Self {
+        Self {
+            cells: (0..count)
+                .map(|_| UnsafeCell::new(MaybeUninit::uninit()))
+                .collect(),
+        }
+    }
+
+    fn write(&self, index: usize, page: PageId) {
+        // SAFETY: the caller holds the frame unpublished (`InFlight`), so no
+        // reader can have validated this frame's Resident word yet.
+        unsafe { (*self.cells[index].get()).write(page) };
+    }
+
+    fn read(&self, index: usize) -> PageId {
+        // SAFETY: the caller published its reader epoch and Acquire-validated
+        // the matching Resident word, whose Release publication followed write.
+        let page = unsafe { &*self.cells[index].get() };
+        // SAFETY: `page` is initialized by the Release-published write above.
+        unsafe { page.assume_init_read() }
+    }
+}
 
 /// Which read-pool frame an internal read lands in. This type is reachable only
 /// through the feature-gated structural testing surface; product callers name
@@ -111,9 +155,8 @@ impl FrameState {
 pub(crate) struct Frames {
     base: NonNull<u8>,
     layout: Layout,
-    states: Box<[AtomicU8]>,
-    #[cfg(feature = "mock")]
-    residency_stamps: Box<[AtomicU64]>,
+    states: Box<[AtomicU64]>,
+    pages: ExactPageCells,
     count: u32,
     granule: u32,
 }
@@ -126,7 +169,7 @@ pub(crate) struct Frames {
 // than sharing any `Box<[u8]>` behind that discipline.
 unsafe impl Send for Frames {}
 // SAFETY: see the `Send` impl — every frame's residency state lives in an
-// `AtomicU8` and its bytes are gated by that state machine.
+// `AtomicU64` and its bytes are gated by that state machine.
 unsafe impl Sync for Frames {}
 
 impl Frames {
@@ -163,12 +206,9 @@ impl Frames {
             base,
             layout,
             states: (0..count)
-                .map(|_| AtomicU8::new(FrameState::Free.to_tag()))
-                .collect(),
-            #[cfg(feature = "mock")]
-            residency_stamps: (0..count)
                 .map(|_| AtomicU64::new(u64::from(FrameState::Free.to_tag())))
                 .collect(),
+            pages: ExactPageCells::preallocated(count),
             count,
             granule,
         }
@@ -266,7 +306,32 @@ impl Frames {
     /// If `frame` is out of range for the configured count.
     #[must_use]
     pub(crate) fn state(&self, frame: ReadFrameIdx) -> FrameState {
-        FrameState::from_tag(self.states[self.checked_index(frame)].load(Ordering::Relaxed))
+        let word = self.states[self.checked_index(frame)].load(Ordering::Acquire);
+        FrameState::from_tag((word & FRAME_STATE_MASK) as u8)
+    }
+
+    #[must_use]
+    pub(crate) fn state_word(&self, frame: ReadFrameIdx) -> u64 {
+        self.states[self.checked_index(frame)].load(Ordering::Acquire)
+    }
+
+    pub(crate) fn word_is_resident(word: u64) -> bool {
+        FrameState::from_tag((word & FRAME_STATE_MASK) as u8) == FrameState::Resident
+    }
+
+    pub(crate) fn write_exact_page(&self, frame: ReadFrameIdx, page: PageId) {
+        let index = self.checked_index(frame);
+        assert_eq!(
+            self.state(frame),
+            FrameState::InFlight,
+            "an exact page identity is written before Resident publication"
+        );
+        self.pages.write(index, page);
+    }
+
+    #[must_use]
+    pub(crate) fn exact_page(&self, frame: ReadFrameIdx) -> PageId {
+        self.pages.read(self.checked_index(frame))
     }
 
     /// Advances `frame` through the residency cycle, storing the new state. Takes
@@ -281,49 +346,24 @@ impl Frames {
     /// If `frame` is out of range, or the transition is illegal (INV-1).
     pub(crate) fn advance(&self, frame: ReadFrameIdx, to: FrameState) {
         let index = self.checked_index(frame);
-        let current = FrameState::from_tag(self.states[index].load(Ordering::Relaxed));
+        let current_word = self.states[index].load(Ordering::Acquire);
+        let current = FrameState::from_tag((current_word & FRAME_STATE_MASK) as u8);
         let next = current.advance(to);
-        #[cfg(feature = "mock")]
-        if next != FrameState::Resident {
-            self.advance_residency_stamp(index, current, next);
-        }
-        self.states[index].store(next.to_tag(), Ordering::Relaxed);
-        #[cfg(feature = "mock")]
-        if next == FrameState::Resident {
-            self.advance_residency_stamp(index, current, next);
-        }
+        let generation = Self::advance_generation(current_word, next);
+        let next_word = (generation << FRAME_STATE_BITS) | u64::from(next.to_tag());
+        self.states[index].store(next_word, Ordering::Release);
     }
 
-    #[cfg(feature = "mock")]
-    fn advance_residency_stamp(&self, index: usize, from: FrameState, to: FrameState) {
-        let previous = self.residency_stamps[index].load(Ordering::Acquire);
-        assert_eq!(
-            FrameState::from_tag((previous & 0b11) as u8),
-            from,
-            "the hint stamp follows the frame residency state"
-        );
-        let generation = previous >> 2;
-        let generation = if to == FrameState::Resident {
+    fn advance_generation(current_word: u64, next: FrameState) -> u64 {
+        let generation = current_word >> FRAME_STATE_BITS;
+        if next == FrameState::Resident {
             generation
                 .checked_add(1)
+                .filter(|&next| next <= FRAME_GENERATION_MAX)
                 .expect("frame residency generation exhausted before ABA")
         } else {
             generation
-        };
-        let next = (generation << 2) | u64::from(to.to_tag());
-        self.residency_stamps[index].store(next, Ordering::Release);
-    }
-
-    #[cfg(feature = "mock")]
-    pub(crate) fn resident_stamp(&self, frame: ReadFrameIdx) -> Option<u64> {
-        let stamp = self.residency_stamps[self.checked_index(frame)].load(Ordering::Acquire);
-        (stamp & 0b11 == u64::from(FrameState::Resident.to_tag())).then_some(stamp)
-    }
-
-    #[cfg(feature = "mock")]
-    pub(crate) fn resident_stamp_matches(&self, frame: ReadFrameIdx, expected: u64) -> bool {
-        let stamp = self.residency_stamps[self.checked_index(frame)].load(Ordering::Acquire);
-        stamp == expected && stamp & 0b11 == u64::from(FrameState::Resident.to_tag())
+        }
     }
 
     /// Fills `frame`'s whole granule with `byte`, standing in for a read
@@ -384,7 +424,9 @@ impl Frames {
     pub(crate) fn abort_inflight(&self, frame: ReadFrameIdx) {
         let index = self.checked_index(frame);
         assert_eq!(
-            FrameState::from_tag(self.states[index].load(Ordering::Relaxed)),
+            FrameState::from_tag(
+                (self.states[index].load(Ordering::Acquire) & FRAME_STATE_MASK) as u8,
+            ),
             FrameState::InFlight,
             "only an unpublished InFlight frame aborts back to Free"
         );

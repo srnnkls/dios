@@ -1,0 +1,44 @@
+checkpoint:
+  scope_name: dios-r1-r7-read-performance
+  scope_path: ./scopes/done/dios-r1-r7-read-performance
+  branch: feat/dios-r1-r7-read-performance
+  base: main
+  timestamp: 2026-08-21T14:35:22Z
+  last_batch: 8
+  last_commit: 87ee84cabb9030a38bd26ff2b3eaf2ce835e2462
+  tasks:
+    done:
+      - {id: DRP001, name: "Freeze R1-R7 production bench plan"}
+      - {id: DRP002, name: "Extract and bind R7-only source"}
+      - {id: DRP003, name: "Land the conservative callable API scaffold"}
+      - {id: DRP004, name: "Implement generation-exact liveness mirror and ReaderSlot alignment"}
+      - {id: DRP005, name: "Decide the admissible page hash"}
+      - {id: DRP006, name: "Implement production file lease and packed residency stamp"}
+      - {id: DRP007, name: "Implement compact hint, mandatory fallback, and reuse proofs"}
+      - {id: DRP008, name: "Close correctness, allocation, and sanitizer matrix"}
+      - {id: DRP009, name: "Run real-backend overhead, materiality, and contention gates"}
+      - {id: DRP010, name: "Publish Dios contract and close cross-scope handoff"}
+    in_progress: []
+    pending: []
+  next_batch:
+    number: null
+    tasks: []
+    parallel: false
+  deferred_issues: []
+  implementation_config:
+    path: ./scopes/done/dios-r1-r7-read-performance/config.yaml
+    epoch_id: 20260820T115308Z-c2716c
+  phase_cursor:
+    batch: 8
+    phase: complete
+    status: done
+    tasks: [DRP010]
+    updated_at: 2026-08-21T14:35:22Z
+    reports:
+      - https://github.com/srnnkls/sira/pull/9
+    external_blocker: null
+    binding_gate:
+      status: passed
+      host: nix
+      blocker: null
+  incomplete_stages: []

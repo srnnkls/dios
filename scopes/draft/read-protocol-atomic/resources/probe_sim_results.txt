@@ -1,0 +1,41 @@
+config                                current mean/p99/max     packed mean/p99/max  verdict
+slots=1024    files=1    seq            1.490/  7/  11       1.518/  7/  11    PASS
+slots=1024    files=1    interleaved    1.490/  7/  11       1.518/  7/  11    PASS
+slots=1024    files=16   seq            1.553/  6/  13       1.574/  7/  16    FAIL
+slots=1024    files=16   interleaved    1.441/  5/   8       1.709/ 11/  21    FAIL
+slots=1024    files=256  seq            1.510/  7/  12       1.457/  7/  13    PASS
+slots=1024    files=256  interleaved    1.504/  6/  12       1.473/  6/  10    PASS
+slots=131072  files=1    seq            1.495/  7/  26       1.504/  7/  28    PASS
+slots=131072  files=1    interleaved    1.495/  7/  26       1.504/  7/  28    PASS
+slots=131072  files=16   seq            1.505/  7/  33       1.506/  7/  25    PASS
+slots=131072  files=16   interleaved    1.497/  7/  28       1.494/  7/  25    PASS
+slots=131072  files=256  seq            1.488/  7/  25       1.497/  7/  23    PASS
+slots=131072  files=256  interleaved    1.498/  7/  26       1.506/  7/  31    PASS
+slots=524288  files=1    seq            1.499/  7/  31       1.498/  7/  31    PASS
+slots=524288  files=1    interleaved    1.499/  7/  31       1.498/  7/  31    PASS
+slots=524288  files=16   seq            1.501/  7/  35       1.501/  7/  33    PASS
+slots=524288  files=16   interleaved    1.497/  7/  33       1.496/  7/  31    PASS
+slots=524288  files=256  seq            1.493/  7/  36       1.501/  7/  40    PASS
+slots=524288  files=256  interleaved    1.502/  7/  41       1.508/  7/  45    PASS
+REJECTED per table_tightening.md bounds
+
+config                                current mean/p99/max  fullwidth mean/p99/max  verdict
+slots=1024    files=1    seq            1.490/  7/  11       1.557/  8/  14    FAIL
+slots=1024    files=1    interleaved    1.490/  7/  11       1.557/  8/  14    FAIL
+slots=1024    files=16   seq            1.553/  6/  13       1.445/  6/  15    PASS
+slots=1024    files=16   interleaved    1.441/  5/   8       1.467/  6/  14    FAIL
+slots=1024    files=256  seq            1.510/  7/  12       1.543/  7/  17    PASS
+slots=1024    files=256  interleaved    1.504/  6/  12       1.496/  7/  10    FAIL
+slots=131072  files=1    seq            1.495/  7/  26       1.497/  7/  25    PASS
+slots=131072  files=1    interleaved    1.495/  7/  26       1.497/  7/  25    PASS
+slots=131072  files=16   seq            1.505/  7/  33       1.489/  7/  21    PASS
+slots=131072  files=16   interleaved    1.497/  7/  28       1.495/  7/  27    PASS
+slots=131072  files=256  seq            1.488/  7/  25       1.504/  7/  28    PASS
+slots=131072  files=256  interleaved    1.498/  7/  26       1.489/  7/  24    PASS
+slots=524288  files=1    seq            1.499/  7/  31       1.498/  7/  38    PASS
+slots=524288  files=1    interleaved    1.499/  7/  31       1.498/  7/  38    PASS
+slots=524288  files=16   seq            1.501/  7/  35       1.497/  7/  27    PASS
+slots=524288  files=16   interleaved    1.497/  7/  33       1.501/  7/  28    PASS
+slots=524288  files=256  seq            1.493/  7/  36       1.501/  7/  33    PASS
+slots=524288  files=256  interleaved    1.502/  7/  41       1.500/  7/  30    PASS
+REJECTED — fullwidth candidate per the same bounds

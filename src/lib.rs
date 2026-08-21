@@ -1,4 +1,23 @@
 //! Completion-based async direct-IO driver and userspace frame pool.
+//!
+//! An ordinary warm [`Pool::get`] hit is the default no-hint path and performs
+//! no hint-specific branch, load, store, or RMW. Callers with repeated access
+//! to an exact file generation may opt into [`Pool::lease_file`],
+//! [`ResidentFileLease`], [`Pool::resident_hint`], [`ResidentHint`], and
+//! [`Pool::get_with_hint`]. A hint is advisory; `get_with_hint` owns fallback
+//! to ordinary `Pool::get` behavior when the observation is absent, mismatched,
+//! or stale.
+//!
+//! A [`ResidentFileLease`] protects the lifetime of one exact file generation,
+//! but does not retain or pin frames. Its pages remain eligible for normal
+//! eviction. The lease/hint API therefore makes no resident-set,
+//! frame-retention, or other R8 guarantee. After pool construction, the
+//! zero-allocation proof covers ordinary warm hits, hinted hits, stale-hint
+//! fallback, lease acquire/drop, and retirement progress on both eager-inline
+//! and `io_uring`.
+//!
+//! The binding R7 gates retained the current four-round page hash and selected
+//! this opt-in API. The ordinary path remains the no-hint default.
 #![cfg_attr(
     not(feature = "mock"),
     expect(
@@ -43,8 +62,6 @@ pub mod testing {
     use std::sync::atomic::Ordering;
 
     pub use crate::pool::ReadFrameIdx;
-    #[cfg(feature = "mock")]
-    pub use crate::pool::{ResidentFileLease, ResidentHint};
 
     /// Feature-gated raw-read admission for backend tests and driver benches.
     pub trait DriverReadTestingExt {
@@ -119,6 +136,15 @@ pub mod testing {
         pub fn state(&self, frame: ReadFrameIdx) -> FrameState {
             self.frames.state(frame)
         }
+
+        pub fn advance(&self, frame: ReadFrameIdx, to: FrameState) {
+            self.frames.advance(frame, to);
+        }
+
+        #[must_use]
+        pub fn state_word(&self, frame: ReadFrameIdx) -> u64 {
+            self.frames.state_word(frame)
+        }
     }
 
     /// Feature-gated deterministic backend construction for pool tests. The
@@ -160,6 +186,13 @@ pub mod testing {
         fn insert_resident_frame(&self, page: crate::pool::PageId, fill: u8) -> ReadFrameIdx;
         fn evict_frame(&self, page: crate::pool::PageId) -> ReadFrameIdx;
         fn clock_reference_stores(&self) -> u64;
+        #[cfg(feature = "bench")]
+        fn global_epoch_observed(&self) -> u64;
+        #[cfg(feature = "bench")]
+        fn reclamation_epochs_observed(&self) -> Option<(u64, u64)>;
+        fn file_is_retired_observed(&self, file: crate::driver::FileId) -> bool;
+        #[cfg(feature = "mock")]
+        fn control_acquisitions(&self) -> u64;
         fn pending_waiters(&self, token: &crate::pool::PendingToken) -> u32;
     }
 
@@ -198,6 +231,25 @@ pub mod testing {
                     self.clock_reference_stores_internal()
                 }
 
+                #[cfg(feature = "bench")]
+                fn global_epoch_observed(&self) -> u64 {
+                    self.global_epoch_observed_internal()
+                }
+
+                #[cfg(feature = "bench")]
+                fn reclamation_epochs_observed(&self) -> Option<(u64, u64)> {
+                    self.reclamation_epochs_observed_internal()
+                }
+
+                fn file_is_retired_observed(&self, file: crate::driver::FileId) -> bool {
+                    self.file_is_retired_observed_internal(file)
+                }
+
+                #[cfg(feature = "mock")]
+                fn control_acquisitions(&self) -> u64 {
+                    self.control_acquisitions_internal()
+                }
+
                 fn pending_waiters(&self, token: &crate::pool::PendingToken) -> u32 {
                     self.pending_waiters_internal(token)
                 }
@@ -214,6 +266,12 @@ pub mod testing {
     pub trait MockPoolTestingExt {
         fn driver(&self) -> &MockDriver;
         fn observe(&self) -> Arc<MockPoolObservation>;
+        fn set_resident_lease_count(&self, file: crate::driver::FileId, count: u32);
+        fn resident_lease_count(&self, file: crate::driver::FileId) -> u32;
+        fn observe_resident_lease_count(
+            &self,
+            file: crate::driver::FileId,
+        ) -> MockResidentLeaseCountObservation;
     }
 
     #[cfg(feature = "mock")]
@@ -227,58 +285,37 @@ pub mod testing {
                 lifecycle: self.lifecycle_internal(),
             })
         }
-    }
 
-    /// Experimental native-residency hint surface. Product exposure remains
-    /// blocked on the active scope's retirement and reuse Loom gates.
-    #[cfg(feature = "mock")]
-    pub trait ResidentHintTestingExt {
-        /// Acquires a coarse lease for one live file.
-        ///
-        /// # Errors
-        ///
-        /// Returns [`crate::pool::GetError::StaleFile`] when `file` is stale or not live.
-        fn lease_file(
+        fn set_resident_lease_count(&self, file: crate::driver::FileId, count: u32) {
+            self.set_resident_lease_count_internal(file, count);
+        }
+
+        fn resident_lease_count(&self, file: crate::driver::FileId) -> u32 {
+            self.resident_lease_count_internal(file)
+        }
+
+        fn observe_resident_lease_count(
             &self,
             file: crate::driver::FileId,
-        ) -> Result<ResidentFileLease, crate::pool::GetError>;
-        fn resident_hint(
-            &self,
-            lease: &ResidentFileLease,
-            page: crate::pool::PageId,
-        ) -> Option<ResidentHint>;
-        fn pin_resident_hint<'ctx>(
-            &'ctx self,
-            reader: &'ctx crate::pool::ReaderCtx,
-            lease: &'ctx ResidentFileLease,
-            hint: ResidentHint,
-        ) -> Option<crate::pool::FrameGuard<'ctx>>;
+        ) -> MockResidentLeaseCountObservation {
+            MockResidentLeaseCountObservation {
+                state: self.observe_resident_lease_count_internal(file),
+            }
+        }
+    }
+
+    /// Arc-backed observation of one exact preallocated file-slot lease count.
+    #[cfg(feature = "mock")]
+    #[derive(Debug, Clone)]
+    pub struct MockResidentLeaseCountObservation {
+        state: Arc<crate::pool::ResidentLeaseState>,
     }
 
     #[cfg(feature = "mock")]
-    impl ResidentHintTestingExt for crate::pool::Pool<MockDriver> {
-        fn lease_file(
-            &self,
-            file: crate::driver::FileId,
-        ) -> Result<ResidentFileLease, crate::pool::GetError> {
-            self.lease_file_internal(file)
-        }
-
-        fn resident_hint(
-            &self,
-            lease: &ResidentFileLease,
-            page: crate::pool::PageId,
-        ) -> Option<ResidentHint> {
-            self.resident_hint_internal(lease, page)
-        }
-
-        fn pin_resident_hint<'ctx>(
-            &'ctx self,
-            reader: &'ctx crate::pool::ReaderCtx,
-            lease: &'ctx ResidentFileLease,
-            hint: ResidentHint,
-        ) -> Option<crate::pool::FrameGuard<'ctx>> {
-            self.pin_resident_hint_internal(reader, lease, hint)
+    impl MockResidentLeaseCountObservation {
+        #[must_use]
+        pub fn count(&self) -> u32 {
+            self.state.count()
         }
     }
 
@@ -395,6 +432,15 @@ pub mod testing {
     };
     #[cfg(any(feature = "mock", feature = "bench"))]
     pub use crate::pool::{Clock, FrameState, PageTable, ReaderCounters};
+
+    /// Calls the shipping four-round page hash for bench evidence generation.
+    #[cfg(feature = "bench")]
+    #[must_use]
+    pub fn current_page_hash(driver: u64, slot: u32, generation: u32, granule: u32) -> u64 {
+        let file = crate::FileId::new(driver, slot, generation);
+        let page = crate::PageId::new(file, granule);
+        crate::pool::page_hash(page)
+    }
 }
 
 #[cfg(feature = "bench")]
@@ -406,7 +452,8 @@ pub use error::IoError;
 pub use open::DirectIo;
 pub use pool::{
     FrameGuard, GRANULE_DEFAULT, Get, GetError, PageId, PendingToken, Pool, PoolBuildError,
-    PoolBuilder, PoolConfigError, ReaderCtx, ReadyResult, RegisterError,
+    PoolBuilder, PoolConfigError, ReaderCtx, ReadyResult, RegisterError, ResidentFileLease,
+    ResidentHint, ResidentLeaseError,
 };
 pub use product::{
     PollReport, PoolCompletion, PoolCompletionBatch, PoolSubmitError, PoolToken, PoolWakeHandle,

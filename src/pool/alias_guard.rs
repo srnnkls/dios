@@ -12,6 +12,7 @@ use std::path::Path;
 const ALLOWLIST: &[(&str, &str)] = &[
     ("clock.rs", "reference_stores"),
     ("loom_model.rs", "held_frame"),
+    ("mod.rs", "control_acquisitions"),
 ];
 
 /// This file grabs the bypass patterns as literals, so it would flag itself.

@@ -3,16 +3,28 @@ name = "dios"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
+build = "build.rs"
 description = "Completion-based async direct-IO driver and userspace frame pool"
 license = "MIT"
 publish = false
 
 [features]
-bench = []
+bench = ["dep:serde_json", "dep:sha2"]
 mock = []
+
+[dependencies]
+serde_json = { version = "1", optional = true }
+sha2 = { version = "0.10", optional = true }
 
 [dev-dependencies]
 criterion = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[[test]]
+name = "drp009_gate_contract"
+required-features = ["bench"]
 
 [[test]]
 name = "driver"
@@ -49,6 +61,11 @@ harness = false
 required-features = ["bench"]
 
 [[bench]]
+name = "read_path_product"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
 name = "overlap"
 harness = false
 required-features = ["bench", "mock"]
@@ -66,6 +83,21 @@ required-features = ["bench", "mock"]
 [[bench]]
 name = "ring_read_bracket"
 harness = false
+required-features = ["bench"]
+
+[[bin]]
+name = "drp_g1_probes"
+path = "src/bin/drp_g1_probes.rs"
+required-features = ["bench"]
+
+[[bin]]
+name = "drp_gate_artifacts"
+path = "src/bin/drp_gate_artifacts.rs"
+required-features = ["bench"]
+
+[[bin]]
+name = "drp_product_harness"
+path = "src/bin/drp_product_harness.rs"
 required-features = ["bench"]
 
 [lints.rust]

@@ -1,0 +1,74 @@
+version: 1
+gate: DRP-G1
+generator_sha256: 4f2f0dcc1cef2845142c8c4df8c7a115f478d64a3b3abed8167762cad0ba514d
+generator_sources:
+  - path: src/bin/drp_g1_probes.rs
+    sha256: 6c91fcf48fd1e21f3262484f93cc19e3be67abf45b10e242030fd4ee9216fd26
+  - path: src/pool/table.rs
+    sha256: 397328aa7bc29db4bd2d4fcc69537e39606bc985d89db6244e92eec20a51c6bb
+quality_artifact:
+  path: scopes/done/dios-r1-r7-read-performance/resources/drp_g1_probe_quality.csv
+  sha256: c5b1f98786f5dea694362f9ba564cae90ca9bb13420317ab80f512bdce97670e
+  rows: 72
+packed_rejection:
+  status: retained
+  row: { slots: 1024, files: 16, pattern: interleaved }
+  current: { mean: 1.441, p99: 5 }
+  packed: { mean: 1.709, p99: 11 }
+calibration:
+  status: pass
+  rows: 18
+  mean: { status: pass, passing_rows: 18 }
+  p99: { status: pass, passing_rows: 18 }
+  maximum_chain: { status: pass, passing_rows: 18 }
+holdout:
+  status: fail
+  rows: 54
+  mean: { status: fail, passing_rows: 45 }
+  p99: { status: fail, passing_rows: 47 }
+  maximum_chain: { status: pass, passing_rows: 54 }
+  failed_rows:
+    - identity: [71c35a09d4e2b687, 2048, 31, round_robin, "0000000000000000"]
+      current: { mean: 1.424804688, p99: 5, max: 13 }
+      candidate: { mean: 1.545898438, p99: 6, max: 11 }
+      failed: [mean, p99]
+    - identity: [71c35a09d4e2b687, 2048, 31, shuffled, 243f6a8885a308d3]
+      current: { mean: 1.424804688, p99: 6, max: 10 }
+      candidate: { mean: 1.545898438, p99: 7, max: 11 }
+      failed: [mean, p99]
+    - identity: [71c35a09d4e2b687, 2048, 31, shuffled, "13198a2e03707344"]
+      current: { mean: 1.424804688, p99: 6, max: 14 }
+      candidate: { mean: 1.545898438, p99: 6, max: 10 }
+      failed: [mean]
+    - identity: [d9034f6128bc7a55, 2048, 3, round_robin, "0000000000000000"]
+      current: { mean: 1.452148438, p99: 6, max: 11 }
+      candidate: { mean: 1.541015625, p99: 8, max: 18 }
+      failed: [mean, p99]
+    - identity: [d9034f6128bc7a55, 2048, 3, shuffled, 243f6a8885a308d3]
+      current: { mean: 1.452148438, p99: 6, max: 8 }
+      candidate: { mean: 1.541015625, p99: 7, max: 17 }
+      failed: [mean, p99]
+    - identity: [d9034f6128bc7a55, 2048, 3, shuffled, "13198a2e03707344"]
+      current: { mean: 1.452148438, p99: 6, max: 10 }
+      candidate: { mean: 1.541015625, p99: 7, max: 20 }
+      failed: [mean, p99]
+    - identity: [d9034f6128bc7a55, 2048, 127, round_robin, "0000000000000000"]
+      current: { mean: 1.480468750, p99: 7, max: 11 }
+      candidate: { mean: 1.559570312, p99: 7, max: 19 }
+      failed: [mean]
+    - identity: [d9034f6128bc7a55, 2048, 127, shuffled, 243f6a8885a308d3]
+      current: { mean: 1.480468750, p99: 6, max: 16 }
+      candidate: { mean: 1.559570312, p99: 8, max: 17 }
+      failed: [mean, p99]
+    - identity: [d9034f6128bc7a55, 2048, 127, shuffled, "13198a2e03707344"]
+      current: { mean: 1.480468750, p99: 6, max: 12 }
+      candidate: { mean: 1.559570312, p99: 7, max: 22 }
+      failed: [mean, p99]
+speed_gate:
+  status: not_run
+  threshold: 0.98
+  reason: The independent holdout failed, so timing is forbidden by DRP-G1.
+decision:
+  selected: current_four_round_hash
+  candidate_adopted: false
+  reason: The sole eligible candidate failed the frozen independent holdout.

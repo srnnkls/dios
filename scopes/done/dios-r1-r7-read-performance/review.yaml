@@ -1,0 +1,315 @@
+scope: dios-r1-r7-read-performance
+revision: 3
+status: passed
+
+gate:
+  required: true
+  outcome: passed
+  implementation_blocked: false
+  reason: >-
+    The scope review passed and the owner explicitly started execution on
+    2026-08-20.
+
+configured_reviewers:
+  - alias: codex-native
+    class: host-native
+    effort: inherit
+
+rounds:
+  - round: 1
+    reviewed_revision: 1
+    result: changes_required
+    blocking_found: 4
+    blocking_resolved: 4
+  - round: 2
+    reviewed_revision: 2
+    result: changes_required
+    blocking_found: 2
+    blocking_resolved: 2
+  - round: 3
+    reviewed_revision: 2
+    result: passed
+    reviewers: [codex-native, cross-scope-review]
+    blocking_found: 0
+  - round: 4
+    reviewed_revision: 3
+    result: changes_required
+    reviewers: [drp_scope_metadata_review]
+    blocking_found: 4
+    blocking_resolved: 4
+  - round: 5
+    reviewed_revision: 3
+    result: changes_required
+    reviewers: [drp_scope_metadata_review]
+    blocking_found: 4
+    blocking_resolved: 4
+  - round: 6
+    reviewed_revision: 3
+    result: passed
+    reviewers: [drp_scope_metadata_review]
+    blocking_found: 0
+
+open_counts:
+  critical: 0
+  high: 0
+  medium: 0
+
+next_action: Squash-merge Dios PR #3; no scope work remains.
+
+review_focus:
+  - R7 extraction is reproducible from the recorded base/carrier hashes and excludes every R8 retention symbol.
+  - The liveness mirror ordering and locked miss recheck make get-vs-retire linearizable.
+  - The packed frame stamp plus unchanged epoch fence excludes two-advance reuse ABA.
+  - Exact per-frame PageId metadata and a pre-index bounds check exclude foreign bytes; a coincidental exact target-page match is safe.
+  - Hint failure always reaches ordinary get without leaking an epoch publication.
+  - Calibration plus independent hash holdout, unused-overhead, shipping-backend materiality, and contention gates are executable and falsifiable.
+  - No task owns a Sira file; SAB008 closed read-only through merged Sira PR #9; retention follows without importing R8 behavior.
+
+final:
+  critical_open: 0
+  high_open: 0
+  outcome: passed
+
+implementation_config:
+  epoch_id: 20260820T115308Z-c2716c
+  reviewer:
+    agents: [codex-native]
+    effort: inherit
+
+gates:
+  correctness: {status: pass, failed_batches: []}
+  style: {status: pass, failed_batches: []}
+  performance: {status: pass, failed_batches: []}
+  security: {status: pass, failed_batches: []}
+  architecture: {status: pass, failed_batches: []}
+
+batch_reviews:
+  - batch: 1
+    timestamp: 2026-08-20T12:45:00Z
+    commit: HEAD
+    tasks: [DRP001, DRP002]
+    reviewers:
+      - id: general-codex-native
+        execution_class: native
+        effort: inherit
+        status: success
+        gates: {correctness: pass, security: pass, performance: pass}
+      - id: architecture-codex-native
+        execution_class: native
+        effort: inherit
+        status: success
+        gates: {architecture: pass}
+      - id: compliance-codex-native
+        execution_class: native
+        effort: inherit
+        status: success
+        gates: {style: pass}
+    synthesized:
+      gates: {correctness: pass, style: pass, performance: pass, security: pass, architecture: pass}
+      critical_issues: 0
+      high_issues: 0
+      medium_issues: 0
+    outcome: approved
+  - batch: 2
+    timestamp: 2026-08-20T13:31:00Z
+    commit: HEAD
+    tasks: [DRP003]
+    reviewers:
+      - id: general-codex-native
+        execution_class: native
+        effort: inherit
+        status: success
+        gates: {correctness: pass, security: pass, performance: pass}
+      - id: architecture-codex-native
+        execution_class: native
+        effort: inherit
+        status: success
+        gates: {architecture: pass}
+      - id: compliance-codex-native
+        execution_class: native
+        effort: inherit
+        status: success
+        gates: {style: pass}
+    synthesized:
+      gates: {correctness: pass, style: pass, performance: pass, security: pass, architecture: pass}
+      critical_issues: 0
+      high_issues: 0
+      medium_issues: 0
+    outcome: approved
+  - batch: 3
+    timestamp: 2026-08-20T14:27:00Z
+    commit: HEAD
+    tasks: [DRP004]
+    reviewers:
+      - id: general-codex-native
+        execution_class: native
+        effort: inherit
+        status: success
+        gates: {correctness: pass, security: pass, performance: pass}
+      - id: architecture-codex-native
+        execution_class: native
+        effort: inherit
+        status: success_after_fix
+        gates: {architecture: pass}
+      - id: compliance-codex-native
+        execution_class: native
+        effort: inherit
+        status: success
+        gates: {style: pass}
+    synthesized:
+      gates: {correctness: pass, style: pass, performance: pass, security: pass, architecture: pass}
+      critical_issues: 0
+      high_issues: 0
+      medium_issues: 0
+      resolved_high_issues: 1
+    outcome: approved
+  - batch: 4
+    timestamp: 2026-08-20T14:23:05Z
+    commit: HEAD
+    tasks: [DRP005, DRP006]
+    reviewers:
+      - id: general-codex-native
+        execution_class: native
+        effort: inherit
+        status: success
+        gates: {correctness: pass, security: pass, performance: pass}
+      - id: architecture-codex-native
+        execution_class: native
+        effort: inherit
+        status: success
+        gates: {architecture: pass}
+      - id: compliance-codex-native
+        execution_class: native
+        effort: inherit
+        status: success
+        gates: {style: pass}
+    synthesized:
+      gates: {correctness: pass, style: pass, performance: pass, security: pass, architecture: pass}
+      critical_issues: 0
+      high_issues: 0
+      medium_issues: 0
+    outcome: approved
+  - batch: 5
+    timestamp: 2026-08-20T15:08:45Z
+    commit: HEAD
+    tasks: [DRP007]
+    reviewers:
+      - id: general-codex-native
+        execution_class: native
+        effort: inherit
+        status: success_after_fix
+        gates: {correctness: pass, security: pass, performance: pass}
+      - id: architecture-codex-native
+        execution_class: native
+        effort: inherit
+        status: success_after_fix
+        gates: {architecture: pass}
+      - id: compliance-codex-native
+        execution_class: native
+        effort: inherit
+        status: success
+        gates: {style: pass}
+    synthesized:
+      gates: {correctness: pass, style: pass, performance: pass, security: pass, architecture: pass}
+      critical_issues: 0
+      high_issues: 0
+      medium_issues: 0
+      resolved_high_issues: 2
+    outcome: approved
+  - batch: 6
+    timestamp: 2026-08-20T15:57:28Z
+    commit: HEAD
+    tasks: [DRP008]
+    reviewers:
+      - id: general-codex-native
+        execution_class: native
+        effort: inherit
+        status: success
+        gates: {correctness: pass, security: pass, performance: pass}
+      - id: architecture-codex-native
+        execution_class: native
+        effort: inherit
+        status: success
+        gates: {architecture: pass}
+      - id: compliance-codex-native
+        execution_class: native
+        effort: inherit
+        status: success
+        gates: {style: pass}
+    synthesized:
+      gates: {correctness: pass, style: pass, performance: pass, security: pass, architecture: pass}
+      critical_issues: 0
+      high_issues: 0
+      medium_issues: 0
+    evidence:
+      eager_zero_alloc: 21/21
+      io_uring_zero_alloc: 21/21
+      asan: 14/14
+      miri: 10/10
+      loom: 7/7
+    outcome: approved
+  - batch: 7
+    timestamp: 2026-08-21T00:11:56Z
+    commit: 28e57aa2670aec9ee28b95688cff4ad793d3cdd0
+    tasks: [DRP009]
+    reviewers:
+      - id: targeted-codex-native
+        execution_class: native
+        effort: inherit
+        status: success_after_fix
+        report: .peer/dios-r1-r7-read-performance/20260820T115308Z-c2716c/b7-targeted-review-DRP009-r2/report.yaml
+    synthesized:
+      critical_issues: 0
+      high_issues: 0
+      medium_issues: 0
+    evidence:
+      gate_results: scopes/done/dios-r1-r7-read-performance/resources/gate-results.yaml
+      binding_status: pass
+    outcome: approved
+  - batch: 8
+    timestamp: 2026-08-21T14:35:22Z
+    commit: 87ee84cabb9030a38bd26ff2b3eaf2ce835e2462
+    tasks: [DRP010]
+    reviewers:
+      - id: drp-scope-metadata-review
+        execution_class: native
+        effort: inherit
+        status: success
+    synthesized:
+      critical_issues: 0
+      high_issues: 0
+      medium_issues: 0
+    evidence:
+      sira_pr: https://github.com/srnnkls/sira/pull/9
+      sira_merge: e99c90d2602357e858d56cc6f8ed26d4c4897843
+      pinned_dios_revision: 011894472cdd49b94b3d48b7aaa46716b1608c9e
+      endpoint: sira-aligned-buffers:SAB008
+    outcome: approved
+
+issues:
+  critical: []
+  high: []
+  medium: []
+
+deferred_issues: []
+
+final_review:
+  status: passed
+  timestamp: 2026-08-21
+  reviewers: [drp_scope_metadata_review]
+  reviewer_effort: inherit
+  native_effort: inherit
+  gates: {correctness: pass, style: pass, performance: pass, security: pass, architecture: pass}
+  scope_compliance: {all_tasks_complete: true, acceptance_criteria_met: true, edge_cases_handled: true}
+  issues: []
+  strengths:
+    - All frozen Dios gates passed and the external handoff is recorded without relabeling its pinned revision.
+  overall_assessment: Complete.
+  recommendation: Squash merge.
+
+readiness:
+  all_batches_reviewed: true
+  critical_issues_resolved: true
+  high_issues_resolved: true
+  final_review_passed: true
+  tests_passing: true

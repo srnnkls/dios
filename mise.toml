@@ -10,6 +10,10 @@ run = "cargo build"
 [tasks.test]
 run = "cargo test --features bench,mock"
 
+[tasks.test-ci]
+description = "Run CI tests without product-backed benchmark smokes"
+run = "cargo test --features mock"
+
 [tasks.fmt]
 run = "cargo fmt"
 
@@ -40,8 +44,72 @@ docker run --rm --security-opt seccomp=unconfined \
 
 [tasks.bench]
 description = "Criterion micro-benches + paired gate benches"
+depends = ["bench-host-guard"]
 run = "cargo bench --features bench"
+
+[tasks.bench-host-guard]
+description = "Require the active NixOS bench profile before benchmark timing"
+run = '''
+set -eu
+if [ ! -e /etc/NIXOS ]; then
+  exit 0
+fi
+if [ ! -x /etc/bench-profile ]; then
+  echo "missing /etc/bench-profile; install the NixOS bench specialisation" >&2
+  exit 1
+fi
+profile_status=$(/etc/bench-profile status)
+printf '%s\n' "$profile_status"
+printf '%s\n' "$profile_status" | grep -Fxq 'bench_profile=active' || {
+  echo "activate benchmark mode with: ssh -t nix sudo /etc/bench-profile enter" >&2
+  exit 1
+}
+mise_executable=${MISE_EXE:-mise}
+mise_version=$("$mise_executable" --version)
+case "$mise_version" in
+  '2026.8.0 '*) ;;
+  *)
+    echo "benchmark timing requires mise 2026.8.0; found: $mise_version" >&2
+    exit 1
+    ;;
+esac
+'''
 
 [tasks.gate]
 description = "Assert a bench plan threshold against a paired samples CSV"
 run = "cargo bench --features bench --bench compare --"
+
+[tasks.generate-drp-g1-probes]
+description = "Generate the frozen DRP-G1 calibration and holdout matrix"
+usage = 'arg "<csv>"'
+run = 'cargo run --quiet --features bench --bin drp_g1_probes -- generate "$usage_csv"'
+
+[tasks.validate-drp-g1-probes]
+description = "Validate the complete frozen DRP-G1 probe-quality artifact"
+usage = '''
+flag "--structure-only"
+arg "<csv>"
+'''
+run = 'cargo run --quiet --features bench --bin drp_g1_probes -- validate ${usage_structure_only:+--structure-only} "$usage_csv"'
+
+[tasks.prepare-gate-pairs]
+description = "Validate rich process rows and prepare paired gate samples"
+usage = '''
+arg "<process_csv>"
+arg "<paired_csv>"
+arg "<provenance_json>"
+'''
+run = 'cargo run --quiet --features bench --bin drp_gate_artifacts -- prepare "$usage_process_csv" "$usage_paired_csv" "$usage_provenance_json"'
+
+[tasks.validate-drp-g2-zero-alloc]
+description = "Require zero post-warmup allocations in a complete DRP-G2 artifact"
+usage = 'arg "<process_csv>"'
+run = 'cargo run --quiet --features bench --bin drp_gate_artifacts -- validate-g2-zero-alloc "$usage_process_csv"'
+
+[tasks.prepare-drp-product-harness]
+description = "Prepare the identical DRP009 runner outside a clean product worktree"
+usage = '''
+arg "<product_worktree>"
+arg "<harness_dir>"
+'''
+run = 'cargo run --quiet --features bench --bin drp_product_harness -- "$usage_product_worktree" "$usage_harness_dir"'

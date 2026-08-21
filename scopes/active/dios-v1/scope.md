@@ -531,6 +531,12 @@ deliverable, reviewed before implementation):
   This gate remains pending until A.5,
   GREEN implementation, full-suite/doctest/example/bench migrations, and
   Phase C review complete.
+- DIO-G10 remains the migration-level consumer gate and consumes
+  `dios-r1-r7-read-performance` after its safety and real-backend decisions.
+  That scope owns the overlapping liveness, alignment, hash, and lease/hint
+  primitive implementation. T018 validates the selected contract in the
+  Sira-shaped owner/API examples without duplicating primitive work; if DRP-G3
+  rejects hints, DIO-G10 consumes ordinary guarded get/composition instead.
 
 ## Acceptance Criteria
 
