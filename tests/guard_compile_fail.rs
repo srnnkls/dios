@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-use dios::{FrameGuard, PendingToken, ReaderCtx};
+use dios::{FrameGuard, PendingToken, ReaderCtx, RetainedFrame};
 
 struct SecondImpl;
 
@@ -65,6 +65,13 @@ fn pending_token_is_send_but_affine() {
 fn frame_guard_is_neither_send_nor_sync() {
     assert_not_send!(FrameGuard<'static>);
     assert_not_sync!(FrameGuard<'static>);
+}
+
+#[test]
+fn retained_frame_is_neither_send_sync_nor_clone() {
+    assert_not_send!(RetainedFrame<'static>);
+    assert_not_sync!(RetainedFrame<'static>);
+    assert_not_clone!(RetainedFrame<'static>);
 }
 
 fn compile_probe(name: &str, source: &str) -> std::process::Output {
@@ -190,6 +197,82 @@ fn reject_guard_across_pool_drop(
         stderr.contains("E0505")
             && stderr.contains("cannot move out of `pool` because it is borrowed"),
         "the compiler probe must fail specifically because pool remains borrowed by the live guard:\n{stderr}"
+    );
+}
+
+#[test]
+fn a_retained_frame_cannot_remain_live_across_reader_drop() {
+    let output = compile_probe(
+        "retained-reader-borrow",
+        r"#![allow(dead_code, elided_lifetimes_in_paths)]
+
+use dios::{PendingToken, Pool, ReaderCtx, ReadyResult};
+
+fn reject_retained_across_reader_drop(
+    pool: &Pool,
+    reader: ReaderCtx,
+    token: PendingToken,
+) {
+    let guard = match pool.ready(&reader, token) {
+        ReadyResult::Ready(guard) => guard,
+        ReadyResult::NotYet(_) | ReadyResult::Err(_) => return,
+    };
+    let retained = match guard.into_retained() {
+        Ok(retained) => retained,
+        Err(_) => return,
+    };
+    drop(reader);
+    std::hint::black_box(&retained);
+}
+",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "a RetainedFrame unexpectedly outlived the ReaderCtx epoch pin"
+    );
+    assert!(
+        stderr.contains("E0505")
+            && stderr.contains("cannot move out of `reader` because it is borrowed"),
+        "the compiler probe must fail specifically because reader remains borrowed by the retained frame:\n{stderr}"
+    );
+}
+
+#[test]
+fn a_retained_frame_cannot_remain_live_across_pool_drop() {
+    let output = compile_probe(
+        "retained-pool-borrow",
+        r"#![allow(dead_code, elided_lifetimes_in_paths)]
+
+use dios::{PendingToken, Pool, ReaderCtx, ReadyResult};
+
+fn reject_retained_across_pool_drop(
+    pool: Pool,
+    reader: &ReaderCtx,
+    token: PendingToken,
+) {
+    let guard = match pool.ready(reader, token) {
+        ReadyResult::Ready(guard) => guard,
+        ReadyResult::NotYet(_) | ReadyResult::Err(_) => return,
+    };
+    let retained = match guard.into_retained() {
+        Ok(retained) => retained,
+        Err(_) => return,
+    };
+    drop(pool);
+    std::hint::black_box(&retained);
+}
+",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "a RetainedFrame unexpectedly outlived its Pool"
+    );
+    assert!(
+        stderr.contains("E0505")
+            && stderr.contains("cannot move out of `pool` because it is borrowed"),
+        "the compiler probe must fail specifically because pool remains borrowed by the retained frame:\n{stderr}"
     );
 }
 

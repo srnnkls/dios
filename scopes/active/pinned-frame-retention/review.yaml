@@ -618,6 +618,58 @@ batch_reviews:
       general: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b2-review-general
       architecture: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b2-review-architecture
       compliance: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b2-review-compliance
+  - batch: 3
+    timestamp: 2026-08-21T21:38:59Z
+    commit: working-tree@0db6c23da29f31632a9bce9141736d580413dd40
+    tasks: [T2, T3]
+    reviewers:
+      - {id: general-codex-native, execution_class: native, status: success, gate: pass}
+      - {id: general-claude-opus-cli, execution_class: external, status: stalled}
+      - {id: general-gemini-3.7-flash, execution_class: external, status: success, gate: pass}
+      - {id: architecture-codex-native, execution_class: native, status: success, gate: pass}
+      - {id: architecture-claude-opus-cli, execution_class: external, status: success, gate: pass}
+      - {id: architecture-gemini-3.7-flash, execution_class: external, status: success, gate: pass}
+      - {id: compliance-codex-native, execution_class: native, status: success, gate: fail}
+      - {id: compliance-claude-opus-cli, execution_class: external, status: stalled}
+      - {id: compliance-gemini-3.7-flash, execution_class: external, status: success, gate: pass}
+    synthesized:
+      gates:
+        correctness: pass
+        performance: pass
+        security: pass
+        architecture: pass
+        style: pass
+      critical_issues: 0
+      high_issues: 0
+      medium_issues: 0
+    accepted_fixes:
+      - id: B3-H1
+        description: Diagnostic AtomicU64 alias hid future proof-bearing std-atomic bypasses from the per-line ARCH-3 guard.
+        resolution: Each diagnostic counter now uses a fully qualified std atomic on its own allowlisted declaration and initializer lines.
+      - id: B3-H2
+        description: RetainedFrame lifetime and !Send/!Sync/!Clone guarantees lacked direct compile probes.
+        resolution: Added direct capability assertions and Pool/ReaderCtx lifetime probes; 10/10 pass.
+      - id: B3-M1
+        description: RetentionUnrepresentable Display misattributed max-reader overflow to the retained-frame budget.
+        resolution: Constraint-neutral retention-capacity wording is pinned by a runtime test.
+    rejected:
+      - id: B3-M2
+        description: Add Debug and snapshot traits to public refusal/statistics types.
+        reason: No T2/T3 contract requires these conveniences; the proposed downstream calls are speculative API expansion.
+    verification:
+      - cargo fmt --check
+      - cargo test --test guard_compile_fail (10 passed)
+      - cargo test --test pinned_frame_retention_config (4 passed)
+      - cargo test --features mock --test pinned_frame_retention_promotion (3 passed)
+      - RUSTFLAGS="--cfg loom" cargo test --test loom_pool (7 passed)
+      - mise run test
+      - mise run lint
+    outcome: approved
+    report_dirs:
+      general: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-recovery-review-general
+      architecture: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-recovery-review-architecture
+      compliance: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-recovery-review-compliance
+      review_fix: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-recovery-review-fix-T2-T3-terra
 
 issues:
   critical: []

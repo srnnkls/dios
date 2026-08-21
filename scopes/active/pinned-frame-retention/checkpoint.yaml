@@ -2,20 +2,21 @@ checkpoint:
   scope_name: pinned-frame-retention
   scope_path: ./scopes/active/pinned-frame-retention
   branch: feat/pinned-frame-retention
-  timestamp: 2026-08-21T19:24:35Z
+  timestamp: 2026-08-21T21:38:59Z
   last_batch: 2
-  last_commit: f73aef3974446cc2eaa488e85d39bae270d03748
+  last_commit: 0db6c23da29f31632a9bce9141736d580413dd40
   tasks:
     done:
       - id: T1
         name: Author bench plan (pre-code, per AGENTS.md)
       - id: T6a
         name: Land the conservative callable retention scaffold
-    in_progress:
       - id: T2
         name: Retention context, budget tally, builder knob
+      - id: T3
+        name: RetainedFrame and into_retained promotion
+    in_progress: []
     pending:
-      - {id: T3, name: RetainedFrame and into_retained promotion}
       - {id: T4, name: Drain integration, release ring, direct free, accounting}
       - {id: T5, name: Integrate retention with file retirement and slot reuse}
       - {id: T6, name: Loom retention cases}
@@ -24,12 +25,12 @@ checkpoint:
       - {id: T8b, name: Exact-R8-scale shipping arm}
       - {id: T9, name: Docs and invariant fold-back}
   next_batch:
-    number: 3
-    id: B3
+    number: 4
+    id: B4
     tasks:
-      - id: T2
-        name: Retention context, budget tally, builder knob
-        files: [src/pool/retention.rs, src/pool/mod.rs, src/product.rs, src/sync.rs, src/pool/alias_guard.rs, src/lib.rs, tests/public_api.rs]
+      - id: T4
+        name: Drain integration, release ring, direct free, accounting
+        files: [src/pool/retention.rs, src/pool/epoch.rs, src/pool/mod.rs, src/pool/loom_model.rs, src/lib.rs]
     parallel: false
   deferred_issues:
     - batch: 1
@@ -42,10 +43,12 @@ checkpoint:
     epoch_id: 20260821T150300Z-376a8f
   phase_cursor:
     batch: 3
-    phase: tester
-    status: pending
-    tasks: [T2]
-    updated_at: 2026-08-21T19:24:35Z
+    phase: code_review
+    status: success
+    tasks: [T2, T3]
+    updated_at: 2026-08-21T21:38:59Z
+    tester_report: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-tester-T2-review-fix/codex-native.yaml
+    test_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-test-review
   review_history:
     batch_1_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-review-general
     batch_1_targeted_review_round_1: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-targeted-review
@@ -55,4 +58,163 @@ checkpoint:
     batch_2_architecture_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b2-review-architecture
     batch_2_compliance_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b2-review-compliance
     batch_2_status: clean
-  incomplete_stages: []
+    batch_3_general_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-recovery-review-general
+    batch_3_architecture_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-recovery-review-architecture
+    batch_3_compliance_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-recovery-review-compliance
+    batch_3_review_fix: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-recovery-review-fix-T2-T3-terra
+    batch_3_status: clean
+  incomplete_stages:
+    - batch: 3
+      task: T2
+      phase: implementer
+      agent: terra
+      report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-implementer-T2-terra
+      status: failed
+      started_at: 2026-08-21T19:50:03Z
+      updated_at: 2026-08-21T20:01:57Z
+      evidence:
+        pre_dispatch:
+          git_status: |
+            M scopes/active/pinned-frame-retention/checkpoint.yaml
+            ?? tests/pinned_frame_retention_config.rs
+          git_diff: |
+            T2 reviewed runtime RED: exact representability error, augmented watermark, and default-zero regression.
+        post_failure:
+          git_status: |
+            M scopes/active/pinned-frame-retention/checkpoint.yaml
+            M src/pool/alias_guard.rs
+            M src/pool/mod.rs
+            M src/product.rs
+            M src/sync.rs
+            ?? src/pool/retention.rs
+            ?? tests/pinned_frame_retention_config.rs
+          git_diff: |
+            Terra left partial T2 state, ring, WaitState, builder, and validation edits; no valid implementer report or GREEN evidence was produced.
+      failure: Terra reached the 600-second hard cap; partial edits are preserved and unverified.
+    - batch: 3
+      task: T2
+      phase: implementer
+      agent: terra
+      report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-implementer-T2-terra-continuation
+      status: failed
+      started_at: 2026-08-21T20:06:28Z
+      updated_at: 2026-08-21T20:09:32Z
+      evidence:
+        pre_dispatch:
+          git_status: |
+            M scopes/active/pinned-frame-retention/checkpoint.yaml
+            M src/pool/alias_guard.rs
+            M src/pool/mod.rs
+            M src/product.rs
+            M src/sync.rs
+            ?? src/pool/retention.rs
+            ?? tests/pinned_frame_retention_config.rs
+          verification: |
+            cargo fmt --check passed.
+            cargo test --test pinned_frame_retention_config passed 3/3.
+            cargo test --lib --features mock passed 10/10 with three dead-code warning groups.
+        post_failure:
+          git_status: |
+            M scopes/active/pinned-frame-retention/checkpoint.yaml
+            M src/pool/alias_guard.rs
+            M src/pool/mod.rs
+            M src/product.rs
+            M src/sync.rs
+            ?? src/pool/retention.rs
+            ?? tests/pinned_frame_retention_config.rs
+          report: empty
+      failure: The continuation process was killed before Terra returned a report; no additional source changes were observed.
+    - batch: 3
+      task: T2
+      phase: implementer
+      agent: terra
+      report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-implementer-T2-terra-retry2
+      status: blocked
+      started_at: 2026-08-21T20:26:08Z
+      updated_at: 2026-08-21T20:35:35Z
+      evidence:
+        pre_dispatch:
+          git_status: |
+            M scopes/active/pinned-frame-retention/checkpoint.yaml
+            M src/pool/alias_guard.rs
+            M src/pool/mod.rs
+            M src/product.rs
+            M src/sync.rs
+            ?? src/pool/retention.rs
+            ?? tests/pinned_frame_retention_config.rs
+          verification: |
+            cargo fmt --check passed.
+            cargo test --test pinned_frame_retention_config passed 3/3.
+            cargo test --lib --features mock passed 10/10 with three dead-code warning groups.
+        post_dispatch:
+          report: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-implementer-T2-terra-retry2/codex-gpt5.6-terra.yaml
+          status: blocked
+          verification: |
+            cargo fmt --check passed.
+            pinned_frame_retention_config passed 3/3.
+            public_api passed 9/9 with warnings.
+            library tests passed 10/10 with warnings.
+            lint failed on unused release-producer and WaitState seams.
+      failure: T2 requires producer primitives that remain unreachable until T4, and strict lint rejects them without an expectation or early T4 integration.
+    - batch: 3
+      task: T3
+      phase: tester
+      agent: codex-native
+      report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-recovery-tester-T3
+      status: success
+      started_at: 2026-08-21T20:47:55Z
+      updated_at: 2026-08-21T21:00:21Z
+      evidence:
+        pre_dispatch:
+          verification: |
+            T2 configuration tests pass 3/3.
+            T6a promotion still refuses every guard.
+        post_dispatch:
+          verification: |
+            Three direct promotion smoke tests added.
+            Test review fixed retained-byte and distinct-frame budget-recovery oracles.
+            Current RED is the missing RetainedFrame Deref byte view.
+    - batch: 3
+      tasks: [T2, T3]
+      phase: implementer
+      agent: terra
+      report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-recovery-implementer-T2-T3-terra
+      status: success
+      started_at: 2026-08-21T21:00:21Z
+      updated_at: 2026-08-21T21:12:14Z
+      evidence:
+        pre_dispatch:
+          git_status: |
+            M scopes/active/pinned-frame-retention/checkpoint.yaml
+            M src/pool/alias_guard.rs
+            M src/pool/mod.rs
+            M src/product.rs
+            M src/sync.rs
+            ?? src/pool/retention.rs
+            ?? tests/pinned_frame_retention_config.rs
+            ?? tests/pinned_frame_retention_promotion.rs
+        post_dispatch:
+          verification: |
+            T2 configuration tests passed 3/3.
+            T3 promotion tests passed 3/3.
+            Public API tests passed 9/9 after the stale T6a test moved to zero budget.
+            Library tests passed 10/10; Loom passed 7/7.
+            Full mise test and lint passed.
+          report: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-recovery-implementer-T2-T3-terra/codex-gpt5.6-terra.yaml
+    - batch: 3
+      tasks: [T2, T3]
+      phase: review_fix
+      agent: terra
+      report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-recovery-review-fix-T2-T3-terra
+      status: recovered
+      started_at: 2026-08-21T21:27:00Z
+      updated_at: 2026-08-21T21:38:59Z
+      evidence:
+        agent_status: stalled
+        orchestrator_verification: |
+          Accepted fixes were present after the hard cap.
+          RetainedFrame capability/lifetime tests passed 10/10.
+          Configuration tests passed 4/4.
+          Promotion tests passed 3/3.
+          Full mise test and lint passed.
+      residual: null

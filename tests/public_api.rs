@@ -276,7 +276,7 @@ fn retention_api_is_directly_callable() {
 
 #[cfg(feature = "mock")]
 #[test]
-fn conservative_retention_refuses_with_live_guard_and_zero_stats() {
+fn zero_budget_retention_refuses_with_live_guard_and_zero_stats() {
     let mock = MockDriver::builder()
         .queue_capacity(1)
         .frames(5)
@@ -294,9 +294,9 @@ fn conservative_retention_refuses_with_live_guard_and_zero_stats() {
         .peak_guards_per_reader(1)
         .max_inflight_reads(1)
         .miss_headroom(3)
-        .max_retained_frames(1)
+        .max_retained_frames(0)
         .build_on(mock)
-        .expect("valid retained-frame pool");
+        .expect("valid zero-budget pool");
     pool.register_file(file);
     let reader = pool.register_reader().expect("one reader slot");
     let Get::Pending(token) = pool
@@ -311,7 +311,7 @@ fn conservative_retention_refuses_with_live_guard_and_zero_stats() {
     };
 
     let Err(RetainRefused { guard, reason }) = guard.into_retained() else {
-        panic!("the conservative scaffold must refuse retention");
+        panic!("disabled retention must refuse promotion");
     };
     assert!(matches!(reason, RetainRefusedReason::Exhausted));
     assert_eq!(guard.len(), GRANULE as usize);

@@ -9,7 +9,6 @@
 //! [`Mutex`]. The miss singleflight and the backend seam live in [`miss`].
 
 use std::cell::Cell;
-use std::marker::PhantomData;
 use std::mem::size_of;
 use std::num::NonZeroU64;
 use std::path::Path;
@@ -36,11 +35,13 @@ mod frames;
 #[cfg(loom)]
 pub mod loom_model;
 mod miss;
+mod retention;
 mod table;
 pub(crate) mod write_arena;
 
 use epoch::{EvictQueue, ReaderRegistry, advance_epoch};
 use miss::{MissEntry, MissInterests, MissOutcome, MissSlot, MissTable};
+use retention::Retention;
 
 pub use clock::Clock;
 pub use epoch::{FrameGuard, ReaderCtx};
@@ -48,6 +49,7 @@ pub(crate) use frames::Frames;
 pub use frames::{FrameState, ReadFrameIdx};
 pub(crate) use miss::PoolBackend;
 pub(crate) use miss::sealed::Sealed as PoolBackendSealed;
+pub use retention::{RetainRefused, RetainRefusedReason, RetainedFrame, RetentionStats};
 pub use table::PageTable;
 #[cfg(feature = "bench")]
 pub(crate) use table::page_hash;
@@ -94,41 +96,6 @@ impl PageId {
     #[must_use]
     pub fn granule_idx(self) -> u32 {
         self.granule_idx
-    }
-}
-
-pub struct RetainedFrame<'pool> {
-    _pool: PhantomData<&'pool ()>,
-}
-
-pub struct RetainRefused<'pool> {
-    pub guard: FrameGuard<'pool>,
-    pub reason: RetainRefusedReason,
-}
-
-pub enum RetainRefusedReason {
-    Exhausted,
-    FileRetiring,
-}
-
-pub struct RetentionStats {
-    pub occupied_budget: u32,
-    pub refused_budget: u64,
-    pub refused_ceiling: u64,
-    pub refused_contention: u64,
-    pub refused_retiring: u64,
-    pub retained_evictions_held: u64,
-}
-
-impl<'pool> FrameGuard<'pool> {
-    /// # Errors
-    ///
-    /// Returns the still-live guard when retention is refused.
-    pub fn into_retained(self) -> Result<RetainedFrame<'pool>, RetainRefused<'pool>> {
-        Err(RetainRefused {
-            guard: self,
-            reason: RetainRefusedReason::Exhausted,
-        })
     }
 }
 
@@ -347,6 +314,13 @@ impl Drop for PendingToken {
 /// — an open-time typed error, never a runtime deadlock (INV-9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PoolConfigError {
+    /// Retention bookkeeping cannot represent the requested fixed budget.
+    RetentionUnrepresentable {
+        /// Requested retained-frame budget or reader bound.
+        requested: u32,
+        /// Largest value representable by the constrained fixed counter.
+        limit: u32,
+    },
     /// `frame_count` is below the deadlock-freedom watermark.
     BelowWatermark {
         /// Configured frame count.
@@ -384,6 +358,10 @@ pub enum PoolConfigError {
 impl std::fmt::Display for PoolConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::RetentionUnrepresentable { requested, limit } => write!(
+                f,
+                "retention-capacity request {requested} exceeds the representable limit {limit}"
+            ),
             Self::BelowWatermark {
                 frame_count,
                 watermark,
@@ -622,6 +600,7 @@ impl PoolBuilder {
                 sector: SECTOR_BYTES,
             });
         }
+        self.validate_retention_capacity()?;
         let Some(minimum) = self.max_inflight_reads.checked_mul(3) else {
             return Err(PoolConfigError::MissHeadroomTooSmall {
                 miss_headroom: self.miss_headroom,
@@ -637,11 +616,41 @@ impl PoolBuilder {
         let watermark = (u64::from(self.max_concurrent_readers)
             * u64::from(self.peak_guards_per_reader)
             + u64::from(self.miss_headroom))
-        .max(1);
+        .max(1)
+            + u64::from(self.max_retained_frames);
         if u64::from(self.frame_count) < watermark {
             return Err(PoolConfigError::BelowWatermark {
                 frame_count: self.frame_count,
                 watermark: u32::try_from(watermark).unwrap_or(u32::MAX),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_retention_capacity(self) -> Result<(), PoolConfigError> {
+        const RING_LIMIT: u32 = 1 << 31;
+        if self.max_retained_frames > RING_LIMIT {
+            return Err(PoolConfigError::RetentionUnrepresentable {
+                requested: self.max_retained_frames,
+                limit: RING_LIMIT,
+            });
+        }
+        let Some(tally_limit) = u32::MAX.checked_sub(self.max_concurrent_readers) else {
+            return Err(PoolConfigError::RetentionUnrepresentable {
+                requested: self.max_concurrent_readers,
+                limit: u32::MAX - 1,
+            });
+        };
+        if self.max_retained_frames > tally_limit {
+            return Err(PoolConfigError::RetentionUnrepresentable {
+                requested: self.max_retained_frames,
+                limit: tally_limit,
+            });
+        }
+        if self.max_concurrent_readers.checked_add(1).is_none() {
+            return Err(PoolConfigError::RetentionUnrepresentable {
+                requested: self.max_concurrent_readers,
+                limit: u32::MAX - 1,
             });
         }
         Ok(())
@@ -708,6 +717,7 @@ struct Control {
     batch: CompletionBatch,
     product_ops: Box<[ProductOpSlot]>,
     product_sequence: u64,
+    release_cursor: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -798,6 +808,7 @@ pub struct Pool<D = Driver> {
     control: Mutex<Control>,
     file_live_generations: Box<[AtomicU64]>,
     resident_lease_states: Box<[Arc<ResidentLeaseState>]>,
+    retention: Retention,
     #[cfg(feature = "mock")]
     control_acquisitions: ObservationAtomicU64,
     driver: D,
@@ -806,6 +817,25 @@ pub struct Pool<D = Driver> {
     max_concurrent_readers: u32,
     write_slots: u32,
     identity: u64,
+}
+
+impl<D> Drop for Pool<D> {
+    fn drop(&mut self) {
+        if self.retention.is_disabled() {
+            return;
+        }
+        #[cfg(not(loom))]
+        let control = self
+            .control
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(loom)]
+        let control = self
+            .control
+            .get_mut()
+            .expect("loom mutex is never poisoned");
+        self.retention.drain_releases(&mut control.release_cursor);
+    }
 }
 
 impl Pool<Driver> {
@@ -861,6 +891,7 @@ impl<D: PoolBackend> Pool<D> {
                 })
                 .collect(),
             product_sequence: 0,
+            release_cursor: 0,
         };
         Self {
             frames,
@@ -882,6 +913,12 @@ impl<D: PoolBackend> Pool<D> {
                     ))
                 })
                 .collect(),
+            retention: Retention::preallocated(
+                config.frame_count,
+                config.max_retained_frames,
+                config.max_concurrent_readers,
+                Arc::clone(&wake),
+            ),
             #[cfg(feature = "mock")]
             control_acquisitions: ObservationAtomicU64::new(0),
             driver,
@@ -1209,6 +1246,9 @@ impl<D: PoolBackend> Pool<D> {
         Ok(Get::Hit(FrameGuard::new(
             self.frames.frame_bytes(frame),
             reader.slot(),
+            frame,
+            page.file().slot(),
+            &self.retention,
         )))
     }
 
@@ -1646,7 +1686,13 @@ impl<D: PoolBackend> Pool<D> {
         };
         let _ = self.clock.reference(frame);
         slot.commit_pin();
-        Some(FrameGuard::new(self.frames.frame_bytes(frame), slot))
+        Some(FrameGuard::new(
+            self.frames.frame_bytes(frame),
+            slot,
+            frame,
+            page.file().slot(),
+            &self.retention,
+        ))
     }
 
     fn assert_reader_owner(&self, reader: &ReaderCtx) {

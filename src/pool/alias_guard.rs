@@ -13,6 +13,11 @@ const ALLOWLIST: &[(&str, &str)] = &[
     ("clock.rs", "reference_stores"),
     ("loom_model.rs", "held_frame"),
     ("mod.rs", "control_acquisitions"),
+    ("retention.rs", "refused_budget"),
+    ("retention.rs", "refused_ceiling"),
+    ("retention.rs", "refused_contention"),
+    ("retention.rs", "refused_retiring"),
+    ("retention.rs", "retained_evictions_held"),
 ];
 
 /// This file grabs the bypass patterns as literals, so it would flag itself.

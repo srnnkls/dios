@@ -13,7 +13,7 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use crate::pool::ReadFrameIdx;
+use crate::pool::{ReadFrameIdx, retention::Retention};
 use crate::product::LifecycleCounters;
 use crate::sync::{AtomicBool, AtomicU64, Ordering, fence};
 
@@ -358,16 +358,28 @@ impl Drop for ReaderCtx {
 /// ```
 #[derive(Debug)]
 pub struct FrameGuard<'pool> {
-    bytes: &'pool [u8],
-    slot: &'pool ReaderSlot,
+    pub(crate) bytes: &'pool [u8],
+    pub(crate) slot: &'pool ReaderSlot,
+    pub(crate) frame: ReadFrameIdx,
+    pub(crate) file_slot: u32,
+    pub(crate) retention: &'pool Retention,
     _thread_bound: PhantomData<*const ()>,
 }
 
 impl<'pool> FrameGuard<'pool> {
-    pub(crate) fn new(bytes: &'pool [u8], slot: &'pool ReaderSlot) -> Self {
+    pub(crate) fn new(
+        bytes: &'pool [u8],
+        slot: &'pool ReaderSlot,
+        frame: ReadFrameIdx,
+        file_slot: u32,
+        retention: &'pool Retention,
+    ) -> Self {
         Self {
             bytes,
             slot,
+            frame,
+            file_slot,
+            retention,
             _thread_bound: PhantomData,
         }
     }

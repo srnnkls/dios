@@ -11,6 +11,9 @@
 //!   - `Clock::reference_stores` (Relaxed CLOCK store-elision observation counter)
 //!   - `loom_model::PoolModel::held_frame` (`cfg(loom)` model scaffolding, not shipping)
 //!   - `Pool::control_acquisitions` (mock-only control-lock observation counter)
+//!   - `Retention::refused_budget`, `Retention::refused_ceiling`,
+//!     `Retention::refused_contention`, `Retention::refused_retiring`, and
+//!     `Retention::retained_evictions_held` (diagnostics-only retention counters)
 
 pub(crate) use std::sync::atomic::Ordering;
 

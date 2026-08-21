@@ -230,6 +230,7 @@ struct WaitCounters {
 struct WaitGeneration {
     current: u64,
     consumed: u64,
+    ring_pending: bool,
 }
 
 /// One preallocated generation latch used by product I/O and external ingress.
@@ -260,6 +261,28 @@ impl WaitState {
         }
     }
 
+    pub(crate) fn wake_if_parked(&self) {
+        let mut generation = self.lock();
+        if self.counters.parks_in_progress.load(Ordering::Acquire) == 0 {
+            return;
+        }
+        generation.current = generation.current.wrapping_add(1);
+        self.changed.notify_all();
+        #[cfg(target_os = "linux")]
+        if let Some(platform) = self.platform.get() {
+            platform.notify();
+        }
+        drop(generation);
+    }
+
+    pub(crate) fn set_ring_pending(&self) {
+        self.lock().ring_pending = true;
+    }
+
+    pub(crate) fn clear_ring_pending(&self) {
+        self.lock().ring_pending = false;
+    }
+
     pub(crate) fn consume_current(&self) {
         let mut generation = self.lock();
         generation.consumed = generation.current;
@@ -272,10 +295,16 @@ impl WaitState {
             return;
         }
         let armed = generation.current;
-        self.counters.parks_entered.fetch_add(1, Ordering::AcqRel);
         self.counters
             .parks_in_progress
             .fetch_add(1, Ordering::AcqRel);
+        if generation.ring_pending {
+            self.counters
+                .parks_in_progress
+                .fetch_sub(1, Ordering::AcqRel);
+            return;
+        }
+        self.counters.parks_entered.fetch_add(1, Ordering::AcqRel);
         let deadline = Instant::now() + timeout;
         let mut timed_out = false;
         while generation.current == armed {
@@ -331,10 +360,16 @@ impl WaitState {
             return None;
         }
         let armed = generation.current;
-        self.counters.parks_entered.fetch_add(1, Ordering::AcqRel);
         self.counters
             .parks_in_progress
             .fetch_add(1, Ordering::AcqRel);
+        if generation.ring_pending {
+            self.counters
+                .parks_in_progress
+                .fetch_sub(1, Ordering::AcqRel);
+            return None;
+        }
+        self.counters.parks_entered.fetch_add(1, Ordering::AcqRel);
         Some(armed)
     }
 
