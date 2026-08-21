@@ -1,0 +1,52 @@
+checkpoint:
+  scope_name: pinned-frame-retention
+  scope_path: ./scopes/active/pinned-frame-retention
+  branch: feat/pinned-frame-retention
+  timestamp: 2026-08-21T17:05:25Z
+  last_batch: 1
+  last_commit: 4264896e7d2e1a2a5d6d71322a46cb7d8a3de7e7
+  tasks:
+    done:
+      - id: T1
+        name: Author bench plan (pre-code, per AGENTS.md)
+    in_progress: []
+    pending:
+      - {id: T6a, name: Land the conservative callable retention scaffold}
+      - {id: T2, name: Retention context, budget tally, builder knob}
+      - {id: T3, name: RetainedFrame and into_retained promotion}
+      - {id: T4, name: Drain integration, release ring, direct free, accounting}
+      - {id: T5, name: Integrate retention with file retirement and slot reuse}
+      - {id: T6, name: Loom retention cases}
+      - {id: T7, name: Wire public diagnostics and acceptance hardening}
+      - {id: T8a, name: Bench implementation and arena-independent gate run}
+      - {id: T8b, name: Exact-R8-scale shipping arm}
+      - {id: T9, name: Docs and invariant fold-back}
+  next_batch:
+    number: 2
+    id: B2
+    tasks:
+      - id: T6a
+        name: Land the conservative callable retention scaffold
+        files: [src/lib.rs, src/pool/mod.rs, src/pool/loom_model.rs, tests/public_api.rs]
+    parallel: false
+  deferred_issues:
+    - batch: 1
+      severity: medium
+      description: Further prose-parser contradiction and modifier permutations
+      location: tests/pinned_frame_retention_plan.rs
+      reason: deferred_hardening after two fix rounds and representative falsifiers
+  implementation_config:
+    path: ./scopes/active/pinned-frame-retention/config.yaml
+    epoch_id: 20260821T150300Z-376a8f
+  phase_cursor:
+    batch: 2
+    phase: tester
+    status: pending
+    tasks: [T6a]
+    updated_at: 2026-08-21T17:05:25Z
+  review_history:
+    batch_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-review-general
+    targeted_review_round_1: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-targeted-review
+    targeted_review_round_2: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-targeted-review-round2
+    final_targeted_status: clean
+  incomplete_stages: []

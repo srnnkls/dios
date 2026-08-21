@@ -1,0 +1,191 @@
+scope: pinned-frame-retention
+created: 2026-08-17
+issue_type: Feature
+validation_depth: standard
+
+ambiguity_scan:
+  scope: clear        # pin promotion; boundaries to sira adapter and victim policy stated
+  behavior: clear     # promotion ordering, refusal-carries-guard, HELD release resolved
+  data_model: clear   # per-frame packed retention word + HELD bit, preallocated
+  constraints: clear  # INV-9; memlock fork resolved r11 — kernel-default baseline, raised limit demoted to opt-in knob
+  edge_cases: clear   # exhaustion, partial-session rollback, promote/evict race
+  integration: clear  # R8 consumer contract plus DRP010 serialization/rebase stated
+  terminology: clear  # retain / promote / transient guard / HELD defined in design.md
+
+questions:
+  - area: behavior
+    question: RetainedFrame cloneable (shared retentions) or one handle per promotion?
+    answer: No Clone in v1; N values in one frame take N independent pins.
+  - area: affinity
+    question: Should RetainedFrame be Send?
+    answer: "!Send in v1; release stays on the owning thread and the consumer session is thread-local."
+  - area: edge_cases
+    question: How is retention capacity bounded?
+    answer: PoolBuilder::max_retained_frames, validated against the augmented INV-9 watermark at build.
+  - area: benchmark
+    question: How can the exact 8,035-page R8 arm run on the registered shipping backend under the host's 8 MiB hard memlock limit?
+    answer: >-
+      It cannot on the registered backend under defaults. Owner decision
+      (revision 11, terminology corrected r13): the baseline operates under
+      the stock unprivileged 8 MiB limit (systemd DefaultLimitMEMLOCK; the
+      kernel's own 64 KiB default is not a target), so the exact arm runs
+      the Unregistered posture from arena-modernization:AM4; raising the
+      limit is an opt-in optimization knob only, and a smaller workload
+      stays labelled non-equivalent to R8.
+  - area: benchmark
+    question: What distinguishes a valid warm comparison from mere page-cache residency in the retained-vs-locator arm?
+    answer: >-
+      Prefaulted locator mapping (MADV_POPULATE_READ), zero timed-region
+      minor AND major faults on both arms (RUSAGE_THREAD), an identical
+      pinned BlockVerification mode, one identical segment layout across
+      arms (a pair on the SAP1 superblock layout is a new baseline, not an
+      R8 reproduction), and both sides' recorded page-size state — page-
+      cache residency proves neither PTE presence nor TLB state. The
+      <= 1.02 threshold is a tie gate with the equal-regime qualifier: a
+      sub-1.0 ratio is interpretable only where the arms' page-size states
+      differ (the Capacity lever). The arm itself is a sira-side companion
+      run recorded in dependencies.yaml, not authored by T1.
+
+context_sources:
+  - resources/r8-resident-set.md (formal R8 evidence, rejected prototype, selected performance shape)
+  - .artifacts/r8/resident-set/formal/ (manifested local evidence)
+  - src/pool/epoch.rs (EBR slots, EvictQueue, advance_epoch)
+  - src/pool/mod.rs (INV-9 watermark validation)
+  - AGENTS.md (bench-driven development, safety rules)
+  - scopes/draft/plan-prefetch/resources/landscape-audit.md (causal memlock probe)
+  - scopes/draft/dios-r1-r7-read-performance/ (serialized frame-state/reclaim predecessor)
+
+review_config:
+  reviewers:
+    - alias: opus
+      class: host-native
+      effort: inherit
+    - alias: gpt
+      class: peer
+      harness: codex
+      effort: high
+    - alias: gemini
+      class: peer
+      harness: pi
+      effort: high
+
+terminology_note: >
+  Rounds 1-2 records use the original vocabulary; renamed at revision 2/5:
+  PinnedFrame -> RetainedFrame, max_pinned_frames -> max_retained_frames,
+  PinnedEvicted -> HELD. Historical entries are preserved verbatim.
+
+review_gate:
+  status: passed
+  passed_revision: 9
+  pending_revision: 13
+  pending_note: >-
+    Round 9 (2026-08-20) reviewed revision 12 with two focused reviewers
+    (retention-r12-consistency-review, retention-r12-claims-review): FAILED
+    with 8 blocking findings, all resolved in revision 13 — T8 split into
+    T8a (arena-independent gates, closure-blocking) and T8b (exact-R8 arm,
+    AM4-gated, non-closure-blocking); retained-vs-locator tie gate
+    reassigned to a sira-side companion run with the cross-repo obligation
+    recorded; arena posture made part of arm identity (exact-R8 arm =
+    Unregistered); "kernel-default RLIMIT_MEMLOCK" corrected to the stock
+    systemd 8 MiB unprivileged limit vs the kernel's 64 KiB default; the
+    probe ENOMEM causal claim demoted to an open attribution with
+    candidates (two registered arenas; compound-page pinning), bounds, and
+    the VmPin rerun observable; the tie gate given its equal-regime
+    qualifier; the XFS file-THP correction propagated to design.md and the
+    R8 resource with "MAY (unverified on 6.6.64)" register; fault rules
+    extended to ru_majflt with RUSAGE_THREAD and stated per-arm; sparse
+    registration corrected (nr fixed at registration, 2 MiB granule
+    quantisation under THP, at most four granules in the 8 MiB budget);
+    resolvable citations added. Nine non-blocking nits folded in the same
+    pass. Mechanism, API, and protocol remain unchanged from revision 9.
+    Prior pending note follows.
+    ---
+    Revision 10 adds bench warm-state controls (prefault, timed-region
+    minor-fault counts, BlockVerification-mode pin), tie-gate framing for
+    the retained-vs-locator threshold, and memory-architecture consequences
+    on the memlock fork. Revision 11 records the owner decision resolving
+    that fork (kernel-default baseline, raised limit demoted to opt-in
+    knob, T8 external dependency), corrects the THP claim, and pins rerun
+    layout identity against the SAP1 superblock change. Revision 12 folds
+    the 2026-08-20 research sweep: sparse registration
+    (BUFFERS2/BUFFERS_UPDATE, 5.13+) recorded as the intermediate memlock
+    posture; registration-is-a-THP-freeze ordering pin; hugepage-lever
+    asymmetry narrowed (XFS >= 5.18 madvised file mappings can obtain PMD
+    folios — bench arms record both sides' page-size state); memlock-probe
+    ring-accounting reinterpretation noted in the R8 resource; the T8
+    external dependency retargeted from the unscoped
+    dios-unregistered-buffer-backend placeholder to arena-modernization
+    AM4. Mechanism, API, and protocol remain unchanged.
+  date: 2026-08-19
+  reviewers: [retention-r9-performance-review, retention-r9-consistency-review]
+  rounds_run: 8
+  blocking_resolved_total: 33
+  deferred_nits: []
+  rounds:
+    - round: 1
+      date: 2026-08-17
+      reviewed_revision: 1
+      result: failed
+      reviewers: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+      blocking_found: 9
+      blocking_resolved: 9
+      detail: review.yaml
+    - round: 2
+      reviewed_revision: 2
+      result: failed
+      reviewers: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+      blocking_found: 8
+      blocking_resolved: 8
+      detail: review.yaml
+      note: gemini first dispatch returned empty; solo redispatch succeeded (pass)
+    - round: 3
+      reviewed_revision: 3
+      result: failed
+      reviewers: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+      blocking_found: 7
+      blocking_resolved: 7
+      detail: review.yaml
+      note: two criticals found convergently by all three reviewers; revision-3 architecture otherwise verified by native review
+    - round: 4
+      reviewed_revision: 4
+      result: failed
+      reviewers: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+      blocking_found: 6
+      blocking_resolved: 6
+      detail: review.yaml
+      note: core mechanism verified by native review; findings confined to auxiliary mechanisms (ring producer progress, wake liveness, orderings, task hygiene)
+    - round: 5
+      reviewed_revision: 5
+      result: failed
+      reviewers: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+      blocking_found: 7
+      blocking_resolved: 7
+      detail: review.yaml
+      note: core proofs verified by native review; criticals confined to the wake handshake (atomics -> mutex-mediated) and the Linux park path
+    - round: 6
+      reviewed_revision: 6
+      result: failed
+      reviewers: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+      blocking_found: 4
+      blocking_resolved: 4
+      detail: review.yaml
+      note: no criticals; native review passed 4/5 gates and verified the wake protocol exhaustively; gemini passed all gates
+    - round: 7
+      reviewed_revision: 7
+      result: passed_after_triage
+      reviewers: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+      blocking_found: 0
+      deferred_nits_folded: 8
+      detail: review.yaml
+      note: opus and gemini passed all gates; gpt's two highs triaged non-blocking (rationale in review.yaml) and materially folded into revision 8
+    - round: 8
+      reviewed_revision: 9
+      result: passed
+      reviewers: [retention-r9-performance-review, retention-r9-consistency-review]
+      blocking_found: 0
+      detail: review.yaml
+      note: >-
+        Focused final review verified the R8-shaped session consumer, HELD
+        reclamation policy, DRP010 serialization, task-local RED pipeline, and
+        explicit unresolved shipping-memlock fork. Execution remains blocked
+        by DRP010 and the T1 owner decision.

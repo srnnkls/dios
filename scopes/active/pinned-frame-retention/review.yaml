@@ -1,0 +1,626 @@
+scope: pinned-frame-retention
+rounds:
+  - round: 1
+    date: 2026-08-17
+    reviewed_revision: 1
+    reviewers: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+    gates:
+      completeness: { status: fail, failed_by: [opus, codex-gpt5.6-sol] }
+      consistency: { status: fail, failed_by: [opus, codex-gpt5.6-sol] }
+      feasibility: { status: fail, failed_by: [opus, codex-gpt5.6-sol] }
+      clarity: { status: fail, failed_by: [opus, codex-gpt5.6-sol] }
+      design_depth: { status: fail, failed_by: [opus, codex-gpt5.6-sol] }
+    synthesized_issues:
+      - id: H1
+        severity: high
+        description: PinRefusedReason::Maturing unreachable — a live guard at epoch E bounds the global epoch to E+1, so the frame's evict entry can never mature
+        found_by: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+        verified: tests/epoch_guards.rs live-guard-limbo test read by orchestrator
+        resolution: variant removed; reachability invariant recorded and asserted (design.md)
+      - id: H2
+        severity: high
+        description: INV-9 delta formula contradicted PoolBuilder::validate and the owning dios-v1 scope (phantom inflight term; scope.md and design.md disagreed)
+        found_by: [opus, codex-gpt5.6-sol]
+        verified: src/pool/mod.rs:474-483 read by orchestrator
+        resolution: delta restated against the code formula; BelowWatermark reports augmented watermark
+      - id: H3
+        severity: high
+        description: Deferred unpin re-enqueue had no mechanism and its no-lock/no-MPSC rationale was self-defeating (drops are multi-producer)
+        found_by: [opus, codex-gpt5.6-sol]
+        resolution: fixed-capacity MPSC release ring sized max_retained_frames, poll-side single consumer under AD-4; tech decision corrected
+      - id: H4
+        severity: high
+        description: PinnedEvicted ambiguously specified as both orthogonal flag and FrameState member; FrameState is closed, assert-guarded, public
+        found_by: [opus, codex-gpt5.6-sol]
+        resolution: decided — no FrameState variant; packed per-frame AtomicU32 (count + HELD) with CAS protocol
+      - id: H5
+        severity: high
+        description: Held retention blocks Pool::retire_file indefinitely with no requirement covering it
+        found_by: [opus]
+        verified: progress_retirements/retire_file_frames read by orchestrator
+        resolution: FileRetiring refusal for retiring files; documented observable wait; per-file count deferred (nit)
+      - id: H6
+        severity: high
+        description: Task file lists did not match code layout (FrameGuard lacks frame index/pool backref; product.rs/error.rs wrong homes; loom model lives in src/pool/loom_model.rs)
+        found_by: [opus, codex-gpt5.6-sol]
+        verified: FrameGuard struct read by orchestrator
+        resolution: file lists corrected across T2-T9; ManuallyDrop and FrameGuard field additions recorded
+      - id: H7
+        severity: high
+        description: Unpin-to-zero racing drain_matured's count read can strand a frame (flagged HELD with count 0, never released)
+        found_by: [gemini-3.5-flash]
+        resolution: single packed word + full-word CAS on both sides; unique release ownership on the (1,HELD)->(0,clear) transition
+      - id: H8
+        severity: high
+        description: Bench-plan-before-code violated — T2 could start alongside T1; plan lacked preregistered gate fields
+        found_by: [opus, codex-gpt5.6-sol]
+        resolution: T1 gates the DAG (all code tasks transitively depend on it); required plan fields enumerated in T1
+      - id: H9
+        severity: high
+        description: Verification lacked acceptance-test matrix, zero-alloc/miri/asan lanes, retirement and recovery cases
+        found_by: [codex-gpt5.6-sol]
+        resolution: acceptance matrix in scope.md; T7 sanitizer/zero-alloc task added
+      - id: M1
+        severity: medium
+        description: Fresh two-epoch grace on last unpin unsound as rationale (no guard can exist; remove_shared precedes eviction) and costs availability
+        found_by: [opus]
+        verified: remove_shared call sites read by orchestrator
+        resolution: direct Evicting -> Free at poll boundary with asserted justification
+      - id: M2
+        severity: medium
+        description: '"pin" overloaded between the EBR epoch verb and the new refcount'
+        found_by: [opus]
+        resolution: retain vocabulary adopted (RetainedFrame, into_retained, RetainRefused, max_retained_frames)
+      - id: M3
+        severity: medium
+        description: max_pinned_frames denomination ambiguous (frames vs handles); default and rollback unspecified
+        found_by: [opus, codex-gpt5.6-sol]
+        resolution: distinct frames, 0->1/1->0 tally with reserve-rollback; default 0 with stated consequence
+      - id: M4
+        severity: medium
+        description: PollReport::reclaimed_frames accounting for HELD pops unspecified
+        found_by: [opus]
+        resolution: HELD pops excluded; test pins reported == frames reaching Free
+      - id: M5
+        severity: medium
+        description: No observability for refusals or retention occupancy
+        found_by: [opus, codex-gpt5.6-sol]
+        resolution: retained-in-use and refusal counters beside lifecycle counters
+      - id: M6
+        severity: medium
+        description: Debug contract referenced FrameGuard len-only Debug that does not exist (FrameGuard derives Debug)
+        found_by: [codex-gpt5.6-sol]
+        resolution: RetainedFrame Debug specified independently; comparison removed
+    decisions_from_clarifying_questions:
+      - RetainedFrame keeps shared pool + ReaderCtx borrows (all read ops take &self; acceptable for sira's Connection-owned ReadCore)
+      - Stale-snapshot semantics on PageId re-admission documented; exact for immutable-file consumers
+      - Promotion refused for Retiring files (FileRetiring)
+      - RetainedFrame is !Sync as well as !Send in v1
+    recommendation: address_issues
+    outcome: revision 2 authored; all high findings resolved, M-class folded or recorded
+  - round: 2
+    date: 2026-08-17
+    reviewed_revision: 2
+    reviewers: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+    gates:
+      completeness: { status: fail, failed_by: [opus, codex-gpt5.6-sol] }
+      consistency: { status: fail, failed_by: [opus, codex-gpt5.6-sol] }
+      feasibility: { status: fail, failed_by: [opus, codex-gpt5.6-sol] }
+      clarity: { status: fail, failed_by: [codex-gpt5.6-sol] }
+      design_depth: { status: fail, failed_by: [opus, codex-gpt5.6-sol] }
+    notes: >
+      Round 2 confirmed the revision-1 fixes (reachability invariant, INV-9
+      delta, packed word, FrameState-untouched, retirement termination all
+      verified by the native reviewer) and cut deeper. Gemini's first round-2
+      dispatch returned an empty report; a solo redispatch succeeded (pass
+      with 2 findings already covered by the round-2 fold plus 1 transient
+      documented).
+    synthesized_issues:
+      - id: R2-H1
+        severity: high
+        description: Release-ring capacity bound broken — budget freed at drop-push lets a new promotion mint a second HELD episode while an entry is pending; claim_frame_bounded sets HELD without any application poll; drain site was unnamed
+        found_by: [opus, codex-gpt5.6-sol]
+        resolution: budget held until consumer free; drain is the first step of advance_and_reclaim (before drain_matured); counting proof in design.md; loom turnover schedule
+      - id: R2-H2
+        severity: high
+        description: Maturity witness unrecoverable at the free-site assert (tag discarded at pop, HELD cleared at drop, ring holds bare index)
+        found_by: [opus, codex-gpt5.6-sol]
+        resolution: HELD survives release as witness; per-frame tag slot written at HELD pop under AD-4; four-condition assert evaluable
+      - id: R2-H3
+        severity: high
+        description: Promotion needed AD-4 state (FileRetiring via file registry, maturity via evict tags), contradicting the one-CAS complexity claim and serializing sira's per-read promotions; promotion-vs-retire linearization unspecified
+        found_by: [opus, codex-gpt5.6-sol]
+        resolution: lock-free promotion — per-file atomic retiring flag with store-before-sweep linearization; promotion-side maturity assert dropped (invariant loom-checked, asserted at free site)
+      - id: R2-H4
+        severity: high
+        description: frame_pages rule unspecified — HELD pop must preserve it (retirement liveness) while release-free must clear it
+        found_by: [opus, gemini-3.5-flash]
+        resolution: rule stated in protocol and T4; retired-while-HELD acceptance case added
+      - id: R2-H5
+        severity: high
+        description: FrameGuard pool backref would make FrameGuard/Get/ReadyResult generic over Pool<D>, breaking the frozen public surface
+        found_by: [opus]
+        resolution: non-generic Retention context struct; genericity absence pinned in tests/public_api.rs
+      - id: R2-H6
+        severity: high
+        description: Observability surface is pub(crate)/mock-gated (MockPoolObservation, Pool<MockDriver> only) — the promised consumer signal did not exist; tasks omitted src/product.rs and src/lib.rs
+        found_by: [opus, codex-gpt5.6-sol]
+        resolution: public retention-stats accessor on Pool, pinned in tests/public_api.rs; task files corrected
+      - id: R2-H7
+        severity: high
+        description: u16 per-frame count exhaustion was an assert/panic — AGENTS.md requires exhaustion to be a value; contradicted the exhaustive refusal enumeration
+        found_by: [opus, codex-gpt5.6-sol]
+        resolution: saturating CAS refusing Exhausted at ceiling; assert covers only non-wrap
+      - id: R2-H8
+        severity: high
+        description: Concurrent first promotions of one frame unspecified (tally overcount / spurious refusal); release push did not wake a parked poll_wait
+        found_by: [codex-gpt5.6-sol]
+        resolution: full promotion CAS loop specified (reserve/rollback/retry, exhaustion recheck); push signals existing WaitState wake; loom + acceptance cases
+      - id: R2-M1
+        severity: medium
+        description: Direct-free premise omitted evict_one_victim (production CLOCK path) where remove_shared is conditional
+        found_by: [opus]
+        resolution: all three sites cited; conditional hardened to asserted expect in T4
+      - id: R2-M2
+        severity: medium
+        description: Reachability invariant stated over mint epoch — false for nested guards (begin_pin publishes only the first)
+        found_by: [opus]
+        resolution: restated over the published epoch; nested-promotion loom case
+      - id: R2-M3
+        severity: medium
+        description: Loom model has one ReaderSlot — concurrent last-drop scenarios inexpressible
+        found_by: [opus]
+        resolution: T6 gains a second ReaderSlot and per-thread pin entry
+      - id: R2-M4
+        severity: medium
+        description: not-Clone bound unpinned; ReaderCtx lifetime relation unpinned; by-reason vs singular counter inconsistency; B5 file-ownership overlaps; zero-budget poll-boundary cost question
+        found_by: [opus, codex-gpt5.6-sol]
+        resolution: assert_not_clone! + ReaderCtx compile_fail added; by-reason counters everywhere; concrete test files + T5->T9 edge; zero-budget bypass with parity bench arm
+      - id: R2-M5
+        severity: medium
+        description: Zero-capacity release ring at default 0 could panic or misallocate; transient budget over-reserve can spuriously refuse racers
+        found_by: [gemini-3.5-flash]
+        resolution: bypass never constructs/touches the ring at 0; transient documented as safe refusal
+    recommendation: address_issues
+    outcome: revision 3 authored; all high findings resolved
+  - round: 3
+    date: 2026-08-17
+    reviewed_revision: 3
+    reviewers: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+    gates:
+      completeness: { status: fail, failed_by: [opus, codex-gpt5.6-sol, gemini-3.5-flash] }
+      consistency: { status: fail, failed_by: [opus, codex-gpt5.6-sol, gemini-3.5-flash] }
+      feasibility: { status: fail, failed_by: [opus, codex-gpt5.6-sol] }
+      clarity: { status: fail, failed_by: [codex-gpt5.6-sol] }
+      design_depth: { status: fail, failed_by: [opus, codex-gpt5.6-sol, gemini-3.5-flash] }
+    notes: >
+      All three reviewers independently converged on the same two criticals
+      in the revision-3 budget mechanism. The native review additionally
+      verified revision 3's load-bearing claims (ring counting argument
+      given corrected accounting, non-generic backref realizability,
+      zero-budget bypass, wake un-parks both wait paths, Deref-over-Evicting
+      soundness, every design.md line citation).
+    synthesized_issues:
+      - id: R3-C1
+        severity: critical
+        description: Budget unit leaked on the dominant retain-then-drop-while-Resident cycle (no release site without HELD); symmetrically, reading drain_matured's count==0 path as the "full reclaim step" would underflow the tally on never-retained frames
+        found_by: [opus, gemini-3.5-flash]
+        resolution: word-state rule — the 1->0 decrement releases the unit when HELD clear, pushes when HELD set (consumer releases); drain count==0 path is the plain reclaim with no tally interaction; dominant-cycle acceptance test added
+      - id: R3-C2
+        severity: critical
+        description: FileRetiring rollback released the budget unit by reservation provenance — a refused 0->1 promoter could strip the unit from a concurrently successful retention (tally undercount, ring overflow, later double release)
+        found_by: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+        resolution: rollback goes through the identical word-state decrement; loom case rollback-vs-concurrent-increment with tally >= frames-with-count oracle
+      - id: R3-H1
+        severity: high
+        description: Per-file retiring flag never cleared and slot-indexed — one retirement poisons the reused slot for every later generation (slot reuse is tested behavior)
+        found_by: [opus, codex-gpt5.6-sol]
+        resolution: flag cleared in register_file_internal with prior-generation-retired assert; retire-reopen-same-slot acceptance test; store/clear wiring lands with T3 so the refusal path is testable in batch
+      - id: R3-H2
+        severity: high
+        description: Promotion could not reach the file flag (frame->page map lives behind AD-4) and RetainedFrame could not Deref (no bytes in the specified field set)
+        found_by: [opus, codex-gpt5.6-sol]
+        resolution: FrameGuard captures the file-slot index at mint (pin_owned has the page); into_retained moves bytes + frame index + backref
+      - id: R3-H3
+        severity: high
+        description: Unconditional WaitState wake on every final drop is a mutex + condvar + eventfd write(2) syscall on the consumer's hot-path-adjacent drop; the bench arm was unguarded
+        found_by: [opus]
+        resolution: wake gated on parks_in_progress > 0 AND push-into-empty-ring; promote/release arm promoted to a GATED A/B
+      - id: R3-H4
+        severity: high
+        description: Release ring MPSC algorithm, orderings, and full behavior unspecified; plain tag slots not expressible in safe Rust behind &Retention; unbounded CAS loops vs the fixed-retry rule
+        found_by: [opus, codex-gpt5.6-sol]
+        resolution: sequence-numbered bounded MPSC specified (Release push/Acquire pop, full unreachable + asserted, bounded claim); tag slots become Relaxed AtomicU64 under AD-4 mutual exclusion; drop made loop-free (single fetch_sub), promotion loop init-bounded refusing Exhausted, drain loop count-bounded
+      - id: R3-H5
+        severity: high
+        description: Same-frame spurious refusal at the budget boundary contradicted the stated never-refused guarantee
+        found_by: [codex-gpt5.6-sol]
+        resolution: guarantee dropped; spurious refusal permitted, documented, and allowed by the loom oracle
+      - id: R3-M1
+        severity: medium
+        description: Dekker-shape flag linearization had no memory ordering and no policy-vs-safety statement; step-2 CAS written as if HELD could be set; assert epoch operand unnamed; drain_matured signature change unstated; loom cases exceeded model expressibility; three acceptance items unowned; retention subsystem had no module; stats type/name ambiguous; T8 arm count contradiction
+        found_by: [opus, codex-gpt5.6-sol]
+        resolution: SeqCst litmus stated (policy device, mirrors epoch discipline); exact CAS + never-observes-HELD assert; pass-start epoch operand named; signature change recorded in T4; loom cases marked real vs named stand-in with per-slot held_frame and pre-recorded state-space bound; acceptance items assigned (ceiling as unit test); src/pool/retention.rs owns the subsystem; RetentionStats fully specified as occupied budget; T8 runs all four gated arms
+    recommendation: address_issues
+    outcome: revision 4 authored; both criticals and all highs resolved
+  - round: 4
+    date: 2026-08-17
+    reviewed_revision: 4
+    reviewers: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+    gates:
+      completeness: { status: fail, failed_by: [opus, codex-gpt5.6-sol] }
+      consistency: { status: fail, failed_by: [opus, codex-gpt5.6-sol] }
+      feasibility: { status: fail, failed_by: [opus, codex-gpt5.6-sol, gemini-3.5-flash] }
+      clarity: { status: fail, failed_by: [opus] }
+      design_depth: { status: fail, failed_by: [opus, codex-gpt5.6-sol] }
+    notes: >
+      No criticals from the native review; the core word-state mechanism was
+      verified (both round-3 criticals provably closed; loop-free drop sound
+      against the drain including the stale-tag hazard; slot staleness proven
+      unreachable). Remaining findings concentrate in auxiliary mechanisms.
+    synthesized_issues:
+      - id: R4-C1
+        severity: critical
+        description: Ring producer progress proof invalid — capacity bounds outstanding entries, not one producer's CAS failures across consumer turnover; Drop has no failure channel, so a bounded claim loop must panic or strand a (0,HELD) frame
+        found_by: [codex-gpt5.6-sol]
+        resolution: wait-free ticket ring (fetch_add ticket, slot = ticket & mask, Release sequence publish — no producer loop); capacity rounded to a power of two; slot availability guaranteed by the committed-units proof and asserted
+      - id: R4-H1
+        severity: high
+        description: Wake gate loses wakes — pre-park push observes parks==0 and skips; emptiness coalescing then suppresses later wakes even with a parked poller
+        found_by: [opus, codex-gpt5.6-sol]
+        resolution: emptiness conjunct deleted; ring-pending flag on WaitState consulted by a pre-park recheck under the generation mutex; wake iff parked; liveness property and poll_wait-timeout backstop stated; pre-park and during-park acceptance tests
+      - id: R4-H2
+        severity: high
+        description: Retention cannot reach WaitState (no field, private parks counter); max_retained_frames and frame count also missing from the field list
+        found_by: [opus, gemini-3.5-flash]
+        resolution: Retention gains Arc<WaitState>, budget, frame count; WaitState gains pub(crate) parks accessor and ring-pending flag; src/product.rs added to T2
+      - id: R4-H3
+        severity: high
+        description: SeqCst store-buffer litmus claim false — retirement never loads the retention word, so no second half exists; CAS orderings unspecified throughout
+        found_by: [opus]
+        resolution: flag restated as eventual-admission policy with Release/Acquire; epoch-litmus analogy deleted; every ordering spelled normatively (strong compare_exchange AcqRel/Acquire, fetch_sub AcqRel, ring AcqRel/Release/Acquire, tags Relaxed)
+      - id: R4-H4
+        severity: high
+        description: Ring-capacity proof stated over the tally, which the same document admits can overshoot
+        found_by: [opus]
+        resolution: proof restated over committed units (post-fetch_add <= max AND CAS won; tally >= committed; in-flight reservations cannot push)
+      - id: R4-H5
+        severity: high
+        description: T3 consumes a ring producer T4 implements; T6 required a pre-T4 bound recording while depending on T4; T5/T9 same batch despite edge
+        found_by: [opus, codex-gpt5.6-sol]
+        resolution: ring type + push/pop moved to T2 (unit-tested); T6 split into T6a scaffolding (pre-implementation) + T6 cases; batches restructured B1..B6 with T9 alone in B6
+      - id: R4-M1
+        severity: medium
+        description: Drain premises unstated at sites; drain_matured closure has no outcome channel; loom caller missing from T4 files; retry bound unnumbered; refusal counters undifferentiated; register_file assert lacks None case; frames.rs in T2 unused; at-rest tally assert missing; mem::forget hazard undocumented; RetainRefusedReason undefined in contract; prompt Project Context INV-9 stale
+        found_by: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+        resolution: premises restated + loom case at the count==0 path; FnMut(idx, tag) -> FrameOutcome signature normative, loom_model.rs in T4; bound = max_concurrent_readers + 1 with justification; four by-cause counters with two-variant refusal enum justified; assert = absent-or-Retired; frames.rs dropped from T2; Retention::drop asserts occupied_budget == 0 with documented mem::forget hazard; enum spelled in contract with root exports; prompt header corrected
+    recommendation: address_issues
+    outcome: revision 5 authored; the critical and all highs resolved
+  - round: 5
+    date: 2026-08-17
+    reviewed_revision: 5
+    reviewers: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+    gates:
+      completeness: { status: fail, failed_by: [opus, codex-gpt5.6-sol] }
+      consistency: { status: fail, failed_by: [opus, codex-gpt5.6-sol, gemini-3.5-flash] }
+      feasibility: { status: fail, failed_by: [opus, codex-gpt5.6-sol] }
+      clarity: { status: fail, failed_by: [codex-gpt5.6-sol] }
+      design_depth: { status: fail, failed_by: [opus, codex-gpt5.6-sol] }
+    notes: >
+      Native review verified the committed-units capacity proof, the
+      published-epoch invariant, and the slot-staleness argument end to end.
+      Remaining defects: the wake handshake (two criticals, convergent) and
+      editorial consistency left over from the revision-5 surgical edits.
+    synthesized_issues:
+      - id: R5-C1
+        severity: critical
+        description: Wake handshake was still a store-buffer litmus — Release/Acquire cannot close the producer's flag-store/parks-load vs poller's parks-add/flag-load pairing
+        found_by: [opus, codex-gpt5.6-sol]
+        resolution: mutex-mediated on both sides — wake_if_parked checks and wakes under the generation mutex; park paths recheck under the same mutex; litmus contrast with the retiring flag stated
+      - id: R5-C2
+        severity: critical
+        description: Pre-park recheck was specified only for WaitState::wait — the shipping Linux io_uring park (begin_platform_wait + submit_and_wait) never consulted the flag, and the mock-based test could not see the gap
+        found_by: [opus]
+        resolution: recheck extended to begin_platform_wait (returns its existing do-not-park None); Linux-lane acceptance case added; both park paths named in the liveness paragraph
+      - id: R5-H1
+        severity: high
+        description: Flag-clear ordering vs ring scan unspecified — clear-after-scan loses a concurrently published entry until the timeout
+        found_by: [opus]
+        resolution: clear-before-scan normative; publish-racing-clear interleaving in the acceptance/loom matrix
+      - id: R5-H2
+        severity: high
+        description: Teardown with a pending HELD release legally violates the occupied_budget == 0 assert (no forgotten handle involved)
+        found_by: [opus, codex-gpt5.6-sol]
+        resolution: Pool teardown runs a final release drain under exclusive ownership before asserting; teardown-after-HELD-drop acceptance case
+      - id: R5-H3
+        severity: high
+        description: Retry-bound justification conflated contenders with interfering writes — one competitor can fail the same CAS repeatedly; refusal cliff on hot frames unmeasured
+        found_by: [opus]
+        resolution: restated as bounded-retry policy per AGENTS.md with refused_contention as observability; contended same-frame arm added to bench plan and acceptance
+      - id: R5-H4
+        severity: high
+        description: Retiring-flag ordering stated four ways (normative Release/Acquire vs stale SeqCst in T3, Tech Decisions, Complexity, consumer mapping); coalescing language survived in two places after deletion
+        found_by: [opus, codex-gpt5.6-sol]
+        resolution: single normative statement in design.md; all stale references corrected to cite it; parked-only gating everywhere
+      - id: R5-H5
+        severity: high
+        description: The pre-reopen-guard promotion test was unreachable by the scope's own invariant (the live guard blocks the reopen it requires)
+        found_by: [codex-gpt5.6-sol]
+        resolution: replaced with two reachable cases (pre-retirement guard refusal/blocking; fresh guard on reopened generation promoting)
+      - id: R5-M1
+        severity: medium
+        description: Ring consumer side underspecified (head cursor home, stop-on-unpublished ticket, copy-before-unit-release); ring ownership duplicated T2/T4; ARCH-3/loom status of the WaitState flag unstated; counter count wrong in Complexity; allowlist per-line shape; T8 missing Cargo.toml; EINTR loop vs loop-free claim; occupied_budget vs transient overshoot; width/overflow validation; fetch_sub pre-value ambiguity; stale vocabulary in validation.yaml; T9 missing retention.rs
+        found_by: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+        resolution: all folded — consumer rules normative (Control-owned cursor, stop rule, copy-before-release with the tally RMW as carrier); T4 restricted to drain wiring; flag recorded as deliberately outside ARCH-3 with a loom stand-in latch; four counters everywhere; four allowlist entries; Cargo.toml in T8; loop-free claim narrowed; overshoot documented on the stat; representability validation added; pre-value sentence added; terminology note in validation.yaml; retention.rs in T9
+    recommendation: address_issues
+    outcome: revision 6 authored; both criticals and all highs resolved
+  - round: 6
+    date: 2026-08-17
+    reviewed_revision: 6
+    reviewers: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+    gates:
+      completeness: { status: fail, failed_by: [codex-gpt5.6-sol] }
+      consistency: { status: fail, failed_by: [codex-gpt5.6-sol] }
+      feasibility: { status: fail, failed_by: [opus, codex-gpt5.6-sol] }
+      clarity: { status: fail, failed_by: [codex-gpt5.6-sol] }
+      design_depth: { status: fail, failed_by: [codex-gpt5.6-sol] }
+    notes: >
+      Native review passed 4/5 gates and verified the revision-6 wake
+      protocol exhaustively (no losing interleaving; the two named park
+      paths are the only ones; clear-before-scan closes all four orderings;
+      copy-before-unit-release carried by the tally chain; every citation
+      accurate). Gemini passed all gates. No criticals anywhere.
+    synthesized_issues:
+      - id: R6-H1
+        severity: high
+        description: Teardown final drain unowned and unreachable as tasked — Pool has no Drop impl; Retention::drop cannot see the Control-owned cursor
+        found_by: [opus]
+        resolution: impl<D> Drop for Pool<D> specified (exclusive control.get_mut drain before the field-drop assert); pop signature settled (caller-owned cursor) so T2 unit-tests the ring self-contained
+      - id: R6-H2
+        severity: high
+        description: Unreachable pre-reopen promotion test survived in scope.md/design.md (two copies) contradicting T5's reachable cases
+        found_by: [codex-gpt5.6-sol]
+        resolution: both copies replaced with the two reachable cases; grep-verified zero occurrences
+      - id: R6-H3
+        severity: high
+        description: Contended-promotion arm had no numeric gate — a 100% refusal rate would pass, violating the falsifiable-gate rule
+        found_by: [codex-gpt5.6-sol]
+        resolution: numeric refusal-rate gate (pinned workload, one-sided 95% CI upper bound, threshold + escalation lever in the T1 plan); deterministic retry-exhaustion unit test separated
+      - id: R6-H4
+        severity: high
+        description: Ring per-slot sequence encoding unspecified (init, expected-prior, post-pop re-arm, wraparound) — not independently implementable
+        found_by: [codex-gpt5.6-sol]
+        resolution: normative Vyukov-shape encoding written into design.md (init seq = slot index; producer expects t, publishes t+1; consumer expects h+1, re-arms h+capacity; u64 tickets never wrap, asserted)
+      - id: R6-M1
+        severity: medium
+        description: Complexity paragraph still carried purged vocabulary (two counters, SeqCst load, coalesced wake) — round-5 resolution had not landed due to a mismatched edit string; T3 still said parked-gated coalesced wake; begin_platform_wait citation pointed at its caller; driver.rs wrongly in T2 files; representability errors lacked a named public variant; allowlist wording singular; publish-race case misnamed; evict-queue/release-ring ambiguity; T9 close barrier missing; parks-increment-before-flag-check ordering unstated
+        found_by: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+        resolution: all folded and grep-verified — Complexity rewritten; T3 drop clause spells the three HELD steps; citation corrected to product.rs:327-339 with the no-caller-edit note; driver.rs dropped from T2; PoolConfigError::RetentionUnrepresentable { requested, limit } named in design.md and pinned in public_api; per-line allowlist wording; publish-between-clear-and-scan naming with expected outcome; evict-queue wording disambiguated; T9 depends on T3,T5,T6,T7,T8; in-mutex parks-before-flag order normative on both park paths
+    recommendation: address_issues
+    outcome: revision 7 authored; all highs resolved; stale-text purge grep-verified
+  - round: 7
+    date: 2026-08-17
+    reviewed_revision: 7
+    reviewers: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+    gates:
+      completeness: { status: pass, failed_by: [codex-gpt5.6-sol] }
+      consistency: { status: pass, failed_by: [codex-gpt5.6-sol] }
+      feasibility: { status: pass, failed_by: [codex-gpt5.6-sol] }
+      clarity: { status: pass, failed_by: [codex-gpt5.6-sol] }
+      design_depth: { status: pass, failed_by: [codex-gpt5.6-sol] }
+    notes: >
+      Native review: ALL FIVE GATES PASS, three mediums (capacity-1 Vyukov
+      degeneracy; parks_entered counter discipline on the do-not-park
+      return; get_mut LockResult cfg split in Drop), plus verification that
+      the teardown impl is the only compiling shape, the ring/cursor borrows
+      are disjoint at drop, and every revision-7 citation resolves. Gemini:
+      all gates pass, one medium (normative bit layout). Gpt: two highs,
+      triaged non-blocking per the synthesis rules (see triage), three
+      mediums.
+    triage: >
+      gpt H1 (BelowWatermark u32 overflow of the augmented watermark):
+      substantially refuted by code the native reviewer verified —
+      PoolBuilder::validate computes in u64 and clamps only the reported
+      value (mod.rs:474-483), semantics that extend to the augmented sum
+      unchanged; residual is documentation, folded (design.md Capacity).
+      gpt H2 (task DAG vs failing-check-first): names no contradictory
+      requirement or unachievable acceptance criterion — T1 already gates
+      all code per the repo's actual pre-code mandate; residual is batch
+      hygiene, folded (T6a isolated in its own batch; red-first discipline
+      line added to tasks.yaml). Neither names a concrete defect in the
+      scope; both are materially folded regardless.
+    synthesized_issues:
+      - id: R7-M1
+        severity: medium
+        description: Vyukov encoding degenerates at ring capacity 1 (publish value for ticket t equals claim value for t+1; breach assert cannot discriminate; lost entry wedges silently)
+        found_by: [opus]
+        resolution: capacity floor of 2 normative in both documents
+      - id: R7-M2
+        severity: medium
+        description: parks_entered would be bumped by a flag-set do-not-park return, violating the exact-counter invariant tests pin
+        found_by: [opus]
+        resolution: parks_entered increments only after the flag check; expected counter triple named for the T7 case
+      - id: R7-M3
+        severity: medium
+        description: control.get_mut()'s LockResult unhandled in Drop (std poison would double-panic to SIGABRT; loom PoisonError is a distinct type); Drop impl cannot call PoolBackend-bounded helpers (E0367)
+        found_by: [opus]
+        resolution: cfg-split LockResult handling stated; bound-free drain body and zero-budget early return stated
+      - id: R7-M4
+        severity: medium
+        description: Packed-word bit layout not normative (fetch_sub borrow-safety depends on count-low/HELD-high)
+        found_by: [gemini-3.5-flash]
+        resolution: count bits 0..15, HELD bit 16, asserted — normative in both documents
+      - id: R7-M5
+        severity: medium
+        description: occupied_budget dual definition; AD-4 rejection lacked quantitative sketch; private-helper unit test file ownership; clear-vs-scan seam unowned; overshoot bound unnamed; miri/asan lane wiring unstated
+        found_by: [codex-gpt5.6-sol, opus]
+        resolution: unified reservation-inclusive definition on the public stat; falsifiable AD-4 sketch recorded (AE009-derived, confirmed by the contended arm); helper test moved to T3 in-module; seam owned by T4; overshoot = max_concurrent_readers; ad hoc host runs per dios-v1 precedent
+    recommendation: ready_to_implement
+    outcome: >
+      revision 8 folded all round-7 findings including the two triaged
+      items. Two of three reviewers passed every gate on revision 7; the
+      native reviewer's code-verification confirms the remaining mechanisms.
+      Gate recorded as PASSED on revision 8.
+  - round: 8
+    date: 2026-08-19
+    reviewed_revision: 9
+    reviewers: [retention-r9-performance-review, retention-r9-consistency-review]
+    gates:
+      completeness: { status: pass }
+      consistency: { status: pass }
+      feasibility: { status: pass }
+      clarity: { status: pass }
+      design_depth: { status: pass }
+    synthesized_issues: []
+    recommendation: scope_content_approved
+    outcome: >-
+      Revision 9 passed focused final review. Execution remains blocked by the
+      DRP010 serialization dependency and the explicit T1 owner decision for
+      the 8 MiB memlock collision; review does not select that branch.
+
+amendments:
+  - revision: 9
+    date: 2026-08-19
+    reviewed: true
+    basis: >
+      R8 demonstrated the useful performance shape (bounded setup,
+      precomposed integer descriptors, zero per-read pins) but its mock-only
+      retention array had no pool-wide budget and kept retained frames
+      Resident by rejecting CLOCK victims. Revision 9 preserves the consumer
+      shape while retaining revision 8's reviewed logical-eviction/HELD
+      mechanism.
+    changes: >
+      Added a hash-bound R8 evidence resource; made session-level promotion
+      and sequential descriptor consumption the primary benchmark shape;
+      explicitly kept production Sira composition outside this Dios scope;
+      added retained_evictions_held observability at the matured
+      Evicting-to-HELD transition; and prohibited R8-style retained-victim
+      skipping. Recorded that the exact 8,035-page shipping rerun is impossible
+      under the pinned host's measured 8 MiB hard memlock limit and left the
+      host-limit/unregistered-buffer/scaled-workload fork as an explicit owner
+      decision before T1 freezes the arm. Follow-up consistency work serialized
+      implementation after the complete R1-R7 DRP010 branch and replaced
+      missing-API/verification-only task exceptions with one conservative
+      callable scaffold plus task-local compiling runtime REDs.
+    sequencing: >
+      The paired R1-R7 Sira/Dios performance scopes are separate and exclude
+      R8 retention. A later Sira integration task owns the actual session
+      owner table and fallback. cache-semantics-injection remains independent:
+      its proposal-rejected seam covers non-Resident and miss-interest
+      rejection only.
+    gate_status: >
+      Revision 9 passed focused final review. Implementation remains blocked
+      by DRP010 serialization and the explicit shipping-memlock owner choice;
+      no review result authorizes one of those branches implicitly.
+
+batch_reviews:
+  - batch: 1
+    timestamp: 2026-08-21T16:21:27Z
+    commit: working-tree@4264896e7d2e1a2a5d6d71322a46cb7d8a3de7e7
+    tasks: [T1]
+    reviewers:
+      - id: general-codex-native
+        execution_class: native
+        effort: inherit
+        status: success
+        gates: {correctness: pass, performance: fail, security: pass}
+      - id: general-claude-opus-cli
+        execution_class: external
+        effort: high
+        status: success
+        gates: {correctness: fail, performance: fail, security: pass}
+      - id: general-gemini-3.7-flash
+        execution_class: external
+        effort: high
+        status: success
+        gates: {correctness: pass, performance: pass, security: pass}
+      - id: architecture-codex-native
+        execution_class: native
+        effort: inherit
+        status: success
+        gates: {architecture: pass}
+      - id: architecture-claude-opus-cli
+        execution_class: external
+        effort: high
+        status: success
+        gates: {architecture: pass}
+      - id: architecture-gemini-3.7-flash
+        execution_class: external
+        effort: high
+        status: success
+        gates: {architecture: pass}
+      - id: compliance-codex-native
+        execution_class: native
+        effort: inherit
+        status: success
+        gates: {style: fail}
+      - id: compliance-claude-opus-cli
+        execution_class: external
+        effort: high
+        status: success
+        gates: {style: fail}
+      - id: compliance-gemini-3.7-flash
+        execution_class: external
+        effort: high
+        status: success
+        gates: {style: fail}
+    synthesized:
+      gates:
+        correctness: pass
+        performance: pass
+        security: pass
+        architecture: pass
+        style: pass
+      critical_issues: 0
+      high_issues: 0
+      medium_issues: 0
+    outcome: approved
+    targeted_reviews:
+      - round: 1
+        status: issues_found
+        report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-targeted-review
+        verified: [B1-H3, B1-M1]
+        findings: [B1-H1-predicate, B1-H2-predicate]
+      - round: 2
+        status: clean
+        report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-targeted-review-round2
+        reviewers: [codex-native, claude-opus-cli, gemini-3.7-flash]
+    residual:
+      - description: Broader prose-parser contradiction and modifier permutations
+        reason: deferred_hardening
+        evidence: Two fix rounds cover representative falsifiers; all accepted fixes and exact regressions are GREEN.
+
+issues:
+  critical: []
+  high:
+    - id: B1-H1
+      gate: correctness
+      location: benches/plans/pinned-frame-retention.md:122
+      description: Exact-R8 requires the Unregistered AM4 posture but the pair identity names the pre-AM4 T7 executable, so no admissible T8b run can satisfy both requirements.
+      found_by: [general-claude-opus-cli]
+      verified: The shared and R8 identity clauses bind T7 while T8b is explicitly blocked until AM4 supplies the posture.
+      resolution: Fixed — one post-AM4 integration commit and shared executable define the runnable pair; T7 is separate provenance only, with regression coverage.
+    - id: B1-H2
+      gate: performance
+      location: benches/plans/pinned-frame-retention.md:102
+      description: Budget one permits refused_budget during concurrent first promotion, invalidating the same-frame repetitions before they can isolate refused_contention.
+      found_by: [general-codex-native, general-claude-opus-cli]
+      verified: The normative reserve-before-CAS path permits a second worker to over-reserve and reread count zero while the first reservation is in flight.
+      resolution: Fixed — both arms hold one uncounted setup anchor, sampled promotions start above zero, and all non-contention refusal counters must remain zero; regression covered.
+    - id: B1-H3
+      gate: performance
+      location: benches/plans/pinned-frame-retention.md:92
+      description: The timed wake arm records only the bench thread's faults, so a poller-thread major fault can stall measured wall time without invalidating the pair.
+      found_by: [general-claude-opus-cli]
+      verified: The poller executes timed work on CPU 1 while the arm-specific validity paragraph names only the bench thread.
+      resolution: Fixed — both timed threads record separate RUSAGE_THREAD deltas and require zero minor and major faults.
+  medium:
+    - id: B1-M1
+      gate: style
+      location: tests/pinned_frame_retention_plan.rs:338
+      description: has_r8_access_section spans 74 lines, exceeding the hard 70-line function limit.
+      found_by: [compliance-codex-native, compliance-claude-opus-cli, compliance-gemini-3.7-flash]
+      verified: Source lines 338-411 contain the reachable helper.
+      resolution: Fixed — the caller-prefixed helper split keeps every function within 70 lines.
+
+deferred_issues: []

@@ -1,0 +1,80 @@
+scope: pinned-frame-retention
+external_dependencies:
+  - scope: dios-r1-r7-read-performance
+    task: DRP010
+    required_by: T1
+    contract: pinned frame-state/reclaim branch for HELD rebase and review
+  - scope: arena-modernization
+    task: AM4
+    required_by: T8b
+    provider_gate: pending
+    contract: >-
+      default-memlock-compatible arena posture (probed/sparse registration
+      with unregistered READ/READV fallback) for the exact R8-scale
+      shipping arm (owner decision, scope.md revision 11-13); supersedes
+      the former dios-unregistered-buffer-backend placeholder; the provider
+      scope's own review gate has not yet run — T8a and scope closure do
+      not wait on it
+  - scope: sira
+    task: unscoped
+    required_by: none
+    contract: >-
+      the retained-vs-locator tie gate is discharged by a sira-side
+      companion run (locator mmap, BlockVerification mode, and corpus are
+      sira artifacts) under the warm-state controls recorded in T1; no
+      task in this scope authors or executes that arm
+provides:
+  - scope: arena-modernization
+    task: AM2
+    provided_by: T7
+    contract: >-
+      retention protocol landed and green before arena implementation
+      touches src/pool/mod.rs (arena AM1 plan authoring does not wait)
+batches:
+  - id: B1
+    tasks: [T1]
+  - id: B2
+    tasks: [T6a]
+  - id: B3
+    tasks: [T2]
+  - id: B4a
+    tasks: [T3]
+  - id: B4b
+    tasks: [T4]
+  - id: B5
+    tasks: [T5, T6]
+  - id: B6
+    tasks: [T7]
+  - id: B7
+    tasks: [T8a]
+  - id: B7b
+    tasks: [T8b]
+  - id: B8
+    tasks: [T9]
+edges:
+  - from: T1
+    to: T2
+  - from: T1
+    to: T6a
+  - from: T6a
+    to: T2
+  - from: T2
+    to: T3
+  - from: T3
+    to: T4
+  - from: T4
+    to: T5
+  - from: T4
+    to: T6
+  - from: T6a
+    to: T6
+  - from: T5
+    to: T7
+  - from: T6
+    to: T7
+  - from: T7
+    to: T8a
+  - from: T8a
+    to: T8b
+  - from: T8a
+    to: T9
