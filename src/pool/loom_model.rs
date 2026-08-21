@@ -12,6 +12,8 @@
 //! the seqlock write and read back after, so the seqlock's Release/Acquire pairing
 //! is what excludes the torn coupling.
 
+use std::sync::atomic as held_frame_atomic;
+
 use crate::driver::FileId;
 use crate::pool::ReadFrameIdx;
 use crate::product::WaitState;
@@ -30,18 +32,18 @@ struct Control {
     files: Box<[Option<PoolFile>]>,
 }
 
-/// One shared control plane, `N` frames, and a single reader slot — the bounded
-/// entry the T009 loom models drive.
+/// One shared control plane, `N` frames, and two reader slots — the bounded
+/// entry the Loom models drive.
 pub struct PoolModel {
     frames: Frames,
     table: PageTable,
     clock: Clock,
     global_epoch: AtomicU64,
-    slot: ReaderSlot,
+    slots: [ReaderSlot; 2],
     // Model scaffolding no loom proof reads: it bypasses `crate::sync` (aliasing it
-    // would add loom state the proofs never use) and is fully qualified so the
-    // sync-alias regression guard allowlists it by name (ARCH-3).
-    held_frame: std::sync::atomic::AtomicU32,
+    // would add loom state the proofs never use) through the diagnostics-only
+    // `held_frame_atomic` allowlist entry (ARCH-3).
+    held_frames: [held_frame_atomic::AtomicU32; 2],
     locked_get_checks: AtomicU32,
     file_live_generations: Box<[AtomicU64]>,
     resident_lease_states: Box<[std::sync::Arc<ResidentLeaseState>]>,
@@ -57,8 +59,11 @@ impl PoolModel {
             table: PageTable::with_frame_count(frames),
             clock: Clock::with_frame_count(frames),
             global_epoch: AtomicU64::new(0),
-            slot: ReaderSlot::vacant(),
-            held_frame: std::sync::atomic::AtomicU32::new(0),
+            slots: [ReaderSlot::vacant(), ReaderSlot::vacant()],
+            held_frames: [
+                held_frame_atomic::AtomicU32::new(0),
+                held_frame_atomic::AtomicU32::new(0),
+            ],
             locked_get_checks: AtomicU32::new(0),
             file_live_generations: Box::new([AtomicU64::new(0)]),
             resident_lease_states: Box::new([std::sync::Arc::new(
@@ -116,32 +121,37 @@ impl PoolModel {
     /// proof needs: dropping the inner guard must not republish quiescent while the
     /// outer holds the frame (the last-drop property of `release_guard`).
     pub fn pin(&self, page: u32) -> Option<Guard<'_>> {
-        self.pin_page(Self::page_id(page))
+        self.pin_reader(0, page)
     }
 
-    fn pin_page(&self, page: PageId) -> Option<Guard<'_>> {
-        let first = self
-            .slot
-            .begin_pin(self.global_epoch.load(Ordering::Acquire));
+    pub fn pin_reader(&self, reader: u32, page: u32) -> Option<Guard<'_>> {
+        self.pin_page(reader, Self::page_id(page))
+    }
+
+    fn pin_page(&self, reader: u32, page: PageId) -> Option<Guard<'_>> {
+        let reader = reader as usize;
+        assert!(reader < self.slots.len(), "reader index is in range");
+        let slot = &self.slots[reader];
+        let first = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
         let frame = if first {
             let mapped = self.table.lookup(page);
             let Some(frame) = mapped else {
-                self.slot.abort_pin();
+                slot.abort_pin();
                 return None;
             };
-            self.held_frame.store(frame.get(), Ordering::Relaxed);
+            self.held_frames[reader].store(frame.get(), Ordering::Relaxed);
             frame
         } else {
-            ReadFrameIdx::new(self.held_frame.load(Ordering::Relaxed))
+            ReadFrameIdx::new(self.held_frames[reader].load(Ordering::Relaxed))
         };
         debug_assert!(
             frame.get() < self.frames.count(),
             "a pinned frame — resolved or the held frame a nested pin reuses — is in range"
         );
         let _ = self.clock.reference(frame);
-        self.slot.commit_pin();
+        slot.commit_pin();
         Some(Guard {
-            slot: &self.slot,
+            slot,
             frames: &self.frames,
             frame,
         })
@@ -173,7 +183,7 @@ impl PoolModel {
         if !file_generation_is_live(&self.file_live_generations[0], page.file()) {
             return None;
         }
-        if let Some(guard) = self.pin_page(page) {
+        if let Some(guard) = self.pin_page(0, page) {
             return Some(guard);
         }
         let control = self.control();
@@ -182,7 +192,7 @@ impl PoolModel {
             return None;
         }
         drop(control);
-        self.pin_page(page)
+        self.pin_page(0, page)
     }
 
     #[must_use]
@@ -218,14 +228,14 @@ impl PoolModel {
             &self.frames,
             &self.clock,
             &self.global_epoch,
-            &self.slot,
+            &self.slots[0],
             page,
             hint,
         ) else {
             return self.get_file(file_generation, page.granule_idx());
         };
         Some(Guard {
-            slot: &self.slot,
+            slot: &self.slots[0],
             frames: &self.frames,
             frame,
         })
@@ -289,7 +299,7 @@ impl PoolModel {
         if let Some(retiring_page) = retiring {
             self.retire_file_frame(&mut control, retiring_page);
         }
-        let global_epoch = advance_epoch(&self.global_epoch, std::slice::from_ref(&self.slot));
+        let global_epoch = advance_epoch(&self.global_epoch, &self.slots);
         let id = FileId::new(0, 0, new_file_generation);
         let Control { evict_queue, files } = &mut *control;
         let reopened = evict_queue.drain_matured(global_epoch, |frame| {
@@ -344,7 +354,9 @@ impl PoolModel {
             .load(Ordering::Acquire)
             .checked_add(1)
             .expect("the bounded Loom epoch remains below the quiescent sentinel");
-        self.slot.permits_advance(next_epoch)
+        self.slots
+            .iter()
+            .all(|slot| slot.permits_advance(next_epoch))
     }
 
     /// Poller: take `page` Resident → Evicting, unmap it, tag the eviction with the
@@ -399,7 +411,7 @@ impl PoolModel {
     /// generation supplied by the bounded model.
     pub fn poll_file_pass(&self, file_generation: u32, refill_page: u32, refill_gen: u8) {
         let mut control = self.control();
-        let global_epoch = advance_epoch(&self.global_epoch, std::slice::from_ref(&self.slot));
+        let global_epoch = advance_epoch(&self.global_epoch, &self.slots);
         let reclaimed = control.evict_queue.drain_matured(global_epoch, |frame| {
             self.frames.advance(frame, FrameState::Free);
             self.install(

@@ -8,8 +8,8 @@ routing:
     agent: codex-native
     effort: inherit
   implementer:
-    agent: codex-native
-    effort: inherit
+    agent: terra
+    effort: high
   reviewer:
     agents: [codex-native, opus-cli, gemini]
     effort: high

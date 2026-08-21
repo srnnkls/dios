@@ -453,7 +453,8 @@ pub use open::DirectIo;
 pub use pool::{
     FrameGuard, GRANULE_DEFAULT, Get, GetError, PageId, PendingToken, Pool, PoolBuildError,
     PoolBuilder, PoolConfigError, ReaderCtx, ReadyResult, RegisterError, ResidentFileLease,
-    ResidentHint, ResidentLeaseError,
+    ResidentHint, ResidentLeaseError, RetainRefused, RetainRefusedReason, RetainedFrame,
+    RetentionStats,
 };
 pub use product::{
     PollReport, PoolCompletion, PoolCompletionBatch, PoolSubmitError, PoolToken, PoolWakeHandle,

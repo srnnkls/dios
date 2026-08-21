@@ -2,17 +2,19 @@ checkpoint:
   scope_name: pinned-frame-retention
   scope_path: ./scopes/active/pinned-frame-retention
   branch: feat/pinned-frame-retention
-  timestamp: 2026-08-21T17:05:25Z
-  last_batch: 1
-  last_commit: 4264896e7d2e1a2a5d6d71322a46cb7d8a3de7e7
+  timestamp: 2026-08-21T19:24:35Z
+  last_batch: 2
+  last_commit: f73aef3974446cc2eaa488e85d39bae270d03748
   tasks:
     done:
       - id: T1
         name: Author bench plan (pre-code, per AGENTS.md)
-    in_progress: []
+      - id: T6a
+        name: Land the conservative callable retention scaffold
+    in_progress:
+      - id: T2
+        name: Retention context, budget tally, builder knob
     pending:
-      - {id: T6a, name: Land the conservative callable retention scaffold}
-      - {id: T2, name: Retention context, budget tally, builder knob}
       - {id: T3, name: RetainedFrame and into_retained promotion}
       - {id: T4, name: Drain integration, release ring, direct free, accounting}
       - {id: T5, name: Integrate retention with file retirement and slot reuse}
@@ -22,12 +24,12 @@ checkpoint:
       - {id: T8b, name: Exact-R8-scale shipping arm}
       - {id: T9, name: Docs and invariant fold-back}
   next_batch:
-    number: 2
-    id: B2
+    number: 3
+    id: B3
     tasks:
-      - id: T6a
-        name: Land the conservative callable retention scaffold
-        files: [src/lib.rs, src/pool/mod.rs, src/pool/loom_model.rs, tests/public_api.rs]
+      - id: T2
+        name: Retention context, budget tally, builder knob
+        files: [src/pool/retention.rs, src/pool/mod.rs, src/product.rs, src/sync.rs, src/pool/alias_guard.rs, src/lib.rs, tests/public_api.rs]
     parallel: false
   deferred_issues:
     - batch: 1
@@ -39,14 +41,18 @@ checkpoint:
     path: ./scopes/active/pinned-frame-retention/config.yaml
     epoch_id: 20260821T150300Z-376a8f
   phase_cursor:
-    batch: 2
+    batch: 3
     phase: tester
     status: pending
-    tasks: [T6a]
-    updated_at: 2026-08-21T17:05:25Z
+    tasks: [T2]
+    updated_at: 2026-08-21T19:24:35Z
   review_history:
-    batch_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-review-general
-    targeted_review_round_1: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-targeted-review
-    targeted_review_round_2: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-targeted-review-round2
-    final_targeted_status: clean
+    batch_1_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-review-general
+    batch_1_targeted_review_round_1: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-targeted-review
+    batch_1_targeted_review_round_2: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-targeted-review-round2
+    batch_1_final_targeted_status: clean
+    batch_2_general_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b2-review-general
+    batch_2_architecture_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b2-review-architecture
+    batch_2_compliance_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b2-review-compliance
+    batch_2_status: clean
   incomplete_stages: []

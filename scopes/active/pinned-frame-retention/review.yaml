@@ -589,6 +589,35 @@ batch_reviews:
       - description: Broader prose-parser contradiction and modifier permutations
         reason: deferred_hardening
         evidence: Two fix rounds cover representative falsifiers; all accepted fixes and exact regressions are GREEN.
+  - batch: 2
+    timestamp: 2026-08-21T19:24:35Z
+    commit: working-tree@f73aef3974446cc2eaa488e85d39bae270d03748
+    tasks: [T6a]
+    reviewers:
+      - {id: general-codex-native, execution_class: native, status: success}
+      - {id: general-claude-opus-cli, execution_class: external, status: success}
+      - {id: general-gemini-3.7-flash, execution_class: external, status: success}
+      - {id: architecture-codex-native, execution_class: native, status: success}
+      - {id: architecture-claude-opus-cli, execution_class: external, status: success}
+      - {id: architecture-gemini-3.7-flash, execution_class: external, status: success}
+      - {id: compliance-codex-native, execution_class: native, status: success}
+      - {id: compliance-claude-opus-cli, execution_class: external, status: success}
+      - {id: compliance-gemini-3.7-flash, execution_class: external, status: success}
+    synthesized:
+      gates:
+        correctness: pass
+        performance: pass
+        security: pass
+        architecture: pass
+        style: pass
+      critical_issues: 0
+      high_issues: 0
+      medium_issues: 0
+    outcome: approved
+    report_dirs:
+      general: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b2-review-general
+      architecture: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b2-review-architecture
+      compliance: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b2-review-compliance
 
 issues:
   critical: []

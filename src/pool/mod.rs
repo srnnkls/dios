@@ -9,6 +9,7 @@
 //! [`Mutex`]. The miss singleflight and the backend seam live in [`miss`].
 
 use std::cell::Cell;
+use std::marker::PhantomData;
 use std::mem::size_of;
 use std::num::NonZeroU64;
 use std::path::Path;
@@ -93,6 +94,41 @@ impl PageId {
     #[must_use]
     pub fn granule_idx(self) -> u32 {
         self.granule_idx
+    }
+}
+
+pub struct RetainedFrame<'pool> {
+    _pool: PhantomData<&'pool ()>,
+}
+
+pub struct RetainRefused<'pool> {
+    pub guard: FrameGuard<'pool>,
+    pub reason: RetainRefusedReason,
+}
+
+pub enum RetainRefusedReason {
+    Exhausted,
+    FileRetiring,
+}
+
+pub struct RetentionStats {
+    pub occupied_budget: u32,
+    pub refused_budget: u64,
+    pub refused_ceiling: u64,
+    pub refused_contention: u64,
+    pub refused_retiring: u64,
+    pub retained_evictions_held: u64,
+}
+
+impl<'pool> FrameGuard<'pool> {
+    /// # Errors
+    ///
+    /// Returns the still-live guard when retention is refused.
+    pub fn into_retained(self) -> Result<RetainedFrame<'pool>, RetainRefused<'pool>> {
+        Err(RetainRefused {
+            guard: self,
+            reason: RetainRefusedReason::Exhausted,
+        })
     }
 }
 
@@ -479,6 +515,7 @@ pub struct PoolBuilder {
     peak_guards_per_reader: u32,
     max_inflight_reads: u32,
     miss_headroom: u32,
+    max_retained_frames: u32,
     write_slots: u32,
     max_inflight_product_ops: u32,
 }
@@ -492,6 +529,7 @@ impl Default for PoolBuilder {
             peak_guards_per_reader: 0,
             max_inflight_reads: 0,
             miss_headroom: 0,
+            max_retained_frames: 0,
             write_slots: 0,
             max_inflight_product_ops: 0,
         }
@@ -538,6 +576,12 @@ impl PoolBuilder {
     #[must_use]
     pub fn miss_headroom(mut self, miss_headroom: u32) -> Self {
         self.miss_headroom = miss_headroom;
+        self
+    }
+
+    #[must_use]
+    pub fn max_retained_frames(mut self, max_retained_frames: u32) -> Self {
+        self.max_retained_frames = max_retained_frames;
         self
     }
 
@@ -846,6 +890,17 @@ impl<D: PoolBackend> Pool<D> {
             max_concurrent_readers: config.max_concurrent_readers,
             write_slots: config.write_slots,
             identity: pool_identity,
+        }
+    }
+
+    pub fn retention_stats(&self) -> RetentionStats {
+        RetentionStats {
+            occupied_budget: 0,
+            refused_budget: 0,
+            refused_ceiling: 0,
+            refused_contention: 0,
+            refused_retiring: 0,
+            retained_evictions_held: 0,
         }
     }
 

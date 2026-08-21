@@ -95,7 +95,7 @@ tasks:
       reports the augmented value). Populate the private counters behind the
       T6a-defined RetentionStats shape; T7 wires their real accessor
       (LifecycleCounters remains pub(crate)/mock-gated).
-    status: pending
+    status: in_progress
     depends_on: [T1, T6a]
     files: [src/pool/retention.rs, src/pool/mod.rs, src/product.rs, src/sync.rs, src/pool/alias_guard.rs, src/lib.rs, tests/public_api.rs]
 
@@ -187,7 +187,7 @@ tasks:
       second ReaderSlot/state-space fixture needed by later real-primitives
       Loom REDs. Missing imports and compile errors never count as RED. The
       scaffold is an intermediate scope-branch state and cannot ship alone.
-    status: pending
+    status: done
     depends_on: [T1]
     files: [src/lib.rs, src/pool/mod.rs, src/pool/loom_model.rs, tests/public_api.rs]
 
