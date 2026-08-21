@@ -6,7 +6,7 @@ discipline: DRP003 establishes a conservative callable scaffold; each behavior t
 meta:
   created: 2026-08-19
   last_updated: 2026-08-21
-  progress: 9/10
+  progress: 10/10
   issue_type: Feature
   review_gate: passed
 
@@ -54,7 +54,7 @@ tasks:
     status: done
     depends_on: []
     files:
-      - scopes/active/dios-r1-r7-read-performance/resources/r7-source-manifest.json
+      - scopes/done/dios-r1-r7-read-performance/resources/r7-source-manifest.json
 
   - id: DRP003
     title: Land the conservative callable API scaffold
@@ -121,7 +121,7 @@ tasks:
       - benches/read_path_product.rs
       - benches/plans/dios_r1_r7_read_performance.md
       - Cargo.toml
-      - scopes/active/dios-r1-r7-read-performance/resources/hash-decision.yaml
+      - scopes/done/dios-r1-r7-read-performance/resources/hash-decision.yaml
 
   - id: DRP006
     title: Implement production file lease and packed residency stamp
@@ -241,7 +241,7 @@ tasks:
       - tests/read_protocol_atomic.rs
       - tests/loom_pool.rs
       - tests/zero_alloc.rs
-      - scopes/active/dios-r1-r7-read-performance/resources/gate-results.yaml
+      - scopes/done/dios-r1-r7-read-performance/resources/gate-results.yaml
 
   - id: DRP010
     title: Publish Dios contract and close cross-scope handoff
@@ -255,7 +255,7 @@ tasks:
       after that scope records its end-to-end result; consume its status
       read-only and edit no Sira file. Fold no R8 retention claim into this
       closeout.
-    status: pending
+    status: done
     depends_on: [DRP009]
     external_depends_on:
       - sira-aligned-buffers:SAB008
@@ -263,5 +263,5 @@ tasks:
       - README.md
       - src/lib.rs
       - src/pool/mod.rs
-      - scopes/active/dios-r1-r7-read-performance/resources/evidence.md
-      - scopes/active/dios-r1-r7-read-performance/resources/gate-results.yaml
+      - scopes/done/dios-r1-r7-read-performance/resources/evidence.md
+      - scopes/done/dios-r1-r7-read-performance/resources/gate-results.yaml

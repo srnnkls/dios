@@ -1,6 +1,6 @@
 ---
 created: 2026-08-19
-status: active
+status: done
 issue_type: Feature
 revision: 3
 ---
@@ -314,7 +314,7 @@ weakening is not.
 - [x] DRP-G1 through DRP-G4 are run exactly as pre-registered. A failed hash
   gate retains the current hash; failed DRP-G2 or a safety gate blocks the
   feature; failed DRP-G3 removes the product hint surface.
-- [ ] The companion `sira-aligned-buffers` scope consumes a pinned Dios
+- [x] The companion `sira-aligned-buffers` scope consumes a pinned Dios
   commit and records its own end-to-end verdict before this scope closes. This
   repository changes no Sira file.
 
@@ -360,14 +360,14 @@ lease RED+GREEN -> hint RED+GREEN + Loom/fallback/retirement
 - Changing CLOCK victim selection, frame retention, pool watermarks, the
   three-way `Get` residency ADT, or the direct-I/O backend topology.
 
-## Open state
+## Closure
 
-- Revision 3 retargets the read-only handoff to the active
-  `sira-aligned-buffers:SAB008` endpoint. The reviewed Dios work through
-  DRP009 and the DRP010 contract documentation are published; closeout waits
-  only on that external endpoint's recorded result.
-- The cross-repository scope is
-  `/Users/srnnkls/projects/sira/scopes/active/sira-aligned-buffers/`.
-  Its existence does not broaden Dios ownership.
-- The hash outcome is intentionally data-dependent and is recorded by DRP-G1;
-  it is not an unresolved architecture question.
+- `sira-aligned-buffers:SAB008` is complete in merged Sira PR #9
+  (`e99c90d2602357e858d56cc6f8ed26d4c4897843`). Sira pins public Dios
+  revision `011894472cdd49b94b3d48b7aaa46716b1608c9e` and records passing
+  production `Connection::get` gates at n=1, 10, 256, and 4,096.
+- Dios consumed that status read-only. No Sira file was changed by this scope,
+  and the recorded Sira result is not relabeled as a measurement of the later
+  DRP009 candidate.
+- DRP-G1 retained the current four-round hash. DRP-G2 through DRP-G4 passed,
+  selecting the optional lease/hint API with mandatory ordinary-get fallback.

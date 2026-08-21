@@ -141,6 +141,18 @@ published Dios branch and is not evidence that Sira consumed it. Exact binary,
 runner, base, input, artifact, and checksum identities are in
 [`gate-results.yaml`](gate-results.yaml).
 
-The companion `sira-aligned-buffers:SAB008` endpoint remains pending. Dios
-therefore does not claim end-to-end Sira closure here, and DRP010 remains open
-until that result can be consumed read-only.
+## Cross-repository closeout
+
+Sira PR #9 merged as `e99c90d2602357e858d56cc6f8ed26d4c4897843` and moved
+`sira-aligned-buffers` to done with SAB008 complete. Its public Dios dependency
+is pinned to `011894472cdd49b94b3d48b7aaa46716b1608c9e`. The Sira-owned production
+`Connection::get` campaign records passing one-sided 95% CI upper bounds of
+`0.361885940273`, `0.328674467011`, `0.315188355428`, and `0.314189291555`
+against `1.02` at n=1, 10, 256, and 4,096 respectively.
+
+That closes the required read-only handoff. It does not claim that Sira timed
+the later DRP009 candidate `28e57aa2670aec9ee28b95688cff4ad793d3cdd0`:
+Sira's merged record explicitly binds its Dios dependency to `0118944` and
+states that the formal mmap campaign does not configure Dios. The independently
+qualified DRP-G2 through DRP-G4 results above remain the authority for the
+shipping Dios lease/hint/fallback contract.

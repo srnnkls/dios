@@ -74,7 +74,7 @@ on eager-inline and Linux io_uring.
 The binding R7 measurements selected this public API and retained the current
 four-round page hash. Exact identities, confidence bounds, proof counts, and
 artifacts are recorded in the
-[R7 gate results](scopes/active/dios-r1-r7-read-performance/resources/gate-results.yaml).
+[R7 gate results](scopes/done/dios-r1-r7-read-performance/resources/gate-results.yaml).
 
 ## Development
 

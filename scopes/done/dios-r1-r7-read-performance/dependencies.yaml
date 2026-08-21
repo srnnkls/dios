@@ -57,6 +57,12 @@ external_dependencies:
     handoff_after: DRP009
     blocks: [DRP010]
     required_endpoint: SAB008
+    status: resolved
+    resolution: >-
+      SAB008 completed in merged Sira PR #9 at
+      e99c90d2602357e858d56cc6f8ed26d4c4897843, consuming pinned public Dios
+      revision 011894472cdd49b94b3d48b7aaa46716b1608c9e and recording passing
+      production Connection::get gates.
     does_not_block: [DRP001, DRP002, DRP003, DRP004, DRP005, DRP006, DRP007, DRP008, DRP009]
     provides: >-
       Sira-owned native-locator integration and end-to-end R1-R7 REMIX gate

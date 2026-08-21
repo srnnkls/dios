@@ -54,7 +54,7 @@ open_counts:
   high: 0
   medium: 0
 
-next_action: Wait for sira-aligned-buffers:SAB008, then close DRP010 read-only.
+next_action: Squash-merge Dios PR #3; no scope work remains.
 
 review_focus:
   - R7 extraction is reproducible from the recorded base/carrier hashes and excludes every R8 retention symbol.
@@ -63,7 +63,7 @@ review_focus:
   - Exact per-frame PageId metadata and a pre-index bounds check exclude foreign bytes; a coincidental exact target-page match is safe.
   - Hint failure always reaches ordinary get without leaking an epoch publication.
   - Calibration plus independent hash holdout, unused-overhead, shipping-backend materiality, and contention gates are executable and falsifiable.
-  - No task owns a Sira file; SAB008 blocks only DRP010; retention is serialized after DRP010 without importing R8 behavior.
+  - No task owns a Sira file; SAB008 closed read-only through merged Sira PR #9; retention follows without importing R8 behavior.
 
 final:
   critical_open: 0
@@ -263,8 +263,27 @@ batch_reviews:
       high_issues: 0
       medium_issues: 0
     evidence:
-      gate_results: scopes/active/dios-r1-r7-read-performance/resources/gate-results.yaml
+      gate_results: scopes/done/dios-r1-r7-read-performance/resources/gate-results.yaml
       binding_status: pass
+    outcome: approved
+  - batch: 8
+    timestamp: 2026-08-21T14:35:22Z
+    commit: 87ee84cabb9030a38bd26ff2b3eaf2ce835e2462
+    tasks: [DRP010]
+    reviewers:
+      - id: drp-scope-metadata-review
+        execution_class: native
+        effort: inherit
+        status: success
+    synthesized:
+      critical_issues: 0
+      high_issues: 0
+      medium_issues: 0
+    evidence:
+      sira_pr: https://github.com/srnnkls/sira/pull/9
+      sira_merge: e99c90d2602357e858d56cc6f8ed26d4c4897843
+      pinned_dios_revision: 011894472cdd49b94b3d48b7aaa46716b1608c9e
+      endpoint: sira-aligned-buffers:SAB008
     outcome: approved
 
 issues:
@@ -275,21 +294,22 @@ issues:
 deferred_issues: []
 
 final_review:
-  status: pending
-  timestamp: null
-  reviewers: []
+  status: passed
+  timestamp: 2026-08-21
+  reviewers: [drp_scope_metadata_review]
   reviewer_effort: inherit
   native_effort: inherit
-  gates: {correctness: pending, style: pending, performance: pending, security: pending, architecture: pending}
-  scope_compliance: {all_tasks_complete: false, acceptance_criteria_met: false, edge_cases_handled: false}
+  gates: {correctness: pass, style: pass, performance: pass, security: pass, architecture: pass}
+  scope_compliance: {all_tasks_complete: true, acceptance_criteria_met: true, edge_cases_handled: true}
   issues: []
-  strengths: []
-  overall_assessment: null
-  recommendation: null
+  strengths:
+    - All frozen Dios gates passed and the external handoff is recorded without relabeling its pinned revision.
+  overall_assessment: Complete.
+  recommendation: Squash merge.
 
 readiness:
-  all_batches_reviewed: false
+  all_batches_reviewed: true
   critical_issues_resolved: true
   high_issues_resolved: true
-  final_review_passed: false
+  final_review_passed: true
   tests_passing: true

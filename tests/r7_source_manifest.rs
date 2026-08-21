@@ -5,7 +5,7 @@ use std::process::{Command, Output};
 use serde::Deserialize;
 
 const CLEAN_BASE: &str = "1004a2e6fcae0bcc9552dc3211c2416e388a250d";
-const SCOPE: &str = "scopes/active/dios-r1-r7-read-performance";
+const SCOPE: &str = "scopes/done/dios-r1-r7-read-performance";
 const MANIFEST: &str = "resources/r7-source-manifest.json";
 const FILE_BYTES_MAX: u64 = 128 * 1024;
 const TEMPORARY_DIRECTORY_ATTEMPTS: u32 = 16;

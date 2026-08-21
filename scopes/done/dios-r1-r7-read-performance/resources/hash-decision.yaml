@@ -7,7 +7,7 @@ generator_sources:
   - path: src/pool/table.rs
     sha256: 397328aa7bc29db4bd2d4fcc69537e39606bc985d89db6244e92eec20a51c6bb
 quality_artifact:
-  path: scopes/active/dios-r1-r7-read-performance/resources/drp_g1_probe_quality.csv
+  path: scopes/done/dios-r1-r7-read-performance/resources/drp_g1_probe_quality.csv
   sha256: c5b1f98786f5dea694362f9ba564cae90ca9bb13420317ab80f512bdce97670e
   rows: 72
 packed_rejection:

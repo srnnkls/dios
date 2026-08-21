@@ -75,7 +75,7 @@ clarification_log:
     question: Who owns the REMIX consumer and end-to-end result?
     answer: >-
       Companion Sira scope sira-aligned-buffers; this scope owns no
-      Sira file and waits on it only for DRP010 closeout.
+      Sira file; DRP010 consumed the completed SAB008 status read-only.
     integration: dependencies.yaml external_dependencies
   - id: C003
     area: behavior
@@ -192,7 +192,7 @@ readiness:
 loqui_check:
   present: false
   language: rust
-  status: pending_implementation
+  status: passed
   violations: []
   adherence_notes: >-
     No Rust implementation is part of scope creation. Tasks require edition
@@ -216,8 +216,8 @@ review_gate:
   reason: >-
     Revision 2 passed the mandatory scope and cross-scope reviews. The owner
     authorized execution on 2026-08-20. Revision 3 retargets only the read-only
-    external handoff to the active SAB008 endpoint; its metadata findings were
-    resolved without changing the reviewed product architecture.
+    external handoff to SAB008; merged Sira PR #9 completed that endpoint
+    without changing the reviewed product architecture or Dios ownership.
 
 deferred:
   - area: design
