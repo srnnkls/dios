@@ -36,6 +36,16 @@ hooks {
       ...heavy
     }
   }
+  ["post-checkout"] {
+    env {
+      ["MISE_CONFIG_DIR"] = "{{ root }}"
+    }
+    steps {
+      ["worktreeinclude"] {
+        check = "git worktreeinclude apply --quiet"
+      }
+    }
+  }
   ["fix"] {
     fix = true
     steps {
