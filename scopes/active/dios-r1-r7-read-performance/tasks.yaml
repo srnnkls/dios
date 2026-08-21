@@ -1,0 +1,267 @@
+scope: dios-r1-r7-read-performance
+code: DRP
+next_id: 11
+discipline: DRP003 establishes a conservative callable scaffold; each behavior task then starts from its own compiling runtime RED, and DRP001 freezes every performance gate before product code
+
+meta:
+  created: 2026-08-19
+  last_updated: 2026-08-21
+  progress: 9/10
+  issue_type: Feature
+  review_gate: passed
+
+tasks:
+  - id: DRP001
+    title: Freeze R1-R7 production bench plan
+    description: >-
+      Before product code, write one plan containing DRP-G1 through DRP-G4
+      exactly as scope.md specifies: metric and direction, real Pool<Driver>
+      workload, clean-base/candidate identities, CPU affinity and governor,
+      at least 30 order-alternated process pairs, one-sided 95% CI thresholds,
+      ratio orientation, shared compare commands, retained raw CSV/provenance,
+      and an escalation lever for each failure. Include both the historical
+      hash calibration matrix and design.md's exact independent holdout before
+      any candidate edit, full-granule binding lanes, cycling/reuse default-
+      overhead lane, ordinary-vs-hint materiality, and 1/8-thread contention.
+      State that MockDriver and the one-word lane are diagnostic only. Amend
+      read-protocol-atomic and active dios-v1 T018/DIO-G10 to assign overlapping
+      primitive implementation here while preserving their evidence and
+      migration-level consumer gates.
+    status: done
+    depends_on: []
+    files:
+      - benches/plans/dios_r1_r7_read_performance.md
+      - scopes/draft/read-protocol-atomic/
+      - scopes/active/dios-v1/
+
+  - id: DRP002
+    title: Extract and bind R7-only source
+    description: >-
+      Starting from clean 1004a2e6fcae0bcc9552dc3211c2416e388a250d, verify
+      SHA-256 16748dd827b1958b6889535f7244fb8ffe767dac674d587f9fee18738be4a967
+      for scopes/draft/dios-r1-r7-read-performance/resources/r7-source.diff,
+      apply it in an isolated temporary checkout, install the exact
+      resources/sira_native_hint.md snapshot at
+      benches/plans/sira_native_hint.md, verify its SHA-256
+      337ecf1aafdbded58c38cca5efdf62056e139e2521744d305b43b962ebd62ecf,
+      and verify all five source/plan hashes in resources/evidence.md. Emit a
+      manifest recording base, carrier, plan snapshot, files,
+      byte lengths, hashes, and a forbidden-symbol scan for ResidentSet,
+      ResidentSetLease, ResidentSetError, retention_counts, and resident_set.
+      Classify the extracted R7 hunks; do not copy the live contaminated
+      experiment-sira-point-proof files and do not edit product code in this
+      task.
+    status: done
+    depends_on: []
+    files:
+      - scopes/active/dios-r1-r7-read-performance/resources/r7-source-manifest.json
+
+  - id: DRP003
+    title: Land the conservative callable API scaffold
+    description: >-
+      First add one compiling runtime source-boundary RED that fails because
+      the callable scaffold is absent; this check proves only API shape and
+      never substitutes for a behavioral test. Then root-export the exact
+      ResidentFileLease, 16-byte niche-sized ResidentHint, ResidentLeaseError,
+      lease_file, resident_hint, and get_with_hint signatures needed by later
+      testers. The scaffold is deliberately conservative: lease_file refuses
+      with a typed stale value, resident_hint returns None, and get_with_hint
+      delegates to ordinary get; it adds no atomics, unsafe code, allocation,
+      mock model, frame metadata, or R8 state. Add only cfg(test)/test-util
+      observation seams that expose actual production primitives. DRP004,
+      DRP006, and DRP007 must each capture their own runtime failures against
+      this compiling surface before changing behavior. The scaffold is an
+      intermediate scope-branch state and cannot be published independently.
+    status: done
+    depends_on: [DRP001, DRP002]
+    files:
+      - src/lib.rs
+      - src/pool/mod.rs
+      - tests/public_api.rs
+
+  - id: DRP004
+    title: Implement generation-exact liveness mirror and ReaderSlot alignment
+    description: >-
+      Add the preallocated full-generation liveness words through crate::sync;
+      publish on register and clear before retirement teardown with the
+      design.md Release/Acquire order; use the unlocked exact check on warm get
+      and preserve the locked miss-path recheck. Add #[repr(align(64))] to
+      ReaderSlot without changing begin_pin, its SeqCst fence, nesting, abort,
+      or release. Before code, use the DRP003 observation seam to capture a
+      compiling runtime RED proving a warm hit still enters AD-4, and add the
+      real-primitives mirror-get versus retire/reuse Loom RED. Make both green.
+      Keep the packed hash out of this task.
+    status: done
+    depends_on: [DRP003]
+    files:
+      - src/pool/mod.rs
+      - src/pool/epoch.rs
+      - src/pool/loom_model.rs
+      - tests/read_protocol_atomic.rs
+      - tests/loom_pool.rs
+
+  - id: DRP005
+    title: Decide the admissible page hash
+    description: >-
+      Reproduce the existing packed-hash rejection, then evaluate only the
+      design.md full-width one-round candidate. Implement and run both the
+      pre-registered calibration matrix and the frozen independent holdout,
+      retaining their generator/source hashes and every row, before the DRP-G1
+      real-Pool<Driver> A/B. If every quality bound and the
+      <=0.98 speed CI pass, adopt the candidate with distribution regression
+      tests; otherwise leave the current four-round hash byte-for-byte and
+      record the failed sub-gate. Either branch completes this task. Never
+      relax a threshold after observing results and never ship the packed
+      expression.
+    status: done
+    depends_on: [DRP004]
+    files:
+      - src/pool/table.rs
+      - tests/read_protocol_atomic.rs
+      - benches/read_path_product.rs
+      - benches/plans/dios_r1_r7_read_performance.md
+      - Cargo.toml
+      - scopes/active/dios-r1-r7-read-performance/resources/hash-decision.yaml
+
+  - id: DRP006
+    title: Implement production file lease and packed residency stamp
+    description: >-
+      Translate the manifest-bound R7 behavior, not its mock gating or R8
+      neighbors. Add one preallocated Arc<ResidentLeaseState> per file slot,
+      with its AtomicU32 lease count and wake state; acquisition is AD-4
+      serialized and clones the existing Arc without allocation. Implement the
+      owned, lifetime-free, non-Clone ResidentFileLease so pool-first drop is
+      safe and last drop performs bounded retirement wake progress. Add typed
+      stale/exhausted acquisition and the single AtomicU64 frame state+
+      generation word from design.md. Route proof-bearing atomics through
+      crate::sync and update alias-guard coverage. Export the production types
+      for every PoolBackend. Before code, capture compiling runtime REDs against
+      the DRP003 scaffold for live/stale/exhausted acquisition, non-Clone
+      ownership, pool-first drop, retirement/reopen, and lease-acquire versus
+      retire/full-retirement/file-slot-reuse Loom. Preserve ordinary FrameState
+      transitions and make those REDs green. ResidentSet and retention symbols
+      are forbidden only in the isolated R7 carrier and this scope's delta.
+    status: done
+    depends_on: [DRP004]
+    files:
+      - src/pool/frames.rs
+      - src/pool/mod.rs
+      - src/pool/alias_guard.rs
+      - src/sync.rs
+      - src/lib.rs
+      - tests/public_api.rs
+      - tests/guard_compile_fail.rs
+      - tests/resident_hint.rs
+
+  - id: DRP007
+    title: Implement compact hint, mandatory fallback, and reuse proofs
+    description: >-
+      Add the opaque 16-byte ResidentHint, lock-free advisory minting,
+      preallocated per-frame exact-PageId metadata, and get_with_hint. The
+      single writer stores bytes and PageId before Release-publishing Resident;
+      the reader publishes through the unchanged ReaderSlot protocol, compares
+      the exact packed stamp with Acquire, then reads and compares the full
+      PageId through one audited Frames unsafe cell before touching CLOCK and
+      returning the normal FrameGuard. None or any stale/mismatched
+      observation must abort only an uncommitted first pin and invoke ordinary
+      get; an out-of-range frame index must fall back before frame indexing,
+      and no separate consumer-side fallback protocol exists. Before code,
+      capture compiling runtime REDs against the live DRP006 lease plus the
+      DRP003 hint scaffold for mint/hit/fallback/refresh, exact PageId, nested
+      fallback, and hinted publication versus unmap/eviction/two advances/
+      refill/reuse Loom. Include same-granule wrong-file and wrong-pool
+      collisions. Make those REDs green.
+      Add deterministic mock fault/byte tests only as correctness support,
+      never as the gate result.
+    status: done
+    depends_on: [DRP006]
+    files:
+      - src/pool/frames.rs
+      - src/pool/mod.rs
+      - src/pool/alias_guard.rs
+      - src/pool/loom_model.rs
+      - src/lib.rs
+      - src/mock.rs
+      - tests/resident_hint.rs
+      - tests/loom_pool.rs
+
+  - id: DRP008
+    title: Close correctness, allocation, and sanitizer matrix
+    description: >-
+      Run and close the full acceptance matrix: wrong pool/file/page with
+      deliberately colliding granule/frame/stamp shapes, an out-of-range frame
+      index that falls back before indexing,
+      None/stale/refresh, lease exhaustion without mutation, retire with a
+      live lease, pool-first lease drop, last-drop progress, same-slot reopen,
+      ordinary get unchanged,
+      exact bytes, trait/lifetime pins, frame-generation transition assertions,
+      and forbidden R8 symbol scans limited to the isolated R7 carrier and this
+      scope's own delta. Extend zero_alloc for ordinary hit, hinted
+      hit, stale fallback, lease acquire/drop, and retirement on eager and
+      io_uring. Run fmt, strict clippy, full tests, bounded Loom cases, miri on
+      pure memory, and asan on the Linux syscall lane.
+    status: done
+    depends_on: [DRP005, DRP007]
+    files:
+      - tests/read_protocol_atomic.rs
+      - tests/resident_hint.rs
+      - tests/public_api.rs
+      - tests/guard_compile_fail.rs
+      - tests/zero_alloc.rs
+      - tests/loom_pool.rs
+
+  - id: DRP009
+    title: Run real-backend overhead, materiality, and contention gates
+    description: >-
+      Implement the frozen plan without changing its thresholds and run
+      DRP-G2 through DRP-G4 on nix. Every binding lane uses Pool<Driver>, at
+      least 30 order-alternated process pairs, raw CSV, source/binary identity,
+      fixed affinity, and the shared compare harness. Record both passes and
+      failures. DRP-G2 or a safety failure blocks adoption; DRP-G3 failure
+      removes the public lease/hint surface and marks hinted contention not
+      applicable while ordinary gates continue; DRP-G4 follows only its
+      recorded in-scope escalation. Mock or one-word results cannot close a
+      gate. Publish the exact DRP009 branch for Sira before DRP010 closeout.
+    status: done
+    depends_on: [DRP008]
+    files:
+      - benches/read_path_product.rs
+      - benches/plans/dios_r1_r7_read_performance.md
+      - Cargo.toml
+      - src/lib.rs
+      - src/pool/mod.rs
+      - src/pool/frames.rs
+      - src/pool/alias_guard.rs
+      - src/pool/loom_model.rs
+      - src/sync.rs
+      - src/mock.rs
+      - tests/public_api.rs
+      - tests/guard_compile_fail.rs
+      - tests/resident_hint.rs
+      - tests/read_protocol_atomic.rs
+      - tests/loom_pool.rs
+      - tests/zero_alloc.rs
+      - scopes/active/dios-r1-r7-read-performance/resources/gate-results.yaml
+
+  - id: DRP010
+    title: Publish Dios contract and close cross-scope handoff
+    description: >-
+      Document the selected hash outcome and the exact DRP-G3 branch: either
+      the production lease/hint/fallback API and proofs, or its clean removal
+      with ordinary guarded get/composition as the consumer contract. Record
+      the zero-default result and real-backend gate identities in Dios
+      rustdoc/README and this scope's resources. Provide the pinned Dios
+      commit to companion scope sira-aligned-buffers. Close only
+      after that scope records its end-to-end result; consume its status
+      read-only and edit no Sira file. Fold no R8 retention claim into this
+      closeout.
+    status: pending
+    depends_on: [DRP009]
+    external_depends_on:
+      - sira-aligned-buffers:SAB008
+    files:
+      - README.md
+      - src/lib.rs
+      - src/pool/mod.rs
+      - scopes/active/dios-r1-r7-read-performance/resources/evidence.md
+      - scopes/active/dios-r1-r7-read-performance/resources/gate-results.yaml

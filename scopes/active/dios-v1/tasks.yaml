@@ -1,6 +1,6 @@
 scope: dios-v1
 code: DIO
-next_id: 18
+next_id: 19
 tasks:
   - id: T001
     content: Scaffold the `dios` crate (skeleton, cfg backend selection, error types, alignment newtypes)
@@ -250,11 +250,26 @@ tasks:
       - benches/mmap_warm_path.rs
       - benches/mmap_tlb_pressure.rs
     depends_on: [T002, T008, T009, T015]
+  - id: T018
+    content: >-
+      T018 consumes dios-r1-r7-read-performance after its safety and
+      real-backend gates complete. dios-r1-r7-read-performance owns primitive
+      implementation for the generation-exact liveness mirror, ReaderSlot
+      alignment, hash decision, and production lease/hint fallback; T018
+      retains only the migration-level consumer validation against the selected
+      ordinary-get or accepted hint contract and does not duplicate those
+      primitives.
+    status: pending
+    phase: sira-fit-api
+    files:
+      - examples/gateway_contract.rs
+      - tests/public_api.rs
+    depends_on: [T017]
 
 meta:
   created: 2026-07-07
   last_updated: 2026-07-20
-  progress: 11/17
+  progress: 11/18
   blocked_by: [sira-read-perf, sira-read-concurrency]
 
 phases:

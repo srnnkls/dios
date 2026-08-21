@@ -99,6 +99,11 @@ phases:
           - benches/mmap_warm_path.rs
           - benches/mmap_tlb_pressure.rs
         depends_on: [T002, T008, T009, T015]
+      - id: T018
+        files:
+          - examples/gateway_contract.rs
+          - tests/public_api.rs
+        depends_on: [T017]
 
 batches:
   - batch: 1
@@ -125,5 +130,18 @@ follow_up_batches:
       Repository-local post-v1 follow-up on feat/dios-api. It may proceed
       independently of deferred external sira-wiring tasks T010-T014, but
       not before its own A.5 RED review clears.
+  - batch: api-2
+    tasks: [T018]
+    note: >-
+      Migration-level consumer validation follows T017 and starts only after
+      dios-r1-r7-read-performance completes DRP010.
+
+external_dependencies:
+  - scope: dios-r1-r7-read-performance
+    required_endpoint: DRP010
+    blocks: [T018]
+    provides: >-
+      The reviewed ordinary-get contract and hash decision, plus the lease/hint
+      surface only when its safety and real-backend gates accept it.
 
 actions: []

@@ -1,0 +1,161 @@
+{
+  "base_commit": "1004a2e6fcae0bcc9552dc3211c2416e388a250d",
+  "bindings": [
+    {
+      "path": "resources/r7-source.diff",
+      "bytes": 16708,
+      "sha256": "16748dd827b1958b6889535f7244fb8ffe767dac674d587f9fee18738be4a967",
+      "kind": "base-to-r7-source-carrier"
+    },
+    {
+      "path": "resources/sira_native_hint.md",
+      "bytes": 3907,
+      "sha256": "337ecf1aafdbded58c38cca5efdf62056e139e2521744d305b43b962ebd62ecf",
+      "kind": "plan-snapshot"
+    },
+    {
+      "path": "src/lib.rs",
+      "bytes": 13755,
+      "sha256": "d56aa1eff2fe1741f6b9e7665cf07c264bb2398778f69d2191b20178c6183ca0",
+      "kind": "isolated-extraction-output"
+    },
+    {
+      "path": "src/mock.rs",
+      "bytes": 42796,
+      "sha256": "443d06229a59c36d5edc7a887a473a7fc371eecfcfd9a8458062b662594a7d0f",
+      "kind": "isolated-extraction-output"
+    },
+    {
+      "path": "src/pool/frames.rs",
+      "bytes": 20307,
+      "sha256": "8b122ffaa0ae198e4ec9dd68999ac0fbe8232cf5998b6a76d041cbfc4d76372c",
+      "kind": "isolated-extraction-output"
+    },
+    {
+      "path": "src/pool/mod.rs",
+      "bytes": 64153,
+      "sha256": "213697747590988533f829e5c6846b3106f9ae293ce0570cbf4d432dabaf1d10",
+      "kind": "isolated-extraction-output"
+    },
+    {
+      "path": "benches/plans/sira_native_hint.md",
+      "bytes": 3907,
+      "sha256": "337ecf1aafdbded58c38cca5efdf62056e139e2521744d305b43b962ebd62ecf",
+      "kind": "installed-plan-snapshot"
+    }
+  ],
+  "extraction": {
+    "isolated_checkout": true,
+    "carrier_applied_to_clean_base": true,
+    "source": "tracked carrier and plan snapshot only"
+  },
+  "extracted_hunks": [
+    {
+      "path": "src/lib.rs",
+      "hunk": "@@ -43,6 +43,8 @@",
+      "classification": "Expose mock-only resident lease and hint types through the testing surface."
+    },
+    {
+      "path": "src/lib.rs",
+      "hunk": "@@ -227,6 +229,59 @@",
+      "classification": "Add the mock-only resident hint testing extension and its Pool<MockDriver> forwarding implementation."
+    },
+    {
+      "path": "src/mock.rs",
+      "hunk": "@@ -419,6 +419,13 @@",
+      "classification": "Expose exact-frame-byte seeding for deterministic hinted-read checks."
+    },
+    {
+      "path": "src/mock.rs",
+      "hunk": "@@ -546,13 +553,19 @@",
+      "classification": "Represent mock page seeds as either a repeated fill byte or exact frame bytes."
+    },
+    {
+      "path": "src/mock.rs",
+      "hunk": "@@ -601,7 +614,21 @@",
+      "classification": "Store exact byte seeds after asserting the configured frame length."
+    },
+    {
+      "path": "src/mock.rs",
+      "hunk": "@@ -686,18 +713,31 @@",
+      "classification": "Copy the completed read range from fill or exact-byte seed data, including partial offsets."
+    },
+    {
+      "path": "src/mock.rs",
+      "hunk": "@@ -750,17 +790,15 @@",
+      "classification": "Fill mock read destinations according to the actual completed byte count, including short reads."
+    },
+    {
+      "path": "src/pool/frames.rs",
+      "hunk": "@@ -8,6 +8,8 @@",
+      "classification": "Import the proof-bearing atomic word used by mock residency stamps."
+    },
+    {
+      "path": "src/pool/frames.rs",
+      "hunk": "@@ -110,6 +112,8 @@",
+      "classification": "Add fixed per-frame mock residency-stamp storage."
+    },
+    {
+      "path": "src/pool/frames.rs",
+      "hunk": "@@ -161,6 +165,10 @@",
+      "classification": "Preallocate each residency stamp in the Free state during frame construction."
+    },
+    {
+      "path": "src/pool/frames.rs",
+      "hunk": "@@ -274,7 +282,48 @@",
+      "classification": "Publish frame transitions through a generation-bearing residency stamp and provide resident stamp observation and validation."
+    },
+    {
+      "path": "src/pool/mod.rs",
+      "hunk": "@@ -22,6 +22,8 @@",
+      "classification": "Import the proof-bearing atomic lease count for the mock-only capability."
+    },
+    {
+      "path": "src/pool/mod.rs",
+      "hunk": "@@ -120,6 +122,47 @@",
+      "classification": "Define the mock-only owned file lease lifecycle and compact volatile resident hint."
+    },
+    {
+      "path": "src/pool/mod.rs",
+      "hunk": "@@ -559,6 +602,8 @@",
+      "classification": "Attach shared resident-lease count state to each pool file entry."
+    },
+    {
+      "path": "src/pool/mod.rs",
+      "hunk": "@@ -775,6 +820,8 @@",
+      "classification": "Initialize resident-lease count state when registering a file."
+    },
+    {
+      "path": "src/pool/mod.rs",
+      "hunk": "@@ -1182,6 +1229,13 @@",
+      "classification": "Defer file retirement progress while a resident file lease remains live."
+    },
+    {
+      "path": "src/pool/mod.rs",
+      "hunk": "@@ -1247,6 +1301,94 @@",
+      "classification": "Implement mock-only lease acquisition, hint minting, epoch-protected hinted pinning, and capability identity assertions."
+    }
+  ],
+  "forbidden_symbol_scans": [
+    {
+      "symbol": "ResidentSet",
+      "matches": []
+    },
+    {
+      "symbol": "ResidentSetLease",
+      "matches": []
+    },
+    {
+      "symbol": "ResidentSetError",
+      "matches": []
+    },
+    {
+      "symbol": "retention_counts",
+      "matches": []
+    },
+    {
+      "symbol": "resident_set",
+      "matches": []
+    }
+  ]
+}

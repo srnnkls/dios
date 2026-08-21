@@ -26,13 +26,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use dios::driver::{CompletionBatch, Driver, FileHandle};
-use dios::testing::{DriverReadTestingExt, ReadFrameIdx};
+use dios::testing::{DriverReadTestingExt, PoolTestingExt, ReadFrameIdx};
 use dios::{
-    DirectIo, Pool, PoolCompletion, PoolCompletionBatch, PoolToken, PoolWriteArena, SyncMode,
+    DirectIo, FrameGuard, Get, PageId, Pool, PoolCompletion, PoolCompletionBatch, PoolToken,
+    PoolWriteArena, ReaderCtx, ReadyResult, RetireStatus, SyncMode,
 };
 
 const FRAME_BYTES: u32 = 4096;
 const DRAIN_POLLS_MAX: u32 = 1_000_000;
+const RETIRE_POLLS_MAX: u32 = 32;
 
 thread_local! {
     static ARMED: Cell<bool> = const { Cell::new(false) };
@@ -80,15 +82,30 @@ fn armed_allocations(body: impl FnOnce()) -> u64 {
     ALLOCS.with(Cell::get)
 }
 
+fn armed_allocations_result<T>(body: impl FnOnce() -> T) -> (u64, T) {
+    ALLOCS.with(|count| count.set(0));
+    ARMED.with(|armed| armed.set(true));
+    let result = body();
+    ARMED.with(|armed| armed.set(false));
+    let allocations = ALLOCS.with(Cell::get);
+    (allocations, result)
+}
+
 static UNIQUE: AtomicU32 = AtomicU32::new(0);
 
-fn temp_frame(tag: &str) -> PathBuf {
+fn temp_frames(tag: &str, frame_count: u32, fill: u8) -> PathBuf {
     let n = UNIQUE.fetch_add(1, Ordering::Relaxed);
     let mut path = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
     std::fs::create_dir_all(&path).expect("target tmp dir");
     path.push(format!("zeroalloc-{tag}-{}-{n}", std::process::id()));
-    std::fs::write(&path, vec![0x4Bu8; FRAME_BYTES as usize]).expect("seed a full frame");
+    let byte_count =
+        usize::try_from(frame_count).expect("test frame count fits usize") * FRAME_BYTES as usize;
+    std::fs::write(&path, vec![fill; byte_count]).expect("seed full frames");
     path
+}
+
+fn temp_frame(tag: &str) -> PathBuf {
+    temp_frames(tag, 1, 0x4B)
 }
 
 fn driver() -> Driver {
@@ -119,6 +136,35 @@ fn product_pool() -> Pool<Driver> {
 fn open(drv: &Driver, path: &Path) -> FileHandle {
     drv.open(path, DirectIo::Disabled)
         .expect("open the seeded file")
+}
+
+fn resolve_product_page<'pool>(
+    pool: &'pool Pool<Driver>,
+    reader: &'pool ReaderCtx,
+    page: PageId,
+) -> FrameGuard<'pool> {
+    for _ in 0..DRAIN_POLLS_MAX {
+        let mut token = match pool.get(reader, page).expect("the product file is live") {
+            Get::Hit(guard) => return guard,
+            Get::Pending(token) => token,
+            Get::Busy => {
+                pool.poll();
+                continue;
+            }
+        };
+        for _ in 0..DRAIN_POLLS_MAX {
+            match pool.ready(reader, token) {
+                ReadyResult::Ready(guard) => return guard,
+                ReadyResult::NotYet(returned) => {
+                    token = returned;
+                    pool.poll();
+                }
+                ReadyResult::Err(error) => panic!("fault-free product warmup failed: {error:?}"),
+            }
+        }
+        panic!("submitted product warmup did not complete within the fixed poll bound");
+    }
+    panic!("product warmup remained Busy beyond the fixed poll bound");
 }
 
 /// Polls until at least one completion drains, bounded by an iteration cap.
@@ -357,16 +403,179 @@ fn a_warmed_real_pool_write_fsync_and_bounded_report_drain_allocate_nothing() {
     );
 }
 
+#[test]
+fn real_pool_warm_get_hit_allocates_nothing() {
+    let path = temp_frames("real-pool-warm-get-hit", 1, 0xC4);
+    let pool = product_pool();
+    let file = pool
+        .open(&path, DirectIo::Disabled)
+        .expect("the real product pool opens the fixture");
+    let reader = pool
+        .register_reader()
+        .expect("the product pool has one reader slot");
+    let page = PageId::new(file, 0);
+    drop(resolve_product_page(&pool, &reader, page));
+
+    let (allocations, outcome) = armed_allocations_result(|| pool.get(&reader, page));
+    match outcome.expect("the product file remains live") {
+        Get::Hit(guard) => assert_eq!(guard[0], 0xC4),
+        Get::Pending(_) => panic!("a warmed product page must hit"),
+        Get::Busy => panic!("a warmed product page is never Busy"),
+    }
+
+    assert_eq!(
+        allocations, 0,
+        "a warmed shipping-backend Pool::get hit reuses fixed residency state"
+    );
+}
+
+#[test]
+fn real_pool_warm_hinted_hit_allocates_nothing() {
+    let path = temp_frames("real-pool-hinted-hit", 1, 0xA5);
+    let pool = product_pool();
+    let file = pool
+        .open(&path, DirectIo::Disabled)
+        .expect("the real product pool opens the fixture");
+    let reader = pool
+        .register_reader()
+        .expect("the product pool has one reader slot");
+    let page = PageId::new(file, 0);
+    drop(resolve_product_page(&pool, &reader, page));
+    let lease = pool
+        .lease_file(file)
+        .expect("the warmed product file admits a lease");
+    let hint = pool
+        .resident_hint(&lease, page)
+        .expect("the warmed product page mints a hint");
+
+    let (allocations, outcome) =
+        armed_allocations_result(|| pool.get_with_hint(&reader, &lease, page, Some(hint)));
+    match outcome.expect("the product lease remains live") {
+        Get::Hit(guard) => assert_eq!(guard[0], 0xA5),
+        Get::Pending(_) => panic!("a warmed hinted product page must hit"),
+        Get::Busy => panic!("a warmed hinted product page is never Busy"),
+    }
+
+    assert_eq!(
+        allocations, 0,
+        "a shipping-backend hinted hit reuses preallocated residency metadata"
+    );
+}
+
+#[test]
+fn real_pool_stale_hint_ordinary_fallback_allocates_nothing() {
+    let source_path = temp_frames("real-pool-stale-hint-source", 8, 0x51);
+    let target_path = temp_frames("real-pool-stale-hint-target", 1, 0xA2);
+    let pool = product_pool();
+    let source_file = pool
+        .open(&source_path, DirectIo::Disabled)
+        .expect("the real product pool opens the source fixture");
+    let target_file = pool
+        .open(&target_path, DirectIo::Disabled)
+        .expect("the real product pool opens the target fixture");
+    let reader = pool
+        .register_reader()
+        .expect("the product pool has one reader slot");
+    let source_page = PageId::new(source_file, 0);
+    drop(resolve_product_page(&pool, &reader, source_page));
+    let source_lease = pool
+        .lease_file(source_file)
+        .expect("the warmed source product file admits a lease");
+    let stale_hint = pool
+        .resident_hint(&source_lease, source_page)
+        .expect("the warmed source product page mints a hint");
+    for granule_idx in 1..=4 {
+        drop(resolve_product_page(
+            &pool,
+            &reader,
+            PageId::new(source_file, granule_idx),
+        ));
+    }
+    assert!(
+        pool.resident_hint(&source_lease, source_page).is_none(),
+        "the old source observation is stale after bounded frame reuse"
+    );
+    let target_page = PageId::new(target_file, 0);
+    drop(resolve_product_page(&pool, &reader, target_page));
+    let target_lease = pool
+        .lease_file(target_file)
+        .expect("the warmed target product file admits a lease");
+
+    let (allocations, outcome) = armed_allocations_result(|| {
+        pool.get_with_hint(&reader, &target_lease, target_page, Some(stale_hint))
+    });
+    match outcome.expect("the stale hint falls back through the live target product file") {
+        Get::Hit(guard) => assert_eq!(guard[0], 0xA2),
+        Get::Pending(_) => panic!("the warmed product fallback target must hit"),
+        Get::Busy => panic!("the warmed product fallback target is never Busy"),
+    }
+
+    assert_eq!(
+        allocations, 0,
+        "a shipping-backend stale hint fallback reuses the ordinary get allocation budget"
+    );
+}
+
+#[test]
+fn real_pool_lease_acquire_and_drop_allocate_nothing() {
+    let path = temp_frame("real-pool-lease-acquire-drop");
+    let pool = product_pool();
+    let file = pool
+        .open(&path, DirectIo::Disabled)
+        .expect("the real product pool opens the fixture");
+
+    let (allocations, lease_result) = armed_allocations_result(|| pool.lease_file(file).map(drop));
+    lease_result.expect("a live product file acquires a resident lease");
+
+    assert_eq!(
+        allocations, 0,
+        "shipping-backend resident lease acquisition and drop reuse preallocated state"
+    );
+}
+
+#[test]
+fn real_pool_last_lease_drop_and_retirement_progress_allocate_nothing() {
+    let path = temp_frame("real-pool-last-lease-retirement");
+    let pool = product_pool();
+    let file = pool
+        .open(&path, DirectIo::Disabled)
+        .expect("the real product pool opens the fixture");
+    let lease = pool
+        .lease_file(file)
+        .expect("the retiring product file has one pre-existing lease");
+    assert_eq!(pool.retire_file(file), RetireStatus::Retiring);
+
+    let allocations = armed_allocations(|| {
+        drop(lease);
+        for _ in 0..RETIRE_POLLS_MAX {
+            pool.poll();
+        }
+    });
+
+    assert!(
+        <Pool<Driver> as PoolTestingExt>::file_is_retired_observed(&pool, file),
+        "the armed bounded polls complete retirement before observation"
+    );
+    assert_eq!(
+        allocations, 0,
+        "shipping-backend last lease drop and retirement progress reuse preallocated state"
+    );
+}
+
 #[cfg(feature = "mock")]
 mod pool_gates {
     use std::path::Path;
 
     use dios::testing::{
-        FrameState, MockDriver, PoolBuilderTestingExt, PoolTestingExt, ReadFrameIdx,
+        FrameState, MockDriver, MockPoolTestingExt, PoolBuilderTestingExt, PoolTestingExt,
+        ReadFrameIdx,
     };
-    use dios::{DirectIo, FrameGuard, Get, PageId, Pool, PoolCompletionBatch, ReaderCtx, SyncMode};
+    use dios::{
+        DirectIo, FrameGuard, Get, PageId, Pool, PoolCompletionBatch, ReaderCtx, RetireStatus,
+        SyncMode,
+    };
 
-    use super::armed_allocations;
+    use super::{armed_allocations, armed_allocations_result};
 
     const GRANULE: u32 = 4096;
     const READY_POLLS_MAX: u32 = 64;
@@ -480,6 +689,138 @@ mod pool_gates {
         assert_eq!(
             allocations, 0,
             "a warm pool get() Hit — page-table probe + epoch pin — allocates nothing (INV-2 / DIO-G4)"
+        );
+    }
+
+    #[test]
+    fn a_warm_pool_hinted_hit_allocates_nothing() {
+        let frames = 4u32;
+        let mock = a_mock(frames);
+        let file = mock
+            .open(Path::new("za-hinted-hit"), DirectIo::Disabled)
+            .expect("mock open");
+        let file_id = file.file_id();
+        let pool = pool_on(mock, frames, 1, 3);
+        pool.register_file(file);
+        let reader = pool.register_reader().expect("a reader slot");
+        let page = PageId::new(file_id, 0);
+        pool.insert_resident_frame(page, 0xA5);
+        let lease = pool
+            .lease_file(file_id)
+            .expect("the live file admits a resident lease");
+        let hint = pool
+            .resident_hint(&lease, page)
+            .expect("the resident page mints a hint");
+
+        let (allocations, outcome) =
+            armed_allocations_result(|| pool.get_with_hint(&reader, &lease, page, Some(hint)));
+        match outcome.expect("the lease remains live") {
+            Get::Hit(guard) => assert_eq!(guard[0], 0xA5),
+            Get::Pending(_) => panic!("a resident hinted page must hit"),
+            Get::Busy => panic!("a resident hinted page is never Busy"),
+        }
+
+        assert_eq!(
+            allocations, 0,
+            "a warmed hinted hit reuses preallocated residency metadata"
+        );
+    }
+
+    #[test]
+    fn a_stale_hint_ordinary_fallback_allocates_nothing() {
+        let frames = 4u32;
+        let mock = a_mock(frames);
+        let source = mock
+            .open(Path::new("za-stale-hint-source"), DirectIo::Disabled)
+            .expect("source mock open");
+        let source_file = source.file_id();
+        let target = mock
+            .open(Path::new("za-stale-hint-target"), DirectIo::Disabled)
+            .expect("target mock open");
+        let target_file = target.file_id();
+        let pool = pool_on(mock, frames, 1, 3);
+        pool.register_file(source);
+        pool.register_file(target);
+        let reader = pool.register_reader().expect("a reader slot");
+        let source_page = PageId::new(source_file, 0);
+        let target_page = PageId::new(target_file, 0);
+        pool.insert_resident_frame(source_page, 0x51);
+        pool.insert_resident_frame(target_page, 0xA2);
+        let source_lease = pool
+            .lease_file(source_file)
+            .expect("the source file admits a resident lease");
+        let target_lease = pool
+            .lease_file(target_file)
+            .expect("the target file admits a resident lease");
+        let stale_hint = pool
+            .resident_hint(&source_lease, source_page)
+            .expect("the resident source page mints a hint");
+        pool.evict_frame(source_page);
+        pool.poll();
+        pool.poll();
+
+        let (allocations, outcome) = armed_allocations_result(|| {
+            pool.get_with_hint(&reader, &target_lease, target_page, Some(stale_hint))
+        });
+        match outcome.expect("the stale hint falls back through the live target file") {
+            Get::Hit(guard) => assert_eq!(guard[0], 0xA2),
+            Get::Pending(_) => panic!("the resident fallback target must hit"),
+            Get::Busy => panic!("the resident fallback target is never Busy"),
+        }
+
+        assert_eq!(
+            allocations, 0,
+            "a stale hinted lookup reuses the ordinary get allocation budget"
+        );
+    }
+
+    #[test]
+    fn lease_acquire_and_drop_allocate_nothing() {
+        let frames = 4u32;
+        let mock = a_mock(frames);
+        let file = mock
+            .open(Path::new("za-lease-retirement"), DirectIo::Disabled)
+            .expect("mock file");
+        let file_id = file.file_id();
+        let pool = pool_on(mock, frames, 1, 3);
+        pool.register_file(file);
+
+        let (acquire_drop_allocations, lease_result) =
+            armed_allocations_result(|| pool.lease_file(file_id).map(drop));
+        lease_result.expect("a live file acquires a resident lease");
+        assert_eq!(
+            acquire_drop_allocations, 0,
+            "resident lease acquisition and drop clone/decrement only preallocated state"
+        );
+    }
+
+    #[test]
+    fn last_lease_drop_and_retirement_progress_allocate_nothing() {
+        let frames = 4u32;
+        let mock = a_mock(frames);
+        let file = mock
+            .open(Path::new("za-last-lease-retirement"), DirectIo::Disabled)
+            .expect("mock file");
+        let file_id = file.file_id();
+        let pool = pool_on(mock, frames, 1, 3);
+        pool.register_file(file);
+        let lease = pool
+            .lease_file(file_id)
+            .expect("the retiring file has one pre-existing lease");
+        assert_eq!(pool.retire_file(file_id), RetireStatus::Retiring);
+        let retirement_allocations = armed_allocations(|| {
+            drop(lease);
+            for _ in 0..READY_POLLS_MAX {
+                pool.poll();
+            }
+        });
+        assert!(
+            pool.driver().is_closed(file_id),
+            "last lease drop wakes bounded retirement progress"
+        );
+        assert_eq!(
+            retirement_allocations, 0,
+            "last lease drop and bounded retirement progress reuse preallocated control state"
         );
     }
 

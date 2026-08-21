@@ -55,6 +55,27 @@ if let Get::Pending(mut token) = pool.get(&reader, page) {
 The explicit completion driver and write-staging vocabulary live under
 `dios::driver`. See `examples/quickstart.rs` for the bounded polling form.
 
+### Optional resident hints
+
+An ordinary warm `Pool::get` hit remains the default no-hint path: it performs
+no hint-specific branch, load, store, or RMW. Callers that can reuse an exact
+resident-page observation may opt into `Pool::lease_file`, `ResidentFileLease`,
+`Pool::resident_hint`, `ResidentHint`, and `Pool::get_with_hint`. Hints are
+advisory: a missing, mismatched, or stale hint falls back inside `get_with_hint`
+to the ordinary `Pool::get` behavior.
+
+A file lease protects the lifetime of one exact file generation. It does not
+retain or pin frames, so pages covered by a live lease remain normally
+evictable. This API makes no resident-set, frame-retention, or other R8 claim.
+After pool construction, the zero-allocation proof covers ordinary warm hits,
+hinted hits, stale-hint fallback, lease acquire/drop, and retirement progress
+on eager-inline and Linux io_uring.
+
+The binding R7 measurements selected this public API and retained the current
+four-round page hash. Exact identities, confidence bounds, proof counts, and
+artifacts are recorded in the
+[R7 gate results](scopes/active/dios-r1-r7-read-performance/resources/gate-results.yaml).
+
 ## Development
 
 ```sh

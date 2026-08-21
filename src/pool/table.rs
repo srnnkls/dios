@@ -286,7 +286,7 @@ fn fills_gap(home: u32, gap: u32, scan: u32, mask: u32) -> bool {
     home_from_gap == 0 || home_from_gap > scan_from_gap
 }
 
-fn page_hash(page: PageId) -> u64 {
+pub(crate) fn page_hash(page: PageId) -> u64 {
     let file: FileId = page.file();
     let mut hash = 0u64;
     hash = mix(hash ^ file.driver());

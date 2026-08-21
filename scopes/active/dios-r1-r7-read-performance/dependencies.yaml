@@ -1,0 +1,78 @@
+scope: dios-r1-r7-read-performance
+version: 1
+
+batches:
+  - id: B1
+    name: preregistration-and-provenance
+    tasks: [DRP001, DRP002]
+  - id: B2
+    name: red-contract
+    tasks: [DRP003]
+  - id: B3
+    name: ordinary-read-protocol
+    tasks: [DRP004]
+  - id: B4
+    name: independent-product-decisions
+    tasks: [DRP005, DRP006]
+  - id: B5
+    name: hinted-access-and-proofs
+    tasks: [DRP007]
+  - id: B6
+    name: verification
+    tasks: [DRP008]
+  - id: B7
+    name: binding-performance
+    tasks: [DRP009]
+  - id: B8
+    name: cross-repository-closeout
+    tasks: [DRP010]
+
+edges:
+  - from: DRP001
+    to: DRP003
+  - from: DRP002
+    to: DRP003
+  - from: DRP003
+    to: DRP004
+  - from: DRP004
+    to: DRP005
+  - from: DRP004
+    to: DRP006
+  - from: DRP006
+    to: DRP007
+  - from: DRP005
+    to: DRP008
+  - from: DRP007
+    to: DRP008
+  - from: DRP008
+    to: DRP009
+  - from: DRP009
+    to: DRP010
+
+external_dependencies:
+  - scope: sira-aligned-buffers
+    repository: /Users/srnnkls/projects/sira
+    provisional_name: false
+    relationship: bidirectional-contract-handoff
+    handoff_after: DRP009
+    blocks: [DRP010]
+    required_endpoint: SAB008
+    does_not_block: [DRP001, DRP002, DRP003, DRP004, DRP005, DRP006, DRP007, DRP008, DRP009]
+    provides: >-
+      Sira-owned native-locator integration and end-to-end R1-R7 REMIX gate
+      result against the pinned Dios commit.
+    consumes: >-
+      The DRP009 branch: either reviewed production ResidentFileLease/
+      ResidentHint with mandatory ordinary-get fallback, or explicit hint-gate
+      rejection selecting ordinary guarded get, plus Dios gate identities.
+    ownership_rule: >-
+      Dios tasks may read the companion status for closeout but must not create
+      or modify any file in the Sira repository.
+
+downstream_serialization:
+  - scope: pinned-frame-retention
+    after: DRP010
+    reason: >-
+      R8 behavior is excluded, but both scopes own the frame-state/reclaim
+      files. Retention must rebase and re-review its HELD encoding after the
+      complete DRP010 branch rather than editing the same baseline concurrently.

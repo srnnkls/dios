@@ -1,0 +1,230 @@
+scope: dios-r1-r7-read-performance
+revision: 3
+created: 2026-08-19
+issue_type: Feature
+validation_depth: standard
+questions_used: 0
+questions_limit: 5
+approach: >-
+  Isolate byte-bound R7 evidence, adopt independently sound ordinary-get
+  changes, decide the hash through pre-registered gates, and translate the
+  compact lease/hint behavior to the generic production Pool with mandatory
+  ordinary-get fallback.
+
+ambiguity_scan:
+  scope:
+    status: clear
+    gaps: []
+    source: user fixed Dios-only R1-R7 and explicitly excluded R8 retention
+  behavior:
+    status: clear
+    gaps: []
+    source: scope.md Requirements and API contract
+  data_model:
+    status: clear
+    gaps: []
+    source: design.md packed frame word, liveness word, lease, and hint
+  constraints:
+    status: clear
+    gaps: []
+    source: AGENTS.md plus scope.md Safety and performance gates
+  edge_cases:
+    status: clear
+    gaps: []
+    source: scope.md Acceptance and design.md Verification model
+  integration:
+    status: clear
+    gaps: []
+    source: Sira SAB008 closeout dependency plus downstream retention serialization
+  terminology:
+    status: clear
+    gaps: []
+    source: scope.md distinguishes stable PageId, volatile ResidentHint, and R8 retention
+
+taxonomy_coverage:
+  scope:
+    status: covered
+    source: scope.md Goal, Requirements, and Non-goals
+  behavior:
+    status: covered
+    source: scope.md API contract and Acceptance criteria
+  data_model:
+    status: covered
+    source: design.md Selected architecture
+  constraints:
+    status: covered
+    source: scope.md Safety and Performance plan
+  edge_cases:
+    status: covered
+    source: design.md Invariants and Verification model
+  integration:
+    status: covered
+    source: dependencies.yaml external_dependencies
+  terminology:
+    status: covered
+    source: design.md File lease, Packed residency word, and Hinted get
+
+clarification_log:
+  - id: C001
+    area: scope
+    question: Which experimental revisions belong to this scope?
+    answer: R1-R7 Dios read-path work only; R8 retention is a hard non-goal.
+    integration: scope.md Goal and Non-goals
+  - id: C002
+    area: integration
+    question: Who owns the REMIX consumer and end-to-end result?
+    answer: >-
+      Companion Sira scope sira-aligned-buffers; this scope owns no
+      Sira file and waits on it only for DRP010 closeout.
+    integration: dependencies.yaml external_dependencies
+  - id: C003
+    area: behavior
+    question: What happens when a hint is absent, mismatched, or stale?
+    answer: get_with_hint aborts an uncommitted first pin and executes ordinary Pool::get.
+    integration: scope.md API contract and design.md Hinted get and fallback
+  - id: C004
+    area: constraints
+    question: Can MockDriver close production or performance gates?
+    answer: No; it is limited to deterministic correctness and fault support.
+    integration: scope.md Performance plan and Non-goals
+  - id: C005
+    area: design
+    question: Is the cheaper hash predetermined?
+    answer: >-
+      No. Only the full-width candidate is admissible, and the current hash is
+      retained unless both distribution and real-backend speed gates pass.
+    integration: scope.md DRP-G1 and design.md Hash decision
+  - id: C006
+    area: safety
+    question: How is a compact hint bound to an exact file/page and pool?
+    answer: >-
+      The hint stays 16 bytes and advisory. After epoch publication and exact
+      stamp validation, the target frame's preallocated full PageId metadata is
+      read under EBR and compared with the supplied PageId; mismatch falls back.
+    integration: scope.md R7 product capability and design.md Hinted get
+  - id: C007
+    area: data_model
+    question: May ResidentFileLease borrow Pool?
+    answer: >-
+      No. It is an owned, non-Clone capability over a preallocated Arc lease
+      state so pool-first drop is safe and acquisition allocates zero times.
+    integration: scope.md API contract and design.md File lease
+
+context_sources:
+  - AGENTS.md
+  - scopes/draft/read-protocol-atomic/scope.md
+  - scopes/draft/read-protocol-atomic/resources/probe_sim_results.txt
+  - scopes/active/dios-v1/resources/remix-dios-native-experiment.md
+  - scopes/draft/plan-prefetch/resources/warm-protocol-audit.md
+  - .worktrees/experiment-read-protocol-tightened
+  - .worktrees/experiment-sira-point-proof
+  - scopes/draft/dios-r1-r7-read-performance/resources/r7-source.diff
+  - scopes/draft/dios-r1-r7-read-performance/resources/sira_native_hint.md
+  - scopes/draft/dios-r1-r7-read-performance/resources/evidence.md
+
+source_integrity:
+  base_commit: 1004a2e6fcae0bcc9552dc3211c2416e388a250d
+  r7_carrier:
+    path: scopes/draft/dios-r1-r7-read-performance/resources/r7-source.diff
+    sha256: 16748dd827b1958b6889535f7244fb8ffe767dac674d587f9fee18738be4a967
+    interpretation: base-to-R7 source carrier only; no R8 adoption authority
+  r7_plan_snapshot:
+    path: scopes/draft/dios-r1-r7-read-performance/resources/sira_native_hint.md
+    bytes: 3907
+    sha256: 337ecf1aafdbded58c38cca5efdf62056e139e2521744d305b43b962ebd62ecf
+  reconstructed_hashes_verified_during_scope_creation: true
+  contaminated_live_files:
+    - .worktrees/experiment-sira-point-proof/src/lib.rs
+    - .worktrees/experiment-sira-point-proof/src/pool/mod.rs
+  forbidden_product_symbols:
+    - ResidentSet
+    - ResidentSetLease
+    - ResidentSetError
+    - retention_counts
+    - resident_set
+
+design_context:
+  design_opted_in: true
+  alternatives_described: true
+  alternative_descriptions:
+    - direct point-proof worktree copy
+    - packed one-round hash
+    - simulation-only hash adoption
+    - dense always-present hint
+    - epoch-fence weakening
+    - stable frame identity in REMIX
+    - R8 retention
+    - MockDriver product proof
+
+complexity_tracking:
+  - addition: full-generation file liveness mirror
+    justification: removes measured warm-path mutex serialization while retaining authoritative locked recheck
+    simpler_alternative_rejected: keep AD-4 on every get; contradicted by warm and contention evidence
+  - addition: packed frame state and residency generation
+    justification: prevents hinted ABA through frame reuse without a second transition atomic
+    simpler_alternative_rejected: separate R7 mock-only stamp array; violates unused-capability overhead goal
+  - addition: file lease capability
+    justification: amortizes exact file-generation liveness outside the per-value loop
+    simpler_alternative_rejected: per-get liveness remains the ordinary fallback but did not meet R7 materiality target
+  - addition: exact PageId metadata per frame
+    justification: a compact granule/frame/stamp hint otherwise admits same-granule file or pool aliasing
+    simpler_alternative_rejected: widening every hint duplicates stable identity in the high-cardinality Sira descriptor and loses the measured compact shape
+
+gates:
+  simplicity:
+    status: n/a
+    reason: Feature issue type; alternatives and one-candidate limits are recorded in design.md.
+  anti_abstraction:
+    status: n/a
+    reason: Feature issue type; the product reuses Get and FrameGuard rather than adding a parallel read ADT.
+  integration_first:
+    status: n/a
+    reason: Feature issue type; cross-repository closeout is explicit and does not transfer file ownership.
+
+readiness:
+  high_priority_areas_covered: true
+  success_criteria_measurable: true
+  scope_boundaries_clear: true
+  integration_points_identified: true
+  edge_cases_addressed: true
+  implementation_authorized: true
+
+loqui_check:
+  present: false
+  language: rust
+  status: pending_implementation
+  violations: []
+  adherence_notes: >-
+    No Rust implementation is part of scope creation. Tasks require edition
+    2024 style, strict clippy, crate::sync proof atomics, bounded control flow,
+    and the repository's existing API conventions.
+
+review_config:
+  reasoning_effort: inherit
+  reviewers:
+    - alias: codex-native
+      class: host-native
+      effort: inherit
+
+review_gate:
+  status: passed
+  reviewers: [codex-native, cross-scope-review, drp_scope_metadata_review]
+  reviewed_at: 2026-08-21
+  blocking_resolved: 14
+  reviewed_revision: 3
+  deferred_nits: []
+  reason: >-
+    Revision 2 passed the mandatory scope and cross-scope reviews. The owner
+    authorized execution on 2026-08-20. Revision 3 retargets only the read-only
+    external handoff to the active SAB008 endpoint; its metadata findings were
+    resolved without changing the reviewed product architecture.
+
+deferred:
+  - area: design
+    item: full-width hash selected or current hash retained
+    resolution_rule: DRP-G1 decides from frozen gates; either outcome is valid
+
+notes: >-
+  The tracked R7 carrier is byte-identical to the historical R8-directory
+  artifact, but no external artifact path is needed for reconstruction. No R8
+  retention design, result, or product claim is imported.

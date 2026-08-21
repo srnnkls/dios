@@ -11,7 +11,9 @@
 )]
 
 use std::any::TypeId;
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 
 use dios::driver::{
     Completion, CompletionBatch, Driver, FileHandle, OpKind, OpToken, SubmitError, WriteArena,
@@ -27,6 +29,59 @@ use dios::{
 };
 
 const GRANULE: u32 = 4096;
+
+fn compile_api_probe(name: &str, source: &str) -> Output {
+    let probe = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    fs::create_dir_all(probe.join("src")).expect("create the isolated API probe");
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    fs::write(
+        probe.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"dios-{name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\ndios = {{ path = \"{manifest_dir}\" }}\n"
+        ),
+    )
+    .expect("write the API probe manifest");
+    fs::write(probe.join("src/lib.rs"), source).expect("write the API probe source");
+
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    Command::new(cargo)
+        .args(["check", "--offline", "--quiet"])
+        .current_dir(&probe)
+        .env(
+            "CARGO_TARGET_DIR",
+            PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("public-api-probe-target"),
+        )
+        .output()
+        .expect("run the isolated API probe")
+}
+
+fn assert_resident_file_lease_not_clone() {
+    let output = compile_api_probe(
+        "resident-file-lease-not-clone",
+        r"
+use dios::ResidentFileLease;
+
+fn assert_clone<T: Clone>() {}
+
+fn resident_file_lease_is_clone() {
+    assert_clone::<ResidentFileLease>();
+}
+",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "ResidentFileLease must not be Clone"
+    );
+    assert!(
+        !stderr.contains("E0432") && !stderr.contains("unresolved import"),
+        "non-Clone probe failed before resolving ResidentFileLease:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("ResidentFileLease: Clone") && stderr.contains("is not satisfied"),
+        "non-Clone probe failed for an unexpected reason:\n{stderr}"
+    );
+}
 
 fn configured_pool() -> Result<Pool, PoolBuildError> {
     Pool::builder()
@@ -143,6 +198,65 @@ fn inspect_pool_submit_error(error: &PoolSubmitError) {
 }
 
 fn assert_clone_send_sync<T: Clone + Send + Sync>() {}
+
+#[test]
+fn resident_hint_callable_scaffold_is_root_exported() {
+    let output = compile_api_probe(
+        "resident-hint-callable-scaffold",
+        r"
+use std::mem::size_of;
+
+use dios::driver::Driver;
+use dios::{
+    FileId, Get, GetError, PageId, Pool, ReaderCtx, ResidentFileLease, ResidentHint,
+    ResidentLeaseError,
+};
+
+const _: [(); 16] = [(); size_of::<ResidentHint>()];
+const _: [(); 16] = [(); size_of::<Option<ResidentHint>>()];
+
+fn assert_hint_traits<T: std::fmt::Debug + Clone + Copy + PartialEq + Eq>() {}
+fn assert_error_traits<T: std::fmt::Debug + Clone + Copy + PartialEq + Eq>() {}
+
+fn inspect_lease_error(error: ResidentLeaseError) -> FileId {
+    match error {
+        ResidentLeaseError::StaleFile { file } => {
+            let file: FileId = file;
+            file
+        }
+        ResidentLeaseError::Exhausted { file } => {
+            let file: FileId = file;
+            file
+        }
+    }
+}
+
+fn pin_callable_scaffold() {
+    type D = Driver;
+    let lease_file: fn(&Pool<D>, FileId) -> Result<ResidentFileLease, ResidentLeaseError> =
+        Pool::<D>::lease_file;
+    let resident_hint: fn(&Pool<D>, &ResidentFileLease, PageId) -> Option<ResidentHint> =
+        Pool::<D>::resident_hint;
+    let get_with_hint: for<'pool> fn(
+        &'pool Pool<D>,
+        &'pool ReaderCtx,
+        &ResidentFileLease,
+        PageId,
+        Option<ResidentHint>,
+    ) -> Result<Get<'pool>, GetError> = Pool::<D>::get_with_hint;
+    assert_hint_traits::<ResidentHint>();
+    assert_error_traits::<ResidentLeaseError>();
+    std::hint::black_box((lease_file, resident_hint, get_with_hint, inspect_lease_error));
+}
+",
+    );
+    assert!(
+        output.status.success(),
+        "resident callable scaffold probe failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_resident_file_lease_not_clone();
+}
 
 #[test]
 fn product_tokens_batches_and_slots_are_not_advanced_driver_types() {

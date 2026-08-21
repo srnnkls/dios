@@ -1,0 +1,15 @@
+version: 1
+epoch:
+  id: 20260820T115308Z-c2716c
+  started_at: 2026-08-20T11:53:08Z
+  updated_at: 2026-08-20T11:53:08Z
+routing:
+  tester:
+    agent: codex-native
+    effort: inherit
+  implementer:
+    agent: codex-native
+    effort: inherit
+  reviewer:
+    agents: [codex-native]
+    effort: inherit

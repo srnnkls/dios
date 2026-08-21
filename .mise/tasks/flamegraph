@@ -15,13 +15,28 @@ usage() {
 build_args=()
 run_args=()
 seen_separator=0
+original_cwd=$PWD
+build_cwd=$original_cwd
+manifest_path_next=0
 for arg in "$@"; do
   if [ "$seen_separator" = 1 ]; then
     run_args+=("$arg")
+  elif [ "$manifest_path_next" = 1 ]; then
+    if [[ "$arg" = /* ]]; then
+      manifest_path="$arg"
+    else
+      manifest_path="$original_cwd/$arg"
+    fi
+    build_cwd=$(cd -- "$(dirname -- "$manifest_path")" && pwd -P)
+    build_args+=("$build_cwd/$(basename -- "$manifest_path")")
+    manifest_path_next=0
   elif [ "$arg" = "--" ]; then
     seen_separator=1
   else
     build_args+=("$arg")
+    if [ "$arg" = "--manifest-path" ]; then
+      manifest_path_next=1
+    fi
   fi
 done
 
@@ -29,21 +44,26 @@ out_dir="target/flamegraph"
 mkdir -p "$out_dir"
 
 binary=$(
-  cargo build --profile profiling --features bench --message-format=json "${build_args[@]}" |
+  (cd "$build_cwd" && cargo build --profile profiling --features bench --message-format=json "${build_args[@]}") |
     jq -r 'select(.reason == "compiler-artifact") | select(.executable != null) | .executable' |
     tail -1
 )
 [ -n "$binary" ] || { echo "no executable produced for: ${build_args[*]}"; exit 1; }
 
+run_command=("$binary")
+if [ "${#run_args[@]}" -gt 0 ]; then
+  run_command+=("${run_args[@]}")
+fi
+
 if [ "$(uname)" = "Darwin" ]; then
-  "$binary" "${run_args[@]}" &
+  "${run_command[@]}" &
   target_pid=$!
   /usr/bin/sample "$target_pid" 3600 1 -mayDie -f "$out_dir/sample.txt" >/dev/null
   wait "$target_pid"
   inferno-collapse-sample "$out_dir/sample.txt" | rustfilt >"$out_dir/profile.folded"
 else
-  perf record -o "$out_dir/perf.data" --call-graph dwarf,16384 \
-    -- "$binary" "${run_args[@]}"
+  perf record -o "$out_dir/perf.data" --call-graph dwarf,16384 -m 16 \
+    -- "${run_command[@]}"
   perf script -i "$out_dir/perf.data" | inferno-collapse-perf >"$out_dir/profile.folded"
 fi
 

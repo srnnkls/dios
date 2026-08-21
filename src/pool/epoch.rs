@@ -26,6 +26,7 @@ pub(crate) const QUIESCENT: u64 = u64::MAX;
 /// carry those values across the shared slot table without a warm-path RMW (a
 /// nested pin and a guard drop each do a plain load then store, never a
 /// read-modify-write). The poll thread only ever reads `local_epoch`.
+#[repr(align(64))]
 #[derive(Debug)]
 pub(crate) struct ReaderSlot {
     occupied: AtomicBool,
@@ -236,6 +237,11 @@ impl EvictQueue {
             "evict tags enqueue in non-decreasing epoch order, so the front matures first"
         );
         self.entries.push_back((frame, tagged_epoch));
+    }
+
+    #[cfg(feature = "bench")]
+    pub(crate) fn oldest_tagged_epoch(&self) -> Option<u64> {
+        self.entries.front().map(|entry| entry.1)
     }
 
     /// Reclaims every frame that has aged two full epochs, running `reclaim` for

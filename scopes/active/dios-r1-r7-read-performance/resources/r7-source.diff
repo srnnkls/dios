@@ -1,0 +1,467 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index d50feb1..8fe886a 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -43,6 +43,8 @@ pub mod testing {
+     use std::sync::atomic::Ordering;
+ 
+     pub use crate::pool::ReadFrameIdx;
++    #[cfg(feature = "mock")]
++    pub use crate::pool::{ResidentFileLease, ResidentHint};
+ 
+     /// Feature-gated raw-read admission for backend tests and driver benches.
+     pub trait DriverReadTestingExt {
+@@ -227,6 +229,59 @@ pub mod testing {
+         }
+     }
+ 
++    /// Experimental native-residency hint surface. Product exposure remains
++    /// blocked on the active scope's retirement and reuse Loom gates.
++    #[cfg(feature = "mock")]
++    pub trait ResidentHintTestingExt {
++        /// Acquires a coarse lease for one live file.
++        ///
++        /// # Errors
++        ///
++        /// Returns [`crate::pool::GetError::StaleFile`] when `file` is stale or not live.
++        fn lease_file(
++            &self,
++            file: crate::driver::FileId,
++        ) -> Result<ResidentFileLease, crate::pool::GetError>;
++        fn resident_hint(
++            &self,
++            lease: &ResidentFileLease,
++            page: crate::pool::PageId,
++        ) -> Option<ResidentHint>;
++        fn pin_resident_hint<'ctx>(
++            &'ctx self,
++            reader: &'ctx crate::pool::ReaderCtx,
++            lease: &'ctx ResidentFileLease,
++            hint: ResidentHint,
++        ) -> Option<crate::pool::FrameGuard<'ctx>>;
++    }
++
++    #[cfg(feature = "mock")]
++    impl ResidentHintTestingExt for crate::pool::Pool<MockDriver> {
++        fn lease_file(
++            &self,
++            file: crate::driver::FileId,
++        ) -> Result<ResidentFileLease, crate::pool::GetError> {
++            self.lease_file_internal(file)
++        }
++
++        fn resident_hint(
++            &self,
++            lease: &ResidentFileLease,
++            page: crate::pool::PageId,
++        ) -> Option<ResidentHint> {
++            self.resident_hint_internal(lease, page)
++        }
++
++        fn pin_resident_hint<'ctx>(
++            &'ctx self,
++            reader: &'ctx crate::pool::ReaderCtx,
++            lease: &'ctx ResidentFileLease,
++            hint: ResidentHint,
++        ) -> Option<crate::pool::FrameGuard<'ctx>> {
++            self.pin_resident_hint_internal(reader, lease, hint)
++        }
++    }
++
+     /// Exact Arc-backed product lifecycle observation.
+     #[cfg(feature = "mock")]
+     #[derive(Debug)]
+diff --git a/src/mock.rs b/src/mock.rs
+index cbec1ac..a582480 100644
+--- a/src/mock.rs
++++ b/src/mock.rs
+@@ -419,6 +419,13 @@ impl MockDriver {
+         self.0.executor().seed(fd.file_id(), granule_idx, fill);
+     }
+ 
++    /// Seeds one simulated page with its exact frame bytes.
++    pub fn seed_page_bytes(&self, fd: &FileHandle, granule_idx: u32, bytes: &[u8]) {
++        self.0
++            .executor()
++            .seed_bytes(fd.file_id(), granule_idx, bytes);
++    }
++
+     /// The reads the composed pool issued against this mock, in submission order.
+     #[must_use]
+     pub fn read_attempts_in_order(&self) -> Vec<ReadAttempt> {
+@@ -546,13 +553,19 @@ struct MockExecutor {
+ #[derive(Debug)]
+ struct MockState {
+     injected: VecDeque<Injected>,
+-    seeds: HashMap<(FileId, u32), u8>,
++    seeds: HashMap<(FileId, u32), MockPageSeed>,
+     io_events: Vec<MockIoEvent>,
+     stored: HashMap<FileId, Vec<u8>>,
+     event_capacity: usize,
+     rng: u64,
+ }
+ 
++#[derive(Debug)]
++enum MockPageSeed {
++    Fill(u8),
++    Bytes(Box<[u8]>),
++}
++
+ impl MockExecutor {
+     fn new(
+         seed: u64,
+@@ -601,7 +614,21 @@ impl MockExecutor {
+     }
+ 
+     fn seed(&self, file_id: FileId, granule_idx: u32, fill: u8) {
+-        self.lock().seeds.insert((file_id, granule_idx), fill);
++        self.lock()
++            .seeds
++            .insert((file_id, granule_idx), MockPageSeed::Fill(fill));
++    }
++
++    fn seed_bytes(&self, file_id: FileId, granule_idx: u32, bytes: &[u8]) {
++        assert_eq!(
++            bytes.len(),
++            self.frame_bytes as usize,
++            "mock page bytes match the configured frame length"
++        );
++        self.lock().seeds.insert(
++            (file_id, granule_idx),
++            MockPageSeed::Bytes(bytes.to_vec().into_boxed_slice()),
++        );
+     }
+ 
+     fn attempts(&self) -> Vec<ReadAttempt> {
+@@ -686,18 +713,31 @@ impl MockExecutor {
+         let _ = self.arena.set(arena);
+     }
+ 
+-    /// Fills the destination pool frame with the seeded byte for a clean read,
+-    /// modelling the disk transferring the granule's contents into the buffer.
+-    fn fill_read(&self, context: &OpContext<'_>) {
++    /// Copies the seeded source range for a completed clean or partial read.
++    fn fill_read(&self, context: &OpContext<'_>, bytes: u32) {
+         let granule_idx = u32::try_from(context.file_offset / u64::from(self.frame_bytes))
+             .expect("granule index fits u32");
+-        let fill = self.lock().seeds.get(&(context.fd, granule_idx)).copied();
+-        if let (Some(arena), Some(fill)) = (self.arena.get(), fill) {
++        let source_offset = usize::try_from(context.file_offset % u64::from(self.frame_bytes))
++            .expect("an offset within one frame fits usize");
++        let source_end = source_offset
++            .checked_add(bytes as usize)
++            .expect("a mock read source range does not overflow");
++        assert!(source_end <= self.frame_bytes as usize);
++        let state = self.lock();
++        if let (Some(arena), Some(seed)) = (
++            self.arena.get(),
++            state.seeds.get(&(context.fd, granule_idx)),
++        ) {
+             arena.with_transfer_range_mut(
+                 context.frame,
+                 context.destination_offset,
+-                context.requested_len,
+-                |destination| destination.fill(fill),
++                bytes,
++                |destination| match seed {
++                    MockPageSeed::Fill(fill) => destination.fill(*fill),
++                    MockPageSeed::Bytes(source) => {
++                        destination.copy_from_slice(&source[source_offset..source_end]);
++                    }
++                },
+             );
+         }
+     }
+@@ -750,17 +790,15 @@ impl EagerExecutor for MockExecutor {
+             state.injected.pop_front()
+         };
+         let attempt = match injected {
+-            None => {
+-                if matches!(kind, OpKind::Read) {
+-                    self.fill_read(&context);
+-                }
+-                Attempt::Done(clean_bytes)
+-            }
++            None => Attempt::Done(clean_bytes),
+             Some(Injected::Io(errno)) => Attempt::Failed(errno),
+             Some(Injected::Short(bytes)) => Attempt::Done(bytes),
+             Some(Injected::Eintr) => Attempt::Interrupted,
+             Some(Injected::Eagain) => Attempt::WouldBlock,
+         };
++        if let (OpKind::Read, Attempt::Done(bytes)) = (kind, attempt) {
++            self.fill_read(&context, bytes);
++        }
+         if let (OpKind::Write, Attempt::Done(bytes)) = (kind, attempt) {
+             let mut state = self.lock();
+             let capacity = state
+diff --git a/src/pool/frames.rs b/src/pool/frames.rs
+index cc72700..c4d7720 100644
+--- a/src/pool/frames.rs
++++ b/src/pool/frames.rs
+@@ -8,6 +8,8 @@ use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
+ use std::ptr::NonNull;
+ 
+ use crate::pool::SECTOR_BYTES;
++#[cfg(feature = "mock")]
++use crate::sync::AtomicU64;
+ use crate::sync::{AtomicU8, Ordering};
+ 
+ #[cfg(all(test, target_os = "linux"))]
+@@ -110,6 +112,8 @@ pub(crate) struct Frames {
+     base: NonNull<u8>,
+     layout: Layout,
+     states: Box<[AtomicU8]>,
++    #[cfg(feature = "mock")]
++    residency_stamps: Box<[AtomicU64]>,
+     count: u32,
+     granule: u32,
+ }
+@@ -161,6 +165,10 @@ impl Frames {
+             states: (0..count)
+                 .map(|_| AtomicU8::new(FrameState::Free.to_tag()))
+                 .collect(),
++            #[cfg(feature = "mock")]
++            residency_stamps: (0..count)
++                .map(|_| AtomicU64::new(u64::from(FrameState::Free.to_tag())))
++                .collect(),
+             count,
+             granule,
+         }
+@@ -274,7 +282,48 @@ impl Frames {
+     pub(crate) fn advance(&self, frame: ReadFrameIdx, to: FrameState) {
+         let index = self.checked_index(frame);
+         let current = FrameState::from_tag(self.states[index].load(Ordering::Relaxed));
+-        self.states[index].store(current.advance(to).to_tag(), Ordering::Relaxed);
++        let next = current.advance(to);
++        #[cfg(feature = "mock")]
++        if next != FrameState::Resident {
++            self.advance_residency_stamp(index, current, next);
++        }
++        self.states[index].store(next.to_tag(), Ordering::Relaxed);
++        #[cfg(feature = "mock")]
++        if next == FrameState::Resident {
++            self.advance_residency_stamp(index, current, next);
++        }
++    }
++
++    #[cfg(feature = "mock")]
++    fn advance_residency_stamp(&self, index: usize, from: FrameState, to: FrameState) {
++        let previous = self.residency_stamps[index].load(Ordering::Acquire);
++        assert_eq!(
++            FrameState::from_tag((previous & 0b11) as u8),
++            from,
++            "the hint stamp follows the frame residency state"
++        );
++        let generation = previous >> 2;
++        let generation = if to == FrameState::Resident {
++            generation
++                .checked_add(1)
++                .expect("frame residency generation exhausted before ABA")
++        } else {
++            generation
++        };
++        let next = (generation << 2) | u64::from(to.to_tag());
++        self.residency_stamps[index].store(next, Ordering::Release);
++    }
++
++    #[cfg(feature = "mock")]
++    pub(crate) fn resident_stamp(&self, frame: ReadFrameIdx) -> Option<u64> {
++        let stamp = self.residency_stamps[self.checked_index(frame)].load(Ordering::Acquire);
++        (stamp & 0b11 == u64::from(FrameState::Resident.to_tag())).then_some(stamp)
++    }
++
++    #[cfg(feature = "mock")]
++    pub(crate) fn resident_stamp_matches(&self, frame: ReadFrameIdx, expected: u64) -> bool {
++        let stamp = self.residency_stamps[self.checked_index(frame)].load(Ordering::Acquire);
++        stamp == expected && stamp & 0b11 == u64::from(FrameState::Resident.to_tag())
+     }
+ 
+     /// Fills `frame`'s whole granule with `byte`, standing in for a read
+diff --git a/src/pool/mod.rs b/src/pool/mod.rs
+index 644e0bf..cb57639 100644
+--- a/src/pool/mod.rs
++++ b/src/pool/mod.rs
+@@ -22,6 +22,8 @@ use crate::product::{
+     LifecycleCounters, PollReport, PoolCompletion, PoolCompletionBatch, PoolSubmitError, PoolToken,
+     PoolWakeHandle, PoolWriteArena, PoolWriteSlot, RetireStatus, WaitState,
+ };
++#[cfg(feature = "mock")]
++use crate::sync::AtomicU32;
+ use crate::sync::{AtomicU64, Mutex, MutexGuard, Ordering};
+ 
+ #[cfg(test)]
+@@ -120,6 +122,47 @@ impl std::fmt::Display for GetError {
+ 
+ impl std::error::Error for GetError {}
+ 
++/// Experimental coarse file-liveness capability used by the native-hint bench.
++/// It is deliberately available only with the deterministic backend feature;
++/// the active scope's Loom gates block product adoption.
++#[cfg(feature = "mock")]
++#[derive(Debug)]
++pub struct ResidentFileLease {
++    pool_identity: u64,
++    file: FileId,
++    count: Arc<AtomicU32>,
++}
++
++#[cfg(feature = "mock")]
++impl Drop for ResidentFileLease {
++    fn drop(&mut self) {
++        let previous = self.count.fetch_sub(1, Ordering::AcqRel);
++        assert!(
++            previous > 0,
++            "a resident file lease was previously acquired"
++        );
++    }
++}
++
++/// Opaque, volatile frame-location observation. The stable page identity remains
++/// external; every pin revalidates this pool-minted residency stamp.
++#[cfg(feature = "mock")]
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct ResidentHint {
++    granule_idx: u32,
++    frame: ReadFrameIdx,
++    stamp: NonZeroU64,
++}
++
++#[cfg(feature = "mock")]
++impl ResidentHint {
++    /// Returns the stable granule ordinal this volatile observation was minted for.
++    #[must_use]
++    pub fn granule_idx(self) -> u32 {
++        self.granule_idx
++    }
++}
++
+ /// Re-check outcome of a pending miss: `NotYet` hands the token back for a
+ /// non-consuming poll-again; `Err` frees the frame and surfaces the failure.
+ #[derive(Debug)]
+@@ -559,6 +602,8 @@ struct PoolFile {
+     id: FileId,
+     handle: Option<FileHandle>,
+     state: PoolFileState,
++    #[cfg(feature = "mock")]
++    resident_leases: Arc<AtomicU32>,
+ }
+ 
+ #[derive(Debug)]
+@@ -775,6 +820,8 @@ impl<D: PoolBackend> Pool<D> {
+             id,
+             handle: Some(fd),
+             state: PoolFileState::Live,
++            #[cfg(feature = "mock")]
++            resident_leases: Arc::new(AtomicU32::new(0)),
+         });
+     }
+ 
+@@ -1182,6 +1229,13 @@ impl<D: PoolBackend> Pool<D> {
+             else {
+                 continue;
+             };
++            #[cfg(feature = "mock")]
++            if control.files[index]
++                .as_ref()
++                .is_some_and(|entry| entry.resident_leases.load(Ordering::Acquire) > 0)
++            {
++                continue;
++            }
+             self.retire_file_frames(control, file);
+             let miss_live = control.miss.has_live_for_file(file, &self.miss_interests);
+             let frames_live = control.frame_pages.iter().enumerate().any(|(frame, page)| {
+@@ -1247,6 +1301,94 @@ impl<D: PoolBackend> Pool<D> {
+         reclaimed
+     }
+ 
++    #[cfg(feature = "mock")]
++    pub(crate) fn lease_file_internal(&self, file: FileId) -> Result<ResidentFileLease, GetError> {
++        assert_eq!(
++            file.driver(),
++            self.identity,
++            "file identity used with a foreign pool"
++        );
++        let control = self.control();
++        let Some(entry) = control.files[file.slot() as usize].as_ref() else {
++            return Err(GetError::StaleFile {
++                page: PageId::new(file, 0),
++            });
++        };
++        if entry.id != file || entry.state != PoolFileState::Live {
++            return Err(GetError::StaleFile {
++                page: PageId::new(file, 0),
++            });
++        }
++        let previous = entry.resident_leases.fetch_add(1, Ordering::AcqRel);
++        assert!(previous < u32::MAX, "resident file lease count within u32");
++        Ok(ResidentFileLease {
++            pool_identity: self.identity,
++            file,
++            count: Arc::clone(&entry.resident_leases),
++        })
++    }
++
++    #[cfg(feature = "mock")]
++    pub(crate) fn resident_hint_internal(
++        &self,
++        lease: &ResidentFileLease,
++        page: PageId,
++    ) -> Option<ResidentHint> {
++        self.assert_lease_page(lease, page);
++        let frame = self.table.lookup(page)?;
++        let stamp = NonZeroU64::new(self.frames.resident_stamp(frame)?)?;
++        Some(ResidentHint {
++            granule_idx: page.granule_idx(),
++            frame,
++            stamp,
++        })
++    }
++
++    #[cfg(feature = "mock")]
++    pub(crate) fn pin_resident_hint_internal<'ctx>(
++        &'ctx self,
++        reader: &'ctx ReaderCtx,
++        lease: &'ctx ResidentFileLease,
++        hint: ResidentHint,
++    ) -> Option<FrameGuard<'ctx>> {
++        self.assert_reader_owner(reader);
++        assert_eq!(
++            lease.pool_identity, self.identity,
++            "a resident file lease cannot cross pool identity"
++        );
++        let slot = reader.slot();
++        let first_guard = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
++        if !self
++            .frames
++            .resident_stamp_matches(hint.frame, hint.stamp.get())
++        {
++            if first_guard {
++                slot.abort_pin();
++            }
++            return None;
++        }
++        let _ = self.clock.reference(hint.frame);
++        slot.commit_pin();
++        Some(FrameGuard::new(self.frames.frame_bytes(hint.frame), slot))
++    }
++
++    #[cfg(feature = "mock")]
++    fn assert_lease_page(&self, lease: &ResidentFileLease, page: PageId) {
++        assert_eq!(
++            lease.pool_identity, self.identity,
++            "a resident file lease cannot cross pool identity"
++        );
++        assert_eq!(
++            lease.file,
++            page.file(),
++            "a resident file lease is file-typed"
++        );
++        assert!(
++            lease.count.load(Ordering::Acquire) > 0,
++            "a borrowed resident file lease remains live"
++        );
++    }
++
+     /// The residency state of `frame` — an observation seam for the epoch tests.
+     #[must_use]
+     pub(crate) fn frame_state_internal(&self, frame: ReadFrameIdx) -> FrameState {
