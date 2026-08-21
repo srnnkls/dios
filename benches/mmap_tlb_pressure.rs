@@ -28,7 +28,11 @@ const REPS: u32 = 40;
 const ITERS_PER_REP: u32 = 256;
 const BOOTSTRAP_RESAMPLES: u32 = 10_000;
 const RESIDENCY_RATIO_MAX: f64 = 3.0;
-const QUEUE_CAPACITY: u32 = 8;
+// The mock's event-recorder bound is queue_capacity × 16 and the warmup
+// records two events per resident page, so the queue must be at least
+// RESIDENT_PAGES / 8; /2 leaves margin. Warm hits never touch the driver,
+// so the measured path is unaffected.
+const QUEUE_CAPACITY: u32 = RESIDENT_PAGES / 2;
 const MAX_INFLIGHT: u32 = 1;
 const MISS_HEADROOM: u32 = 3;
 const READY_POLLS_MAX: u32 = 64;

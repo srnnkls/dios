@@ -46,3 +46,86 @@ config arithmetic stay within their `u32` bounds — the arena span 65,536 × 40
 256 MiB is well under `isize::MAX`). If any `u32`/capacity limit bites at 65,536,
 that is reported as a FINDING rather than shrunk silently; the stated acceptable
 fallback is 32,768 pages (128 MiB), still far above the TLB reach.
+
+## Runs (2026-08-18, first completed runs)
+
+As authored the bench could not complete: `QUEUE_CAPACITY = 8` sized the
+mock event recorder (bound = queue × 16 = 128) below the warmup's
+131,072 events; fixed to `RESIDENT_PAGES / 2` — warm hits never touch
+the driver, so the measured path is unchanged.
+
+| host | ratio geomean | ci95 upper | gate 3.0 |
+|---|---|---|---|
+| macOS (M1 Pro, 16 KiB pages) | 0.6439 | 0.6931 | PASS — crosses 1.0 in the POOL's favor |
+| Linux (3970X, THP `always [madvise] never` — arena not hugepage-backed) | 1.1808 | 1.1945 | PASS |
+
+The trend question is answered on both archs: the small-set ratio
+(1.73 macOS / 2.05 Linux in `mmap_warm_path`) collapses to 0.64 / 1.18
+under real dTLB pressure — residency bookkeeping amortizes into memory
+stalls both arms share. The macOS inversion's mechanism is unattributed
+(no flamegraph run; the escalation lever triggers only when the pool
+LOSES under active THP, which did not occur).
+
+## Granule sweep (2026-08-18, spike branch, pinned host, THP-advised arena)
+
+The machinery is fixed per hit; useful bytes scale with granule — and the
+fold itself runs faster on the hugepage-backed contiguous arena than on
+the 4 KiB-paged file mapping, so the ratio crosses BELOW 1.0 rather than
+asymptoting to it:
+
+| granule | small set (64 pages) | 256 MiB set |
+|---|---|---|
+| 4 KiB | 2.04 | 1.18 |
+| 16 KiB | 1.27 | 1.04 |
+| 64 KiB | 0.98 (ci95 0.992 — flip) | 0.99 (ci95 1.002 — parity) |
+
+Reading: the warm gap is not a fixed tax, it is machinery ÷
+useful-bytes-per-pin. At 64 KiB granules the pool beats or matches bare
+mmap in BOTH warm regimes on x86 (macOS already flipped at 4 KiB/256 MiB).
+The trade is NOT free: coarser granules amplify cold reads (a 4 KiB need
+fetches 64 KiB — the information-loss model's W > 1 on our own ledger)
+and the granule is the consumer's settled format decision
+(sira GRANULE_DEFAULT = 4096, M001; re-validation on real encoded
+segments is already scheduled at T011/T014 — these numbers are input to
+that decision, not an override). The real sweet-spot variable is bytes
+consumed per pin, which sequential composition (contiguous span
+consumption) raises without touching the format granule. Caveat: the
+mmap arm's 4 KiB pages reflect ext4 file-backed mappings on this kernel;
+filesystems with large-folio page cache would erode the arena's edge.
+
+## THP attribution (2026-08-18, follow-up demanded by external review)
+
+Verified live via `/proc/PID/smaps` during a timed run: the 256 MiB
+anonymous arena VMA reports `AnonHugePages: 262144 kB` — 100%
+PMD-mapped with 2 MiB THPs — while the file mapping stays on
+`KernelPageSize: 4 kB`. Differential with the arena advised
+`MADV_NOHUGEPAGE` (spike build, reverted):
+
+| config | THP on | THP off | fixed-cost model predicts (no THP) |
+|---|---|---|---|
+| 4 KiB granule, 256 MiB set | 1.18 | 1.48 | — |
+| 64 KiB granule, small set | 0.98 | 1.063 | 1.065 |
+
+Readings: (1) the 64 KiB "second effect" is entirely THP — with it
+removed the measurement lands on the pure fixed-cost amortization
+prediction to three digits. (2) The fixed-cost model
+R = 1 + (R_4K − 1)/scale is now validated at three points (16 KiB:
+1.26 predicted / 1.27 measured small, 1.045 / 1.04 at 256 MiB; 64 KiB
+THP-off: 1.065 / 1.063). The warm tax is an approximately FIXED
+ABSOLUTE cost per protected access, not a multiplicative penalty.
+(3) `advise_hugepage` (already shipped, `src/pool/frames.rs`) is worth
+30 ratio points at 4 KiB/256 MiB — without it the at-scale warm gap
+would be 1.48. (4) CI precision, corrected per review: the 64 KiB
+small-set win clears its confidence interval (ci95 0.992 < 1.0); the
+256 MiB result is PARITY within uncertainty (ci95 1.002), not a
+demonstrated win. (5) The small-set sweep column confounds footprint
+with granule (64 pages × 64 KiB = 4 MiB, 1,024 base-page translations
+on the mmap side); the 16 KiB point and the fixed-256-MiB column are
+the clean amortization evidence; a fixed-total-bytes sweep remains
+open. (6) Span-guard qualification confirmed empirically: holding the
+epoch pin across gets recovers only ~3% (scope-amortization run) — a
+real `get_span` must batch liveness, lookup window, CLOCK accounting,
+and guard lifetime to approach the one-granule result; its decisive
+4-arm bench (constant 64 KiB useful work: one 64 KiB get / 16×4 KiB
+span op / 16×4 KiB independent gets / bare mmap fold, × THP on/off) is
+pre-registered here for whichever scope owns the span surface.

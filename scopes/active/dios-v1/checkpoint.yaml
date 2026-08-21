@@ -20,7 +20,7 @@ checkpoint:
     revision: 10
     task: T017
     branch: feat/dios-api
-    worktree: /private/tmp/dios-feat-dios-api
+    worktree: /Users/srnnkls/projects/dios/.worktrees/feat-dios-api
     timestamp: 2026-07-20
     status: review_in_progress
     implementation: phase_c_dispatched
@@ -69,6 +69,22 @@ checkpoint:
         - benches/mmap_warm_path.rs
         - benches/mmap_tlb_pressure.rs
 
+  r7_point_path_state:
+    revision: 14
+    task: T018
+    worktrees:
+      sira: /Users/srnnkls/projects/sira/.worktrees/experiment-sira-aligned-buffers
+      dios: /Users/srnnkls/projects/dios/.worktrees/experiment-sira-point-proof
+    timestamp: 2026-08-19
+    status: in_progress_parity_failed
+    result: >-
+      Aligned native locator displaces current format work (0.4710/0.4731).
+      Compact typed-lease hint materially beats general get (0.8813/0.8980)
+      but fails locator-mmap parity (1.2045/1.2229). Dense descriptors
+      regressed and were reverted. T012 remains blocked; feature-mock hint
+      adoption additionally waits for get/retire and evict/reuse Loom proofs.
+    evidence: scopes/active/dios-v1/resources/remix-dios-native-experiment.md
+
   commits:
     - { batch: 1, sha: 8706fb0, tasks: [T001], note: "scaffold — backend seam, error values, Alignment newtype" }
     - { batch: 2, sha: 1cef8c3, tasks: [T002], note: "DriverCore<E: Executor> (locked-prepare/unlocked-execute/locked-publish), generational FileTable, INV-11 leases, seeded DST mock, 24 contract tests" }
@@ -80,7 +96,7 @@ checkpoint:
 
   tasks:
     done: [T001, T002, T003, T016, T006, T004, T007, T005, T008, T009, T015]
-    in_progress: [T017]
+    in_progress: [T017, T018]
     pending: []
     deferred_external:
       tasks: [T010, T011, T012, T013, T014]

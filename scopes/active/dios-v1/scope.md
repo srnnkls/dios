@@ -2,18 +2,66 @@
 created: 2026-07-07
 status: active
 issue_type: Feature
-revision: 10
+revision: 14
 parent: sira-read-concurrency
 blocked_by: [sira-point-format]  # sira-read-perf, sira-read-concurrency, sira-read-hotpath (PR #5) all done; sira-point-format batch 1 converges the cache onto this scope's seam
 ---
 
 # Scope: dios-v1
 
+> **Revision 14 — R7 point-path displacement and native-hint result
+> (2026-08-19).** The repo-local R7 experiment first removed Sira's repeated
+> frame parsing and coordinate work: the aligned native locator measured
+> 244.537 ns/read versus 519.178 ns/read for current-prefix mmap. Against that
+> tighter baseline, unmodified general Dios acquisition remained 32.8% slower
+> (CI upper 1.3478). A typed file lease plus pool-minted volatile
+> `(frame, residency-generation)` hint reduced the fresh-process mean to
+> 305.527 ns/read and beat general `get` by a materiality ratio of 0.8813 / CI
+> upper 0.8980, but still failed mmap parity at 1.2045 / 1.2229. Removing the
+> hint descriptor's niche-encoded `Option` made both smoke and long-run results
+> worse and was reverted. T018 is therefore in progress, not complete; T012
+> remains blocked. The hint implementation exists only behind the experimental
+> mock feature in the repo-local dependency worktree, and adoption remains
+> blocked on the two get/retire and evict/reuse Loom adversaries.
+
+> **Revision 13 — experiment retrofit and honest split verdict
+> (2026-08-18).** T019--T023 now name the work that produced revision 12's
+> design inputs. The code and evidence live in repo-local worktrees pinned
+> below; no Dios shipping branch changed, while a separate uncommitted Dios
+> candidate preserves the atomic-table protocol experiment. The 5M structural
+> result validates one/two-frame REMIX geometry, and the corrected Threadripper
+> replacement preflight passes n=10 at 0.9609 / CI upper 0.9615 but fails n=1
+> at 1.1103 / CI upper 1.1408. Therefore T018 is now the pending formal
+> closeout, T012 remains blocked, and revision 13 records no format approval.
+> Every aggregate, artifact hash, caveat, and raw-artifact location is in
+> `resources/remix-dios-native-experiment.md`.
+
+> **Revision 12 — prefix-preserving aligned frames (2026-08-18).** Existing
+> adaptive-HEAD evidence closes the forgotten format question: on the same
+> 5M-row 24-byte-key/150-byte-value corpus, fixed width lost prefix compression
+> on Threadripper by 4.2% at n=10 and 15.6% at n=256 while using 0.99% more
+> bytes; pre-resolving its minor recovered at most 1.7%. Revision 12 therefore
+> keeps revision 11's breaking 4 KiB independent-frame direction but selects a
+> frame-local prefix grammar as candidate B. The 22-row fixed SoA layout remains
+> projection F only. T018 must clear a separate aligned-prefix/current-prefix
+> end-to-end format gate as well as the REMIX/Dios acquisition gate before T012.
+
+> **Revision 11 — page-native Sira format and REMIX acquisition plan
+> (2026-08-18).** The owner accepts a breaking format change and requires no
+> backward-compatible reader. This revision replaces AD-5/AD-6's
+> one-block-per-granule layout with independently verifiable 4 KiB record
+> frames grouped into approximately 32 KiB encoding/prefetch units. REMIX
+> ordinals become stable file-relative frame/encoding-minor coordinates from which Sira
+> derives bounded acquisitions on demand; they never contain live Dios frame
+> identities. The frozen pre-timing adaptive-HEAD experiment remains responsible
+> for the parity verdict; recording the format does not claim that gate green.
+
 > **Revision 10 — post-v1 Sira-fit API evolution (2026-07-20).** The
 > completed v1 batches and their review evidence remain historical facts. This
-> revision adds pending task T017 and supersedes the original public pool
-> signatures where they conflict with the product API below. Its RED tests are
-> still in A.5 review; no implementation or review gate is claimed green.
+> revision adds task T017 and supersedes the original public pool signatures
+> where they conflict with the product API below. A.5 is approved and Phase B
+> is green on Darwin and the Linux container gate; Phase C/final review remains
+> in progress, so T017 is not yet complete.
 
 Async direct-IO layer + userspace buffer pool, built as the standalone
 crate `dios` (this repository); sira consumes it as a dependency. Both
@@ -51,6 +99,33 @@ becomes explicit, and SIGBUS leaves the failure model — at strict warm-hit
 parity with mmap at the block-fetch layer and zero hot-path allocation.
 
 ## Context
+
+### Experiment worktrees
+
+The revision-12 prototype was based on Sira adaptive-execution commit
+`36211b452cd31980a8123f02ca0fa993e7ae2759`; the adaptive branch has since
+advanced, so rebasing is an explicit integration task rather than part of the
+measurement. Canonical repo-local worktrees are:
+
+| Purpose | Worktree | Branch |
+|---|---|---|
+| aligned-prefix/REMIX prototype | `~/projects/sira/.worktrees/experiment-sira-aligned-buffers` | `experiment/sira-aligned-buffers` |
+| additive point-tax proof | `~/projects/sira/.worktrees/experiment-sira-dios-point-proof` | `experiment/sira-dios-point-proof` |
+| shipping Dios base plus R7 feature-mock native-hint prototype, based at `1004a2e6fcae0bcc9552dc3211c2416e388a250d` | `~/projects/dios/.worktrees/experiment-sira-point-proof` | `experiment/sira-point-proof` |
+| candidate atomic-table protocol source | `~/projects/dios/.worktrees/experiment-read-protocol-tightened` | `experiment/read-protocol-tightened` |
+| post-v1 Dios API work | `~/projects/dios/.worktrees/feat-dios-api` | `feat/dios-api` |
+
+The prototype remains test/bench code: it has not changed Sira's normal
+segment writer/reader or any Dios shipping branch. The point-proof Dios
+worktree now has an explicitly measured R7 feature-mock delta in `src/mock.rs`,
+`src/pool/frames.rs`, `src/pool/mod.rs`, and `src/lib.rs`; this is not a
+shipping change. The separate atomic-table candidate also modifies `src/pool`,
+but old CSVs labeled tightened lack a retained binary identity, so that
+attribution remains advisory only. The companion active
+Sira scope is `scopes/active/sira-aligned-buffers` in the Sira repository.
+The stale `/private/tmp/dios-feat-dios-api` worktree record was pruned and the
+branch restored at its existing `d4203d95378490edb692a9aea091c4ba617105ed`
+head under `.worktrees/`; `checkpoint.yaml` now names that canonical path.
 
 - `dios` lives in its own repository (this one); sira lives at
   `~/projects/sira`. `sira/src/...`, `sira-fixtures`, `resources/...`,
@@ -99,9 +174,10 @@ parity with mmap at the block-fetch layer and zero hot-path allocation.
 | `sira/src/segment/cursor.rs` | 530-547 | `load_into` — row block-load choke point, seam site |
 | `sira/src/columnar.rs` | 1219-1231, 1332-1386 | columnar block/cell loads, seam site |
 | `sira/src/segment/block_storage.rs` | all | existing CRC-verify module — unrelated to the seam, unchanged |
+| `sira/src/block.rs` | all | prefix entry/restart packer reused inside vNext's frame-local payload |
 | `sira/src/manifest.rs` | 264-393 | `CommitFs` trait + `RealFs`, write-plane seam, darwin fsync ops |
 | `sira/src/journal.rs` | all | micro-commit journal codec/replay |
-| `sira/src/segment/writer.rs` | all | segment writer — gains sector padding |
+| `sira/src/segment/writer.rs` | all | segment writer — emits aligned, independently checksummed record frames and logical prefetch groups |
 | `sira/src/storage.rs` | 1556-1671, 2244-2310 | read routing, Arc-clone snapshot discipline, commit barrier accounting |
 | `sira/src/parallel.rs` | 9-51 | executor-agnostic scan stub the pool's overlap serves |
 | `resources/tigerbeetle/src/io/*.zig` | — | reference implementation |
@@ -241,29 +317,87 @@ invariant (INV-4) holds identically on both backends.
 
 #### AD-5: Segment format vNext
 
-**Context:** O_DIRECT reads are issued as granule-aligned extents; a
-block that spans a granule boundary would need multi-frame assembly,
-which cannot yield a contiguous `&[u8]` without copying (violates
-zero-alloc). Existing segments were written without padding, so their
-blocks may span granule boundaries.
+**Context:** Sira's adaptive format targets roughly 32 KiB encoded blocks.
+Padding each complete block into one Dios frame would either force a larger
+residency unit or split a checksummed object across frames; both make a point
+read acquire data REMIX already knows it does not need. Current blocks begin
+after a 32-byte header and are unpadded, so a nominal 32 KiB block normally
+touches nine 4 KiB granules.
 
-**Decision:** vNext segment format guarantees no block spans a granule
-boundary (writer inserts zeroed padding; GRANULE is a hard upper bound
-on encoded block size). Store open requires the current format version
-and fails with a rebuild-required error otherwise.
+**Decision:** vNext separates the logical encoding/prefetch group from the
+physical verification/residency frame. Every physical frame is 4,096-byte
+aligned and independently protected by a CRC32C trailer. It reserves a
+16-byte header and a 4-byte CRC. The trailer is the CRC32C of exact bytes
+`0..4092`, including the complete header, populated payload, and zero padding;
+no safety-critical header field is trusted before that check passes. Eight
+frames form the approximately 32 KiB logical group
+used by sequential decode and prefetch, but point and selective-range reads
+acquire only selected frames.
 
-#### AD-6: Hard value-size cap
+Candidate B preserves Sira's current prefix entry grammar inside each frame.
+Bytes `16..4092` hold the prefix entries, restart-offset array/count, then zero
+padding; restart interval remains 16 and the first entry in every frame is a
+restart with shared-prefix length zero. The packer tests the prospective
+finished payload before adding an entry, so neither an ordinary entry nor its
+restart directory spills. REMIX's expected full key plus the frame-local entry
+byte offset directly decodes the selected value without reconstructing earlier
+keys. Store open requires this format version and rejects every earlier version
+with a rebuild-required error; old stores are rebuilt, not routed through a
+compatibility reader.
 
-**Context:** The writer gives an entry larger than the block-size target
-its own block (`writer.rs:97-99`), values accepted to u32::MAX —
-encoded block size is unbounded. Measured on gestalt's store (36,423
-rows): max value 758 B, 36,421 values ≤ 16 B.
+The fixed-width SoA grammar from revision 11 remains experiment projection F,
+not a shipping candidate: 22 canonical rows occupy 3,944 bytes including
+header and CRC and leave 152 zero-padding bytes. It may bound geometry but may
+not override the existing end-to-end fixed-width falsification.
 
-**Decision:** A put whose encoded block would exceed GRANULE is rejected
-with `ValueTooLarge` at the write path (the existing u32 check tightens
-to the granule bound). T006's granule sizing takes maximum value size as
-an input. Escalation if the cap binds: WiscKey-style value log, own
-scope.
+#### AD-6: Bounded oversized-record extents
+
+**Context:** A single-frame ordinary-record rule must not turn the physical
+frame size into an accidental unbounded API promise. The canonical grammar
+admits an ordinary value through 4,040 bytes; the next byte requires a second
+frame.
+
+**Decision:** Values that do not fit an ordinary record use an explicit
+continuation extent of 2 through 16 independently checksummed frames. The
+header of every extent frame carries the same extent identity, total length,
+and bounded frame count plus that frame's ordinal. Decode uses bounded,
+preallocated caller scratch or a segmented consumer and performs no hot-path
+allocation. A record exceeding the 16-frame extent bound is rejected with
+`ValueTooLarge` before bytes reach the writer. A value log remains a separate
+escalation only if this bound binds in representative stores.
+
+Extent decode verifies each frame's CRC over bytes `0..4092` before reading its
+typed header. It then requires the first ordinal to be zero, a frame count in
+`2..=16`, a total length representable by that exact count, identical extent
+identity and total length in every continuation, strictly consecutive
+ordinals, and a terminal ordinal of `frame_count - 1`. Missing, truncated,
+duplicated, reordered, mismatched, or surplus continuations are corruption
+values (`CorruptBlock`/`CorruptSegment` at the existing Sira boundary), never
+assertions or partially returned values.
+
+#### AD-8: REMIX supplies stable acquisition coordinates
+
+**Context:** REMIX already selects the winning `(run, block, row/minor)` for
+each live logical row. Repeating a general block search below that plan wastes
+information, while persisting a second descriptor per key risks material view
+memory. Caching a pool `FrameIdx` would be unsound because eviction and reuse
+make it a live residency identity.
+
+**Decision:** In vNext, REMIX's existing ordinal storage is interpreted as a
+stable file-relative frame ordinal plus the exact frame-local prefix-entry byte
+offset. Sira derives
+deduplicated frame requests and logical-entry mappings on demand inside each
+bounded range chunk. A persistent span descriptor is optional only if the
+frozen pre-timing storage and timing gates independently earn it; it is not a
+format requirement. Neither representation stores `FrameIdx`, an epoch
+ticket, or any other live Dios identity. The base protocol decodes/copies range
+outputs sequentially with one ordinary `Pool::get`/`FrameGuard` epoch at a
+time; a borrowed point likewise holds one. A bounded request chunk may name up
+to 16 frames, but no epoch or frame guard spans the chunk: each guard drops
+before the next acquisition. Oversized extents copy each verified frame into
+preallocated scratch under the same one-at-a-time rule. A shared `ReadEpoch` or
+true-gather API is not assumed; it may enter a later reviewed scope only if the
+DIO-G10 n=256/4,096 trace shows a material win over independent gets.
 
 ### Constraints
 
@@ -286,10 +420,43 @@ scope.
   per-worker last-frame memoization lever, the Linux default flip is
   BLOCKED and the decision (relax the gate vs keep mmap default) returns
   to the scope owner — it is not relaxed silently.
+- REMIX acquisition viability uses the amended, frozen pre-timing contract in
+  `sira/benches/plans/remix-dios-native.md` and is independent of DIO-G1.
+  On adaptive HEAD, A is the current whole-block range path, O derives
+  deduplicated stable frame coordinates on demand into fixed-capacity scratch,
+  and optional P consumes a persistent descriptor vector. The preserved
+  one-L1 control and retained one-L1-plus-four-L0 overlap corpus are reported
+  separately for n=1 and binding n=10. Run at least
+  30 interleaved paired process repetitions. O passes only if the upper bound
+  of the one-sided 95% paired-log-ratio CI for O/A is ≤ 1.02 on both corpora,
+  the upper bound of its measured/mixed-labelled Dios acquisition share is
+  ≤ 2.0% of the same end-to-end n=10 range time, it adds zero persistent bytes,
+  its warmed scratch path allocates zero times, and its unchanged point path
+  has an O/A canary CI upper bound ≤ 1.01 on both corpora. Failure of any O
+  gate blocks AD-8's O migration and requires a representation/protocol
+  redesign; it does not
+  relax DIO-G1 or justify weakening residency/read-stability guarantees.
+  Optional P must separately meet O's correctness/timing bounds, add at most
+  2 bytes per live key on both corpora, and keep unused point/range canary CI
+  upper bounds ≤ 1.01. A P miss rejects only P. Raw starts, checksums, fan-in,
+  frame counts, and paired samples are retained; a frozen plan identity and
+  immutable manifest bind each strict two-column comparison CSV by SHA-256 and
+  provenance. n=1 remains visible even though no cross-regime weighting is
+  invented. n=256, 4,096, and full-view remain fixture-tested diagnostics and
+  run on the 5M corpora only if n=10 fails because repeated acquisitions make
+  a shared-gather decision live.
+  Separately, B's aligned-prefix format prototype is compared end-to-end
+  through mmap against today's roughly 32 KiB prefix format on the identical
+  5M corpus at n=1, 10, 256, and 4,096. Over at least 30 paired process reps
+  per length, every B/current one-sided 95% paired-log CI upper bound must be
+  ≤ 1.02, with store bytes and fetched bytes reported. This causal format gate
+  cannot be satisfied by projection F or by favorable Dios lookup arithmetic;
+  failure blocks B/T012 and returns frame packing to design.
 - Minimum pool size (deadlock freedom): a reader's k-way merge holds one
   pinned guard per source plus key/column blocks concurrently.
-  `frame_count >= (max_concurrent_readers × peak_guards_per_reader + miss_headroom).max(1) + max_retained_frames`,
-  where `peak_guards_per_reader` derives from the STATIC maximum merge fan-out —
+  `frame_count >= (max_concurrent_readers × peak_guards_per_reader + miss_headroom).max(1) + max_retained_frames`.
+  `peak_guards_per_reader` includes the one transient vNext selected-record
+  frame and derives from the STATIC maximum merge fan-out —
   the whole-stack merge bound
   `f(ln_runs [default 20] + level count)` from config — not the
   open-time source count, and `max_concurrent_readers` counts compaction
@@ -306,7 +473,9 @@ scope.
   pinned by DIO-G7 and a Busy-rate counter keeps frequency observable.
   `miss_headroom ≥ 3 × max_inflight_reads`: one InFlight frame per
   outstanding miss plus up to two grace periods of Evicting limbo, since
-  each miss admits at most one eviction.
+  each miss admits at most one eviction. A 16-frame request chunk does not add
+  16 to this bound because it is consumed as 16 independent one-guard epochs;
+  any future shared-epoch/gather API must amend and re-prove INV-9 before use.
 - Linux bench host: AMD Threadripper 3970X box (32c/64t Zen 2, 4 CCDs /
   8 CCXs, 16MB L3 per CCX), ssh host `nix` — NixOS, kernel 6.6.64
   (clears the ≥ 5.15 uring floor, the ≥ 6.1 `statx(STATX_DIOALIGN)`
@@ -395,22 +564,33 @@ scope.
 | `PoolToken` / `PoolCompletion` | Pool-minted operation identity and owned caller result; completions are exactly typed `Write` or `Fsync`, never `Read`/close or raw driver kinds | pool identity, slab slot + generation, typed owned result; admitted + retained population bounded by `max_inflight_product_ops` (default 0) |
 | `PoolWakeHandle` | Cloneable external wake capability, `Send + Sync`; shares a monotonic wake generation with `Pool::poll_wait` | pool identity, wake generation/event source |
 | `Pool` | Product API and sole owner of read placement, writes, fsync, progress, and file retirement | frames, page table, one composed driver, bounded caller-completion backlog |
+| vNext segment frame (Sira) | Independently readable and verifiable on-disk residency unit | aligned 4,096-byte extent; 16-byte typed header; frame-local prefix rows or bounded extent continuation; zero padding; 4-byte CRC32C |
+| REMIX frame coordinate (Sira) | Stable plan coordinate resolved to a Dios `PageId` only at acquisition | segment/run identity, file-relative frame ordinal, exact frame-local prefix-entry byte offset; never `FrameIdx` or an epoch ticket |
 | `dios::driver::Driver` | Advanced cfg-selected completion driver, namespaced below the product API | `Uring` (Linux) / `Eager` (portable, AD-7) |
 | `dios::testing::MockIoEvent` | Feature-gated sole chronological mock recorder; read/write/fsync attempts, completions, and closes | `ReadAttempt { file, file_offset, destination_offset, requested_len }`; frozen read/write attempt accessors are derived projections, never parallel logs |
 
-Frame granule: fixed per store at open. GRANULE is a hard upper bound on
-encoded block size (AD-5); the default is fixed during T006 from a
-block-size distribution measurement over representative stores (the
-fragmentation cost of padding small key blocks is part of that
-measurement). Segment vNext layout requirements (full spec is T012's
-deliverable, reviewed before implementation):
+Frame granule: fixed at 4,096 bytes for vNext and equal to Dios's residency,
+direct-I/O, and independent verification unit. It is not the logical encoded
+block-size target: sequential encoding and prefetch operate on eight-frame
+groups. Segment vNext layout requirements (the exact header bit layout and
+extent decoder are T012's deliverable, reviewed before implementation):
 
 - header format-version bump; store open rejects any non-current
   version with a rebuild-required error (AD-5)
-- writer inserts zeroed padding so no block crosses a granule boundary;
-  block index offsets address true block starts (padding is transparent
-  to the index and to CRC coverage, which is per-block payload,
-  unchanged)
+- every 4 KiB frame begins at a 4 KiB file offset, carries a 16-byte typed
+  header and 4-byte CRC32C trailer, and verifies without another frame;
+  frame-local zero padding participates in CRC coverage
+- candidate B frames preserve the prefix entry/restart grammar, reset prefix
+  state at every frame, and pack only complete entries plus their restart
+  directory; eight frames form one logical encoding/prefetch group without
+  changing the frame-level point-fetch or eviction unit
+- REMIX ordinals address a stable file-relative frame plus exact frame-local
+  prefix-entry byte offset; a fixture makes byte offset differ from row ordinal
+  and resolves solely from the stored coordinate; range acquisition
+  deduplicates those coordinates on demand in a bounded
+  chunk and restores logical order after fetch
+- ordinary records never cross frames; oversized records use explicit
+  2..=16-frame extents and exceedance is rejected before writing (AD-6)
 - file length padded to a whole number of granules; footer/fixture
   tooling (`sira-fixtures`) updated alongside
 
@@ -431,8 +611,9 @@ deliverable, reviewed before implementation):
   `GetError::StaleFile { page }`. `ReaderCtx` and `PendingToken` are
   lifetime-free owned capabilities; `FrameGuard` remains borrowed.
   `poll_report`/`poll_wait` route reads privately and report typed
-  progress. The pool is a raw granule cache and knows nothing of blocks
-  or CRCs — per-block CRC verification stays in sira above the seam.
+  progress. The pool is a raw granule cache and knows nothing of segment
+  rows or CRCs — vNext's per-frame CRC verification stays in sira above
+  the seam.
 - DIO-R2b product write staging: `PoolWriteArena` and `PoolWriteSlot` are
   closed crate-root staging types for the O_DIRECT data plane, separate
   from the read pool and outside its watermark. The same `Pool` submits
@@ -447,13 +628,17 @@ deliverable, reviewed before implementation):
 - DIO-R3 sira reads: both backends behind the `BlockSource` seam at the
   two choke points, selected by store config; defaults Linux=pool,
   macOS=mmap (AD-2). Store open rejects non-current segment format
-  versions (AD-5). Coverage: backend×platform matrix tests (pool-on-macOS
-  included), old-format open-rejection test, advisory (non-gating)
-  pool-vs-mmap measurement on macOS in T011.
+  versions (AD-5). REMIX-selected stable frame coordinates drive selective
+  frame acquisition without caching live pool identities (AD-8). Coverage:
+  backend×platform matrix tests (pool-on-macOS included), old-format
+  open-rejection test, advisory (non-gating) pool-vs-mmap measurement on
+  macOS in T011.
 - DIO-R4 sira writes: segment writer (O_DIRECT data plane, WriteArena
   staging), manifest and journal (buffered + fsync metadata plane, AD-3)
-  route through the crate on both platforms; segment format vNext per
-  AD-5; writes exceeding the AD-6 cap rejected with `ValueTooLarge`.
+  route through the crate on both platforms; segment format vNext emits
+  aligned independently checksummed frames and eight-frame logical groups per
+  AD-5; ordinary records are frame-local and writes exceeding AD-6's bounded
+  extent cap are rejected with `ValueTooLarge`.
 - DIO-R5 nmnm-readiness: a compile-tested example demonstrates the
   Gateway contract — async submit → resident borrowed buffer, worker
   never blocks on a miss, waiter-interest drop on pending tokens —
@@ -484,12 +669,13 @@ deliverable, reviewed before implementation):
   the gate fails, it re-forms as ≤ 1.2x that floor — owner-signed,
   recorded, never silent.
 - DIO-G4 zero-alloc: alloc-count harness shows 0 allocations on warm get,
-  miss submit, and completion drain after warmup, both backends.
+  miss submit, completion drain, and warmed AD-8 REMIX dedupe/order scratch
+  reuse after warmup, both backends.
 - DIO-G5 crash safety: existing crash suite (CommitFs fault shims, torn
   journal tail, manifest atomic swap) green through the new write plane
-  on both platforms; includes a corrupt-block case re-read after
+  on both platforms; includes a corrupt selected-frame case re-read after
   eviction (re-fetch through `BlockSource` re-verifies, surfacing the
-  CRC error — per-fetch verification semantics unchanged from today).
+  per-frame CRC error before header use).
 - DIO-G6 no regression: the full sira suite on both platforms — poison
   oracles, laziness pins, routing contract, absent-key class, RC-R1..R3
   on the platform-default backends. Owned by T014 as an explicit
@@ -537,6 +723,40 @@ deliverable, reviewed before implementation):
   primitive implementation. T018 validates the selected contract in the
   Sira-shaped owner/API examples without duplicating primitive work; if DRP-G3
   rejects hints, DIO-G10 consumes ordinary guarded get/composition instead.
+- DIO-G10 REMIX-native acquisition viability (Linux), owned by pre-T012 task
+  T018: on adaptive HEAD and
+  the frozen one-L1 control plus one-L1/four-L0 falsifier, n=10 O must
+  satisfy all five constraints from `sira/benches/plans/remix-dios-native.md`:
+  paired O/A one-sided 95% CI upper bound ≤ 1.02 over at least 30 interleaved
+  process repetitions per corpus; Dios acquisition-share CI upper bound
+  ≤ 2.0% of matched end-to-end range time; zero additional persistent bytes;
+  zero warmed internal allocations with fixed-capacity dedupe/order scratch;
+  and an unchanged point-path O/A canary CI upper bound ≤ 1.01 on each corpus,
+  emitted as paired raw CSV and checked by Dios's shared compare harness. P is
+  optional and additionally requires ≤ 2 B/live-key on both
+  corpora plus unused-path canary CI upper bounds ≤ 1.01. O failure blocks
+  AD-8/T012 pending redesign; P failure rejects P only. n=1 remains separately
+  reported and may not be pooled to rescue n=10. n=256, 4,096, and full-view
+  run only as conditional gather diagnostics after an acquisition-driven n=10
+  miss. The same task separately gates candidate B against the current prefix
+  format through mmap at n=1, 10, 256, and 4,096: each B/current one-sided 95%
+  paired-log CI upper bound over at least 30 paired process reps must be ≤ 1.02.
+  A B miss blocks T012 even when O passes.
+
+  Revision-13 evidence is deliberately non-closing. The 5M structural reporter
+  produced 16,384 checksum-matched n=1/n=10 observations. The corrected
+  targeted in-process replacement preflight passed n=10 (ratio 0.9609, CI
+  upper 0.9615) and failed n=1 (ratio 1.1103, CI upper 1.1408). It did not run
+  the required fresh-child n=256/4,096 arms. T023 is complete as a measurement
+  task, while T018 and DIO-G10 remain pending/blocked.
+
+  Revision-14 R7 evidence is also non-closing. Native locator mmap displaced
+  274.641 ns/read of repeated format work. The compact typed-lease hint then
+  beat ordinary general get at ratio 0.8813 / CI upper 0.8980, but failed the
+  locator-mmap point gate at 1.2045 / 1.2229. The feature-mock prototype has no
+  adoption authority before the two retirement/reuse Loom proofs, and R7 did
+  not execute the required n=10/256/4,096 or two-corpus O/A gates. T018 is in
+  progress and DIO-G10/T012 remain blocked.
 
 ## Acceptance Criteria
 
@@ -546,6 +766,28 @@ deliverable, reviewed before implementation):
   reps,
   then the one-sided 95% CI upper bound of the ratio is ≤ 1.02
   (non-inferiority margin, DIO-G1).
+
+- [ ] Given the adaptive-HEAD one-L1 control and retained one-L1/four-L0
+  overlap corpus, identical deterministic n=10 starts, fixed-capacity warmed O
+  scratch, and at least 30 interleaved paired process repetitions per corpus,
+  when A and on-demand O produce identical ordered checksums,
+  then O/A's one-sided 95% paired-log-ratio CI upper bound is ≤ 1.02, O's Dios
+  acquisition-share CI upper bound is ≤ 2.0% of matched end-to-end range time,
+  O adds zero persistent bytes and records zero internal allocations; otherwise
+  AD-8/T012 is blocked for redesign (DIO-G10).
+
+- [ ] Given the unchanged adaptive-HEAD point path on each DIO-G10 corpus and
+  at least 30 interleaved paired process repetitions,
+  when O and A produce identical point checksums and the paired raw CSV is
+  evaluated by Dios's shared compare harness,
+  then the O/A one-sided 95% CI upper bound is ≤ 1.01; otherwise O is rejected
+  and AD-8/T012 remains blocked (DIO-G10).
+
+- [ ] Given optional persistent P on both DIO-G10 corpora,
+  when it consumes its descriptors for the same observations,
+  then it matches O's coordinates/checksums and timing bounds, adds ≤ 2 bytes
+  per live key, and keeps unused point/range canary CI upper bounds ≤ 1.01;
+  failure rejects P without rejecting O (DIO-G10, AD-8).
 
 - [ ] Given the RC-R2 threaded bench (shared Arc, 8 threads) on Linux,
   when reads run on the pool backend,
@@ -581,10 +823,40 @@ deliverable, reviewed before implementation):
   when it is opened,
   then open fails with a rebuild-required format error (DIO-R3, AD-5).
 
-- [ ] Given a put whose encoded block would exceed GRANULE,
+- [ ] Given candidate B and canonical prefix-coded rows in source-run order,
+  when the writer fills a physical frame,
+  then it resets prefix state at the frame boundary, admits an entry only when
+  the prospective entry plus restart directory fits bytes `16..4092`, emits
+  the exact frame-local byte offset retained by REMIX, zero-pads the remainder,
+  and verifies the frame independently before decoding that offset (AD-5,
+  DIO-R4).
+
+- [ ] Given a canonical 24-byte key and value lengths 4,040 and 4,041 bytes,
+  when candidate B packs them,
+  then 4,040 occupies exactly one ordinary frame and 4,041 occupies exactly
+  two independently verified extent frames (AD-5, AD-6, INV-10).
+
+- [ ] Given identical 5M-row current-prefix and candidate-B stores,
+  when mmap end-to-end reads run at n=1, 10, 256, and 4,096 for at least 30
+  paired process repetitions per length,
+  then every B/current one-sided 95% paired-log CI upper bound is ≤ 1.02 and
+  store/fetched bytes are retained; otherwise T012 is blocked for a new packing
+  decision (DIO-G10, AD-5).
+
+- [ ] Given a REMIX winner ordinal for an ordinary vNext record,
+  when a point or bounded range is acquired,
+  then the ordinal resolves to its stable file-relative frame and exact
+  frame-local prefix-entry byte offset, with a pinning fixture whose row ordinal
+  differs and without recomputing the offset from the view,
+  selected frames are deduplicated without persisting a second per-key vector,
+  logical result order is restored, and no pool `FrameIdx` or epoch identity is
+  stored in REMIX (AD-8, DIO-R3).
+
+- [ ] Given a value one byte larger than the ordinary-record maximum,
   when the write is submitted,
-  then it is rejected with `ValueTooLarge` before the oversize block is
-  formed (AD-6, DIO-R4).
+  then it is encoded as a two-frame independently checksummed extent; and
+  given a value exceeding the configured 16-frame extent bound, it is rejected
+  with `ValueTooLarge` before any extent bytes reach the writer (AD-6, DIO-R4).
 
 - [ ] Given the pinned Linux host with the pre-dios `RealFs` baseline
   arm available,
@@ -928,7 +1200,8 @@ existing lower-level deferred-drain guarantee.
 ```
 Phase 1 (crate core)      T001 scaffold → T002 driver surface → {T003 eager, T004 uring, T016 API-fit spike} → T005 harness
 Phase 2 (pool)            T006 frames/table/CLOCK/granule (gated by T016) → T007 epoch guards → {T008 miss+overlap, T009 zero-alloc+loom}
-Phase 3 (sira wiring)     T010 BlockSource seam → T011 read routing; T012 vNext format → T013 write plane → T014 gates
+Phase 3 evidence          T006 → T019 provenance/worktrees → {T020 point tax, T021 REMIX structure, T022 physical format} → T023 5M/preflight → T018 formal closeout
+Phase 3 shipping          T010 BlockSource seam → T012 vNext format (needs T018) → {T011 read routing, T013 write plane} → T014 gates
 Phase 4 (nmnm-readiness)  T015 contract example (extends the T016 spike) + extraction checklist
 Post-v1 API evolution     {T002,T008,T009,T015} → T017 Sira-fit Pool product API (independent of deferred sira wiring)
 ```
@@ -945,8 +1218,10 @@ unblock or silently start T010–T014 in the sira repository.
 - nmnm integration (implementing `BlockCache`/`ResolvesBlocks` inside
   nmnm, Gateway wiring) — later scope; this scope only proves API fit.
 - A futures adapter / async-runtime interop layer.
-- Kernel-op cancellation (v1 ops always drain); multi-frame block
-  assembly (AD-5 makes GRANULE a hard block-size bound instead).
+- Kernel-op cancellation (v1 ops always drain); reconstructing an entire
+  logical eight-frame group into one contiguous scratch block. Selective reads
+  consume frame-local records; bounded oversized-record extents alone may use
+  preallocated caller scratch or a segmented consumer (AD-5/AD-6).
 - Multi-process cache sharing (a page-cache property we knowingly give up
   on Linux).
 - Value log / key-value separation (escalation path if the AD-6 cap
@@ -1007,10 +1282,10 @@ unblock or silently start T010–T014 in the sira repository.
 - XFS can EAGAIN blocking-file reads under io_uring; resubmit.
 - O_DIRECT unsupported on tmpfs — probe and fall back buffered or CI
   misreports parity.
-- O_DIRECT alignment constrains buffer address, file offset, and length
-  of the syscall — not block placement inside the file. Granule-aligned
-  extent reads satisfy it regardless of where blocks sit; the only
-  format constraint is that no block spans a granule (AD-5).
+- O_DIRECT alignment constrains buffer address, file offset, and syscall
+  length. vNext therefore aligns and independently verifies every physical
+  frame. The roughly 32 KiB logical group is a layout/prefetch concept, not a
+  reason to issue one 32 KiB read for a point selected by REMIX (AD-5/AD-8).
 - io_uring keeps fds (and flocks) alive until in-flight ops complete —
   affects lock-file handling on unclean shutdown (TigerBeetle
   `linux.zig:1558-1583`).
@@ -1040,8 +1315,9 @@ unblock or silently start T010–T014 in the sira repository.
 
 ## Open Questions
 
-- [x] GRANULE default value — RESOLVED in T006: 4096 (sector floor), from
-  the recorded S003 gestalt-store measurement (max value 758 B over
-  36,423 rows; padding fragmentation negligible). Derivation in
-  `GRANULE_DEFAULT`'s rustdoc; per-store override stays a construction
-  parameter (marker M001).
+- [x] GRANULE default value — RESOLVED in T006: 4096 (sector floor).
+  Revision 11 additionally freezes 4,096 bytes for Sira vNext because it is
+  the independent verification/residency unit; the approximately 32 KiB
+  logical group absorbs sequential-layout concerns. Dios's generic per-store
+  override remains a construction parameter, but Sira rejects a pool granule
+  that does not match its format frame size (marker M001).

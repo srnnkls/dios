@@ -1,0 +1,121 @@
+{
+  "schema": "sira-dios-point-tax-retrospective-manifest-v1",
+  "created_after_measurement": true,
+  "purpose": "Inventory every retained point-tax input and raw CSV. This manifest does not retroactively prove which uncommitted Dios binary produced the files labeled tightened.",
+  "host": "nix",
+  "protocol": {
+    "paired_samples": 30,
+    "warm_gets_per_sample": 1000000,
+    "candidate_over_base_orientation": true
+  },
+  "sira_harness": {
+    "base_commit": "36211b452cd31980a8123f02ca0fa993e7ae2759",
+    "worktree": "/Users/srnnkls/projects/sira/.worktrees/experiment-sira-dios-point-proof",
+    "files": [
+      {"path": "Cargo.lock", "bytes": 52431, "sha256": "3138d81a5a6a76e278e2667dd89617bbdd109545d9769317762a3f7e876320eb"},
+      {"path": "sira/Cargo.toml", "bytes": 961, "sha256": "59a87ac1ba25c9d3833bd04250190addde250a11ded39982a5ecaf2f0587854a"},
+      {"path": "sira/benches/redb_workload.rs", "bytes": 76671, "sha256": "801756af4314fc65c97408fffc09b947c73b0e771e61dbb565898c2decf2405b"},
+      {"path": "benches/plans/dios_point_tax.md", "bytes": 2929, "sha256": "0cc1b143031b5f2437ddd4baa8f8a47cbd070518e8d17f084c52a3b9247726dc"}
+    ]
+  },
+  "dios_variants": {
+    "shipping": {
+      "worktree": "/Users/srnnkls/projects/dios/.worktrees/experiment-sira-point-proof",
+      "commit": "1004a2e6fcae0bcc9552dc3211c2416e388a250d",
+      "clean": true
+    },
+    "candidate_labeled_tightened": {
+      "worktree": "/Users/srnnkls/projects/dios/.worktrees/experiment-read-protocol-tightened",
+      "base_commit": "1004a2e6fcae0bcc9552dc3211c2416e388a250d",
+      "clean": false,
+      "binary_identity_retained": false,
+      "csv_to_source_binding": "not_independently_auditable",
+      "files": [
+        {"path": "Cargo.toml", "bytes": 2169, "sha256": "6d7639a020cfdf914345cb6f626677a41f031adae3d951a705aa2a4d75ae29fe"},
+        {"path": "benches/mmap_tlb_pressure.rs", "bytes": 10720, "sha256": "67b24d243e373504f11c59ac4776d8fc183ec67d14f3cb7fec8eeadce94c4e8b"},
+        {"path": "src/pool/epoch.rs", "bytes": 14060, "sha256": "bab6c35e232114a5554a18d533ce2cd6d03ac154916cab5502df9bbf61c3cdc8"},
+        {"path": "src/pool/mod.rs", "bytes": 60396, "sha256": "99a6c26fd46746316dd82b485f2578c7693bc32bcb1561e0a69d0048086051e5"},
+        {"path": "src/pool/table.rs", "bytes": 11041, "sha256": "daf4f0128d74cf7b9489600ed88a0105331d8c44dfdc7ce05679bcbde93eeee8"},
+        {"path": "benches/plans/table_tightening.md", "bytes": 1969, "sha256": "936f9e6e810f3a0ccf563d53dbb3fce8e0509514edd7bc650de86cbed22a76cd"},
+        {"path": "benches/plans/warm_scaling.md", "bytes": 1339, "sha256": "b9e93fa32be03c0cb77fdc66328a04cd2be108d17b789661ebda454b904151e7"},
+        {"path": "benches/warm_profile.rs", "bytes": 4340, "sha256": "ff9efb45c0148bdf6bc2f38e715962145751a9f02ea76a0adab7e3a10c059a5d"},
+        {"path": "benches/warm_scaling.rs", "bytes": 5717, "sha256": "586cfe7abd8c44aaff9cd1c9e36018ab1e67f1a3d3ce03e76b8e5e3f26dca4b7"}
+      ]
+    }
+  },
+  "candidate_source_local_diagnostic": {
+    "file": "/private/tmp/sira-dios-point-proof.OqT4Wx/tightened-evidence/mmap_warm_path.csv",
+    "bytes": 501,
+    "sha256": "018d553e52e5245f4ab26fa80289e718212b074fd031ab28d248045dc86d87a8",
+    "pairs": 40,
+    "ratio_geomean": 1.4631,
+    "ci95_upper": 1.4926,
+    "disposition": "passes mmap_warm_path's absolute <=3.0 sanity bound; table_tightening's relative no-regression verdict is not auditable because its corresponding baseline CSV was not retained; this Dios microbench is not a Sira point-tax arm and does not bind the old tightened-labeled Sira CSVs"
+  },
+  "raw_csvs": [
+    {
+      "file": "sira_dios_point_1p.csv",
+      "bytes": 621,
+      "sha256": "52a324f4922c09e0a120a8cede3ad083a656ae1b3845791400b9f373fcc267b9",
+      "ratio_geomean": 1.066112,
+      "ci95_upper": 1.0664,
+      "additive_ns_per_get": 54.976137,
+      "disposition": "retained exploratory default series; excluded from the selected matched-pair projection"
+    },
+    {
+      "file": "sira_dios_point_1p_upper_bracket.csv",
+      "bytes": 621,
+      "sha256": "58c9e13728292e9d39fde7bee4ba191f4b454b0894dd82b28fc175505b335ffe",
+      "ratio_geomean": 1.064603,
+      "ci95_upper": 1.0650,
+      "additive_ns_per_get": 53.410965,
+      "disposition": "retained explicitly named upper-bracket series; excluded from the selected matched-pair projection"
+    },
+    {
+      "file": "sira_dios_point_1p_shipping_matched.csv",
+      "bytes": 621,
+      "sha256": "584d7f2f4cdffd48791f6be20bf3c9778352abd3e1844536e5b4899ec83c2984",
+      "ratio_geomean": 1.061944,
+      "ci95_upper": 1.0623,
+      "additive_ns_per_get": 51.277405,
+      "disposition": "selected shipping matched series"
+    },
+    {
+      "file": "sira_dios_point_1p_tightened_matched.csv",
+      "bytes": 621,
+      "sha256": "b1de6cb740ce3996b9f42a583ddf0533b0fefe01f7f3c05fba4627702bd3ea04",
+      "ratio_geomean": 1.0382,
+      "ci95_upper": 1.0387,
+      "additive_ns_per_get": 31.550918,
+      "disposition": "advisory candidate series labeled tightened at collection time; exact uncommitted source/binary attribution is not independently auditable"
+    },
+    {
+      "file": "sira_dios_point_2p.csv",
+      "bytes": 621,
+      "sha256": "1b2ba7c3ddcc4b286e2191951ad908e2988c603a590eb6e2175be8615e808066",
+      "ratio_geomean": 1.1047,
+      "ci95_upper": 1.1050,
+      "additive_ns_per_get": 86.715258,
+      "disposition": "byte-identical to the selected shipping two-frame series"
+    },
+    {
+      "file": "sira_dios_point_2p_shipping_matched.csv",
+      "bytes": 621,
+      "sha256": "1b2ba7c3ddcc4b286e2191951ad908e2988c603a590eb6e2175be8615e808066",
+      "ratio_geomean": 1.1047,
+      "ci95_upper": 1.1050,
+      "additive_ns_per_get": 86.715258,
+      "disposition": "selected shipping matched series"
+    },
+    {
+      "file": "sira_dios_point_2p_tightened_matched.csv",
+      "bytes": 621,
+      "sha256": "caabbfcec24d49bcf79f8a6cf23f3af94ffaa9a580aacfa05cdf8f91c0046a74",
+      "ratio_geomean": 1.0793,
+      "ci95_upper": 1.0796,
+      "additive_ns_per_get": 65.096559,
+      "disposition": "advisory candidate series labeled tightened at collection time; exact uncommitted source/binary attribution is not independently auditable"
+    }
+  ],
+  "raw_root": "/private/tmp/sira-dios-point-proof.OqT4Wx/nix-samples"
+}

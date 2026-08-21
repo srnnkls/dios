@@ -1,6 +1,9 @@
 external:
-  blocked_by: [sira-read-perf, sira-read-concurrency]
-  note: fully sequential — no batch dispatches until both parents are done
+  blocked_by: [sira-point-format]
+  note: >-
+    sira-read-perf and sira-read-concurrency are complete. Sira wiring waits
+    for sira-point-format; revision-13 retains the measured n=1 failure, so
+    AD-8/T012 additionally cannot ship until T018 closes DIO-G10.
 
 phases:
   - id: crate-core
@@ -39,7 +42,7 @@ phases:
         depends_on: [T007, T004]
       - id: T009
         files: [tests/loom_pool.rs, tests/zero_alloc.rs]
-        depends_on: [T007]
+        depends_on: [T007, T008]
 
   - id: sira-wiring
     name: sira integration (sira repository, dios as dependency)
@@ -49,16 +52,34 @@ phases:
         depends_on: []
       - id: T011
         files: [sira/src/block_source.rs, sira/src/storage.rs]
-        depends_on: [T010, T008]
+        depends_on: [T010, T008, T012]
       - id: T012
-        files: [sira/src/segment/writer.rs, sira/src/segment/footer.rs, sira/src/segment/header.rs, sira/src/write_buffer.rs]
-        depends_on: [T003, T006]
+        files: [sira/src/block.rs, sira/src/segment/writer.rs, sira/src/segment/footer.rs, sira/src/segment/header.rs, sira/src/segment/index.rs, sira/src/segment/cursor.rs, sira/src/segment/block_storage.rs, sira/src/remix.rs, sira/src/block_source.rs, sira/src/write_buffer.rs, sira-fixtures, sira/tests, sira/benches]
+        depends_on: [T003, T006, T010, T018]
       - id: T013
         files: [sira/src/manifest.rs, sira/src/journal.rs]
         depends_on: [T012, T004]
       - id: T014
-        files: [sira/benches/, scopes/draft/dios-v1/resources/measurements.md]
+        files: [sira/benches/, scopes/active/dios-v1/resources/measurements.md]
         depends_on: [T011, T013]
+      - id: T019
+        files: [.gitignore, scopes/active/dios-v1/checkpoint.yaml, scopes/active/dios-v1/scope.md, scopes/active/dios-v1/design.md, scopes/active/dios-v1/resources/remix-dios-native-experiment.md, scopes/active/dios-v1/resources/point-tax-retrospective-manifest.json, scopes/active/dios-v1/resources/remix-dios-native-rewarm-manifest.json, sira/scopes/active/sira-aligned-buffers]
+        depends_on: [T006]
+      - id: T020
+        files: [sira/benches/plans/dios_point_tax.md, sira/benches/redb_workload.rs, sira/Cargo.toml, scopes/active/dios-v1/resources/remix-dios-native-experiment.md, scopes/active/dios-v1/resources/point-tax-retrospective-manifest.json]
+        depends_on: [T019]
+      - id: T021
+        files: [sira/src/remix.rs, sira/src/remix/dios_native.rs, sira/src/white_box/remix_dios_native.rs]
+        depends_on: [T019]
+      - id: T022
+        files: [sira/benches/plans/remix-dios-native.md, sira/src/remix/dios_native.rs, sira/src/white_box/remix_dios_native.rs]
+        depends_on: [T019]
+      - id: T023
+        files: [sira/benches/plans/remix-dios-native.md, sira/src/remix/dios_native.rs, sira/src/white_box/remix_dios_native.rs, scopes/active/dios-v1/resources/remix-dios-native-experiment.md]
+        depends_on: [T020, T021, T022]
+      - id: T018
+        files: [sira/benches/plans/remix-dios-native.md, sira/benches/remix_dios_native.rs, sira/src/remix.rs, sira/src/remix/dios_native.rs, sira/src/white_box/remix_dios_native.rs, benches/plans/sira_native_hint.md, src/lib.rs, src/mock.rs, src/pool/frames.rs, src/pool/mod.rs, scopes/active/dios-v1/checkpoint.yaml, scopes/active/dios-v1/resources/remix-dios-native-experiment.md]
+        depends_on: [T023]
 
   - id: nmnm-readiness
     name: nmnm API fit
@@ -115,12 +136,18 @@ batches:
   - batch: 4
     tasks: [T005, T006]
   - batch: 5
-    tasks: [T007, T012]
+    tasks: [T007, T019]
   - batch: 6
-    tasks: [T008, T009, T013]
+    tasks: [T008, T020, T021, T022]
   - batch: 7
-    tasks: [T011, T015]
+    tasks: [T009, T015, T023]
   - batch: 8
+    tasks: [T018]
+  - batch: 9
+    tasks: [T012]
+  - batch: 10
+    tasks: [T011, T013]
+  - batch: 11
     tasks: [T014]
 
 follow_up_batches:

@@ -2,6 +2,40 @@
 
 ---
 
+Revision 14 records R7 without promoting it to shipping design. Moving repeated
+frame verification and exact coordinates out of the read loop cut the aligned
+mmap control from 519.178 to 244.537 ns/read. Unmodified general Dios `get`
+then cost 335.570 ns/read. A typed file lease plus volatile, generation-checked
+resident hint reduced that to 305.527 ns/read and materially beat general get
+(ratio 0.8813 / CI upper 0.8980 in the dedicated paired gate), but remained
+20.45% slower than locator mmap (CI upper 1.2229). The apparently hot optional
+descriptor branch was a false attribution: replacing the niche-encoded option
+with a dense vacant descriptor regressed and was reverted. The remaining
+fresh-pass cost is dominated by an extra random descriptor/cache touch plus
+the intended retained epoch/read-stability work; no guarantee was deliberately
+removed, but the lifetime/reuse claim is not accepted until Loom passes. The
+feature-mock prototype in the Dios point-proof worktree is evidence only, and
+its hinted pin cannot ship before the get/retire and evict/reuse Loom schedules
+prove that every outcome is stale or linearized before invalidation.
+
+Revision 13 separates the earlier prototype evidence from shipping design. The prototype
+is preserved at Sira commit `36211b4` in the repo-local worktrees named by
+`scope.md`. It validates the aligned-prefix codec,
+exact REMIX byte coordinates, bounded one-handle O scratch, and n=10 geometry,
+but its corrected Threadripper n=1 replacement ratio is 1.1103 with CI upper
+1.1408. These mechanisms remain candidates, not an approved vNext format,
+until T018 removes that regression and clears the fresh-process four-length
+gate. The full evidence ledger is
+`resources/remix-dios-native-experiment.md`.
+
+Revision 12 retains revision 11's page-native AD-5/AD-6/AD-8 contract but
+preserves Sira's measured prefix grammar inside each independently verifiable
+4 KiB frame. Existing AE010 evidence rejects fixed-width SoA as the shipping
+default on the canonical workload; its 22-row geometry remains a reporter
+control only. Eight frames remain one logical encoding/prefetch group, REMIX
+stores stable frame/byte-offset coordinates, oversized extents stay bounded,
+and earlier stores are rebuilt without a compatibility reader.
+
 ## Problem
 
 | Metric | Current | Target |
@@ -91,15 +125,34 @@ prefetch overlap is a uring capability. The eager-inline backend (AD-7,
 TigerBeetle's shipped darwin shape) replaces it: submit enqueues, poll
 executes the syscall on the calling thread outside the lock.
 
-### Multi-frame block assembly
+### Whole-logical-group assembly
 
-Let blocks span granule boundaries and assemble them across frames.
+Keep today's approximately 32 KiB block as the verification and borrowing
+unit, then assemble it from several Dios frames.
 
-**Rejected:** two frames are never contiguous, so a single `&[u8]` view
-requires a scratch copy — an allocation or a reserved scratch region
-that reintroduces per-read copies. AD-5/AD-6 instead bound encoded block
-size by GRANULE (vNext padding + `ValueTooLarge` cap); the cost is
-internal padding fragmentation, measured during T006 granule sizing.
+**Rejected:** a point selected by REMIX would acquire eight frames and either
+hold a fragmented view or copy the whole logical block. AD-5 instead makes
+each 4 KiB frame independently verifiable and keeps the approximately 32 KiB
+unit only for encoding and prefetch. Ordinary records are frame-local, so a
+point borrows one selected frame. The base range/extent protocol acquires,
+decodes or copies, and drops one ordinary guard/epoch before acquiring the next
+frame; a 16-frame request chunk is a control/scratch bound, not a shared epoch.
+Only AD-6's explicitly bounded oversized-record path may use preallocated
+caller scratch or a segmented consumer. A shared epoch/true gather remains a
+conditional later optimization requiring its own INV-9 amendment and proof.
+
+### Fixed-width SoA record frames
+
+Pack 22 canonical 24-byte-key/150-byte-value rows into each aligned frame,
+leaving a simple frame-local row ordinal and 152 bytes of padding.
+
+**Rejected as the selected format; retained as projection F:** adaptive
+execution's existing AE010 causal control built independent 5M-row prefix and
+fixed-width stores. On Threadripper fixed width lost by 4.2% at n=10 and 15.6%
+at n=256, used 0.99% more bytes, and a pre-resolved minor recovered at most
+1.7%. Its transparent packing arithmetic remains useful as a conservative
+geometry control, but only aligned prefix candidate B may enter T012, after its
+own end-to-end format gate clears.
 
 ### compio-driver as the driver foundation
 
@@ -324,7 +377,74 @@ State per pool: `global_epoch: AtomicU64`; per registered reader thread a
   advance; reclamation halts but correctness holds. The watermark
   invariant (INV-9) bounds the frames a well-behaved reader can hold;
   sira's cursors drop guards at block boundaries, so stalls are bugs and
-  surface as `Busy` under load, not corruption.
+  surface as `Busy` under load, not corruption. Containment escalation
+  (recorded 2026-08-21, `resources/affinity-research-2026-08.md` §2;
+  LeanStore 2018 is the closest published match and its authors
+  abandoned it for this wedge, BTW 2023 — exiting to optimistic
+  versioned reads, the branch this design rejects): first the
+  diagnostics floor, sequenced behind the read-protocol work — the
+  advance scan completes on denial instead of short-circuiting,
+  recording every denying reader slot and its consecutive-denial
+  count in poll-side control state under the AD-4 lock (extra scan
+  cost on the deny path only; never a store on the reader slot line);
+  report-only is the accepted floor (Seastar's and glommio's stall
+  detectors contain nothing). Beside the counters, a park-boundary
+  assert: the deadline-free wait verb the containment scope adds takes
+  the caller's own `&ReaderCtx` and asserts its live-guard count is
+  zero before arming. Today's `poll_wait(out, timeout)` is
+  reader-agnostic and always deadline-bounded, so the assert arrives
+  with that verb, not on the current signature. Deadline-bounded waits
+  stay exempt and may hold guards (the INV-9 merge-miss case: stall
+  bounded by the deadline, budgeted by `miss_headroom`). Escalation
+  trigger: attribution records a reader slot denying consecutive
+  advances past a threshold while
+  the Busy rate holds above a floor, and the holder is not a fixable
+  caller bug; threshold, window, and floor freeze in
+  `benches/plans/stalled_reader_containment.md` when the diagnostics
+  floor lands — this prose records the shape, the plan owns the
+  numbers. Candidates: hazard-slots per guard (publish the pinned
+  `FrameIdx`; INV-9's static peak-guard bound voids the
+  unbounded-protected-set objection; a stalled reader freezes exactly
+  its own frames; the fence moves from per-first-guard to per-guard
+  and reclaim scans `max_readers × peak_guards` slots) or
+  interval-based reclamation (per-frame birth/retire eras, one extra
+  Relaxed store per pin on the owned slot line; a stalled reader
+  blocks only frames born before its snapshot — cheaper reader side,
+  softer bound than hazard-slots). One bench is unconditional and
+  pre-trigger, riding the same post-DRP scope as the counters and the
+  park assert: a fence proxy pricing hazard-slots' reader side by
+  swapping the warm A/B's per-first-guard epoch publish for one slot
+  store + SeqCst fence + one extra page-table probe per `get` (the
+  hazard pin is lookup → publish → fence → revalidate; the warm A/B
+  drops its guard every iteration, so an additive injection would
+  price two fences, and on single-guard gets the unwidened arm is an
+  upper bound — the with-widening arm decides), arms with and without
+  the epoch-pin widening. A ratio-of-ratios over the neutral mmap arm
+  (never the proxy's own unwidened arm, which shares the probe and
+  would cancel it), asserted on the widened pair and leaving DIO-G1's
+  2% margin intact at T014,
+  makes hazard-slots eligible for owner-decided promotion to
+  candidate end-state (it deletes the wedge class — no epoch
+  consensus — rather than containing it): the proxy authorizes
+  considering the promotion, never enacting it, and promotion is the
+  one path that needs no attribution trigger. Breaking parity demotes
+  hazard-slots below interval-based reclamation and leaves
+  containment gated on the trigger. Either candidate amends INV-1's
+  two-advance rule, INV-9's watermark and its `miss_headroom`
+  derivation, and
+  (hazard-slots) the warm-hit fence budget, and replaces the T009
+  grace-period loom model, so either is its own scope, enacted only
+  as an owner decision recorded in validation.yaml and gated on the
+  stalled-reader workload (one parked guard-holder, readers cycling a
+  working set larger than the pool; metric: non-stalled eviction
+  throughput and Busy rate) — its gate shape, threshold, reps, and
+  ratio orientation freeze in
+  `benches/plans/stalled_reader_containment.md`; the test table
+  registers the workload as observation until that enactment promotes
+  it. Per-shard
+  epoch domains are rejected: with one global page table any reader
+  may pin any frame, so every grace period must consult every domain
+  — the scan this design already has.
 - Busy path: `get()` finding no evictable frame runs one bounded reclaim
   attempt — drain completions, advance the epoch if every reader
   permits, reclaim expired Evicting frames, one more CLOCK sweep — then
@@ -358,15 +478,15 @@ the first-touch bit store rides in the DIO-G1 parity bench.
 | ID | Invariant | Enforcement |
 |----|-----------|-------------|
 | INV-1 | A frame is never reused while epoch-pinned, retained, or in-flight | packed state/generation word with `FrameState` remaining exactly `Free`, `InFlight`, `Resident`, or `Evicting`; orthogonal `HELD`/count word; logical eviction remains allowed, but physical `Free`/reuse follows two epoch advances and, when retained, the last retained release plus release drain; loom tests |
-| INV-2 | Zero allocation on get/submit/poll after warmup, including Pool write/fsync completion conversion and bounded overflow retention | alloc-count harness (nmnm `zero_alloc.rs` pattern) in CI |
+| INV-2 | Zero allocation on get/submit/poll after warmup, including Pool write/fsync completion conversion, bounded overflow retention, and reuse of AD-8's fixed-capacity REMIX dedupe/order scratch | alloc-count harness (nmnm `zero_alloc.rs` pattern) in CI, with warmed O n=10 on both DIO-G10 corpus shapes |
 | INV-3 | `submit` never waits on kernel completion or queue space; `poll_wait` parks outside pool/driver control and is losslessly wakeable by I/O or `PoolWakeHandle` ingress | uring: SQ-full → flush-and-retry-once then `SubmitError::Full`; eager: bounded queue → `Full`; saturated-submit, submit-while-parked, wake-before-park, and wake-during-park tests |
 | INV-4 | Kernel never writes into memory Rust may free | frames registered at pool init (uring only; eager uses the same non-moving slab unregistered), deregistered only in `Pool::drop` after quiesce on both backends; ops address frames by index, not pointer-lifetime |
 | INV-5 | Journal one-barrier-per-micro-commit preserved | metadata plane stays buffered+fsync (AD-3); existing journal/crash suite runs through the new write plane unmodified (DIO-G5) |
 | INV-6 | Owned reader/pending capabilities cannot turn a residency borrow into transferable or `'static` bytes | `ReaderCtx: !Send + !Sync`; `PendingToken: Send + !Clone`, with `Sync` deliberately unspecified; `FrameGuard<'pool>: !Send + !Sync`, tied to Pool + destination ReaderCtx borrows; executable compile-fail/trait tests |
-| INV-7 | Resident frame content is immutable until Evicting; frames hold raw granules — per-block CRC lives above the seam in `segment::block_storage`, per fetch, as today | frames read-only until Evicting; eviction-re-read corruption test through BlockSource (DIO-G5) |
+| INV-7 | Resident frame content is immutable until Evicting; frames hold raw granules — vNext's per-frame CRC lives above the seam in Sira and is verified for every newly fetched residency | frames read-only until Evicting; corrupt one selected frame and repeat after eviction through BlockSource (DIO-G5) |
 | INV-8 | Kernel ops always drain; Pool shutdown quiesces exactly once even when lifetime-free reader/token metadata outlives the Pool value | `Pool::drop` polls until backend in-flight count is 0; PendingToken drop is waiter-interest only; drop-order observation test |
-| INV-9 | Deadlock freedom: `frame_count >= (max_concurrent_readers × peak_guards_per_reader + miss_headroom).max(1) + max_retained_frames`; separately, `miss_headroom ≥ 3 × max_inflight_reads`. Within the watermark `Busy` is bounded, retriable backpressure — reachable only under reclamation lag or a stalled reader, never deadlock | peak guards per reader = static max merge fan-out `f(ln_runs [20] + levels)`; compaction counts as a reader at peak fan-out; reader slots and distinct retained frames are capped by configuration; under-watermark config fails open; get() runs one bounded reclaim attempt before returning Busy; Busy-rate counter; open-fail test + DIO-G7 recovery + loom |
-| INV-10 | Encoded block size ≤ GRANULE | `ValueTooLarge` at the write path (AD-6); vNext writer padding (AD-5); cap-rejection test |
+| INV-9 | Deadlock freedom: `frame_count >= (max_concurrent_readers × peak_guards_per_reader + miss_headroom).max(1) + max_retained_frames`; separately, `miss_headroom ≥ 3 × max_inflight_reads`. `peak_guards_per_reader` includes one transient vNext selected-record frame; a bounded request chunk is consumed through independent one-guard epochs and creates no hidden multi-frame pin. Within the watermark `Busy` is bounded, retriable backpressure — reachable only under reclamation lag or a stalled reader, never deadlock | peak guards per reader = static max merge fan-out `f(ln_runs [20] + levels)` plus key/column/transient selected-frame needs; compaction counts as a reader at peak fan-out; reader slots and distinct retained frames are capped by configuration; under-watermark config fails open; get() runs one bounded reclaim attempt before returning Busy; Busy-rate counter; open-fail/sequential-extent recovery tests + DIO-G7 recovery + loom. Any future shared `ReadEpoch` must amend this invariant first |
+| INV-10 | Every ordinary vNext record is contained in one independently checksummed frame; every oversized record is an explicit 2..=16-frame extent | frame packer/decoder assertions (AD-5/AD-6); 4,040/4,041-byte boundary test; extent-cap rejection before writer I/O |
 | INV-11 | No op references a closed fd, reused op slot, reused write buffer, or retired/reused product file generation | advanced ownership remains `close(FileHandle)` by value with deferred close; Pool closes get/write/fsync admission on `Retiring`, returns rejected `PoolWriteSlot`, drains admitted reads/writes/fsyncs and owned completions, waits for tokens/guards/EBR, and reaches `Retired` only after close; stale-generation and retirement matrix tests |
 
 ---
@@ -378,7 +498,7 @@ the first-touch bit store rides in the DIO-G1 parity bench.
 | Crates | sira workspace, no IO crate | standalone `dios` crate + sira dependency on it | +1 crate (own repository), extraction done up front |
 | Read backends | 1 (mmap) | 2 behind `BlockSource` (pool: Linux; mmap: macOS) | +1 seam, +1 backend |
 | Write plane | `CommitFs` → std::fs | `CommitFs` → `dios` driver (O_DIRECT data via WriteArena / buffered metadata) | same trait, new impl |
-| Segment format | unpadded, unbounded blocks | vNext granule padding, version bump, GRANULE-capped blocks | writer + fixtures change; old stores rebuild |
+| Segment format | unaligned, whole-block CRC over roughly 32 KiB packed blocks | aligned independently checksummed 4 KiB record frames, eight-frame logical groups, bounded extents, version bump | writer, REMIX ordinals, decoder, and fixtures change; old stores rebuild |
 | unsafe surface | mmap map + borrow discipline | ring registration, epoch guard deref, frame state (encapsulated in `dios`) | shifted into one audited crate |
 | Failure model (reads) | SIGBUS | `Err` completions | strictly better |
 | Ops burden | kernel manages residency | crate manages residency (CLOCK, sizing, watermark) | new knobs: pool size ≥ watermark, GRANULE |
@@ -394,7 +514,7 @@ the first-touch bit store rides in the DIO-G1 parity bench.
 | loom: concurrent get/evict/complete on one frame | INV-1 | no interleaving reuses a pinned or in-flight frame |
 | loom: guard held across evict + two epoch advances | INV-1, EBR | frame not freed until second advance after last drop |
 | loom: probe/publish-epoch/evict interleave on guard create | INV-1, EBR | reader observing Evicting or removed mapping takes the miss path, never derefs |
-| zero_alloc harness: warm get/miss plus Pool write/fsync/report/overflow drain | INV-2 | 0 allocs after warmup on both backends |
+| zero_alloc harness: warm get/miss, warmed REMIX O dedupe/order scratch, plus Pool write/fsync/report/overflow drain | INV-2, AD-8, DIO-G10 | 0 internal allocs after warmup on both backends |
 | saturate SQ / eager queue, then submit | INV-3 | `SubmitErr::Full`, no block, recovery after poll |
 | single-thread writer exhausts WriteArena, alloc_wait (eager backend, no external poller) | write-plane liveness | slot freed by driver pump, no self-wait, no timeout |
 | drop Pool with in-flight reads | INV-4, INV-8 | quiesce completes, no UAF under miri/asan run |
@@ -408,11 +528,22 @@ the first-touch bit store rides in the DIO-G1 parity bench.
 | corrupt block on disk, cold + re-read after eviction | INV-7 | CRC error surfaces from BlockSource verify on each fetch |
 | pool sized below watermark | INV-9 | store open fails with config error |
 | watermark-sized pool, all spare frames pinned, get(absent) | INV-9, DIO-G7 | `Busy`/`Pending`, no deadlock, recovers on guard drop |
-| put exceeding GRANULE-bounded block size | INV-10 | `ValueTooLarge`, nothing reaches the writer |
+| aligned-prefix frame prospective-fill boundary | AD-5, INV-10 | prefix state resets at the frame, every admitted entry plus restart directory fits bytes 16..4092, REMIX minor is its exact byte offset, padding is zero, and the frame verifies independently |
+| aligned-prefix B vs current-prefix mmap, n=1/10/256/4096 | AD-5, DIO-G10 | every B/current paired-log one-sided 95% CI upper bound is <=1.02 over at least 30 paired process reps; store and fetched bytes retained |
+| targeted in-process B/current replacement preflight, n=1/10 | revision-13 evidence only | record both outcomes without promoting them to the fresh-process gate; observed nix rewarm n=1 1.1103/1.1408 FAIL and n=10 0.9609/0.9615 PASS |
+| 24-byte key with 4,040- and 4,041-byte canonical values | AD-5, AD-6, INV-10 | 4,040 occupies exactly one ordinary frame; 4,041 occupies exactly two extent frames; every frame verifies independently |
+| put exceeding the 16-frame extent bound | AD-6, INV-10 | `ValueTooLarge`, nothing reaches the writer |
+| corrupt extent header with otherwise well-formed payload/padding | AD-5, AD-6, INV-10 | frame CRC fails before any header field controls allocation, indexing, or fetch count |
+| extent with missing/truncated, duplicate, reordered, wrong-identity, wrong-total, or surplus continuation | AD-6, INV-10 | bounded decode returns typed corruption; no partial value, panic, allocation, or out-of-bound fetch |
+| REMIX ordinal after eviction/reuse | AD-8, INV-1 | resolves the same file-relative frame and exact prefix-entry byte offset through a fresh `PageId`; a fixture makes row ordinal differ from byte offset and decode consumes only the stored coordinate; no stale `FrameIdx` exists in the view |
+| experimental resident-file lease acquisition races retire and file-slot reuse | R7 adoption blocker, INV-1, INV-11 | lease acquisition either fails stale or linearizes before retirement; no hinted pin can authorize the reused file generation |
+| experimental hinted pin races mapping removal, eviction, two epoch advances, and frame reuse | R7 adoption blocker, INV-1 | pin returns stale/fallback or a guard linearized before invalidation; it never exposes bytes from the reused frame generation |
+| every reader sequentially consumes a 16-frame extent/request chunk at the exact watermark | INV-9, AD-8 | each guard/epoch drops before the next get; decode completes and one frame below the declared peak-guard formula fails open |
 | 64 concurrent cold gets (Linux, O_DIRECT) | DIO-G3 | wall ≤ 2.0x p50 single-miss latency |
-| pinned parity bench (Linux, 1/5 scale, decoded cache bypassed) | DIO-G1 | ratio CI upper bound ≤ 1.02 (non-inferiority) |
+| pinned parity bench (Linux, 1/5 scale, artifact memo warm in both arms; no byte cache exists to bypass) | DIO-G1 | ratio CI upper bound ≤ 1.02 (non-inferiority) |
 | write-plane A/B: segment flush + journal micro-commit vs retained RealFs arm (Linux, pinned host) | DIO-G8 | each ratio CI upper bound ≤ 1.02 (non-inferiority) |
 | scan workload: sweep > pool size interleaved with point-gets | eviction quality (S3-FIFO escalation evidence) | per-ReaderCtx hit/eviction counters recorded in measurements.md — observation, not a gate |
+| one parked guard-holder plus readers cycling a working set > pool size | stall containment escalation evidence | non-stalled eviction throughput and Busy rate recorded in measurements.md — observation, not a gate |
 | pre-vNext store open | DIO-R3, AD-5 | rejected with rebuild-required format error |
 | close(FileHandle) with ops in flight (both backends) | INV-11 | ops complete on the old fd; close(2) observed only after drain; no fd-number recycling race on eager |
 | submit_read with a stale-generation FileId | INV-11 | rejected before an op is issued |
@@ -512,5 +643,6 @@ the first-touch bit store rides in the DIO-G1 parity bench.
   lifetime-free/Result-returning surface in T017. The obsolete
   ReaderCtx-cannot-outlive-Pool doctest is removed, not copied into inert
   integration-test prose. The guard escape and reader thread-affinity
-  doctests remain executable. This document records the selected design;
-  T017 implementation and its A.5/Phase-C reviews are still pending.
+  doctests remain executable. This document records the selected design.
+  T017's A.5 gate is approved and Phase B is green; Phase C/final review is
+  still pending.

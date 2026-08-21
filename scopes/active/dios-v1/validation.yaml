@@ -1,8 +1,8 @@
 metadata:
   issue_type: Feature
   created: 2026-07-07
-  last_updated: 2026-07-20
-  revision: 10
+  last_updated: 2026-08-19
+  revision: 14
   questions_used: 5
   questions_limit: 5
   approach: "Completion reactor (TigerBeetle-shaped) + registered frame pool; platform-split defaults (pool on Linux, mmap on macOS)"
@@ -17,9 +17,8 @@ ambiguity_scan:
     status: clear
     gaps: []
   data_model:
-    status: partial
-    gaps:
-      [frame granule default pending block-size + max-value measurement (T006)]
+    status: clear
+    gaps: []
   constraints:
     status: clear
     gaps: []
@@ -27,8 +26,8 @@ ambiguity_scan:
     status: clear
     gaps: []
   integration:
-    status: partial
-    gaps: [Linux bench environment unresolved (open question)]
+    status: clear
+    gaps: []
   terminology:
     status: clear
     gaps: []
@@ -129,26 +128,41 @@ clarification_log:
       owner-directed evolution after its RED review clears.
     impact_uncertainty: high
     integration: scope.md revision 10 API Contract/DIO-R6/DIO-G9; design.md post-v1 Sira-fit product boundary; tasks.yaml T017
+  - id: C010
+    area: data_model
+    question: "May Sira's segment format break, and should REMIX carry Dios-native acquisition metadata?"
+    answer: >-
+      Yes: no backward compatibility is required. Use aligned independently
+      checksummed 4 KiB record frames inside approximately 32 KiB logical
+      encoding/prefetch groups. Reinterpret the existing REMIX ordinal as a
+      stable file-relative frame + exact frame-local prefix-entry byte offset
+      and derive bounded gathers on
+      demand; never store live Dios frame or epoch identities. Ordinary
+      records stay frame-local and oversized records use explicit extents
+      bounded at 16 frames. A second persistent descriptor vector is optional
+      and must earn its own storage/timing gate. Revision 12 preserves the
+      existing prefix entry/restart grammar inside each frame because AE010
+      falsified fixed-width end-to-end; the 22-row SoA is projection F only.
+    impact_uncertainty: high
+    integration: scope.md revision 12 AD-5/AD-6/AD-8; design.md revision 12; tasks.yaml T012
 
 markers:
   - id: M001
     area: data_model
-    description: "GRANULE default value — fixed in T006 by block-size distribution measurement with max value size as input (AD-6)"
+    description: "GRANULE default value — fixed in T006 at 4096; revision 12 retains it as Sira vNext's independent frame size"
     doc_ref: "scope.md#open-questions"
     status: resolved
     resolution: >-
-      GRANULE_DEFAULT = 4096, fixed in T006 (2026-07-10) from the recorded
-      S003 measurement (gestalt store, 36,423 rows: max value 758 B, 36,421
-      values <= 16 B) — every measured value fits one sector, padding
-      fragmentation is negligible, so the O_DIRECT sector floor is the
-      granule. Derivation carried in GRANULE_DEFAULT's rustdoc
-      (src/pool/mod.rs). Per-store override remains a construction
-      parameter; a fresh distribution measurement over sira stores can
-      revisit the default at T011/T014 without an API change.
+      GRANULE_DEFAULT = 4096, fixed in T006 (2026-07-10) at the O_DIRECT
+      sector floor. Revisions 11/12 decouple this physical verification/residency
+      frame from Sira's approximately 32 KiB logical encoding/prefetch group,
+      so changing the pool granule is no longer the warm-read layout lever.
+      Dios retains a generic construction override; Sira vNext requires 4096
+      and rejects a mismatched pool configuration.
   - id: M004
     area: scope
-    description: "Value-log (WiscKey) escalation scope if the AD-6 cap binds"
-    doc_ref: "scope.md#ad-6-hard-value-size-cap"
+    description: "Value-log (WiscKey) escalation scope if AD-6's 16-frame extent cap binds"
+    doc_ref: "scope.md#ad-6-bounded-oversized-record-extents"
     status: open
     resolution: null
   - id: M002
@@ -178,6 +192,37 @@ markers:
     doc_ref: "scope.md#api-contract"
     status: open
     resolution: null
+  - id: M006
+    area: integration
+    description: >-
+      Adaptive-HEAD REMIX/Dios-native structural and timing experiment must
+      decide on-demand O viability separately from persistent P metadata
+    doc_ref: "scope.md#ad-8-remix-supplies-stable-acquisition-coordinates"
+    status: open
+    resolution: >-
+      Frozen pre-timing on 2026-08-18 with an amendment ledger; the untracked
+      pre-code draft has no recoverable content hash and is not represented as
+      the unchanged current plan. n=1 and binding n=10 are reported separately
+      on the preserved one-L1 control and a retained one-L1-plus-four-L0 overlap
+      falsifier. n=256,4096,full stay fixture-tested and become real-corpus
+      diagnostics only after an acquisition-driven n=10 miss. For n=10 on each
+      corpus, O must
+      clear >=30 interleaved paired process repetitions with one-sided 95%
+      paired-log-ratio CI upper bounds O/A <=1.02 and Dios acquisition share
+      <=2.0%, add zero persistent bytes, allocate zero times from fixed warmed
+      scratch, and clear an unchanged-point O/A canary CI upper bound <=1.01 on
+      both corpora through retained CSVs and Dios's shared compare harness.
+      Failure blocks AD-8/T012 for redesign. P is optional and
+      is rejected alone if it exceeds 2 B/live-key, misses O's timing/correctness
+      bounds, or regresses unused canaries above 1.01. Commands and raw-artifact
+      schema live in sira/benches/plans/remix-dios-native.md; a frozen plan
+      identity and immutable manifest bind every strict two-column comparison
+      CSV by SHA-256 and provenance. No parity result
+      is recorded until retained artifacts and the scope review gate are complete.
+      Candidate aligned-prefix B separately compares end-to-end through mmap
+      with the current prefix format at n=1,10,256,4096; every B/current CI
+      upper bound must be <=1.02 or T012 remains blocked. Fixed projection F
+      cannot satisfy that causal format gate.
 
 clarification_sessions:
   - id: S002
@@ -259,10 +304,10 @@ gates:
     reason: "Feature"
 
 deferred:
-  - area: data_model
-    question: "Frame granule default (block-size distribution + max-value input, T006)"
   - area: integration
-    question: "Linux bench environment (box vs CI runner) for DIO-G1..G3 — Phase 3 entry gate"
+    question: "Revision-13 DIO-G10 closeout after the measured aligned-prefix n=1 failure (M006)"
+  - area: integration
+    question: "Revision-10 T017 production/review completion (M005)"
 
 design_context:
   design_opted_in: true
@@ -272,6 +317,7 @@ design_context:
     - "futures + owned buffers (monoio BufResult shape)"
     - "runtime-allocated read views (glommio ReadResult)"
     - "sync-inline darwin backend (TigerBeetle literal port) — became the selected eager-inline portable backend via C007/AD-7"
+    - "fixed-width SoA aligned frames — retained as projection F only after adaptive AE010 lost to prefix end-to-end"
   source: session research 2026-07-07 (TigerBeetle io analysis, nmnm design map, sira architecture map, local monoio/glommio API inspection)
 
 readiness:
@@ -284,7 +330,7 @@ readiness:
 loqui_check:
   present: true
   language: rust
-  status: applied-to-revision-10-contract; production-review-pending
+  status: applied-to-revision-12-contract; production-review-pending
   violations: []
   adherence_notes: |
     Revision 10 applies ownership-is-design, newtype/product-boundary,
@@ -298,24 +344,110 @@ review_config:
 api_evolution_gate:
   revision: 10
   task: T017
-  status: pending
-  test_review: issues_found
-  implementation: not_started
-  phase_c: not_started
+  status: in_progress
+  test_review: approved
+  implementation: phase_b_green
+  phase_c: dispatched
   note: >-
     The original review_gate pass covers revisions 1-9 only. Revision 10
     cannot inherit it; A.5 must clear on the coherent RED suite before GREEN.
 
+format_evolution_gate:
+  revision: 14
+  evidence_task: T018
+  blocked_task: T012
+  status: blocked
+  experiment: r7_native_hint_complete_with_n1_failure
+  scope_review: pending
+  note: >-
+    T019--T023 preserve the breaking page-native prototype and its R6 evidence.
+    Structural n=1/n=10 geometry is favorable and the corrected nix n=10
+    replacement preflight passes at 0.9609/0.9615, but n=1 fails at
+    1.1103/1.1408. The in-process test also does not satisfy the required
+    fresh-child n=1/10/256/4096 protocol. R7's native locator displaces the
+    format work and its compact hint materially beats general get, but the
+    fresh-process hint/locator ratio remains 1.2045/1.2229 and the Loom
+    adversaries are not implemented. T012 therefore remains blocked; T018 is
+    in progress and must still clear the full formal gate before any format
+    approval or integration onto the current adaptive branch.
+
+experiment_retrofit:
+  revision: 13
+  tasks_done: [T019, T020, T021, T022, T023]
+  final_gate_task: T018
+  worktrees:
+    aligned_buffers: /Users/srnnkls/projects/sira/.worktrees/experiment-sira-aligned-buffers
+    point_tax: /Users/srnnkls/projects/sira/.worktrees/experiment-sira-dios-point-proof
+    dios_dependency: /Users/srnnkls/projects/dios/.worktrees/experiment-sira-point-proof
+    dios_candidate: /Users/srnnkls/projects/dios/.worktrees/experiment-read-protocol-tightened
+  commits:
+    sira_measured_base: 36211b452cd31980a8123f02ca0fa993e7ae2759
+    dios_dependency: 1004a2e6fcae0bcc9552dc3211c2416e388a250d
+  evidence: scopes/active/dios-v1/resources/remix-dios-native-experiment.md
+  verdict: >-
+    Preserve the mechanisms and n=10 signal as design inputs; reject production
+    migration until n=1 is fixed and the formal gate passes. No shipping Dios
+    branch changed; the point-proof worktree now contains a separately
+    manifested feature-mock native-hint experiment, while the repo-local
+    atomic-table candidate remains unbound to the old tightened-labeled CSVs.
+
+r7_point_path:
+  date: 2026-08-19
+  task: T018
+  status: measured_parity_failed_safety_pending
+  workload: 8192 deterministic n=1 reads; checksum 17131094364009660908
+  formal_pairs: 30
+  results:
+    current_to_locator: {current_ns_read: 519.177686, locator_ns_read: 244.536702, ratio: 0.4710, ci95_upper: 0.4731}
+    locator_to_direct: {locator_ns_read: 252.410754, direct_ns_read: 335.570292, ratio: 1.3280, ci95_upper: 1.3478}
+    locator_to_compact_hint: {locator_ns_read: 253.701737, hint_ns_read: 305.527327, ratio: 1.2045, ci95_upper: 1.2229}
+    direct_to_compact_hint: {direct_ns_read: 354.724703, hint_ns_read: 311.982703, ratio: 0.8813, ci95_upper: 0.8980, threshold: 0.95, gate: pass}
+  rejected_dense_descriptor:
+    smoke_pairs: 5
+    locator_ns_read: 251.398071
+    hint_ns_read: 325.522217
+    disposition: reverted
+  adoption_blockers:
+    - loom_file_lease_acquire_vs_retire_and_file_slot_reuse
+    - loom_hinted_pin_vs_evict_two_epoch_advances_and_frame_reuse
+  evidence: scopes/active/dios-v1/resources/remix-dios-native-experiment.md
+
 review_gate:
-  status: passed
+  last_passed_revision: 9
+  pending_revisions: [10, 11, 12, 13, 14]
   rounds: 4
   reviewers: [claude-opus, claude-sonnet, codex-gpt5.5, gemini-3.5-flash]
   reviewed_at: 2026-07-07
   blocking_found: 18
   blocking_resolved: 18
   deferred_nits: []
-  note: rounds 1-3 full 2x2 (S002-S004); round 4 targeted opus confirmation of the six S004 folds — verdict pass, no new critical/high
+  note: >-
+    Historical rounds 1-3 full 2x2 (S002-S004) and round 4 targeted opus
+    confirmation passed revisions 1-9. That pass is retained as history only;
+    the canonical gate is pending because revision 10 has its own unfinished
+    API gate and revisions 11/12 require DIO-G10 evidence plus material-delta
+    re-review before T012 may start.
   post_gate_revisions:
+    - id: R14
+      date: 2026-08-19
+      decisions: [retain aligned native locator, retain compact hint as experiment only, reject dense descriptor, keep T018 in progress and T012 blocked]
+      touched: [checkpoint.yaml, scope.md, design.md, tasks.yaml, dependencies.yaml, validation.yaml, resources/remix-dios-native-experiment.md]
+      confirmation: pending
+      findings:
+        - "native locator/current ratio 0.4710/0.4731; format decode and verification were the dominant removable work"
+        - "compact hint/direct ratio 0.8813/0.8980 passes materiality, but hint/locator 1.2045/1.2229 fails parity"
+        - "dense descriptor regressed and was reverted; feature-mock hint remains blocked on two Loom adversaries"
+    - id: R13
+      date: 2026-08-18
+      decisions: [repo-local experiment worktrees, retrofitted T019-T023, preserve failed n=1 verdict, keep T018/T012 blocked]
+      touched: [.gitignore, checkpoint.yaml, scope.md, design.md, tasks.yaml, dependencies.yaml, validation.yaml, resources/remix-dios-native-experiment.md, resources/point-tax-retrospective-manifest.json, resources/remix-dios-native-rewarm-manifest.json]
+      confirmation: passed-after-fold
+      reviewers: [codex-native/dios_scope_review, codex-native/evidence_audit]
+      findings:
+        - "5M structural: 16,384 checksum-matched observations; n=1 exactly one aligned frame; n=10 mean 1.390747 frames and never above two"
+        - "corrected nix replacement preflight: n=10 0.9609/0.9615 PASS; n=1 1.1103/1.1408 FAIL"
+        - "point-tax upper bracket: tightened one frame +31.550918 ns/get, ratio 1.0382/1.0387; not statistical noise"
+        - "prototype remains test/experiment-only and is based on adaptive commit 36211b4; no shipping Dios branch changed; candidate source is isolated and old CSV attribution remains advisory"
     - id: R1
       date: 2026-07-07
       decisions: [C007 eager-inline portable backend, C008 cross-platform pool with platform-split defaults]
@@ -417,6 +549,46 @@ review_gate:
         Specification recorded only. T017 RED tests remain under A.5 review;
         implementation, full migrations, zero-allocation evidence, and Phase C
         are not green and the original v1 review pass does not approve R10.
+    - id: R11
+      date: 2026-08-18
+      decisions:
+        - "owner-directed breaking Sira format change: no backward-compatible reader; pre-vNext stores rebuild"
+        - "4096-byte aligned independently CRC32C-protected record frames are the verification/residency unit; eight frames form the approximately 32 KiB logical encoding/prefetch group"
+        - "canonical 24-byte-key/150-byte-value SoA frames hold 22 rows and 152 zero-padding bytes; ordinary records never spill"
+        - "oversized records use explicit 2..=16-frame extents; excess is ValueTooLarge before writer I/O"
+        - "REMIX existing ordinals carry stable file-relative frame + encoding-specific minor coordinates; bounded on-demand O dedupes acquisitions and restores logical order without live FrameIdx/epoch identities"
+        - "persistent P descriptors are optional and may fail their <=2 B/live-key gate without rejecting O or the page-native format"
+        - "frame CRC32C covers exact bytes 0..4092 including the typed header and zero padding; extent headers are parsed only after CRC and malformed continuation topology returns typed corruption"
+        - "base vNext acquisition consumes bounded request chunks and oversized extents through independent one-frame guard/epoch lifetimes; no shared ReadEpoch or hidden 16-frame watermark charge is assumed, and any true-gather follow-up must amend INV-9"
+        - "DIO-G10 independently gates on-demand O at n=10 on both corpora: >=30 paired reps, O/A CI upper <=1.02, acquisition-share CI upper <=2.0%, zero persistent bytes, zero warmed allocations; O failure blocks AD-8/T012"
+      touched:
+        - "scope.md revision note/AD-5/AD-6/AD-8/Data Model/watermark/DIO-R2,R3,R4/DIO-G10/Acceptance/Non-Goals/Gotchas"
+        - "design.md alternative/INV-7/INV-9/INV-10/complexity/test table"
+        - "tasks.yaml T006/T011/T012/T014/T018/meta"
+        - "dependencies.yaml T011/T012/T014/T018 ownership and ordering"
+        - "validation.yaml C010/M001/M004/M006/deferred/review_gate/format_evolution_gate/R11"
+      confirmation: >-
+        Pending adaptive-HEAD experiment evidence and independent material-delta
+        review. No parity or implementation gate is claimed green.
+    - id: R12
+      date: 2026-08-18
+      decisions:
+        - "existing adaptive AE010 evidence restores the format rationale: fixed width lost prefix on the identical 5M 24-byte-key/150-byte-value corpus (TR +4.2% n=10, +15.6% n=256, +0.99% bytes; pre-resolved minor recovered at most 1.7%)"
+        - "candidate B keeps revision 11's aligned independently CRC32C-protected 4096-byte frames but preserves the current prefix entry/restart grammar, resets prefix state per frame, and stores an exact frame-local byte offset in REMIX"
+        - "candidate B pins the canonical 24-byte-key boundary: 4,040 value bytes occupy one ordinary frame and 4,041 occupy two extent frames"
+        - "the 22-row/152-padding fixed SoA becomes structural projection F only; it cannot satisfy the shipping-format gate"
+        - "T018 separately compares candidate B with today's roughly 32 KiB prefix format end-to-end through mmap at n=1/10/256/4096; every B/current paired-log one-sided 95% CI upper bound must be <=1.02 over at least 30 paired process reps"
+        - "O and B must both pass before T012; favorable acquisition arithmetic cannot hide a format regression"
+        - "O additionally preserves the unchanged point path on both corpora with an O/A canary CI upper bound <=1.01 checked from retained paired CSV by Dios's shared compare harness"
+      touched:
+        - "scope.md revision note/AD-5/Data Model/DIO-G10/Acceptance"
+        - "design.md revision note/alternatives/test table"
+        - "tasks.yaml T012/T018"
+        - "validation.yaml C010/M001/M006/deferred/review_gate/format_evolution_gate/R12"
+      confirmation: >-
+        Pending T018 structural and timing evidence plus independent
+        material-delta review. No format, parity, or implementation gate is
+        claimed green.
 
 notes: |
   User decisions deliberately exceed the assistant's recommendations on three

@@ -1,0 +1,98 @@
+{
+  "schema": "sira-remix-dios-native-retrospective-artifact-manifest-v1",
+  "namespace": "36211b4/20260818-r6/format-B-preflight-rewarm",
+  "created_after_measurement": true,
+  "purpose": "Cryptographically bind the retained corrected targeted preflight; this post-hoc manifest does not promote it to the formal gate.",
+  "thresholds_changed_after_timing": false,
+  "host": {
+    "name": "nix",
+    "cpu": "Threadripper 3970X",
+    "kernel": "6.6.64",
+    "affinity": "cpu 0"
+  },
+  "source": {
+    "repository": "/Users/srnnkls/projects/sira",
+    "worktree": "/Users/srnnkls/projects/sira/.worktrees/experiment-sira-aligned-buffers",
+    "branch": "experiment/sira-aligned-buffers",
+    "base_commit": "36211b452cd31980a8123f02ca0fa993e7ae2759",
+    "files": [
+      {
+        "path": "benches/plans/remix-dios-native.md",
+        "bytes": 35216,
+        "sha256": "7a0c298f950fac8ed9f1dba375ff21f721ab5b9ae421488563922209bbbeb5af",
+        "git_blob": "db4756581ecc48d4f12e80fe8703c743d2b0eecb"
+      },
+      {
+        "path": "sira/src/remix.rs",
+        "bytes": 55155,
+        "sha256": "fcb2c1aaa461a1480f0395ad737effe2ec8c13901b80f27463aa344bf78cf231"
+      },
+      {
+        "path": "sira/src/remix/dios_native.rs",
+        "bytes": 123214,
+        "sha256": "f3f47852656ba49c802f9116914ce9669d5180409a95445b3dafa506a806bf36"
+      },
+      {
+        "path": "sira/src/white_box/mod.rs",
+        "bytes": 2391,
+        "sha256": "0c090f0f263376cc59dfcae4905e49512f7cc4a2ea924b40ac1a7432cbd96a39"
+      },
+      {
+        "path": "sira/src/white_box/remix_dios_native.rs",
+        "bytes": 60698,
+        "sha256": "076763b26543122783af4e0254ce17747ede0d37021e9abaaa2c840bda2aa58e"
+      }
+    ]
+  },
+  "corpus": {
+    "name": "fp-full",
+    "selected_generation": 50,
+    "shards": 8,
+    "runs_per_shard": 1,
+    "remote_root": "/home/srnnkls/build/sira-readprof/fp-full/sira",
+    "manifest": {
+      "path": "/private/tmp/remix-native-evidence-r6/fp-full-corpus-files.sha256",
+      "bytes": 990,
+      "sha256": "7fa249ad9c4c4781650ce4a60baa2035c9e5cbb30d8796e4150fff1f21fb13ae"
+    }
+  },
+  "protocol": {
+    "kind": "targeted-in-process-replacement-preflight-rewarm",
+    "repetitions": 30,
+    "query_count_per_arm": 8192,
+    "lengths": [1, 10],
+    "same_arm_rewarm_immediately_before_timing": true,
+    "base": "current-prefix mmap",
+    "candidate": "aligned-prefix direct reader",
+    "formal_fresh_child_gate": false
+  },
+  "artifacts": [
+    {
+      "path": "format-preflight-summary.json",
+      "bytes": 792,
+      "sha256": "ab5d538d12e387608000fe23fd69cbd853ba266dc458edebfe338a33eaa66532"
+    },
+    {
+      "path": "paired-aligned-prefix-over-current-prefix-n1.csv",
+      "bytes": 501,
+      "sha256": "4232900d89e14d85546837a0fadbdbf712857b0835cf7f735aa3bf4f06a62fdf",
+      "ratio_geomean": 1.1103,
+      "ci95_upper": 1.1408,
+      "threshold": 1.02,
+      "verdict": "fail"
+    },
+    {
+      "path": "paired-aligned-prefix-over-current-prefix-n10.csv",
+      "bytes": 561,
+      "sha256": "dcddf650cbcf3acc45ddada02fd14153c5d8e39ee185ae7d808881680f503627",
+      "ratio_geomean": 0.9609,
+      "ci95_upper": 0.9615,
+      "threshold": 1.02,
+      "verdict": "pass"
+    }
+  ],
+  "artifact_roots": {
+    "local": "/private/tmp/remix-native-evidence-r6/fp-full-nix-format-preflight-rewarm",
+    "remote": "/home/srnnkls/build/sira-remix-native-artifacts/36211b4/20260818-r6/format-B-preflight-rewarm"
+  }
+}

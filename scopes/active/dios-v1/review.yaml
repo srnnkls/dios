@@ -388,7 +388,7 @@ batch_reviews:
     tasks: [T004, T007]
     test_review:
       rounds: 4
-      gate: cleared -> Phase B (round 4 unanimous: opus, codex, gemini)
+      gate: "cleared -> Phase B (round 4 unanimous: opus, codex, gemini)"
       round_1:
         reviewers: [claude-opus, claude-sonnet, gemini-3.5-flash]
         codex: stalled twice, skipped by peer (known flakiness; gemini ok satisfies the >=1-external gate)
@@ -1124,6 +1124,19 @@ batch_reviews:
     outcome: >-
       approved — committed on the container gate per the owner decision
       (bench-host re-run for batches 5-7 owed on its return)
+scope_revision_reviews:
+  - revision: 13
+    date: 2026-08-18
+    reviewers: [codex-native/dios_scope_review, codex-native/evidence_audit]
+    outcome: passed-after-fold
+    material_findings_found: 7
+    material_findings_resolved: 7
+    note: >-
+      Repo-local worktree ownership, retrofit task/DAG metadata, T017 state,
+      raw evidence provenance, manifest identities, and the adverse n=1
+      disposition were independently rechecked. This clears revision 13's
+      documentation retrofit only; the canonical gate remains pending for
+      unfinished T017 and DIO-G10 work.
 issues:
   critical: []
   high: []
