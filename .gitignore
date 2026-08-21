@@ -1,8 +1,8 @@
 /target
-/resources/
-/.reviews/
-/.artifacts/
+/resources
+/.reviews
+/.artifacts
 /.worktrees/
 /.claude/worktrees/
 /.worktreeinclude
-.peer/
+.peer
