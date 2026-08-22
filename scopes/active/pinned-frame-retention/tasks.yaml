@@ -151,7 +151,7 @@ tasks:
       publish-between-pending-clear-and-ring-scan ordering, then add the
       cfg(test)/testing-extension barrier that makes the schedule
       deterministic; implementation follows only after the RED is captured.
-    status: pending
+    status: done
     depends_on: [T3]
     files: [src/pool/retention.rs, src/pool/epoch.rs, src/pool/mod.rs, src/pool/loom_model.rs, src/lib.rs]
 

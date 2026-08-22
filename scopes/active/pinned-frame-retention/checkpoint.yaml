@@ -2,9 +2,9 @@ checkpoint:
   scope_name: pinned-frame-retention
   scope_path: ./scopes/active/pinned-frame-retention
   branch: feat/pinned-frame-retention
-  timestamp: 2026-08-21T21:38:59Z
-  last_batch: 2
-  last_commit: 0db6c23da29f31632a9bce9141736d580413dd40
+  timestamp: 2026-08-22T06:24:20Z
+  last_batch: 3
+  last_commit: f9e967406deefb1a373b608113565dc86224af02
   tasks:
     done:
       - id: T1
@@ -15,9 +15,10 @@ checkpoint:
         name: Retention context, budget tally, builder knob
       - id: T3
         name: RetainedFrame and into_retained promotion
+      - id: T4
+        name: Drain integration, release ring, direct free, accounting
     in_progress: []
     pending:
-      - {id: T4, name: Drain integration, release ring, direct free, accounting}
       - {id: T5, name: Integrate retention with file retirement and slot reuse}
       - {id: T6, name: Loom retention cases}
       - {id: T7, name: Wire public diagnostics and acceptance hardening}
@@ -25,13 +26,16 @@ checkpoint:
       - {id: T8b, name: Exact-R8-scale shipping arm}
       - {id: T9, name: Docs and invariant fold-back}
   next_batch:
-    number: 4
-    id: B4
+    number: 5
+    id: B5
     tasks:
-      - id: T4
-        name: Drain integration, release ring, direct free, accounting
-        files: [src/pool/retention.rs, src/pool/epoch.rs, src/pool/mod.rs, src/pool/loom_model.rs, src/lib.rs]
-    parallel: false
+      - id: T5
+        name: Integrate retention with file retirement and slot reuse
+        files: [src/pool/retention.rs, src/pool/mod.rs, src/lib.rs, tests/retention_retirement.rs]
+      - id: T6
+        name: Loom retention cases
+        files: [src/pool/loom_model.rs, tests/loom_pool.rs]
+    parallel: true
   deferred_issues:
     - batch: 1
       severity: medium
@@ -42,13 +46,18 @@ checkpoint:
     path: ./scopes/active/pinned-frame-retention/config.yaml
     epoch_id: 20260821T150300Z-376a8f
   phase_cursor:
-    batch: 3
+    batch: 4
     phase: code_review
     status: success
-    tasks: [T2, T3]
-    updated_at: 2026-08-21T21:38:59Z
-    tester_report: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-tester-T2-review-fix/codex-native.yaml
-    test_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-test-review
+    tasks: [T4]
+    updated_at: 2026-08-22T06:24:20Z
+    tester_report: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-tester-T4/codex-native.yaml
+    test_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-test-review-T4
+    general_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-review-general
+    architecture_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-review-architecture
+    compliance_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-review-compliance
+    review_fix: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-review-fix-T4-terra
+    targeted_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-targeted-review
   review_history:
     batch_1_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-review-general
     batch_1_targeted_review_round_1: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-targeted-review
@@ -63,6 +72,12 @@ checkpoint:
     batch_3_compliance_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-recovery-review-compliance
     batch_3_review_fix: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-recovery-review-fix-T2-T3-terra
     batch_3_status: clean
+    batch_4_general_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-review-general
+    batch_4_architecture_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-review-architecture
+    batch_4_compliance_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-review-compliance
+    batch_4_review_fix: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-review-fix-T4-terra
+    batch_4_targeted_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-targeted-review
+    batch_4_status: clean
   incomplete_stages:
     - batch: 3
       task: T2
@@ -217,4 +232,85 @@ checkpoint:
           Configuration tests passed 4/4.
           Promotion tests passed 3/3.
           Full mise test and lint passed.
+      residual: null
+    - batch: 4
+      task: T4
+      phase: tester
+      agent: codex-native
+      report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-tester-T4
+      status: success
+      started_at: 2026-08-21T21:42:11Z
+      updated_at: 2026-08-21T21:55:21Z
+      evidence:
+        pre_dispatch:
+          base_commit: f9e967406deefb1a373b608113565dc86224af02
+          verification: T2 and T3 passed full test, Loom, and lint gates.
+        post_dispatch:
+          verification: |
+            Plain reclaim passed; two retained cases failed at runtime while a handle remained live.
+            Test review requires same-poll Free and reclaimed_frames == 1 after the final drop.
+    - batch: 4
+      task: T4
+      phase: implementer
+      agent: terra
+      report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-implementer-T4-terra
+      status: recovered
+      started_at: 2026-08-21T21:55:21Z
+      updated_at: 2026-08-21T22:16:00Z
+      evidence:
+        pre_dispatch:
+          git_status: |
+            M scopes/active/pinned-frame-retention/checkpoint.yaml
+            M scopes/active/pinned-frame-retention/tasks.yaml
+            ?? tests/pinned_frame_retention_reclaim.rs
+        post_dispatch:
+          verification: |
+            T4 reclaim passed 3/3; promotion passed 3/3; configuration passed 4/4.
+            Library tests passed 10/10; Loom passed 7/7.
+            Full mise test and lint passed.
+          report: empty
+      failure: Terra reached the hard cap after leaving a verified GREEN implementation; code review found three unresolved issues.
+    - batch: 4
+      task: T4
+      phase: review_fix
+      agent: terra
+      report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-review-fix-T4-terra
+      status: failed
+      started_at: 2026-08-21T22:22:00Z
+      updated_at: 2026-08-21T22:27:37Z
+      evidence:
+        pre_dispatch:
+          verification: |
+            Review accepted the zero-budget bypass, deterministic release-publication test, and Retention ownership-seam findings.
+        post_failure:
+          git_status: |
+            M scopes/active/pinned-frame-retention/checkpoint.yaml
+            M scopes/active/pinned-frame-retention/tasks.yaml
+            M src/pool/epoch.rs
+            M src/pool/loom_model.rs
+            M src/pool/mod.rs
+            M src/pool/retention.rs
+            ?? tests/pinned_frame_retention_reclaim.rs
+          partial_changes: |
+            Terra added the deterministic release-publication barrier test and test hook.
+            The zero-budget bypass and Retention ownership split remain unresolved.
+          verification: cargo fmt --check failed on the partial test-hook edit before tests ran.
+          report: empty
+      failure: The external implementer process was killed; partial edits are preserved.
+    - batch: 4
+      task: T4
+      phase: review_fix
+      agent: native-terra
+      report_dir: native-agent
+      status: recovered
+      started_at: 2026-08-22T05:45:00Z
+      updated_at: 2026-08-22T06:24:20Z
+      evidence:
+        post_dispatch:
+          verification: |
+            T4 reclaim passed 3/3; promotion passed 3/3; configuration passed 4/4.
+            Library tests passed 11/11; canonical Loom passed 7/7.
+            Full mise test and lint passed.
+          review: |
+            Native Opus, codex-gpt5.6-sol, and gemini-3.7-flash targeted reviews all returned clean.
       residual: null

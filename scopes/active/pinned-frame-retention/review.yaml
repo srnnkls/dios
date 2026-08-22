@@ -670,6 +670,52 @@ batch_reviews:
       architecture: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-recovery-review-architecture
       compliance: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-recovery-review-compliance
       review_fix: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b3-recovery-review-fix-T2-T3-terra
+  - batch: 4
+    timestamp: 2026-08-22T06:24:20Z
+    commit: working-tree@f9e967406deefb1a373b608113565dc86224af02
+    tasks: [T4]
+    initial_review:
+      reviewers:
+        - {id: general-claude-opus, execution_class: native, status: success, gate: fail}
+        - {id: architecture-claude-opus, execution_class: native, status: success, gate: fail}
+        - {id: compliance-claude-opus, execution_class: native, status: success, gate: fail}
+      accepted_findings:
+        - id: B4-H1
+          description: Zero-budget pools still executed retention reclaim work on every poll boundary.
+          resolution: advance_and_reclaim and teardown now take a direct pre-retention path before pass-start load, ring drain, or per-frame retention decisions.
+        - id: B4-H2
+          description: The publish-between-pending-clear-and-ring-scan ordering lacked its required deterministic test.
+          resolution: A bounded two-barrier test forces the real ReleaseRing and WaitState schedule and detects clear-after-scan.
+        - id: B4-H3
+          description: Retention::drain_releases crossed the ownership seam by mutating Frames, reverse mapping, and reclaim accounting.
+          resolution: Retention now owns word/tag/ring/budget protocol only; Pool owns free transitions, reverse-map clearing, teardown, and accounting.
+    targeted_review:
+      reviewers:
+        - {id: claude-opus, execution_class: native, status: success, gate: pass}
+        - {id: codex-gpt5.6-sol, execution_class: external, status: success, gate: pass}
+        - {id: gemini-3.7-flash, execution_class: external, status: success, gate: pass}
+      report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-targeted-review
+      findings: []
+    synthesized:
+      gates:
+        correctness: pass
+        performance: pass
+        security: pass
+        architecture: pass
+        style: pass
+      critical_issues: 0
+      high_issues: 0
+      medium_issues: 0
+    verification:
+      - cargo fmt --check
+      - cargo test --features mock --test pinned_frame_retention_reclaim (3 passed)
+      - cargo test --features mock --test pinned_frame_retention_promotion (3 passed)
+      - cargo test --test pinned_frame_retention_config (4 passed)
+      - cargo test --lib --features mock (11 passed)
+      - RUSTFLAGS="--cfg loom" cargo test --test loom_pool (7 passed)
+      - mise run test
+      - mise run lint
+    outcome: approved
 
 issues:
   critical: []

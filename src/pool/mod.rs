@@ -39,7 +39,7 @@ mod retention;
 mod table;
 pub(crate) mod write_arena;
 
-use epoch::{EvictQueue, ReaderRegistry, advance_epoch};
+use epoch::{EvictQueue, FrameOutcome, ReaderRegistry, advance_epoch};
 use miss::{MissEntry, MissInterests, MissOutcome, MissSlot, MissTable};
 use retention::Retention;
 
@@ -834,7 +834,19 @@ impl<D> Drop for Pool<D> {
             .control
             .get_mut()
             .expect("loom mutex is never poisoned");
-        self.retention.drain_releases(&mut control.release_cursor);
+        let pass_start_epoch = self.global_epoch.load(Ordering::Acquire);
+        let frames = &self.frames;
+        let frame_pages = &mut control.frame_pages;
+        self.retention
+            .drain_releases(&mut control.release_cursor, pass_start_epoch, |frame| {
+                assert_eq!(
+                    frames.state(frame),
+                    FrameState::Evicting,
+                    "a release-ring frame remains Evicting until direct free"
+                );
+                frames.advance(frame, FrameState::Free);
+                frame_pages[frame.get() as usize] = None;
+            });
     }
 }
 
@@ -1833,9 +1845,13 @@ impl<D: PoolBackend> Pool<D> {
             if !control.miss.prepare_eviction(victim, &self.miss_interests) {
                 continue;
             }
-            if let Some(page) = control.frame_pages[victim.get() as usize] {
-                self.table.remove_shared(page);
-            }
+            let page = control.frame_pages[victim.get() as usize]
+                .expect("a resident eviction victim has a reverse page mapping");
+            let removed = self
+                .table
+                .remove_shared(page)
+                .expect("a resident eviction victim remains mapped");
+            assert_eq!(removed, victim, "the reverse mapping names the victim");
             self.frames.advance(victim, FrameState::Evicting);
             control.evict_queue.push(victim, epoch);
             return;
@@ -2027,13 +2043,51 @@ impl<D: PoolBackend> Pool<D> {
     }
 
     fn advance_and_reclaim(&self, control: &mut Control) -> usize {
-        let global_epoch = advance_epoch(&self.global_epoch, self.readers.slots());
+        if self.retention.is_disabled() {
+            let global_epoch = advance_epoch(&self.global_epoch, self.readers.slots());
+            let frames = &self.frames;
+            let Control {
+                evict_queue,
+                frame_pages,
+                ..
+            } = control;
+            return evict_queue.drain_matured(global_epoch, |frame, _tag| {
+                frames.advance(frame, FrameState::Free);
+                frame_pages[frame.get() as usize] = None;
+                FrameOutcome::Freed
+            });
+        }
+
+        let pass_start_epoch = self.global_epoch.load(Ordering::Acquire);
         let frames = &self.frames;
-        let frame_pages = &mut control.frame_pages;
-        control.evict_queue.drain_matured(global_epoch, |frame| {
+        let retention = &self.retention;
+        let Control {
+            evict_queue,
+            frame_pages,
+            release_cursor,
+            ..
+        } = control;
+        let mut release_reclaimed = 0;
+        retention.drain_releases(release_cursor, pass_start_epoch, |frame| {
+            assert_eq!(
+                frames.state(frame),
+                FrameState::Evicting,
+                "a release-ring frame remains Evicting until direct free"
+            );
             frames.advance(frame, FrameState::Free);
             frame_pages[frame.get() as usize] = None;
-        })
+            release_reclaimed += 1;
+        });
+        let global_epoch = advance_epoch(&self.global_epoch, self.readers.slots());
+        let matured_reclaimed = evict_queue.drain_matured(global_epoch, |frame, tag| {
+            let outcome = retention.matured_outcome(frame, tag);
+            if outcome == FrameOutcome::Freed {
+                frames.advance(frame, FrameState::Free);
+                frame_pages[frame.get() as usize] = None;
+            }
+            outcome
+        });
+        release_reclaimed + matured_reclaimed
     }
 
     /// Cumulative clear→set CLOCK reference-bit stores across every `get()` hit

@@ -8,9 +8,11 @@ use std::sync::Arc;
 
 use crate::driver::MAX_FILES;
 use crate::product::WaitState;
+#[cfg(test)]
+use crate::sync::Mutex;
 use crate::sync::{AtomicBool, AtomicU32, Ordering};
 
-use super::{FrameGuard, ReadFrameIdx};
+use super::{FrameGuard, ReadFrameIdx, epoch::FrameOutcome};
 
 const HELD: u32 = 1 << 16;
 const COUNT_MASK: u32 = u16::MAX as u32;
@@ -193,6 +195,15 @@ pub(crate) struct Retention {
     max_retained_frames: u32,
     max_concurrent_readers: u32,
     frame_count: u32,
+    #[cfg(test)]
+    release_drain_test_hook: Mutex<Option<ReleaseDrainTestHook>>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+struct ReleaseDrainTestHook {
+    pending_cleared: Arc<std::sync::Barrier>,
+    release_published: Arc<std::sync::Barrier>,
 }
 
 impl Retention {
@@ -225,6 +236,8 @@ impl Retention {
             max_retained_frames,
             max_concurrent_readers,
             frame_count,
+            #[cfg(test)]
+            release_drain_test_hook: Mutex::new(None),
         }
     }
 
@@ -244,6 +257,8 @@ impl Retention {
             max_retained_frames: 0,
             max_concurrent_readers,
             frame_count,
+            #[cfg(test)]
+            release_drain_test_hook: Mutex::new(None),
         }
     }
 
@@ -251,17 +266,89 @@ impl Retention {
         self.max_retained_frames == 0
     }
 
-    pub(crate) fn drain_releases(&self, cursor: &mut u64) {
-        let Some(ring) = &self.release_ring else {
-            return;
-        };
-        self.wait.clear_ring_pending();
+    pub(crate) fn drain_releases<F: FnMut(ReadFrameIdx)>(
+        &self,
+        cursor: &mut u64,
+        pass_start_epoch: u64,
+        mut reclaim: F,
+    ) {
+        let ring = self
+            .release_ring
+            .as_ref()
+            .expect("release drain requires enabled retention");
+        self.clear_ring_pending_before_scan();
         for _ in 0..self.max_retained_frames {
-            if ring.pop(cursor).is_none() {
-                return;
-            }
+            let Some(frame) = ring.pop(cursor) else {
+                break;
+            };
+            let frame = ReadFrameIdx::new(frame);
+            let tag = self.tag(frame).load(Ordering::Relaxed);
+            assert!(
+                tag.saturating_add(2) <= pass_start_epoch,
+                "a release-ring tag matured before this reclaim pass"
+            );
+            let word = self.word(frame).load(Ordering::Acquire);
+            assert_eq!(word & COUNT_MASK, 0, "a release-ring frame has no handles");
+            assert_ne!(word & HELD, 0, "a release-ring frame remains held");
+            self.word(frame)
+                .compare_exchange(word, word & !HELD, Ordering::AcqRel, Ordering::Acquire)
+                .expect("a held release-ring frame has no concurrent mutator");
+            reclaim(frame);
             self.release_budget_unit();
         }
+    }
+
+    pub(crate) fn matured_outcome(&self, frame: ReadFrameIdx, tag: u64) -> FrameOutcome {
+        if self.is_disabled() {
+            return FrameOutcome::Freed;
+        }
+        let word = self.word(frame);
+        let mut previous = word.load(Ordering::Acquire);
+        let attempts = previous & COUNT_MASK;
+        if attempts == 0 {
+            assert_eq!(
+                previous & HELD,
+                0,
+                "an evict queue entry is not already held"
+            );
+            return FrameOutcome::Freed;
+        }
+        self.tag(frame).store(tag, Ordering::Relaxed);
+        for _ in 0..attempts {
+            assert_eq!(previous & HELD, 0, "only the mature drain sets held");
+            let count = previous & COUNT_MASK;
+            assert!(
+                count > 0,
+                "the bounded held transition starts with a handle"
+            );
+            match word.compare_exchange(
+                previous,
+                previous | HELD,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    self.retained_evictions_held.fetch_add(1, Ordering::Relaxed);
+                    return FrameOutcome::Held;
+                }
+                Err(observed) => {
+                    assert!(
+                        observed & COUNT_MASK < count,
+                        "a mature-drain CAS failure is a completed handle drop"
+                    );
+                    if observed & COUNT_MASK == 0 {
+                        assert_eq!(
+                            observed & HELD,
+                            0,
+                            "a concurrent last drop cannot publish held"
+                        );
+                        return FrameOutcome::Freed;
+                    }
+                    previous = observed;
+                }
+            }
+        }
+        panic!("mature-drain retries are bounded by the strictly decreasing count");
     }
 
     fn release_budget_unit(&self) {
@@ -382,6 +469,57 @@ impl Retention {
         assert!(index < self.words.len(), "retention covers every frame");
         &self.words[index]
     }
+
+    fn tag(&self, frame: ReadFrameIdx) -> &crate::sync::AtomicU64 {
+        let index = usize::try_from(frame.get()).expect("frame indexes fit platform indexes");
+        assert!(index < self.tags.len(), "retention tags cover every frame");
+        &self.tags[index]
+    }
+
+    fn clear_ring_pending_before_scan(&self) {
+        self.wait.clear_ring_pending();
+        #[cfg(test)]
+        self.wait_after_pending_clear_for_test();
+    }
+
+    #[cfg(test)]
+    fn install_release_drain_test_hook(&self, hook: ReleaseDrainTestHook) {
+        #[cfg(not(loom))]
+        let mut installed = self
+            .release_drain_test_hook
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(loom)]
+        let mut installed = self
+            .release_drain_test_hook
+            .lock()
+            .expect("loom mutex is never poisoned");
+        assert!(
+            installed.is_none(),
+            "a release-drain test hook is installed once"
+        );
+        *installed = Some(hook);
+    }
+
+    #[cfg(test)]
+    fn wait_after_pending_clear_for_test(&self) {
+        #[cfg(not(loom))]
+        let hook = self
+            .release_drain_test_hook
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        #[cfg(loom)]
+        let hook = self
+            .release_drain_test_hook
+            .lock()
+            .expect("loom mutex is never poisoned")
+            .clone();
+        if let Some(hook) = hook {
+            hook.pending_cleared.wait();
+            hook.release_published.wait();
+        }
+    }
 }
 
 impl Drop for Retention {
@@ -405,17 +543,17 @@ impl Drop for Retention {
             "enabled retention covers every file slot"
         );
         assert_eq!(HELD & COUNT_MASK, 0, "held and count bits never overlap");
-        assert_eq!(
-            self.retained_evictions_held.load(Ordering::Relaxed),
-            0,
-            "T3 has no held-frame reclamation"
-        );
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ReleaseRing;
+    use std::sync::Arc;
+
+    use super::{HELD, ReleaseDrainTestHook, ReleaseRing, Retention};
+    use crate::pool::ReadFrameIdx;
+    use crate::product::WaitState;
+    use crate::sync::Ordering;
 
     #[test]
     fn release_ring_pops_frames_in_ticket_order() {
@@ -432,7 +570,7 @@ mod tests {
     fn release_ring_stops_at_an_unpublished_ticket() {
         let ring = ReleaseRing::preallocated(2);
         let mut cursor = 0;
-        let _ticket = ring.tail.fetch_add(1, crate::sync::Ordering::AcqRel);
+        let _ticket = ring.tail.fetch_add(1, Ordering::AcqRel);
         assert_eq!(ring.pop(&mut cursor), None);
         assert_eq!(cursor, 0);
     }
@@ -447,5 +585,43 @@ mod tests {
         ring.push(3);
         assert_eq!(ring.pop(&mut cursor), Some(2));
         assert_eq!(ring.pop(&mut cursor), Some(3));
+    }
+
+    #[test]
+    fn release_published_after_pending_clear_is_reclaimed_before_the_same_scan() {
+        let wait = Arc::new(WaitState::default());
+        let retention = Retention::preallocated(1, 1, 1, Arc::clone(&wait));
+        let frame = ReadFrameIdx::new(0);
+        retention.word(frame).store(HELD | 1, Ordering::Release);
+        retention.occupied_budget.store(1, Ordering::Release);
+
+        let pending_cleared = Arc::new(std::sync::Barrier::new(2));
+        let release_published = Arc::new(std::sync::Barrier::new(2));
+        retention.install_release_drain_test_hook(ReleaseDrainTestHook {
+            pending_cleared: Arc::clone(&pending_cleared),
+            release_published: Arc::clone(&release_published),
+        });
+
+        std::thread::scope(|scope| {
+            let drain = scope.spawn(|| {
+                let mut cursor = 0;
+                let mut reclaimed = 0;
+                retention.drain_releases(&mut cursor, 2, |released| {
+                    assert_eq!(released, frame);
+                    reclaimed += 1;
+                });
+                reclaimed
+            });
+
+            pending_cleared.wait();
+            retention.release(frame);
+            release_published.wait();
+
+            assert_eq!(
+                drain.join().expect("release-drain thread does not panic"),
+                1,
+                "a release published after pending clear is drained before the same scan ends"
+            );
+        });
     }
 }

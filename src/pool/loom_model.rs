@@ -19,7 +19,7 @@ use crate::pool::ReadFrameIdx;
 use crate::product::WaitState;
 use crate::sync::{Arc, AtomicU32, AtomicU64, Mutex, MutexGuard, Ordering};
 
-use super::epoch::{EvictQueue, ReaderSlot, advance_epoch};
+use super::epoch::{EvictQueue, FrameOutcome, ReaderSlot, advance_epoch};
 use super::{
     Clock, FrameState, Frames, PageId, PageTable, PoolFile, PoolFileState, ResidentFileLease,
     ResidentHint, ResidentLeaseError, ResidentLeaseState, SECTOR_BYTES,
@@ -302,7 +302,7 @@ impl PoolModel {
         let global_epoch = advance_epoch(&self.global_epoch, &self.slots);
         let id = FileId::new(0, 0, new_file_generation);
         let Control { evict_queue, files } = &mut *control;
-        let reopened = evict_queue.drain_matured(global_epoch, |frame| {
+        let reopened = evict_queue.drain_matured(global_epoch, |frame, _tag| {
             self.frames.advance(frame, FrameState::Free);
             self.install(frame, PageId::new(id, page), content_generation);
             files[0]
@@ -316,6 +316,7 @@ impl PoolModel {
                 id,
                 None,
             );
+            FrameOutcome::Freed
         });
         assert!(
             reopened <= 1,
@@ -412,14 +413,17 @@ impl PoolModel {
     pub fn poll_file_pass(&self, file_generation: u32, refill_page: u32, refill_gen: u8) {
         let mut control = self.control();
         let global_epoch = advance_epoch(&self.global_epoch, &self.slots);
-        let reclaimed = control.evict_queue.drain_matured(global_epoch, |frame| {
-            self.frames.advance(frame, FrameState::Free);
-            self.install(
-                frame,
-                Self::file_page_id(file_generation, refill_page),
-                refill_gen,
-            );
-        });
+        let reclaimed = control
+            .evict_queue
+            .drain_matured(global_epoch, |frame, _tag| {
+                self.frames.advance(frame, FrameState::Free);
+                self.install(
+                    frame,
+                    Self::file_page_id(file_generation, refill_page),
+                    refill_gen,
+                );
+                FrameOutcome::Freed
+            });
         if reclaimed > 0
             && control.files[0]
                 .as_ref()

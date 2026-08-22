@@ -217,6 +217,12 @@ pub(crate) struct EvictQueue {
     capacity: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FrameOutcome {
+    Freed,
+    Held,
+}
+
 impl EvictQueue {
     pub(crate) fn with_capacity(capacity: u32) -> Self {
         Self {
@@ -244,13 +250,13 @@ impl EvictQueue {
         self.entries.front().map(|entry| entry.1)
     }
 
-    /// Reclaims every frame that has aged two full epochs, running `reclaim` for
-    /// each. Entries are tagged in non-decreasing epoch order, so the front
-    /// matures first and a not-yet-matured front ends the pass.
-    pub(crate) fn drain_matured<F: FnMut(ReadFrameIdx)>(
+    /// Processes every frame that has aged two full epochs. Entries are tagged
+    /// in non-decreasing epoch order, so the front matures first and a
+    /// not-yet-matured front ends the pass.
+    pub(crate) fn drain_matured<F: FnMut(ReadFrameIdx, u64) -> FrameOutcome>(
         &mut self,
         global_epoch: u64,
-        mut reclaim: F,
+        mut process: F,
     ) -> usize {
         let mut reclaimed = 0usize;
         while let Some(&(frame, tagged_epoch)) = self.entries.front() {
@@ -262,8 +268,9 @@ impl EvictQueue {
                 "a reclaimed frame has aged two full epochs past its evict tag"
             );
             self.entries.pop_front();
-            reclaim(frame);
-            reclaimed += 1;
+            if process(frame, tagged_epoch) == FrameOutcome::Freed {
+                reclaimed += 1;
+            }
         }
         reclaimed
     }
