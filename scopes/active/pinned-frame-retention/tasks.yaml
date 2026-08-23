@@ -252,7 +252,7 @@ tasks:
       controls; a pair violating its per-arm fault rule (nonzero major
       fault anywhere; nonzero minor fault where zero is required) is
       invalid and rerun. Scope closure requires this task green.
-    status: pending
+    status: in_progress
     depends_on: [T7]
     files: [benches/, Cargo.toml]
 

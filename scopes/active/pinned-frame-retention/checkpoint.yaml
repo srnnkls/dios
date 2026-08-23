@@ -2,9 +2,9 @@ checkpoint:
   scope_name: pinned-frame-retention
   scope_path: ./scopes/active/pinned-frame-retention
   branch: feat/pinned-frame-retention
-  timestamp: 2026-08-23T03:17:12Z
-  last_batch: 5
-  last_commit: d56383e16bf4af1abfb79cbcafa608832885edb5
+  timestamp: 2026-08-23T06:17:14Z
+  last_batch: 6
+  last_commit: 2e630b175f6c741d77b258d388df47df754567ed
   tasks:
     done:
       - id: T1
@@ -23,18 +23,19 @@ checkpoint:
         name: Loom retention cases
       - id: T7
         name: Wire public diagnostics and acceptance hardening
-    in_progress: []
+    in_progress:
+      - id: T8a
+        name: Bench implementation and arena-independent gate run
     pending:
-      - {id: T8a, name: Bench implementation and arena-independent gate run}
       - {id: T8b, name: Exact-R8-scale shipping arm}
       - {id: T9, name: Docs and invariant fold-back}
   next_batch:
-    number: 6
-    id: B6
+    number: 7
+    id: B7
     tasks:
-      - id: T7
-        name: Wire public diagnostics and acceptance hardening
-        files: [src/pool/retention.rs, src/pool/mod.rs, src/lib.rs, tests/retention_acceptance.rs, tests/zero_alloc.rs]
+      - id: T8a
+        name: Bench implementation and arena-independent gate run
+        files: [benches/, Cargo.toml]
     parallel: false
   deferred_issues:
     - batch: 1
@@ -46,11 +47,11 @@ checkpoint:
     path: ./scopes/active/pinned-frame-retention/config.yaml
     epoch_id: 20260821T150300Z-376a8f
   phase_cursor:
-    batch: 6
-    phase: code_review
-    status: success
-    tasks: [T7]
-    updated_at: 2026-08-23T03:17:12Z
+    batch: 7
+    phase: review_fix
+    status: in_progress
+    tasks: [T8a]
+    updated_at: 2026-08-23T06:17:14Z
   review_history:
     batch_1_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-review-general
     batch_1_targeted_review_round_1: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-targeted-review

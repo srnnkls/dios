@@ -81,6 +81,11 @@ harness = false
 required-features = ["bench", "mock"]
 
 [[bench]]
+name = "pinned_frame_retention"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
 name = "ring_read_bracket"
 harness = false
 required-features = ["bench"]

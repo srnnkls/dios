@@ -584,6 +584,31 @@ impl PoolModel {
         let pass_start_epoch = self.global_epoch.load(Ordering::Acquire);
         let released = self.drain_release_entries(release_cursor, pass_start_epoch, &mut on_free);
         let global_epoch = advance_epoch(&self.global_epoch, &self.slots);
+        if !self.retention.has_occupied_budget() {
+            let mut first = None;
+            let mut matured = 0u32;
+            let matured_freed = evict_queue.drain_matured(global_epoch, |frame, _tag| {
+                if first.is_none() {
+                    first = Some(DrainSource::Matured);
+                }
+                matured = matured
+                    .checked_add(1)
+                    .expect("a pass processes at most the bounded frame count");
+                on_free(frame);
+                FrameOutcome::Freed
+            });
+            return DrainReport {
+                released,
+                matured,
+                matured_freed: u32::try_from(matured_freed)
+                    .expect("the bounded frame count fits u32"),
+                first: if released > 0 {
+                    Some(DrainSource::Release)
+                } else {
+                    first
+                },
+            };
+        }
         let mut report = self.drain_matured_entries(evict_queue, global_epoch, on_free);
         if released > 0 {
             report.first = Some(DrainSource::Release);

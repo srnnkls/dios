@@ -79,6 +79,25 @@ esac
 description = "Assert a bench plan threshold against a paired samples CSV"
 run = "cargo bench --features bench --bench compare --"
 
+[tasks.validate-pfr-pairs]
+description = "Validate PFR rich process rows and prepare paired gate samples"
+usage = '''
+arg "<lane>"
+arg "<process_csv>"
+arg "<paired_csv>"
+arg "<provenance_json>"
+'''
+run = 'cargo bench --features bench --bench pinned_frame_retention -- validate-pairs "$usage_lane" "$usage_process_csv" "$usage_paired_csv" "$usage_provenance_json"'
+
+[tasks.refusal-gate]
+description = "Assert the PFR same-frame promotion refusal-rate threshold"
+usage = '''
+arg "<process_csv>"
+arg "<threshold>"
+arg "<resamples>"
+'''
+run = 'cargo bench --features bench --bench pinned_frame_retention -- refusal-gate "$usage_process_csv" "$usage_threshold" "$usage_resamples"'
+
 [tasks.generate-drp-g1-probes]
 description = "Generate the frozen DRP-G1 calibration and holdout matrix"
 usage = 'arg "<csv>"'

@@ -294,6 +294,10 @@ impl Retention {
         self.max_retained_frames == 0
     }
 
+    pub(crate) fn has_occupied_budget(&self) -> bool {
+        self.occupied_budget.load(Ordering::Acquire) > 0
+    }
+
     pub(crate) fn mark_file_retiring(&self, file_slot: u32) {
         if self.is_disabled() {
             return;

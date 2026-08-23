@@ -2080,6 +2080,14 @@ impl<D: PoolBackend> Pool<D> {
             release_reclaimed += 1;
         });
         let global_epoch = advance_epoch(&self.global_epoch, self.readers.slots());
+        if !retention.has_occupied_budget() {
+            let matured_reclaimed = evict_queue.drain_matured(global_epoch, |frame, _tag| {
+                frames.advance(frame, FrameState::Free);
+                frame_pages[frame.get() as usize] = None;
+                FrameOutcome::Freed
+            });
+            return release_reclaimed + matured_reclaimed;
+        }
         let matured_reclaimed = evict_queue.drain_matured(global_epoch, |frame, tag| {
             let outcome = retention.matured_outcome(frame, tag);
             if outcome == FrameOutcome::Freed {
