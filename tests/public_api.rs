@@ -276,7 +276,7 @@ fn retention_api_is_directly_callable() {
 
 #[cfg(feature = "mock")]
 #[test]
-fn zero_budget_retention_refuses_with_live_guard_and_zero_stats() {
+fn zero_budget_retention_refuses_with_live_guard_and_budget_stat() {
     let mock = MockDriver::builder()
         .queue_capacity(1)
         .frames(5)
@@ -319,7 +319,7 @@ fn zero_budget_retention_refuses_with_live_guard_and_zero_stats() {
 
     let stats = pool.retention_stats();
     assert_eq!(stats.occupied_budget, 0);
-    assert_eq!(stats.refused_budget, 0);
+    assert_eq!(stats.refused_budget, 1);
     assert_eq!(stats.refused_ceiling, 0);
     assert_eq!(stats.refused_contention, 0);
     assert_eq!(stats.refused_retiring, 0);

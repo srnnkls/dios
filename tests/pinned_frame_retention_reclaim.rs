@@ -5,6 +5,7 @@ use std::path::Path;
 use dios::testing::{FrameState, MockDriver, PoolBuilderTestingExt, PoolTestingExt, ReadFrameIdx};
 use dios::{
     DirectIo, FileId, FrameGuard, Get, PageId, PollReport, Pool, PoolCompletionBatch, ReaderCtx,
+    RetainRefused, RetainRefusedReason, RetentionStats, RetireStatus,
 };
 
 const GRANULE: u32 = 4096;
@@ -153,4 +154,81 @@ fn plain_matured_eviction_still_reclaims_exactly_once() {
     assert_eq!(pool.evict_frame(page), frame);
     assert_eq!(poll_until_free(&pool, frame), 1);
     assert_no_further_reclaim(&pool);
+}
+
+#[test]
+fn retention_stats_attribute_budget_retirement_and_held_eviction() {
+    let (pool, file) = pool_with_file("retention-stats-attribution");
+    let reader = pool.register_reader().expect("reader slot is available");
+    let retained_page = PageId::new(file, 0);
+    let refused_page = PageId::new(file, 1);
+    let retained_frame = pool.insert_resident_frame(retained_page, 0xD8);
+    pool.insert_resident_frame(refused_page, 0xE9);
+
+    let Ok(retained) = resident_guard(&pool, &reader, retained_page).into_retained() else {
+        panic!("the first distinct frame fits the budget");
+    };
+    let retiring_guard = resident_guard(&pool, &reader, retained_page);
+    let budget_guard = resident_guard(&pool, &reader, refused_page);
+    let Err(RetainRefused {
+        guard: budget_guard,
+        reason: budget_reason,
+    }) = budget_guard.into_retained()
+    else {
+        panic!("a second distinct frame exceeds the budget");
+    };
+    let after_budget_refusal = retention_stats_values(&pool.retention_stats());
+    assert!(matches!(budget_reason, RetainRefusedReason::Exhausted));
+
+    assert_eq!(pool.retire_file(file), RetireStatus::Retiring);
+    let Err(RetainRefused {
+        guard: retiring_guard,
+        reason: retiring_reason,
+    }) = retiring_guard.into_retained()
+    else {
+        panic!("a same-frame promotion after retirement must be refused");
+    };
+    let after_retiring_refusal = retention_stats_values(&pool.retention_stats());
+    assert!(matches!(retiring_reason, RetainRefusedReason::FileRetiring));
+    drop((budget_guard, retiring_guard));
+
+    for _ in 0..4 {
+        pool.poll();
+    }
+    assert_eq!(pool.frame_state(retained_frame), FrameState::Evicting);
+    assert_fill(&retained, 0xD8);
+    let held = retention_stats_values(&pool.retention_stats());
+
+    drop(retained);
+    let pending_release = retention_stats_values(&pool.retention_stats());
+    pool.poll();
+    let released = retention_stats_values(&pool.retention_stats());
+
+    assert_eq!(
+        (
+            after_budget_refusal,
+            after_retiring_refusal,
+            held,
+            pending_release,
+            released,
+        ),
+        (
+            (1, 1, 0, 0, 0, 0),
+            (1, 1, 0, 0, 1, 0),
+            (1, 1, 0, 0, 1, 1),
+            (1, 1, 0, 0, 1, 1),
+            (0, 1, 0, 0, 1, 1),
+        )
+    );
+}
+
+fn retention_stats_values(stats: &RetentionStats) -> (u32, u64, u64, u64, u64, u64) {
+    (
+        stats.occupied_budget,
+        stats.refused_budget,
+        stats.refused_ceiling,
+        stats.refused_contention,
+        stats.refused_retiring,
+        stats.retained_evictions_held,
+    )
 }

@@ -233,7 +233,7 @@ tasks:
       only). zero_alloc over promote/release/drain; miri and asan run
       ad hoc on the Linux host per dios-v1 precedent (no CI lane
       wiring in this scope).
-    status: pending
+    status: done
     depends_on: [T5, T6]
     files: [src/pool/retention.rs, src/pool/mod.rs, src/lib.rs, tests/retention_acceptance.rs, tests/zero_alloc.rs]
 

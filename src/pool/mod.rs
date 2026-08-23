@@ -943,14 +943,7 @@ impl<D: PoolBackend> Pool<D> {
     }
 
     pub fn retention_stats(&self) -> RetentionStats {
-        RetentionStats {
-            occupied_budget: 0,
-            refused_budget: 0,
-            refused_ceiling: 0,
-            refused_contention: 0,
-            refused_retiring: 0,
-            retained_evictions_held: 0,
-        }
+        self.retention.retention_stats()
     }
 
     /// Borrows the composed driver — a test/observation seam.

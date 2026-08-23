@@ -197,6 +197,8 @@ pub(crate) struct Retention {
     frame_count: u32,
     #[cfg(test)]
     release_drain_test_hook: Mutex<Option<ReleaseDrainTestHook>>,
+    #[cfg(all(test, not(loom)))]
+    promotion_test_hook: Mutex<Option<PromotionTestHook>>,
 }
 
 #[cfg(test)]
@@ -204,6 +206,17 @@ pub(crate) struct Retention {
 struct ReleaseDrainTestHook {
     pending_cleared: Arc<std::sync::Barrier>,
     release_published: Arc<std::sync::Barrier>,
+}
+
+#[cfg(all(test, not(loom)))]
+const PROMOTION_TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[cfg(all(test, not(loom)))]
+#[derive(Debug, Clone)]
+struct PromotionTestHook {
+    target: std::thread::ThreadId,
+    paused: std::sync::mpsc::Sender<()>,
+    resume: Arc<Mutex<std::sync::mpsc::Receiver<()>>>,
 }
 
 impl Retention {
@@ -238,6 +251,8 @@ impl Retention {
             frame_count,
             #[cfg(test)]
             release_drain_test_hook: Mutex::new(None),
+            #[cfg(all(test, not(loom)))]
+            promotion_test_hook: Mutex::new(None),
         }
     }
 
@@ -259,6 +274,19 @@ impl Retention {
             frame_count,
             #[cfg(test)]
             release_drain_test_hook: Mutex::new(None),
+            #[cfg(all(test, not(loom)))]
+            promotion_test_hook: Mutex::new(None),
+        }
+    }
+
+    pub(super) fn retention_stats(&self) -> RetentionStats {
+        RetentionStats {
+            occupied_budget: self.occupied_budget.load(Ordering::Acquire),
+            refused_budget: self.refused_budget.load(Ordering::Relaxed),
+            refused_ceiling: self.refused_ceiling.load(Ordering::Relaxed),
+            refused_contention: self.refused_contention.load(Ordering::Relaxed),
+            refused_retiring: self.refused_retiring.load(Ordering::Relaxed),
+            retained_evictions_held: self.retained_evictions_held.load(Ordering::Relaxed),
         }
     }
 
@@ -413,6 +441,8 @@ impl Retention {
             self.refused_ceiling.fetch_add(1, Ordering::Relaxed);
             return Promotion::Refused(RetainRefusedReason::Exhausted);
         }
+        #[cfg(all(test, not(loom)))]
+        self.pause_promotion_for_test();
         if count > 0 {
             return Self::compare_increment(word, previous);
         }
@@ -506,6 +536,41 @@ impl Retention {
         self.wait_after_pending_clear_for_test();
     }
 
+    #[cfg(all(test, not(loom)))]
+    fn pause_promotion_for_test(&self) {
+        let hook = self
+            .promotion_test_hook
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(hook) = hook
+            && hook.target == std::thread::current().id()
+        {
+            hook.paused
+                .send(())
+                .expect("promotion coordinator receives each target attempt");
+            let resumed = hook
+                .resume
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .recv_timeout(PROMOTION_TEST_TIMEOUT);
+            assert!(resumed.is_ok(), "promotion target resume is bounded");
+        }
+    }
+
+    #[cfg(all(test, not(loom)))]
+    fn install_promotion_test_hook(&self, hook: PromotionTestHook) {
+        let mut installed = self
+            .promotion_test_hook
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            installed.is_none(),
+            "a promotion test hook is installed once"
+        );
+        *installed = Some(hook);
+    }
+
     #[cfg(test)]
     fn install_release_drain_test_hook(&self, hook: ReleaseDrainTestHook) {
         #[cfg(not(loom))]
@@ -573,11 +638,113 @@ impl Drop for Retention {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    #[cfg(not(loom))]
+    use std::sync::mpsc;
 
-    use super::{HELD, ReleaseDrainTestHook, ReleaseRing, Retention};
+    use super::{
+        COUNT_MASK, HELD, ReleaseDrainTestHook, ReleaseRing, RetainRefusedReason, Retention,
+    };
+    #[cfg(not(loom))]
+    use super::{PROMOTION_TEST_TIMEOUT, Promotion, PromotionTestHook};
     use crate::pool::ReadFrameIdx;
     use crate::product::WaitState;
+    #[cfg(not(loom))]
+    use crate::sync::Mutex;
     use crate::sync::Ordering;
+
+    #[test]
+    fn promotion_at_count_ceiling_is_exhausted_without_mutation() {
+        let wait = Arc::new(WaitState::default());
+        let retention = Retention::preallocated(1, 1, 1, wait);
+        let frame = ReadFrameIdx::new(0);
+        retention.word(frame).store(COUNT_MASK, Ordering::Release);
+        retention.occupied_budget.store(1, Ordering::Release);
+        let word_before = retention.word(frame).load(Ordering::Acquire);
+        let budget_before = retention.retention_stats().occupied_budget;
+
+        assert!(matches!(
+            retention.promote(frame, 0, 1),
+            Err(RetainRefusedReason::Exhausted)
+        ));
+        let stats = retention.retention_stats();
+        assert_eq!(retention.word(frame).load(Ordering::Acquire), word_before);
+        assert_eq!(stats.occupied_budget, budget_before);
+        assert_eq!(
+            (
+                stats.refused_budget,
+                stats.refused_ceiling,
+                stats.refused_contention,
+                stats.refused_retiring,
+                stats.retained_evictions_held,
+            ),
+            (0, 1, 0, 0, 0)
+        );
+
+        retention.word(frame).store(0, Ordering::Release);
+        retention.occupied_budget.store(0, Ordering::Release);
+    }
+
+    #[cfg(not(loom))]
+    #[test]
+    fn bounded_same_frame_refusal_is_attributed_only_to_contention() {
+        let wait = Arc::new(WaitState::default());
+        let retention = Retention::preallocated(1, 1, 1, wait);
+        let frame = ReadFrameIdx::new(0);
+        assert!(retention.promote(frame, 0, 1).is_ok());
+        let before = retention.retention_stats();
+        let (paused_sender, paused) = mpsc::channel();
+        let (resume, target_resume) = mpsc::channel();
+        let (start, target_start) = mpsc::channel();
+        let (target_results, results) = mpsc::channel();
+        let mut observed = (0u32, 0u32);
+        let (target_result, target_joined) = std::thread::scope(|scope| {
+            let target_retention = &retention;
+            let target = scope.spawn(move || {
+                let started = target_start.recv_timeout(PROMOTION_TEST_TIMEOUT);
+                assert!(started.is_ok(), "promotion target start is bounded");
+                let result = target_retention.promote(frame, 0, 1);
+                let _ = target_results.send(result);
+            });
+            retention.install_promotion_test_hook(PromotionTestHook {
+                target: target.thread().id(),
+                paused: paused_sender,
+                resume: Arc::new(Mutex::new(target_resume)),
+            });
+            start.send(()).expect("promotion target starts");
+            for _ in 0..2 {
+                if paused.recv_timeout(PROMOTION_TEST_TIMEOUT).is_err() {
+                    break;
+                }
+                observed.0 += 1;
+                let promoted = matches!(retention.promote_once(frame), Promotion::Retained);
+                observed.1 += u32::from(promoted);
+                let resumed = resume.send(()).is_ok();
+                if !promoted || !resumed {
+                    break;
+                }
+            }
+            drop(resume);
+            let result = results.recv_timeout(PROMOTION_TEST_TIMEOUT);
+            (result, target.join().is_ok())
+        });
+        let after = retention.retention_stats();
+        let target_promoted = u32::from(matches!(&target_result, Ok(Ok(()))));
+        for _ in 0..1 + observed.1 + target_promoted {
+            retention.release(frame);
+        }
+        assert!(target_joined);
+        assert_eq!(observed, (2, 2));
+        let target_refused = matches!(target_result, Ok(Err(RetainRefusedReason::Exhausted)));
+        assert!(target_refused);
+        assert_eq!(after.occupied_budget, before.occupied_budget);
+        assert_eq!(after.refused_budget, before.refused_budget);
+        assert_eq!(after.refused_ceiling, before.refused_ceiling);
+        assert_eq!(after.refused_contention, before.refused_contention + 1);
+        assert_eq!(after.refused_retiring, before.refused_retiring);
+        let held_delta = after.retained_evictions_held - before.retained_evictions_held;
+        assert_eq!(held_delta, 0);
+        assert_eq!(retention.retention_stats().occupied_budget, 0);
+    }
 
     #[test]
     fn release_ring_pops_frames_in_ticket_order() {

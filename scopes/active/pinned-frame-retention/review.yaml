@@ -769,6 +769,59 @@ batch_reviews:
       - mise run lint
       - git diff --check
     outcome: approved
+  - batch: 6
+    timestamp: 2026-08-23T03:17:12Z
+    commit: working-tree@d56383e16bf4af1abfb79cbcafa608832885edb5
+    tasks: [T7]
+    test_reviews:
+      - {area: core_acceptance, status: approved, report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b6-test-review-T7-round2}
+      - {area: wake_and_teardown, status: approved, report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b6-test-review-T7-wake-round2}
+      - {area: zero_allocation, status: approved, report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b6-test-review-T7-zero-alloc-round2}
+      - {area: coverage_gap_closure, status: approved, report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b6-test-review-T7-gap-close-round2}
+      - {area: zero_budget_diagnostics, status: approved, report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b6-test-review-T7-zero-budget-stats}
+    initial_review:
+      report_dirs:
+        general: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b6-code-review-general
+        architecture: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b6-code-review-architecture
+        compliance: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b6-code-review-compliance
+      accepted_findings:
+        - id: B6-H1
+          description: Zero-budget promotion incremented refused_budget, but the public accessor fabricated an all-zero disabled snapshot.
+          resolution: Retention::retention_stats now loads live counters for every configuration; the direct public API test pins refused_budget at one.
+    targeted_review:
+      reviewers: [codex-native, claude-opus-cli, gemini-3.7-flash]
+      status: clean
+      report_dir: .peer/pinned-frame-retention/20260823T030641Z-d5746a/b6-code-rereview-general-zero-budget
+      findings: []
+    synthesized:
+      gates:
+        correctness: pass
+        performance: pass
+        security: pass
+        architecture: pass
+        style: pass
+      critical_issues: 0
+      high_issues: 0
+      medium_issues: 0
+    verification:
+      report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b6-verification
+      local:
+        - cargo fmt --check and git diff --check passed
+        - cargo clippy --all-targets --features bench,mock -- -D warnings passed with zero warnings
+        - cargo test --features mock passed 257/257
+        - cargo test --features bench,mock --test zero_alloc passed 23/23
+        - direct diagnostics, contention, acceptance, wake, and reclaim oracles passed 12/12
+        - 38 changed functions checked; maximum 65 lines; none exceeded 70
+      remote:
+        - Miri pure-memory retention coverage passed 15/15
+        - Linux ASan retention_acceptance and real_pool passed 6/6 with no findings
+        - normal zero-allocation target passed 23/23
+        - Linux shipping platform-wait wake target passed 4/4
+      notes: >
+        Nightly 1.100 emitted two deprecation warnings for pre-existing
+        fetch_update calls in src/pool/miss.rs; no T7 path introduced them,
+        and the pinned stable all-target strict Clippy gate remained warning-free.
+    outcome: approved
 
 issues:
   critical: []

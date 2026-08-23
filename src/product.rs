@@ -535,3 +535,98 @@ impl WaitObservation {
         self.state.counters.timeout_exits.load(Ordering::Acquire)
     }
 }
+
+#[cfg(all(test, feature = "mock"))]
+mod ring_pending_tests {
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use super::{WaitObservation, WaitState};
+    use crate::testing::{FrameState, MockDriver, PoolBuilderTestingExt, PoolTestingExt};
+    use crate::{DirectIo, Get, PageId, Pool};
+
+    fn observation(wait: &Arc<WaitState>) -> WaitObservation {
+        WaitObservation {
+            state: Arc::clone(wait),
+        }
+    }
+
+    fn assert_never_parked(observation: &WaitObservation) {
+        assert_eq!(observation.parks_entered(), 0);
+        assert_eq!(observation.parks_in_progress(), 0);
+        assert_eq!(observation.parks_exited(), 0);
+        assert_eq!(observation.wake_exits(), 0);
+        assert_eq!(observation.timeout_exits(), 0);
+    }
+
+    #[test]
+    fn held_final_release_without_a_parker_sets_ring_pending() {
+        let mock = MockDriver::builder()
+            .queue_capacity(1)
+            .frames(6)
+            .frame_bytes(4096)
+            .build();
+        let file = mock
+            .open(Path::new("ring-pending-held-release"), DirectIo::Disabled)
+            .expect("mock file opens");
+        let file_id = file.file_id();
+        let pool = Pool::builder()
+            .frame_count(6)
+            .granule(4096)
+            .max_concurrent_readers(1)
+            .peak_guards_per_reader(2)
+            .max_inflight_reads(1)
+            .miss_headroom(3)
+            .max_retained_frames(1)
+            .build_on(mock)
+            .expect("retention fixture satisfies its watermark");
+        pool.register_file(file);
+        let reader = pool.register_reader().expect("reader slot is available");
+        let page = PageId::new(file_id, 0);
+        let frame = pool.insert_resident_frame(page, 0xA5);
+        let Get::Hit(guard) = pool.get(&reader, page).expect("inserted page remains live") else {
+            panic!("the inserted page must hit");
+        };
+        let Ok(retained) = guard.into_retained() else {
+            panic!("the configured budget must admit one retained frame");
+        };
+        assert_eq!(pool.evict_frame(page), frame);
+        for _ in 0..4 {
+            pool.poll();
+        }
+        assert_eq!(pool.frame_state(frame), FrameState::Evicting);
+        let wait = pool.wait_internal();
+        let observation = observation(&wait);
+        assert_never_parked(&observation);
+
+        drop(retained);
+
+        assert!(wait.lock().ring_pending);
+        assert_never_parked(&observation);
+        pool.poll();
+    }
+
+    #[test]
+    fn eager_wait_does_not_park_when_a_ring_release_is_pending() {
+        let wait = Arc::new(WaitState::default());
+        let observation = observation(&wait);
+        wait.set_ring_pending();
+
+        wait.wait(Duration::from_millis(10));
+
+        assert_never_parked(&observation);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn platform_wait_is_not_armed_when_a_ring_release_is_pending() {
+        let wait = Arc::new(WaitState::default());
+        let observation = observation(&wait);
+        wait.set_ring_pending();
+
+        assert_eq!(wait.begin_platform_wait(), None);
+
+        assert_never_parked(&observation);
+    }
+}

@@ -133,6 +133,19 @@ fn product_pool() -> Pool<Driver> {
         .expect("the cfg-selected shipping pool initializes")
 }
 
+fn product_retention_pool() -> Pool<Driver> {
+    Pool::builder()
+        .frame_count(5)
+        .granule(FRAME_BYTES)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .max_retained_frames(1)
+        .build()
+        .expect("the cfg-selected shipping pool initializes with retention")
+}
+
 fn open(drv: &Driver, path: &Path) -> FileHandle {
     drv.open(path, DirectIo::Disabled)
         .expect("open the seeded file")
@@ -560,6 +573,57 @@ fn real_pool_last_lease_drop_and_retirement_progress_allocate_nothing() {
         allocations, 0,
         "shipping-backend last lease drop and retirement progress reuse preallocated state"
     );
+}
+
+#[test]
+fn shipping_pool_retained_release_cycle_allocates_nothing() {
+    let path = temp_frames("shipping-retained-release-drain", 2, 0x4B);
+    let pool = product_retention_pool();
+    let file = pool
+        .open(&path, DirectIo::Disabled)
+        .expect("the shipping pool opens the fixture");
+    let reader = pool.register_reader().expect("one reader slot");
+
+    let warmup_page = PageId::new(file, 0);
+    let warmup_frame = pool.insert_resident_frame(warmup_page, 0xC4);
+    let warmup_guard = resolve_product_page(&pool, &reader, warmup_page);
+    shipping_pool_retained_release_cycle(&pool, warmup_page, warmup_frame, warmup_guard);
+
+    let page = PageId::new(file, 1);
+    let frame = pool.insert_resident_frame(page, 0xD5);
+    let guard = resolve_product_page(&pool, &reader, page);
+    let allocations = armed_allocations(|| {
+        shipping_pool_retained_release_cycle(&pool, page, frame, guard);
+    });
+
+    assert_eq!(allocations, 0);
+}
+
+fn shipping_pool_retained_release_cycle(
+    pool: &Pool<Driver>,
+    page: PageId,
+    frame: ReadFrameIdx,
+    guard: FrameGuard<'_>,
+) {
+    let held_before = pool.retention_stats().retained_evictions_held;
+    let Ok(retained) = guard.into_retained() else {
+        panic!("the configured budget admits one retained frame");
+    };
+    assert_eq!(pool.evict_frame(page), frame);
+    for _ in 0..4 {
+        pool.poll();
+    }
+    assert_eq!(pool.frame_state(frame), dios::testing::FrameState::Evicting);
+    assert_eq!(
+        pool.retention_stats().retained_evictions_held,
+        held_before + 1
+    );
+
+    drop(retained);
+    assert_eq!(pool.retention_stats().occupied_budget, 1);
+    pool.poll();
+    assert_eq!(pool.frame_state(frame), dios::testing::FrameState::Free);
+    assert_eq!(pool.retention_stats().occupied_budget, 0);
 }
 
 #[cfg(feature = "mock")]
@@ -1080,5 +1144,74 @@ mod pool_gates {
             allocations, 0,
             "the warmed product write path is fixed-capacity"
         );
+    }
+
+    #[test]
+    fn retained_promote_final_drop_and_release_drain_allocate_nothing() {
+        let frames = 5u32;
+        let mock = a_mock(frames);
+        let file = mock
+            .open(Path::new("za-retained-release-drain"), DirectIo::Disabled)
+            .expect("mock file opens");
+        let file_id = file.file_id();
+        let pool = Pool::builder()
+            .frame_count(frames)
+            .granule(GRANULE)
+            .max_concurrent_readers(1)
+            .peak_guards_per_reader(1)
+            .max_inflight_reads(1)
+            .miss_headroom(3)
+            .max_retained_frames(1)
+            .build_on(mock)
+            .expect("retention fixture satisfies its watermark");
+        pool.register_file(file);
+        let reader = pool.register_reader().expect("one reader slot");
+
+        let warmup_page = PageId::new(file_id, 0);
+        let warmup_frame = pool.insert_resident_frame(warmup_page, 0xC4);
+        let warmup_guard = resolve(&pool, &reader, warmup_page);
+        retained_promote_final_drop_and_release_drain_allocate_nothing_cycle(
+            &pool,
+            warmup_page,
+            warmup_frame,
+            warmup_guard,
+        );
+
+        let page = PageId::new(file_id, 1);
+        let frame = pool.insert_resident_frame(page, 0xD5);
+        let guard = resolve(&pool, &reader, page);
+        let allocations = armed_allocations(|| {
+            retained_promote_final_drop_and_release_drain_allocate_nothing_cycle(
+                &pool, page, frame, guard,
+            );
+        });
+
+        assert_eq!(allocations, 0);
+    }
+
+    fn retained_promote_final_drop_and_release_drain_allocate_nothing_cycle(
+        pool: &Pool<MockDriver>,
+        page: PageId,
+        frame: ReadFrameIdx,
+        guard: FrameGuard<'_>,
+    ) {
+        let held_before = pool.retention_stats().retained_evictions_held;
+        let Ok(retained) = guard.into_retained() else {
+            panic!("the configured budget admits one retained frame");
+        };
+        assert_eq!(pool.evict_frame(page), frame);
+        for _ in 0..4 {
+            pool.poll();
+        }
+        assert_eq!(pool.frame_state(frame), FrameState::Evicting);
+        let held = pool.retention_stats();
+        assert_eq!(held.occupied_budget, 1);
+        assert_eq!(held.retained_evictions_held, held_before + 1);
+
+        drop(retained);
+        assert_eq!(pool.retention_stats().occupied_budget, 1);
+        pool.poll();
+        assert_eq!(pool.frame_state(frame), FrameState::Free);
+        assert_eq!(pool.retention_stats().occupied_budget, 0);
     }
 }
