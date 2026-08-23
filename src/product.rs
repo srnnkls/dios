@@ -1,7 +1,7 @@
 //! Closed product-level operation, progress, and wake vocabulary.
 
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -237,6 +237,7 @@ struct WaitGeneration {
 #[derive(Debug, Default)]
 pub(crate) struct WaitState {
     generation: Mutex<WaitGeneration>,
+    ring_pending_hint: AtomicBool,
     changed: Condvar,
     counters: WaitCounters,
     #[cfg(target_os = "linux")]
@@ -276,11 +277,19 @@ impl WaitState {
     }
 
     pub(crate) fn set_ring_pending(&self) {
-        self.lock().ring_pending = true;
+        let mut generation = self.lock();
+        generation.ring_pending = true;
+        self.ring_pending_hint.store(true, Ordering::Release);
     }
 
     pub(crate) fn clear_ring_pending(&self) {
-        self.lock().ring_pending = false;
+        let mut generation = self.lock();
+        generation.ring_pending = false;
+        self.ring_pending_hint.store(false, Ordering::Release);
+    }
+
+    pub(crate) fn ring_may_be_pending(&self) -> bool {
+        self.ring_pending_hint.load(Ordering::Acquire)
     }
 
     pub(crate) fn consume_current(&self) {

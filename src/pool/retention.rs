@@ -197,6 +197,8 @@ pub(crate) struct Retention {
     frame_count: u32,
     #[cfg(test)]
     release_drain_test_hook: Mutex<Option<ReleaseDrainTestHook>>,
+    #[cfg(all(test, feature = "mock", not(loom)))]
+    release_pending_test_hook: Mutex<Option<ReleasePendingTestHook>>,
     #[cfg(all(test, not(loom)))]
     promotion_test_hook: Mutex<Option<PromotionTestHook>>,
 }
@@ -206,6 +208,16 @@ pub(crate) struct Retention {
 struct ReleaseDrainTestHook {
     pending_cleared: Arc<std::sync::Barrier>,
     release_published: Arc<std::sync::Barrier>,
+}
+
+#[cfg(all(test, feature = "mock", not(loom)))]
+const RELEASE_PENDING_TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[cfg(all(test, feature = "mock", not(loom)))]
+#[derive(Debug)]
+struct ReleasePendingTestHook {
+    paused: std::sync::mpsc::SyncSender<()>,
+    resume: std::sync::mpsc::Receiver<()>,
 }
 
 #[cfg(all(test, not(loom)))]
@@ -251,6 +263,8 @@ impl Retention {
             frame_count,
             #[cfg(test)]
             release_drain_test_hook: Mutex::new(None),
+            #[cfg(all(test, feature = "mock", not(loom)))]
+            release_pending_test_hook: Mutex::new(None),
             #[cfg(all(test, not(loom)))]
             promotion_test_hook: Mutex::new(None),
         }
@@ -274,6 +288,8 @@ impl Retention {
             frame_count,
             #[cfg(test)]
             release_drain_test_hook: Mutex::new(None),
+            #[cfg(all(test, feature = "mock", not(loom)))]
+            release_pending_test_hook: Mutex::new(None),
             #[cfg(all(test, not(loom)))]
             promotion_test_hook: Mutex::new(None),
         }
@@ -296,6 +312,13 @@ impl Retention {
 
     pub(crate) fn has_occupied_budget(&self) -> bool {
         self.occupied_budget.load(Ordering::Acquire) > 0
+    }
+
+    pub(crate) fn release_drain_needed(&self) -> bool {
+        if self.has_occupied_budget() {
+            return true;
+        }
+        self.wait.ring_may_be_pending()
     }
 
     pub(crate) fn mark_file_retiring(&self, file_slot: u32) {
@@ -518,6 +541,8 @@ impl Retention {
             .as_ref()
             .expect("held frames need a release ring");
         ring.push(frame.get());
+        #[cfg(all(test, feature = "mock", not(loom)))]
+        self.pause_release_before_pending_for_test();
         self.wait.set_ring_pending();
         self.wait.wake_if_parked();
     }
@@ -573,6 +598,40 @@ impl Retention {
             "a promotion test hook is installed once"
         );
         *installed = Some(hook);
+    }
+
+    #[cfg(all(test, feature = "mock", not(loom)))]
+    fn install_release_pending_test_hook(
+        &self,
+        paused: std::sync::mpsc::SyncSender<()>,
+        resume: std::sync::mpsc::Receiver<()>,
+    ) {
+        let mut installed = self
+            .release_pending_test_hook
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            installed.is_none(),
+            "only one release-pending test hook may be installed"
+        );
+        *installed = Some(ReleasePendingTestHook { paused, resume });
+    }
+
+    #[cfg(all(test, feature = "mock", not(loom)))]
+    fn pause_release_before_pending_for_test(&self) {
+        let hook = self
+            .release_pending_test_hook
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(hook) = hook {
+            hook.paused
+                .send(())
+                .expect("release-pending test observer remains live");
+            hook.resume
+                .recv_timeout(RELEASE_PENDING_TEST_TIMEOUT)
+                .expect("release-pending test resume is bounded");
+        }
     }
 
     #[cfg(test)]
@@ -645,6 +704,8 @@ mod tests {
     #[cfg(not(loom))]
     use std::sync::mpsc;
 
+    #[cfg(all(feature = "mock", not(loom)))]
+    use super::RELEASE_PENDING_TEST_TIMEOUT;
     use super::{
         COUNT_MASK, HELD, ReleaseDrainTestHook, ReleaseRing, RetainRefusedReason, Retention,
     };
@@ -655,6 +716,12 @@ mod tests {
     #[cfg(not(loom))]
     use crate::sync::Mutex;
     use crate::sync::Ordering;
+    #[cfg(all(feature = "mock", not(loom)))]
+    use crate::testing::{
+        FrameState, MockDriver, MockPoolTestingExt, PoolBuilderTestingExt, PoolTestingExt,
+    };
+    #[cfg(all(feature = "mock", not(loom)))]
+    use crate::{DirectIo, Get, PageId, Pool, PoolCompletionBatch};
 
     #[test]
     fn promotion_at_count_ceiling_is_exhausted_without_mutation() {
@@ -817,6 +884,133 @@ mod tests {
                 1,
                 "a release published after pending clear is drained before the same scan ends"
             );
+        });
+    }
+
+    #[cfg(all(feature = "mock", not(loom)))]
+    fn held_release_consumed_before_pending_publication_does_not_poison_next_empty_wait_pool()
+    -> (Pool<MockDriver>, PageId, ReadFrameIdx) {
+        const FRAME_COUNT: u32 = 6;
+        const GRANULE: u32 = 4096;
+
+        let mock = MockDriver::builder()
+            .queue_capacity(1)
+            .frames(FRAME_COUNT)
+            .frame_bytes(GRANULE)
+            .build();
+        let file = mock
+            .open(
+                std::path::Path::new("retention-release-before-pending"),
+                DirectIo::Disabled,
+            )
+            .expect("mock file opens");
+        let file_id = file.file_id();
+        let pool = Pool::builder()
+            .frame_count(FRAME_COUNT)
+            .granule(GRANULE)
+            .max_concurrent_readers(1)
+            .peak_guards_per_reader(2)
+            .max_inflight_reads(1)
+            .miss_headroom(3)
+            .max_retained_frames(1)
+            .build_on(mock)
+            .expect("retention release fixture satisfies its watermark");
+        pool.register_file(file);
+        let page = PageId::new(file_id, 0);
+        let frame = pool.insert_resident_frame(page, 0xA5);
+        (pool, page, frame)
+    }
+
+    #[cfg(all(feature = "mock", not(loom)))]
+    fn held_release_consumed_before_pending_publication_does_not_poison_next_empty_wait_producer(
+        pool: &Pool<MockDriver>,
+        page: PageId,
+        retained_sender: &mpsc::SyncSender<()>,
+        target_release: &mpsc::Receiver<()>,
+    ) {
+        let reader = pool.register_reader().expect("reader slot is available");
+        let guard = match pool.get(&reader, page).expect("registered page is live") {
+            Get::Hit(guard) => guard,
+            Get::Pending(_) => panic!("the fixture inserts its resident page"),
+            Get::Busy => panic!("the fixture has spare frames"),
+        };
+        let retained = guard
+            .into_retained()
+            .ok()
+            .expect("the configured budget admits one retained frame");
+        retained_sender
+            .send(())
+            .expect("retained-ready observer remains live");
+        target_release
+            .recv_timeout(RELEASE_PENDING_TEST_TIMEOUT)
+            .expect("last-drop start is bounded");
+        drop(retained);
+    }
+
+    #[cfg(all(feature = "mock", not(loom)))]
+    #[test]
+    fn held_release_consumed_before_pending_publication_does_not_poison_next_empty_wait() {
+        const HELD_POLLS: u32 = 4;
+        const EMPTY_WAIT: std::time::Duration = std::time::Duration::from_millis(25);
+
+        let (pool, page, frame) =
+            held_release_consumed_before_pending_publication_does_not_poison_next_empty_wait_pool();
+        let observation = pool.driver().observe_waits();
+        let (paused_sender, paused) = mpsc::sync_channel(0);
+        let (resume, target_resume) = mpsc::sync_channel(0);
+        pool.retention
+            .install_release_pending_test_hook(paused_sender, target_resume);
+        let (retained_sender, retained_ready) = mpsc::sync_channel(0);
+        let (release, target_release) = mpsc::sync_channel(0);
+
+        std::thread::scope(|scope| {
+            let producer_pool = &pool;
+            let producer = scope.spawn(move || {
+                held_release_consumed_before_pending_publication_does_not_poison_next_empty_wait_producer(
+                    producer_pool,
+                    page,
+                    &retained_sender,
+                    &target_release,
+                );
+            });
+
+            retained_ready
+                .recv_timeout(RELEASE_PENDING_TEST_TIMEOUT)
+                .expect("retained frame setup is bounded");
+            assert_eq!(pool.evict_frame(page), frame);
+            let mut completions = PoolCompletionBatch::with_capacity(0);
+            for _ in 0..HELD_POLLS {
+                let report = pool.poll_report(&mut completions);
+                assert_eq!(report.backend_completions(), 0);
+                assert_eq!(report.reclaimed_frames(), 0);
+            }
+            assert_eq!(pool.frame_state(frame), FrameState::Evicting);
+            assert_eq!(pool.retention_stats().occupied_budget, 1);
+
+            release.send(()).expect("last-drop producer remains live");
+            paused
+                .recv_timeout(RELEASE_PENDING_TEST_TIMEOUT)
+                .expect("last drop pauses after publishing its ring entry");
+            let release_report = pool.poll_report(&mut completions);
+            assert_eq!(release_report.backend_completions(), 0);
+            assert_eq!(release_report.reclaimed_frames(), 1);
+            assert_eq!(pool.frame_state(frame), FrameState::Free);
+            assert_eq!(pool.retention_stats().occupied_budget, 0);
+
+            resume.send(()).expect("last-drop producer remains live");
+            producer.join().expect("last-drop producer does not panic");
+
+            let empty_report = pool.poll_wait(&mut completions, EMPTY_WAIT);
+            assert_eq!(empty_report.backend_completions(), 0);
+            assert_eq!(empty_report.reclaimed_frames(), 0);
+            assert_eq!(completions.iter().count(), 0);
+            assert_eq!(pool.retention_stats().occupied_budget, 0);
+            assert_eq!(pool.frame_state(frame), FrameState::Free);
+            assert_eq!(observation.parks_entered(), 1);
+            assert_eq!(observation.parks_in_progress(), 0);
+            assert_eq!(observation.parks_exited(), 1);
+            assert_eq!(observation.wake_exits(), 0);
+            assert_eq!(observation.timeout_exits(), 1);
         });
     }
 }

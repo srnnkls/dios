@@ -5,7 +5,7 @@ use std::path::Path;
 use sha2::{Digest as _, Sha256};
 
 pub(crate) const BASE_SOURCE_COMMIT: &str = "4264896e7d2e1a2a5d6d71322a46cb7d8a3de7e7";
-pub(crate) const CANDIDATE_SOURCE_COMMIT: &str = "2e630b175f6c741d77b258d388df47df754567ed";
+pub(crate) const CANDIDATE_SOURCE_COMMIT: &str = "04a333f58799e99e9f52d217fdc78e5651ae632d";
 pub(crate) const GRANULE_BYTES: u32 = 4096;
 pub(crate) const PAIR_COUNT: u32 = 40;
 pub(crate) const SEGMENT_LAYOUT: &str = "pfr-flat-4096-v1";

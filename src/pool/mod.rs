@@ -2069,16 +2069,18 @@ impl<D: PoolBackend> Pool<D> {
             ..
         } = control;
         let mut release_reclaimed = 0;
-        retention.drain_releases(release_cursor, pass_start_epoch, |frame| {
-            assert_eq!(
-                frames.state(frame),
-                FrameState::Evicting,
-                "a release-ring frame remains Evicting until direct free"
-            );
-            frames.advance(frame, FrameState::Free);
-            frame_pages[frame.get() as usize] = None;
-            release_reclaimed += 1;
-        });
+        if retention.release_drain_needed() {
+            retention.drain_releases(release_cursor, pass_start_epoch, |frame| {
+                assert_eq!(
+                    frames.state(frame),
+                    FrameState::Evicting,
+                    "a release-ring frame remains Evicting until direct free"
+                );
+                frames.advance(frame, FrameState::Free);
+                frame_pages[frame.get() as usize] = None;
+                release_reclaimed += 1;
+            });
+        }
         let global_epoch = advance_epoch(&self.global_epoch, self.readers.slots());
         if !retention.has_occupied_budget() {
             let matured_reclaimed = evict_queue.drain_matured(global_epoch, |frame, _tag| {

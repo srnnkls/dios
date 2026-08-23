@@ -582,7 +582,11 @@ impl PoolModel {
         F: FnMut(ReadFrameIdx),
     {
         let pass_start_epoch = self.global_epoch.load(Ordering::Acquire);
-        let released = self.drain_release_entries(release_cursor, pass_start_epoch, &mut on_free);
+        let released = if self.retention.release_drain_needed() {
+            self.drain_release_entries(release_cursor, pass_start_epoch, &mut on_free)
+        } else {
+            0
+        };
         let global_epoch = advance_epoch(&self.global_epoch, &self.slots);
         if !self.retention.has_occupied_budget() {
             let mut first = None;
