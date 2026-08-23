@@ -157,6 +157,14 @@ impl ReleaseRing {
         slot.sequence.store(ticket + 1, Ordering::Release);
     }
 
+    #[inline]
+    fn is_ready(&self, consumer: u64) -> bool {
+        assert!(consumer != u64::MAX, "release-ring cursor never wraps");
+        let index = usize::try_from(consumer & self.mask)
+            .expect("a representable ring capacity fits the platform index width");
+        self.slots[index].sequence.load(Ordering::Acquire) == consumer + 1
+    }
+
     fn pop(&self, cursor: &mut u64) -> Option<u32> {
         assert!(*cursor != u64::MAX, "release-ring cursor never wraps");
         let index = usize::try_from(*cursor & self.mask)
@@ -184,7 +192,7 @@ pub(crate) struct Retention {
     words: Box<[AtomicU32]>,
     tags: Box<[crate::sync::AtomicU64]>,
     retiring: Box<[AtomicBool]>,
-    occupied_budget: AtomicU32,
+    pub(super) occupied_budget: AtomicU32,
     refused_budget: std::sync::atomic::AtomicU64, // refused_budget
     refused_ceiling: std::sync::atomic::AtomicU64, // refused_ceiling
     refused_contention: std::sync::atomic::AtomicU64, // refused_contention
@@ -310,15 +318,12 @@ impl Retention {
         self.max_retained_frames == 0
     }
 
-    pub(crate) fn has_occupied_budget(&self) -> bool {
-        self.occupied_budget.load(Ordering::Acquire) > 0
-    }
-
-    pub(crate) fn release_drain_needed(&self) -> bool {
-        if self.has_occupied_budget() {
-            return true;
-        }
-        self.wait.ring_may_be_pending()
+    #[inline]
+    pub(crate) fn release_drain_needed(&self, consumer: u64) -> bool {
+        self.release_ring
+            .as_ref()
+            .is_some_and(|ring| ring.is_ready(consumer))
+            || self.wait.ring_may_be_pending()
     }
 
     pub(crate) fn mark_file_retiring(&self, file_slot: u32) {
@@ -543,8 +548,7 @@ impl Retention {
         ring.push(frame.get());
         #[cfg(all(test, feature = "mock", not(loom)))]
         self.pause_release_before_pending_for_test();
-        self.wait.set_ring_pending();
-        self.wait.wake_if_parked();
+        self.wait.publish_ring_pending_and_wake_if_parked();
     }
 
     fn word(&self, frame: ReadFrameIdx) -> &AtomicU32 {
@@ -847,6 +851,78 @@ mod tests {
         ring.push(3);
         assert_eq!(ring.pop(&mut cursor), Some(2));
         assert_eq!(ring.pop(&mut cursor), Some(3));
+    }
+
+    #[test]
+    fn release_drain_selection_uses_current_slot_or_terminal_pending_hint() {
+        let wait = Arc::new(WaitState::default());
+        let retention = Retention::preallocated(4, 4, 1, Arc::clone(&wait));
+        let frame = ReadFrameIdx::new(3);
+        assert!(retention.promote(frame, 0, 1).is_ok());
+        let ring = retention
+            .release_ring
+            .as_ref()
+            .expect("nonzero retention budget preallocates a release ring");
+        assert_eq!(ring.slots.len(), 4);
+        let mut cursor = 0;
+        ring.push(0);
+        assert_eq!(ring.pop(&mut cursor), Some(0));
+        assert_eq!(cursor, 1);
+        let observe = |consumer: u64| {
+            let index = usize::try_from(consumer & ring.mask)
+                .expect("a representable ring capacity fits the platform index width");
+            let sequence = ring.slots[index].sequence.load(Ordering::Acquire);
+            (consumer, sequence, retention.release_drain_needed(consumer))
+        };
+
+        let retained_resident_with_empty_current_slot = observe(cursor);
+        assert_eq!(ring.tail.fetch_add(1, Ordering::AcqRel), cursor);
+        let reserved_but_unpublished_current_ticket = observe(cursor);
+        ring.push(2);
+        let published_non_current_behind_unpublished_current = observe(cursor);
+        let current_index = usize::try_from(cursor & ring.mask)
+            .expect("a representable ring capacity fits the platform index width");
+        let current_slot = &ring.slots[current_index];
+        current_slot.frame.store(1, Ordering::Relaxed);
+        current_slot.sequence.store(cursor + 1, Ordering::Release);
+        assert_eq!(ring.pop(&mut cursor), Some(1));
+        let next_published_at_advanced_cursor = observe(cursor);
+        assert_eq!(ring.pop(&mut cursor), Some(2));
+        let rearmed_stale_slots_after_consumption = observe(cursor);
+        wait.set_ring_pending();
+        let terminal_pending_after_consumption = observe(cursor);
+
+        wait.clear_ring_pending();
+        retention.release(frame);
+        assert_eq!(
+            (
+                retention.word(frame).load(Ordering::Acquire),
+                wait.ring_may_be_pending(),
+                retention.retention_stats().occupied_budget,
+                ring.tail.load(Ordering::Acquire),
+                cursor,
+            ),
+            (0, false, 0, cursor, cursor)
+        );
+        assert_eq!(
+            (
+                retained_resident_with_empty_current_slot,
+                reserved_but_unpublished_current_ticket,
+                published_non_current_behind_unpublished_current,
+                next_published_at_advanced_cursor,
+                rearmed_stale_slots_after_consumption,
+                terminal_pending_after_consumption,
+            ),
+            (
+                (1, 1, false),
+                (1, 1, false),
+                (1, 1, false),
+                (2, 3, true),
+                (3, 3, false),
+                (3, 3, true),
+            ),
+            "drain selection follows the current consumer slot or terminal pending hint"
+        );
     }
 
     #[test]

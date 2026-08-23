@@ -59,6 +59,21 @@ The candidate must finish every repetition with occupied budget zero and
 `retained_evictions_held = 0`. Both sides record thread-local minor and major
 fault deltas; this registered pair requires both deltas to be zero.
 
+### Owner-authorized final overhead refinement
+
+The 40-pair v14 nonzero-budget poll run remains a valid performance RED:
+`candidate / baseline` geomean `1.0280`, one-sided CI95 upper `1.0896`, failing
+the unchanged `<= 1.01` gate. The authorized refinement selects a release drain
+only when the current consumer ring slot is published or the terminal pending
+hint is set; ring tail alone is not readiness because ticket reservation
+precedes slot publication. A HELD last-drop combines pending publication and
+the parked-check/wake decision under one generation-mutex acquisition. The
+pass-start epoch load occurs only after a drain is selected, and reclaim helpers
+may be inlined to remove enabled-but-empty call overhead. The occupied-budget
+observation after epoch advancement remains safety-critical and cannot be
+removed. The nonzero-budget poll gate stays `<= 1.01`, and the promote/release
+and mutex-mediated wake gate stays `<= 1.25`.
+
 ## Zero-budget bypass parity A/B gate
 
 | Field | Frozen value |

@@ -48,10 +48,10 @@ checkpoint:
     epoch_id: 20260821T150300Z-376a8f
   phase_cursor:
     batch: 7
-    phase: review_fix
+    phase: performance_gate
     status: in_progress
     tasks: [T8a]
-    updated_at: 2026-08-23T06:17:14Z
+    updated_at: 2026-08-23T21:55:00Z
   review_history:
     batch_1_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-review-general
     batch_1_targeted_review_round_1: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-targeted-review
@@ -98,6 +98,11 @@ checkpoint:
     batch_6_targeted_review: .peer/pinned-frame-retention/20260823T030641Z-d5746a/b6-code-rereview-general-zero-budget
     batch_6_verification: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b6-verification
     batch_6_status: clean
+    batch_7_final_refinement_test_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b7-final-refinement-test-review-round2
+    batch_7_final_refinement_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b7-verification-flake-targeted-review
+    batch_7_verification_fix_test_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b7-verification-flake-test-review
+    batch_7_verification: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b7-final-overhead-verification-round2
+    batch_7_status: performance_gate_in_progress
   incomplete_stages:
     - batch: 3
       task: T2
@@ -334,3 +339,67 @@ checkpoint:
           review: |
             Native Opus, codex-gpt5.6-sol, and gemini-3.7-flash targeted reviews all returned clean.
       residual: null
+    - batch: 7
+      task: T8a
+      phase: review_fix
+      agent: native-terra
+      report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b7-review-fix-final-line-limit
+      status: recovered
+      started_at: 2026-08-23T20:36:40Z
+      updated_at: 2026-08-23T20:47:00Z
+      evidence:
+        pre_dispatch:
+          verification: |
+            Exact selector and parked-wake tests pass.
+            Strict all-target Clippy passes.
+            Targeted review found only the selector RED's 74-line span against the 70-line limit.
+        post_dispatch:
+          verification: |
+            Selector RED spans exactly 70 lines.
+            Exact selector and parked-wake tests passed.
+            Full bench/mock suite passed 275 tests.
+            Strict all-target Clippy, formatting, and diff checks passed.
+          report: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b7-review-fix-final-line-limit/codex-gpt5.6-terra.yaml
+      residual: null
+    - batch: 7
+      task: T8a
+      phase: verification_fix_tester
+      agent: codex-native
+      report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b7-verification-flake-tester
+      status: success
+      started_at: 2026-08-23T20:56:36Z
+      updated_at: 2026-08-23T21:01:44Z
+      evidence:
+        pre_dispatch:
+          verification: |
+            Independent verification confirmed all four authorized behaviors and optimized code shape.
+            The wake/teardown suite failed once because wait_until_parked returned before parks_entered incremented, then passed on rerun.
+          report: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b7-final-overhead-verification/codex-native.yaml
+        post_dispatch:
+          verification: |
+            Deterministic runtime RED fails when parks_in_progress is one but parks_entered is zero.
+            Existing wake/teardown suite passed 3/3; formatting and diff checks passed.
+          report: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b7-verification-flake-tester/codex-native.yaml
+    - batch: 7
+      task: T8a
+      phase: verification_fix_implementer
+      agent: native-terra
+      report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b7-verification-flake-implementer
+      status: success
+      started_at: 2026-08-23T21:05:30Z
+      updated_at: 2026-08-23T21:15:00Z
+      evidence:
+        pre_dispatch:
+          verification: |
+            Deterministic RED approved by codex-native, claude-opus-cli, and gemini-3.7-flash.
+            Fix is limited to the test-observation helper; production wait/wake behavior must remain unchanged.
+          reports:
+            - .peer/pinned-frame-retention/20260821T150300Z-376a8f/b7-verification-flake-test-review/codex-native.yaml
+            - .peer/pinned-frame-retention/20260821T150300Z-376a8f/b7-verification-flake-test-review/claude-opus-cli.yaml
+            - .peer/pinned-frame-retention/20260821T150300Z-376a8f/b7-verification-flake-test-review/gemini-3.7-flash.yaml
+        post_dispatch:
+          verification: |
+            Deterministic helper RED and one-lock test passed.
+            Wake/teardown passed 256/256 repetitions.
+            Full bench/mock, strict Clippy, formatting, and diff checks passed.
+          report: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b7-verification-flake-implementer/codex-gpt5.6-terra.yaml

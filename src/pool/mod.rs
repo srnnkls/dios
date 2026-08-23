@@ -2059,7 +2059,6 @@ impl<D: PoolBackend> Pool<D> {
             });
         }
 
-        let pass_start_epoch = self.global_epoch.load(Ordering::Acquire);
         let frames = &self.frames;
         let retention = &self.retention;
         let Control {
@@ -2069,7 +2068,8 @@ impl<D: PoolBackend> Pool<D> {
             ..
         } = control;
         let mut release_reclaimed = 0;
-        if retention.release_drain_needed() {
+        if retention.release_drain_needed(*release_cursor) {
+            let pass_start_epoch = self.global_epoch.load(Ordering::Acquire);
             retention.drain_releases(release_cursor, pass_start_epoch, |frame| {
                 assert_eq!(
                     frames.state(frame),
@@ -2082,7 +2082,7 @@ impl<D: PoolBackend> Pool<D> {
             });
         }
         let global_epoch = advance_epoch(&self.global_epoch, self.readers.slots());
-        if !retention.has_occupied_budget() {
+        if retention.occupied_budget.load(Ordering::Acquire) == 0 {
             let matured_reclaimed = evict_queue.drain_matured(global_epoch, |frame, _tag| {
                 frames.advance(frame, FrameState::Free);
                 frame_pages[frame.get() as usize] = None;

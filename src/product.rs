@@ -237,6 +237,8 @@ struct WaitGeneration {
 #[derive(Debug, Default)]
 pub(crate) struct WaitState {
     generation: Mutex<WaitGeneration>,
+    #[cfg(test)]
+    generation_lock_acquisitions: std::sync::atomic::AtomicU64,
     ring_pending_hint: AtomicBool,
     changed: Condvar,
     counters: WaitCounters,
@@ -246,9 +248,17 @@ pub(crate) struct WaitState {
 
 impl WaitState {
     fn lock(&self) -> MutexGuard<'_, WaitGeneration> {
+        #[cfg(test)]
+        self.generation_lock_acquisitions
+            .fetch_add(1, Ordering::Relaxed);
         self.generation
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    #[cfg(test)]
+    fn generation_lock_acquisitions(&self) -> u64 {
+        self.generation_lock_acquisitions.load(Ordering::Relaxed)
     }
 
     pub(crate) fn wake(&self) {
@@ -262,8 +272,10 @@ impl WaitState {
         }
     }
 
-    pub(crate) fn wake_if_parked(&self) {
+    pub(crate) fn publish_ring_pending_and_wake_if_parked(&self) {
         let mut generation = self.lock();
+        generation.ring_pending = true;
+        self.ring_pending_hint.store(true, Ordering::Release);
         if self.counters.parks_in_progress.load(Ordering::Acquire) == 0 {
             return;
         }
@@ -276,6 +288,7 @@ impl WaitState {
         drop(generation);
     }
 
+    #[cfg(test)]
     pub(crate) fn set_ring_pending(&self) {
         let mut generation = self.lock();
         generation.ring_pending = true;
@@ -288,6 +301,7 @@ impl WaitState {
         self.ring_pending_hint.store(false, Ordering::Release);
     }
 
+    #[inline]
     pub(crate) fn ring_may_be_pending(&self) -> bool {
         self.ring_pending_hint.load(Ordering::Acquire)
     }
@@ -508,7 +522,7 @@ impl WaitObservation {
     pub(crate) fn wait_until_parked(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            if self.parks_in_progress() > 0 {
+            if self.parks_in_progress() > 0 && self.parks_entered() != self.parks_exited() {
                 return true;
             }
             std::thread::yield_now();
@@ -569,8 +583,8 @@ mod ring_pending_tests {
         assert_eq!(observation.timeout_exits(), 0);
     }
 
-    #[test]
-    fn held_final_release_without_a_parker_sets_ring_pending() {
+    fn held_final_release_wakes_a_parker_with_one_generation_lock_pool()
+    -> (Pool<MockDriver>, PageId) {
         let mock = MockDriver::builder()
             .queue_capacity(1)
             .frames(6)
@@ -591,8 +605,13 @@ mod ring_pending_tests {
             .build_on(mock)
             .expect("retention fixture satisfies its watermark");
         pool.register_file(file);
+        (pool, PageId::new(file_id, 0))
+    }
+
+    #[test]
+    fn held_final_release_wakes_a_parker_with_one_generation_lock() {
+        let (pool, page) = held_final_release_wakes_a_parker_with_one_generation_lock_pool();
         let reader = pool.register_reader().expect("reader slot is available");
-        let page = PageId::new(file_id, 0);
         let frame = pool.insert_resident_frame(page, 0xA5);
         let Get::Hit(guard) = pool.get(&reader, page).expect("inserted page remains live") else {
             panic!("the inserted page must hit");
@@ -607,13 +626,64 @@ mod ring_pending_tests {
         assert_eq!(pool.frame_state(frame), FrameState::Evicting);
         let wait = pool.wait_internal();
         let observation = observation(&wait);
-        assert_never_parked(&observation);
 
-        drop(retained);
+        let (generation_locks_before, generation_locks_after, pending) =
+            std::thread::scope(|scope| {
+                let waiter_wait = Arc::clone(&wait);
+                let waiter = scope.spawn(move || waiter_wait.wait(Duration::from_secs(5)));
+                assert!(
+                    observation.wait_until_parked(Duration::from_secs(1)),
+                    "WaitState::wait enters its parked path"
+                );
+                let generation_locks_before = wait.generation_lock_acquisitions();
 
-        assert!(wait.lock().ring_pending);
-        assert_never_parked(&observation);
+                drop(retained);
+                let generation_locks_after = wait.generation_lock_acquisitions();
+                let pending = wait.ring_may_be_pending();
+
+                waiter.join().expect("HELD final release wakes the waiter");
+                (generation_locks_before, generation_locks_after, pending)
+            });
+        let park_outcome = (
+            observation.parks_entered(),
+            observation.parks_in_progress(),
+            observation.parks_exited(),
+            observation.wake_exits(),
+            observation.timeout_exits(),
+        );
         pool.poll();
+
+        assert_eq!(
+            (
+                pending,
+                generation_locks_after - generation_locks_before,
+                park_outcome,
+            ),
+            (true, 1, (1, 0, 1, 1, 0)),
+            "pending publication and the parked-wake decision share one generation lock"
+        );
+    }
+
+    #[test]
+    fn wait_until_parked_requires_entered_park_publication() {
+        let wait = Arc::new(WaitState::default());
+        let observation = observation(&wait);
+        wait.counters
+            .parks_in_progress
+            .store(1, std::sync::atomic::Ordering::Release);
+
+        assert!(
+            !observation.wait_until_parked(Duration::from_millis(1)),
+            "pre-park progress is not an entered park"
+        );
+
+        wait.counters
+            .parks_entered
+            .store(1, std::sync::atomic::Ordering::Release);
+        assert!(
+            observation.wait_until_parked(Duration::from_millis(1)),
+            "entered park state is observable"
+        );
     }
 
     #[test]

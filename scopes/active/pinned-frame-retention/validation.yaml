@@ -189,3 +189,52 @@ review_gate:
         reclamation policy, DRP010 serialization, task-local RED pipeline, and
         explicit unresolved shipping-memlock fork. Execution remains blocked
         by DRP010 and the T1 owner decision.
+
+decision_log:
+  - date: 2026-08-23
+    decision: Select release draining from the current consumer slot's published sequence or the terminal pending hint.
+    alternatives:
+      - Select from occupied budget, which performs enabled-empty work and cannot distinguish resident retentions from consumable releases.
+      - Select from ring tail, which mistakes ticket reservation for slot publication.
+    reason: Current-slot readiness is the earliest safe consumability signal; the pending hint preserves the push-before-pending terminal race.
+  - date: 2026-08-23
+    decision: Publish HELD pending state and choose any parked wake under one generation-mutex acquisition.
+    alternatives:
+      - Keep separate pending-publication and wake acquisitions.
+      - Wake unconditionally on every final drop.
+    reason: One acquisition preserves the mutex-mediated handshake without duplicate locking or an unconditional eventfd syscall.
+  - date: 2026-08-23
+    decision: Keep epoch advancement unconditional, defer the pass-start epoch load until a release drain is selected, and retain the post-epoch occupied-budget Acquire.
+    alternatives:
+      - Reuse a pre-epoch zero observation.
+      - Skip epoch advancement on an enabled-empty pass.
+    reason: Loom falsified the pre-epoch reuse; only the pass-start load is avoidable when no release is consumable.
+  - date: 2026-08-23
+    decision: Define wait_until_parked as an in-progress park with unmatched entered and exited publications.
+    alternatives:
+      - Treat pre-park progress as parked.
+      - Treat any historical entered publication as parked.
+    reason: The former produced a witnessed false-positive; the latter would report completed parks as current.
+  - date: 2026-08-23
+    decision: Preserve every recorded T8a threshold and close the scope after T8a and T9 while retaining T8b as an explicit AM4-blocked obligation.
+    alternatives:
+      - Relax a failed threshold.
+      - Substitute a scaled or raised-memlock arm for the exact R8 shipping arm.
+      - Block scope closure on the non-closure dependency.
+    reason: The bench plan forbids silent relaxation and substitution; scope revision 13 makes T8b non-closure-blocking.
+  - date: 2026-08-23
+    decision: Continue autonomously through verification, gates, documentation, and closure, choosing the smallest conformant path without interactive decisions.
+    alternatives:
+      - Pause for each reversible implementation or gate decision.
+    reason: Explicit execution authorization delegates reasonable path selection; irreversible external actions remain outside this scope.
+  - date: 2026-08-23
+    decision: Rerun the transient guard gate against the final candidate identity.
+    alternatives:
+      - Reuse the v11 PASS from candidate 2e630b1 as final closure evidence.
+    reason: The binding validator requires the exact candidate source commit; the earlier PASS remains characterization only.
+  - date: 2026-08-23
+    decision: Build v15 from clean isolated product clones on nix while keeping the controller checkout limited to the runner identity edit.
+    alternatives:
+      - Build products from the dirty controller checkout.
+      - Reuse v14 executables after the source commit changes.
+    reason: Product and executable seals must bind to clean baseline and final-candidate commits; target artifacts are versioned to prevent evidence overwrite.
