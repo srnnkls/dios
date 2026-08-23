@@ -266,6 +266,30 @@ impl Retention {
         self.max_retained_frames == 0
     }
 
+    pub(crate) fn mark_file_retiring(&self, file_slot: u32) {
+        if self.is_disabled() {
+            return;
+        }
+        let index = usize::try_from(file_slot).expect("file slots fit platform indexes");
+        assert!(
+            index < self.retiring.len(),
+            "retention covers every file slot"
+        );
+        self.retiring[index].store(true, Ordering::Release);
+    }
+
+    pub(crate) fn clear_file_retiring(&self, file_slot: u32) {
+        if self.is_disabled() {
+            return;
+        }
+        let index = usize::try_from(file_slot).expect("file slots fit platform indexes");
+        assert!(
+            index < self.retiring.len(),
+            "retention covers every file slot"
+        );
+        self.retiring[index].store(false, Ordering::Release);
+    }
+
     pub(crate) fn drain_releases<F: FnMut(ReadFrameIdx)>(
         &self,
         cursor: &mut u64,

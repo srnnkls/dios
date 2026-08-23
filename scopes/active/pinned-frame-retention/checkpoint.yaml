@@ -2,9 +2,9 @@ checkpoint:
   scope_name: pinned-frame-retention
   scope_path: ./scopes/active/pinned-frame-retention
   branch: feat/pinned-frame-retention
-  timestamp: 2026-08-22T06:24:20Z
-  last_batch: 3
-  last_commit: f9e967406deefb1a373b608113565dc86224af02
+  timestamp: 2026-08-23T00:33:40Z
+  last_batch: 4
+  last_commit: 7b2e61ecb412444e17948f5443e79151cf0b3aa4
   tasks:
     done:
       - id: T1
@@ -17,25 +17,24 @@ checkpoint:
         name: RetainedFrame and into_retained promotion
       - id: T4
         name: Drain integration, release ring, direct free, accounting
+      - id: T5
+        name: Integrate retention with file retirement and slot reuse
+      - id: T6
+        name: Loom retention cases
     in_progress: []
     pending:
-      - {id: T5, name: Integrate retention with file retirement and slot reuse}
-      - {id: T6, name: Loom retention cases}
       - {id: T7, name: Wire public diagnostics and acceptance hardening}
       - {id: T8a, name: Bench implementation and arena-independent gate run}
       - {id: T8b, name: Exact-R8-scale shipping arm}
       - {id: T9, name: Docs and invariant fold-back}
   next_batch:
-    number: 5
-    id: B5
+    number: 6
+    id: B6
     tasks:
-      - id: T5
-        name: Integrate retention with file retirement and slot reuse
-        files: [src/pool/retention.rs, src/pool/mod.rs, src/lib.rs, tests/retention_retirement.rs]
-      - id: T6
-        name: Loom retention cases
-        files: [src/pool/loom_model.rs, tests/loom_pool.rs]
-    parallel: true
+      - id: T7
+        name: Wire public diagnostics and acceptance hardening
+        files: [src/pool/retention.rs, src/pool/mod.rs, src/lib.rs, tests/retention_acceptance.rs, tests/zero_alloc.rs]
+    parallel: false
   deferred_issues:
     - batch: 1
       severity: medium
@@ -46,18 +45,11 @@ checkpoint:
     path: ./scopes/active/pinned-frame-retention/config.yaml
     epoch_id: 20260821T150300Z-376a8f
   phase_cursor:
-    batch: 4
+    batch: 5
     phase: code_review
     status: success
-    tasks: [T4]
-    updated_at: 2026-08-22T06:24:20Z
-    tester_report: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-tester-T4/codex-native.yaml
-    test_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-test-review-T4
-    general_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-review-general
-    architecture_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-review-architecture
-    compliance_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-review-compliance
-    review_fix: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-review-fix-T4-terra
-    targeted_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-targeted-review
+    tasks: [T5, T6]
+    updated_at: 2026-08-23T00:33:40Z
   review_history:
     batch_1_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-review-general
     batch_1_targeted_review_round_1: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-targeted-review
@@ -78,6 +70,20 @@ checkpoint:
     batch_4_review_fix: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-review-fix-T4-terra
     batch_4_targeted_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b4-targeted-review
     batch_4_status: clean
+    batch_5_t5_test_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-test-review-T5
+    batch_5_t5_general_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-review-T5
+    batch_5_t5_architecture_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-review-T5-architecture
+    batch_5_t5_compliance_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-review-T5-compliance
+    batch_5_t5_targeted_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-targeted-review-T5
+    batch_5_t6_test_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-test-review-T6-final
+    batch_5_t6_poll_test_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-test-review-T6-poll-pass
+    batch_5_t6_generation_test_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-test-review-T6-generation
+    batch_5_t6_general_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-review-T6
+    batch_5_t6_architecture_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-review-T6-architecture
+    batch_5_t6_compliance_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-review-T6-compliance
+    batch_5_t6_targeted_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-targeted-review-T6
+    batch_5_t6_generation_targeted_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-targeted-review-T6-generation
+    batch_5_status: clean
   incomplete_stages:
     - batch: 3
       task: T2

@@ -1070,6 +1070,13 @@ impl<D: PoolBackend> Pool<D> {
         let slot = fd.file_id().slot() as usize;
         let id = fd.file_id();
         let mut control = self.control();
+        assert!(
+            control.files[slot]
+                .as_ref()
+                .is_none_or(|entry| entry.state == PoolFileState::Retired),
+            "a file slot is absent or retired before registration"
+        );
+        self.retention.clear_file_retiring(id.slot());
         publish_live_file(
             &mut control.files,
             &self.file_live_generations[slot],
@@ -1544,6 +1551,7 @@ impl<D: PoolBackend> Pool<D> {
         if entry.state == PoolFileState::Retired {
             return RetireStatus::Retired;
         }
+        self.retention.mark_file_retiring(file.slot());
         let started = begin_file_retirement(entry, &self.file_live_generations[index], file);
         self.progress_retirements(&mut control);
         if started {

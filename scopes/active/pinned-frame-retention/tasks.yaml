@@ -168,7 +168,7 @@ tasks:
       release; retire-then-reopen-same-slot with a FRESH guard on the
       new generation promoting successfully (flag cleared at
       register_file_internal, absent-or-Retired assert).
-    status: pending
+    status: done
     depends_on: [T4]
     files: [src/pool/retention.rs, src/pool/mod.rs, src/lib.rs, tests/retention_retirement.rs]
 
@@ -205,7 +205,7 @@ tasks:
       claim_frame_bounded); promotion vs retire_file on a model flag. Within
       this task, add each new Loom case as a failing model check before the
       corresponding model extension.
-    status: pending
+    status: done
     depends_on: [T4, T6a]
     files: [src/pool/loom_model.rs, tests/loom_pool.rs]
 

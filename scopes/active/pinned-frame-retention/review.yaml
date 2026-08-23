@@ -716,6 +716,59 @@ batch_reviews:
       - mise run test
       - mise run lint
     outcome: approved
+  - batch: 5
+    timestamp: 2026-08-23T00:33:40Z
+    commit: working-tree@7b2e61ecb412444e17948f5443e79151cf0b3aa4
+    tasks: [T5, T6]
+    test_reviews:
+      - {task: T5, status: approved, report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-test-review-T5}
+      - {task: T6, status: approved, report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-test-review-T6-final}
+      - {task: T6, status: approved, report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-test-review-T6-poll-pass}
+      - {task: T6, status: approved, report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-test-review-T6-generation}
+    initial_review:
+      report_dirs:
+        t5_general: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-review-T5
+        t5_architecture: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-review-T5-architecture
+        t5_compliance: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-review-T5-compliance
+        t6_general: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-review-T6
+        t6_architecture: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-review-T6-architecture
+        t6_compliance: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-review-T6-compliance
+      accepted_findings:
+        - id: B5-M1
+          description: A retirement regression exceeded the 70-line limit and deferred an unexpected successful promotion through a boolean.
+          resolution: Immediate match failure preserves the live-guard checks and reduces the test to 63 lines.
+        - id: B5-H1
+          description: The T6 retirement model used a shadow flag disconnected from Retention::mark_file_retiring.
+          resolution: The scenario now drives the production retention primitive directly.
+        - id: B5-H2
+          description: Full model poll entries could bypass the release ring and run only epoch maturity.
+          resolution: poll_reopen, poll_file_pass, and drain_driver share one release-first reclaim pass; direct poll regression covers release, refill, and budget reuse.
+        - id: B5-H3
+          description: Release-driven file refills installed new bytes without publishing the replacement file generation.
+          resolution: poll_file_pass publishes on either release or matured free; the approved regression rejects the old generation and admits the reopened one.
+    targeted_reviews:
+      - {task: T5, status: clean, report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-targeted-review-T5}
+      - {task: T6, status: clean, report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-targeted-review-T6}
+      - {task: T6, status: clean, report_dir: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b5-targeted-review-T6-generation}
+    synthesized:
+      gates:
+        correctness: pass
+        performance: pass
+        security: pass
+        architecture: pass
+        style: pass
+      critical_issues: 0
+      high_issues: 0
+      medium_issues: 0
+    verification:
+      - cargo fmt --check
+      - RUSTFLAGS="--cfg loom" cargo test --test loom_pool (15 passed)
+      - targeted mock retirement, reclaim, and promotion tests (14 passed)
+      - cargo test --lib --features mock (11 passed)
+      - mise run test (261 passed)
+      - mise run lint
+      - git diff --check
+    outcome: approved
 
 issues:
   critical: []
