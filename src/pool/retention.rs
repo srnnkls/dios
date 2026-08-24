@@ -18,6 +18,12 @@ const HELD: u32 = 1 << 16;
 const COUNT_MASK: u32 = u16::MAX as u32;
 const RING_CAPACITY_MAX: u32 = 1 << 31;
 
+/// Thread-bound access to a retained, point-in-time frame snapshot.
+///
+/// Logical eviction may remove the frame from lookup while this handle lives,
+/// but its bytes remain stable and physical reuse waits for the last retained
+/// handle to drop. The borrow cannot outlive the pool or the `ReaderCtx` that
+/// acquired the originating guard.
 pub struct RetainedFrame<'pool> {
     bytes: &'pool [u8],
     frame: ReadFrameIdx,
@@ -48,8 +54,14 @@ impl Drop for RetainedFrame<'_> {
     }
 }
 
+/// A refused promotion together with the still-live epoch guard.
+///
+/// The caller can continue guarded access or copy the bytes before dropping
+/// [`Self::guard`].
 pub struct RetainRefused<'pool> {
+    /// The same live guard passed to [`FrameGuard::into_retained`].
     pub guard: FrameGuard<'pool>,
+    /// Why promotion was refused.
     pub reason: RetainRefusedReason,
 }
 
@@ -59,12 +71,25 @@ pub enum RetainRefusedReason {
     FileRetiring,
 }
 
+/// A concurrent snapshot of one pool's retention activity.
+///
+/// Fields are loaded independently, so a snapshot taken during promotion or
+/// release need not describe one atomic instant. Refusal and held-eviction
+/// counters are cumulative for the pool's lifetime.
 pub struct RetentionStats {
+    /// Occupied budget units: retained or pending-release frames plus in-flight
+    /// reservations. Concurrent reservations may transiently exceed the configured
+    /// `max_retained_frames`.
     pub occupied_budget: u32,
+    /// Promotions refused because no distinct-frame budget was available.
     pub refused_budget: u64,
+    /// Promotions refused because the frame's retention count reached its ceiling.
     pub refused_ceiling: u64,
+    /// Promotions refused after exhausting the bounded contention retries.
     pub refused_contention: u64,
+    /// Promotions refused because the frame's file was retiring.
     pub refused_retiring: u64,
+    /// Matured logical evictions whose physical reuse was deferred by retention.
     pub retained_evictions_held: u64,
 }
 

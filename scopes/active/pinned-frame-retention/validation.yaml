@@ -373,3 +373,11 @@ decision_log:
       .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-v18-gates;
       T8b remains externally blocked by arena-modernization:AM4 and
       non-closure-blocking.
+  - date: 2026-08-25
+    decision: Fold retention into the public API and owning dios-v1 invariants as documentation only, using existing API smoke, doctest, rustdoc, and lint gates.
+    alternatives:
+      - Add source scanners, token checks, or a generated API-compliance crate.
+      - Duplicate the complete retention protocol across every public type.
+      - Change production behavior while documenting it.
+      - Modify epoch or pool modules that already expose accurate public behavior.
+    reason: The reviewed documentation RED identified four exact owning sites and no missing behavior. README, sparse public rustdoc, and dios-v1 INV-1/INV-9 now describe bounded-session promotion, live-guard refusal, orthogonal HELD/count state, unchanged FrameState, and the augmented watermark. Fresh-target full tests, strict lint, rustdoc, and all configured native, Opus, and Gemini reviews pass without findings.

@@ -2,7 +2,7 @@ checkpoint:
   scope_name: pinned-frame-retention
   scope_path: ./scopes/active/pinned-frame-retention
   branch: feat/pinned-frame-retention
-  timestamp: 2026-08-24T22:06:02Z
+  timestamp: 2026-08-24T22:36:53Z
   last_batch: 7
   last_commit: ec09d66c7fabe86da723c06ea668e427278f14e8
   tasks:
@@ -25,19 +25,12 @@ checkpoint:
         name: Wire public diagnostics and acceptance hardening
       - id: T8a
         name: Bench implementation and arena-independent gate run
-    in_progress:
       - id: T9
         name: Docs and invariant fold-back
+    in_progress: []
     pending:
       - {id: T8b, name: Exact-R8-scale shipping arm}
-  next_batch:
-    number: 8
-    id: B8
-    tasks:
-      - id: T9
-        name: Docs and invariant fold-back
-        files: [README.md, src/pool/retention.rs, src/pool/epoch.rs, src/pool/mod.rs, scopes/active/dios-v1/scope.md, scopes/active/dios-v1/design.md]
-    parallel: false
+  next_batch: null
   deferred_issues:
     - batch: 1
       severity: medium
@@ -49,11 +42,11 @@ checkpoint:
     epoch_id: 20260821T150300Z-376a8f
   phase_cursor:
     batch: 8
-    phase: tester
+    phase: verification
     status: in_progress
     tasks: [T9]
-    report_dir: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b8-tester-T9
-    updated_at: 2026-08-24T22:09:24Z
+    report_dir: target/final-verify
+    updated_at: 2026-08-24T22:36:53Z
   review_history:
     batch_1_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-review-general
     batch_1_targeted_review_round_1: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-targeted-review
@@ -129,6 +122,11 @@ checkpoint:
     batch_7_v17_transient_cost_model: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-transient-cost-model
     batch_7_v18_gates: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-v18-gates
     batch_7_status: clean
+    batch_8_t9_tester: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b8-tester-T9
+    batch_8_t9_implementer: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b8-implementer-T9-terra
+    batch_8_t9_review: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b8-review
+    batch_8_t9_review_gemini_retry: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b8-review-gemini-retry
+    batch_8_status: clean
   incomplete_stages:
     - batch: 3
       task: T2
@@ -698,3 +696,43 @@ checkpoint:
           same_frame_promotion:
             result: "PASS: mean refusal 0.00001862, CI95 upper 0.00001992 <= 0.00500000, 40 pairs"
             sha256: [87bc1449cebf07c8c66b7d0c59a83fc6c18dfcebd432cf6bb3ea6126a26c7ab3, 33d555607333fd3cc4d1ed47f244d2eb02300705296e2241feadac370c777638]
+    - batch: 8
+      task: T9
+      phase: implementer
+      agent: terra
+      report_dir: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b8-implementer-T9-terra
+      status: success
+      started_at: 2026-08-24T22:14:09Z
+      updated_at: 2026-08-24T22:25:54Z
+      evidence:
+        pre_dispatch:
+          base_commit: 2b33d700c135404e42b5dbe1147a82986f5e89ae
+          git_status: "M benches/pinned_frame_retention/common.rs"
+          tester_report: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b8-tester-T9/codex-native.yaml
+        post_dispatch:
+          report: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b8-implementer-T9-terra/codex-gpt5.6-terra.yaml
+          verification: README, public rustdoc, and owning INV-1/INV-9 documentation were updated; public API 9/9, doctests 5/5, mock suite 261/261, rustdoc, strict Clippy, formatting, and diff checks passed.
+    - batch: 8
+      task: T9
+      phase: code_review
+      agent: codex-native, claude-opus-cli, gemini-3.7-flash
+      report_dir: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b8-review
+      status: success
+      started_at: 2026-08-24T22:25:54Z
+      updated_at: 2026-08-24T22:36:53Z
+      evidence:
+        reports:
+          - .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b8-review/codex-native.yaml
+          - .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b8-review/claude-opus-cli.yaml
+          - .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b8-review-gemini-retry/gemini-3.7-flash.yaml
+        verification: All configured reviewers approved with no findings; Gemini's first substantive approval was retried only to remove Markdown fences and produce schema-valid YAML.
+    - batch: 8
+      task: T9
+      phase: verification
+      agent: orchestrator
+      status: success
+      started_at: 2026-08-24T22:25:54Z
+      updated_at: 2026-08-24T22:36:53Z
+      evidence:
+        initial_run: The shared target retained a benchmark executable sealed to a2e01f5e, so two identity smoke cases correctly rejected current HEAD 2b33d700; this was stale build output rather than a source failure.
+        verification: A fresh CARGO_TARGET_DIR passed the complete bench/mock suite including all 8 gate-contract cases and 23 zero-allocation cases, strict Clippy, formatting, doctests, and rustdoc.

@@ -314,6 +314,12 @@ State per pool: `global_epoch: AtomicU64`; per registered reader thread a
 - Reclaim (same poll pass): a queued frame with `tagged_epoch + 2 <=
   global_epoch` transitions Evicting → Free. Two advances guarantee every
   guard that could have observed the old contents has dropped.
+- Retention extension: a separate `HELD`/count word is orthogonal to the packed
+  frame-state/generation word; `FrameState` remains exactly `Free`, `InFlight`,
+  `Resident`, or `Evicting`. Logical eviction and table removal remain allowed
+  while retained. If EBR maturity finds a live retention, the frame stays
+  `Evicting` with `HELD` set; physical `Free`/reuse waits for the last retained
+  release and the release drain.
 - Stalled reader: a thread holding a guard indefinitely stalls epoch
   advance; reclamation halts but correctness holds. The watermark
   invariant (INV-9) bounds the frames a well-behaved reader can hold;
@@ -351,7 +357,7 @@ the first-touch bit store rides in the DIO-G1 parity bench.
 
 | ID | Invariant | Enforcement |
 |----|-----------|-------------|
-| INV-1 | A frame is never reused while pinned or in-flight | frame state machine (Free→InFlight→Resident→Evicting→Free); Evicting→Free only after two epoch advances (EBR above); loom test |
+| INV-1 | A frame is never reused while epoch-pinned, retained, or in-flight | packed state/generation word with `FrameState` remaining exactly `Free`, `InFlight`, `Resident`, or `Evicting`; orthogonal `HELD`/count word; logical eviction remains allowed, but physical `Free`/reuse follows two epoch advances and, when retained, the last retained release plus release drain; loom tests |
 | INV-2 | Zero allocation on get/submit/poll after warmup, including Pool write/fsync completion conversion and bounded overflow retention | alloc-count harness (nmnm `zero_alloc.rs` pattern) in CI |
 | INV-3 | `submit` never waits on kernel completion or queue space; `poll_wait` parks outside pool/driver control and is losslessly wakeable by I/O or `PoolWakeHandle` ingress | uring: SQ-full → flush-and-retry-once then `SubmitError::Full`; eager: bounded queue → `Full`; saturated-submit, submit-while-parked, wake-before-park, and wake-during-park tests |
 | INV-4 | Kernel never writes into memory Rust may free | frames registered at pool init (uring only; eager uses the same non-moving slab unregistered), deregistered only in `Pool::drop` after quiesce on both backends; ops address frames by index, not pointer-lifetime |
@@ -359,7 +365,7 @@ the first-touch bit store rides in the DIO-G1 parity bench.
 | INV-6 | Owned reader/pending capabilities cannot turn a residency borrow into transferable or `'static` bytes | `ReaderCtx: !Send + !Sync`; `PendingToken: Send + !Clone`, with `Sync` deliberately unspecified; `FrameGuard<'pool>: !Send + !Sync`, tied to Pool + destination ReaderCtx borrows; executable compile-fail/trait tests |
 | INV-7 | Resident frame content is immutable until Evicting; frames hold raw granules — per-block CRC lives above the seam in `segment::block_storage`, per fetch, as today | frames read-only until Evicting; eviction-re-read corruption test through BlockSource (DIO-G5) |
 | INV-8 | Kernel ops always drain; Pool shutdown quiesces exactly once even when lifetime-free reader/token metadata outlives the Pool value | `Pool::drop` polls until backend in-flight count is 0; PendingToken drop is waiter-interest only; drop-order observation test |
-| INV-9 | Deadlock freedom: pool sized ≥ watermark (max concurrent readers × peak guards per reader + miss_headroom, miss_headroom ≥ 3 × max_inflight_reads); within the watermark `Busy` is bounded, retriable backpressure — reachable only under reclamation lag or a stalled reader, never deadlock | peak guards per reader = static max merge fan-out `f(ln_runs [20] + levels)`; compaction counts as a reader at peak fan-out; reader slots capped at registration; under-watermark config fails open; get() runs one bounded reclaim attempt before returning Busy; Busy-rate counter; open-fail test + DIO-G7 recovery + loom |
+| INV-9 | Deadlock freedom: `frame_count >= (max_concurrent_readers × peak_guards_per_reader + miss_headroom).max(1) + max_retained_frames`; separately, `miss_headroom ≥ 3 × max_inflight_reads`. Within the watermark `Busy` is bounded, retriable backpressure — reachable only under reclamation lag or a stalled reader, never deadlock | peak guards per reader = static max merge fan-out `f(ln_runs [20] + levels)`; compaction counts as a reader at peak fan-out; reader slots and distinct retained frames are capped by configuration; under-watermark config fails open; get() runs one bounded reclaim attempt before returning Busy; Busy-rate counter; open-fail test + DIO-G7 recovery + loom |
 | INV-10 | Encoded block size ≤ GRANULE | `ValueTooLarge` at the write path (AD-6); vNext writer padding (AD-5); cap-rejection test |
 | INV-11 | No op references a closed fd, reused op slot, reused write buffer, or retired/reused product file generation | advanced ownership remains `close(FileHandle)` by value with deferred close; Pool closes get/write/fsync admission on `Retiring`, returns rejected `PoolWriteSlot`, drains admitted reads/writes/fsyncs and owned completions, waits for tokens/guards/EBR, and reaches `Retired` only after close; stale-generation and retirement matrix tests |
 

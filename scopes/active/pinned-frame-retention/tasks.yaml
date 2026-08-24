@@ -281,6 +281,6 @@ tasks:
       docs at close; preserve the R8 evidence/disposition reference and state
       explicitly that the performance consumer promotes once per bounded read
       session rather than once per point.
-    status: in_progress
+    status: done
     depends_on: [T8a]
     files: [README.md, src/pool/retention.rs, src/pool/epoch.rs, src/pool/mod.rs, scopes/active/dios-v1/scope.md, scopes/active/dios-v1/design.md]

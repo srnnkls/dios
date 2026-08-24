@@ -76,6 +76,18 @@ four-round page hash. Exact identities, confidence bounds, proof counts, and
 artifacts are recorded in the
 [R7 gate results](scopes/done/dios-r1-r7-read-performance/resources/gate-results.yaml).
 
+### Retained frames
+
+A nonzero `PoolBuilder::max_retained_frames` enables
+`FrameGuard::into_retained`. If promotion is refused, `RetainRefused` returns
+that same live guard for ordinary guarded access or copy-out.
+
+A performance consumer promotes each distinct frame once while setting up one
+bounded read session, not once per point. It then indexes bytes through the
+retained handles until the session drops them. The
+[R8 retained-set evidence and disposition](scopes/active/pinned-frame-retention/resources/r8-resident-set.md)
+records the rejected prototype and the selected session shape.
+
 ## Development
 
 ```sh

@@ -53,7 +53,7 @@ batches:
     status: blocked_external_non_closure
   - id: B8
     tasks: [T9]
-    status: ready
+    status: done
 edges:
   - from: T1
     to: T2
