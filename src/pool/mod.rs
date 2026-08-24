@@ -2044,23 +2044,9 @@ impl<D: PoolBackend> Pool<D> {
     }
 
     fn advance_and_reclaim(&self, control: &mut Control) -> usize {
-        if self.retention.is_disabled() {
-            let global_epoch = advance_epoch(&self.global_epoch, self.readers.slots());
-            let frames = &self.frames;
-            let Control {
-                evict_queue,
-                frame_pages,
-                ..
-            } = control;
-            return evict_queue.drain_matured(global_epoch, |frame, _tag| {
-                frames.advance(frame, FrameState::Free);
-                frame_pages[frame.get() as usize] = None;
-                FrameOutcome::Freed
-            });
-        }
-
         let frames = &self.frames;
         let retention = &self.retention;
+        let retention_enabled = !retention.is_disabled();
         let Control {
             evict_queue,
             frame_pages,
@@ -2068,7 +2054,7 @@ impl<D: PoolBackend> Pool<D> {
             ..
         } = control;
         let mut release_reclaimed = 0;
-        if retention.release_drain_needed(*release_cursor) {
+        if retention_enabled && retention.release_drain_needed(*release_cursor) {
             let pass_start_epoch = self.global_epoch.load(Ordering::Acquire);
             retention.drain_releases(release_cursor, pass_start_epoch, |frame| {
                 assert_eq!(
@@ -2082,7 +2068,7 @@ impl<D: PoolBackend> Pool<D> {
             });
         }
         let global_epoch = advance_epoch(&self.global_epoch, self.readers.slots());
-        if retention.occupied_budget.load(Ordering::Acquire) == 0 {
+        if !retention_enabled || retention.occupied_budget.load(Ordering::Acquire) == 0 {
             let matured_reclaimed = evict_queue.drain_matured(global_epoch, |frame, _tag| {
                 frames.advance(frame, FrameState::Free);
                 frame_pages[frame.get() as usize] = None;
