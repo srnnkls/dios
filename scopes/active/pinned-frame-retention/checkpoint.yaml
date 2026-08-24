@@ -2,7 +2,7 @@ checkpoint:
   scope_name: pinned-frame-retention
   scope_path: ./scopes/active/pinned-frame-retention
   branch: feat/pinned-frame-retention
-  timestamp: 2026-08-23T06:17:14Z
+  timestamp: 2026-08-24T20:20:01Z
   last_batch: 6
   last_commit: 2e630b175f6c741d77b258d388df47df754567ed
   tasks:
@@ -48,10 +48,10 @@ checkpoint:
     epoch_id: 20260821T150300Z-376a8f
   phase_cursor:
     batch: 7
-    phase: performance_gate
+    phase: commit_and_seal
     status: in_progress
     tasks: [T8a]
-    updated_at: 2026-08-23T21:55:00Z
+    updated_at: 2026-08-24T20:20:01Z
   review_history:
     batch_1_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-review-general
     batch_1_targeted_review_round_1: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-targeted-review
@@ -102,7 +102,30 @@ checkpoint:
     batch_7_final_refinement_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b7-verification-flake-targeted-review
     batch_7_verification_fix_test_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b7-verification-flake-test-review
     batch_7_verification: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b7-final-overhead-verification-round2
-    batch_7_status: performance_gate_in_progress
+    batch_7_nonzero_red_review: .peer/pinned-frame-retention/20260824T061850Z-5d7d2c/b7-nonzero-red-review
+    batch_7_nonzero_profile: target/flamegraph/pfr_nonzero_poll_v15_arm_diff
+    batch_7_nonzero_performance_fix: .peer/pinned-frame-retention/20260824T061850Z-5d7d2c/b7-nonzero-performance-fix-terra
+    batch_7_nonzero_fix_review_general: .peer/pinned-frame-retention/20260824T071938Z-1a00e6/b7-nonzero-fix-review-general
+    batch_7_nonzero_fix_review_architecture: .peer/pinned-frame-retention/20260824T071938Z-1a00e6/b7-nonzero-fix-review-architecture
+    batch_7_nonzero_fix_review_compliance: .peer/pinned-frame-retention/20260824T071938Z-1a00e6/b7-nonzero-fix-review-compliance
+    batch_7_nonzero_fix_verification: .peer/pinned-frame-retention/20260824T071938Z-1a00e6/b7-nonzero-fix-verification
+    batch_7_nonzero_tristate_red_review: .peer/pinned-frame-retention/20260824T084521Z-11dd58/b7-tristate-selector-red-review
+    batch_7_nonzero_tristate_test_review: .peer/pinned-frame-retention/20260824T084521Z-11dd58/b7-tristate-selector-test-review-r2
+    batch_7_nonzero_tristate_review_general: .peer/pinned-frame-retention/20260824T084521Z-11dd58/b7-tristate-review-general
+    batch_7_nonzero_tristate_review_architecture: .peer/pinned-frame-retention/20260824T084521Z-11dd58/b7-tristate-review-architecture
+    batch_7_nonzero_tristate_review_compliance: .peer/pinned-frame-retention/20260824T084521Z-11dd58/b7-tristate-review-compliance
+    batch_7_nonzero_tristate_fix_rereview: .peer/pinned-frame-retention/20260824T084521Z-11dd58/b7-tristate-review-fix-rereview
+    batch_7_nonzero_tristate_verification: .peer/pinned-frame-retention/20260824T084521Z-11dd58/b7-tristate-verification
+    batch_7_v17_transient_profile: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-transient-profile-analysis
+    batch_7_v17_transient_red_review: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-transient-red-review
+    batch_7_v17_transient_value_flow_green: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-transient-value-flow-green-terra
+    batch_7_v17_transient_value_flow_review_general: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-transient-value-flow-review-general
+    batch_7_v17_transient_value_flow_review_architecture: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-transient-value-flow-review-architecture
+    batch_7_v17_transient_value_flow_review_compliance: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-transient-value-flow-review-compliance
+    batch_7_v17_transient_value_flow_review_fix: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-transient-value-flow-review-fix-terra
+    batch_7_v17_transient_value_flow_fix_rereview: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-transient-value-flow-fix-rereview
+    batch_7_v17_transient_cost_model: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-transient-cost-model
+    batch_7_status: compact_carrier_verified_pending_commit_and_seal
   incomplete_stages:
     - batch: 3
       task: T2
@@ -403,3 +426,228 @@ checkpoint:
             Wake/teardown passed 256/256 repetitions.
             Full bench/mock, strict Clippy, formatting, and diff checks passed.
           report: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b7-verification-flake-implementer/codex-gpt5.6-terra.yaml
+    - batch: 7
+      task: T8a
+      phase: tristate_selector_implementer
+      agent: terra
+      report_dir: .peer/pinned-frame-retention/20260824T084521Z-11dd58/b7-tristate-selector-fix-terra
+      status: blocked
+      started_at: 2026-08-24T08:52:00Z
+      updated_at: 2026-08-24T09:07:00Z
+      evidence:
+        pre_dispatch:
+          head: dddf923117c7bdf9c4b24483276a9dd77f09208b
+          runtime_red: |
+            pfr_nonzero_poll v16 passed 40/40 rich-row validity checks.
+            budget64/zero geomean 0.9998; one-sided CI95 upper 1.0104; threshold 1.0100: FAIL.
+          profile: |
+            Enabled-empty loads max_retained_frames before independently loading release_ring.
+            Native, opus-cli, and gemini approved one Option<bool> selector result and exact tri-state oracle.
+        post_dispatch:
+          status: blocked
+          reason: The implementer role cannot mutate the bool selector test into the required tri-state oracle before GREEN.
+    - batch: 7
+      task: T8a
+      phase: tristate_selector_tester
+      agent: codex-native
+      report_dir: .peer/pinned-frame-retention/20260824T084521Z-11dd58/b7-tristate-selector-tester
+      status: success
+      started_at: 2026-08-24T09:08:00Z
+      updated_at: 2026-08-24T09:14:00Z
+      evidence:
+        pre_dispatch:
+          head: dddf923117c7bdf9c4b24483276a9dd77f09208b
+          runtime_red: |
+            pfr_nonzero_poll v16 passed 40/40 rich-row validity checks.
+            budget64/zero geomean 0.9998; one-sided CI95 upper 1.0104; threshold 1.0100: FAIL.
+          requirement: Add a runtime RED that remains source-compatible across the bool-to-Option selector transition, then record the exact failure.
+        post_dispatch:
+          report: .peer/pinned-frame-retention/20260824T084521Z-11dd58/b7-tristate-selector-tester/codex-native.yaml
+          verification: |
+            Focused selector test failed at the disabled case with actual Some(false) and expected None.
+            Production prefix SHA-256 stayed ea98357a before and after the test-only edit.
+    - batch: 7
+      task: T8a
+      phase: tristate_selector_test_fix
+      agent: codex-native
+      report_dir: .peer/pinned-frame-retention/20260824T084521Z-11dd58/b7-tristate-selector-test-fix
+      status: success
+      started_at: 2026-08-24T09:22:00Z
+      updated_at: 2026-08-24T09:25:00Z
+      evidence:
+        pre_dispatch:
+          head: dddf923117c7bdf9c4b24483276a9dd77f09208b
+          review: |
+            codex-native found that the disabled fixture used max_retained_frames=4 and that the stale case observed virgin slot 3.
+            Gemini passed; opus-cli stalled twice. The grounded native finding controls the fix round.
+        post_dispatch:
+          report: .peer/pinned-frame-retention/20260824T084521Z-11dd58/b7-tristate-selector-test-fix/codex-native.yaml
+          verification: |
+            The full selector tuple passed with cursor 4 observing slot 0 at rearmed sequence 4.
+            The focused test then failed only at the corrected disabled max_retained_frames=0 fixture: actual Some(false), expected None.
+            Production prefix SHA-256 remained ea98357a.
+    - batch: 7
+      task: T8a
+      phase: tristate_selector_implementer_green
+      agent: terra
+      report_dir: .peer/pinned-frame-retention/20260824T084521Z-11dd58/b7-tristate-selector-green-terra
+      status: blocked
+      started_at: 2026-08-24T09:36:00Z
+      updated_at: 2026-08-24T09:55:00Z
+      evidence:
+        pre_dispatch:
+          head: dddf923117c7bdf9c4b24483276a9dd77f09208b
+          focused_red: The corrected selector test passed all enabled-state tuples and failed only at disabled Some(false) versus None.
+          test_review: Native and Gemini passed; opus-cli stalled twice; native and external execution classes both succeeded.
+          runtime_red: pfr_nonzero_poll v16 CI95 upper 1.0104 exceeded the frozen 1.0100 gate.
+        post_dispatch:
+          report: .peer/pinned-frame-retention/20260824T084521Z-11dd58/b7-tristate-selector-green-terra/claude-opus-5-terra.yaml
+          verification: |
+            Focused selector 1/1, reclaim 4/4, wake 3/3, Loom 15/15, full mock tests 242/242, and strict Clippy passed.
+            Production and Loom carry one tri-state selector call and one shared plain drain.
+          blocker: Full formatting requires test-owned adapter removal and fixture line formatting.
+    - batch: 7
+      task: T8a
+      phase: tristate_selector_test_refactor
+      agent: codex-native
+      report_dir: .peer/pinned-frame-retention/20260824T084521Z-11dd58/b7-tristate-selector-test-refactor
+      status: success
+      started_at: 2026-08-24T09:56:00Z
+      updated_at: 2026-08-24T09:59:00Z
+      evidence:
+        pre_dispatch:
+          focused_green: 1 passed; 0 failed
+          formatter_red: cargo fmt --check changes only the test-owned disabled fixture line.
+          requirement: Remove the now-obsolete bool compatibility adapter and format the direct Option oracle while staying green.
+        post_dispatch:
+          report: .peer/pinned-frame-retention/20260824T084521Z-11dd58/b7-tristate-selector-test-refactor/codex-native.yaml
+          verification: |
+            The transient observation trait and both observed() calls were removed.
+            Focused selector 1/1 and cargo fmt --check passed.
+            The post-GREEN production prefix SHA-256 remained c0b1bcf9.
+    - batch: 7
+      task: T8a
+      phase: tristate_selector_review_fix_test
+      agent: codex-native
+      report_dir: .peer/pinned-frame-retention/20260824T084521Z-11dd58/b7-tristate-review-fix-test
+      status: success
+      started_at: 2026-08-24T10:10:00Z
+      updated_at: 2026-08-24T10:13:00Z
+      evidence:
+        pre_dispatch:
+          review: Opus architecture review found the selector test spans 79 physical lines, violating the hard 70-line function limit.
+          fix: Move the disabled tri-state assertion into its own test and collapse the release_ring binding while preserving every oracle state.
+        post_dispatch:
+          report: .peer/pinned-frame-retention/20260824T084521Z-11dd58/b7-tristate-review-fix-test/codex-native.yaml
+          verification: |
+            Both selector tests passed; formatting passed.
+            Inclusive spans are 69 and 4 lines; all enabled-state assertions remain.
+            The post-GREEN production prefix SHA-256 remained c0b1bcf9.
+    - batch: 7
+      task: T8a
+      phase: tristate_selector_verification
+      agent: codex-native
+      report_dir: .peer/pinned-frame-retention/20260824T084521Z-11dd58/b7-tristate-verification
+      status: success
+      started_at: 2026-08-24T10:20:00Z
+      updated_at: 2026-08-24T10:34:00Z
+      evidence:
+        pre_dispatch:
+          reviews: General, architecture, compliance, and targeted fix rereview passed across native and external execution classes.
+          required: Re-run deterministic checks and prove the optimized Linux load/branch shape before committing.
+        post_dispatch:
+          report: .peer/pinned-frame-retention/20260824T084521Z-11dd58/b7-tristate-verification/codex-native.yaml
+          verification: |
+            Selector 2/2, reclaim 4/4, wake/teardown 256/256 repetitions, Loom 15/15, retention zero-allocation 2/2, full tests 277/277, strict lint, and no-feature tests/lint passed.
+            Optimized Linux symbol 0x8cac0..0x8cf62 has one inlined selector load, no tri-state spill, disabled slot/hint/epoch/occupied avoidance, and one shared plain drain loop.
+          commit: a2e01f5e710d0718fd3288e51e979fa2e6096c5f
+          seal: v17
+          bundle_sha256: 5164f8b98b339ec3dc06215076caf6b7fddbcd3654bab69fc534ed61f09db909
+          baseline_executable_sha256: 514096bf676e48a59f45cc5695cf50a33ee2c51f69626af1b032809f927c63fb
+          candidate_executable_sha256: cffc9afe68d17c512b710fb64cff0d852de0cdec33c46130f3bfff35095db52a
+          runner_executable_sha256: 2b2c993ddd2b7f26a97b409c2a29c11ee4c88fd8ce1f965542aec20d40d37a53
+          runner_source_sha256: 05349415bf22b4700f79c2ddf7cbd4f2fb0c568079d1a9e9376e29436620d387
+    - batch: 7
+      task: T8a
+      phase: transient_value_flow_implementer
+      agent: native-terra
+      report_dir: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-transient-value-flow-green-terra
+      status: success
+      started_at: 2026-08-24T13:26:00Z
+      updated_at: 2026-08-24T14:00:00Z
+      evidence:
+        pre_dispatch:
+          head: a2e01f5e710d0718fd3288e51e979fa2e6096c5f
+          runtime_red: pfr_transient_guard v17 passed 40/40 validity checks but failed at geomean 1.0113 and CI95 upper 1.0149 against 1.0100.
+          review: Native, opus-cli, and gemini approved the compact-frame return and direct final guard construction; all reported no issues or blockers.
+        post_dispatch:
+          report: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-transient-value-flow-green-terra/native-terra.yaml
+          verification: |
+            Focused affected tests passed 69/69; retention zero-allocation 2/2; Loom 15/15; full tests 277/277; strict lint, formatting, no-feature tests, and no-feature Clippy passed.
+            Optimized Linux pin_owned returns a compact register pair, Pool::get stack returned from 0x88 to 0x78, and the helper-to-Get 16-byte payload copy is absent.
+    - batch: 7
+      task: T8a
+      phase: transient_value_flow_review_fix
+      agent: native-terra
+      report_dir: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-transient-value-flow-review-fix-terra
+      status: success
+      started_at: 2026-08-24T14:23:00Z
+      updated_at: 2026-08-24T15:00:00Z
+      evidence:
+        pre_dispatch:
+          runtime_red: pfr_transient_guard v17 CI95 upper 1.0149 exceeds 1.0100.
+          codegen_red: Frame-only return removes the 40-byte sret but grows Pool::get from 0x520 to 0x847 and adds PageId materialization, caller spills, and a separate frame_bytes call.
+          review: Native general and architecture plus external general, architecture, and compliance passed; native compliance raised the concrete replacement-work finding, confirmed against sealed v17 and final full-range disassembly.
+        post_dispatch:
+          report: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-transient-value-flow-review-fix-terra/native-terra.yaml
+          verification: |
+            Focused affected tests passed 69/69; retention zero-allocation 2/2; Loom 15/15; full 277/277; strict lint, formatting, no-feature tests, and no-feature Clippy passed.
+            Final get is 0x503/stack 0x48 versus sealed v17 0x520/0x88 and baseline 0x504/0x78; both pin calls reuse existing PageId storage with no caller spill block or separate frame_bytes call.
+            The outlined helper returns a 24-byte bytes/frame carrier and writes no ReaderSlot, file-slot, or Retention metadata.
+    - batch: 7
+      task: T8a
+      phase: transient_value_flow_targeted_review
+      agent: codex-native, claude-opus-cli, gemini-3.7-flash
+      report_dir: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-transient-value-flow-fix-rereview
+      status: success
+      started_at: 2026-08-24T15:03:00Z
+      updated_at: 2026-08-24T15:20:00Z
+      evidence:
+        pre_dispatch:
+          finding: Confirm that the final carrier removes PageId rematerialization, caller spills, separate frame_bytes work, and promotion metadata duplication without changing pin or cleanup transitions.
+        post_dispatch:
+          verification: |
+            Native, opus-cli, and gemini targeted rereviews passed with no issues, residual risks, or blockers.
+            First and nested hits and misses, ready success and cleanup, borrowed lifetimes, exact identity, one outlined protocol body, and the 70-line function limit were verified.
+    - batch: 7
+      task: T8a
+      phase: transient_cost_model
+      agent: orchestrator
+      report_dir: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-transient-cost-model
+      status: success
+      started_at: 2026-08-24T15:20:00Z
+      updated_at: 2026-08-24T20:11:48Z
+      evidence:
+        pre_dispatch:
+          requirement: Freeze source and derive a proper Samply plus cargo-flamegraph cost model before any further source change.
+        post_dispatch:
+          verification: |
+            Cargo-flamegraph recorded 512 exact probes per baseline, sealed v17, and compact carrier product with about 16,400 samples each and no reported sample loss.
+            High-rate Samply recorded 128 exact probes per product with 5,052, 5,003, and 4,906 total samples.
+            Exact assembly attributes the sealed regression to seven extra instructions and 52 bytes of private carrier traffic per hit, concentrated at the mixed-width frame/file reload at 0x8f852.
+            Samply inclusive get samples are 394 baseline, 422 sealed, and 306 compact; inclusive pin_owned samples are 227, 266, and 207.
+            The compact carrier removes the hotspot. The residual GOT-indirect pin_owned call is recorded and deferred to the frozen gate rather than changed speculatively.
+    - batch: 7
+      task: T8a
+      phase: transient_value_flow_verification
+      agent: orchestrator
+      status: success
+      started_at: 2026-08-24T20:11:48Z
+      updated_at: 2026-08-24T20:20:01Z
+      evidence:
+        pre_dispatch:
+          requirement: Re-run the complete deterministic suite after the isolated gate-contract subprocess case passed.
+        post_dispatch:
+          verification: |
+            mise run test passed the complete bench/mock suite, including all 8 drp009 gate-contract cases, 23 zero-allocation cases, and every compile and doc test.
+            The compact-carrier source remains unchanged from the reviewed and profiled product.

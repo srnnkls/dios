@@ -238,3 +238,115 @@ decision_log:
       - Build products from the dirty controller checkout.
       - Reuse v14 executables after the source commit changes.
     reason: Product and executable seals must bind to clean baseline and final-candidate commits; target artifacts are versioned to prevent evidence overwrite.
+  - date: 2026-08-23
+    decision: Wait for the root-owned benchmark profile before running timing lanes.
+    alternatives:
+      - Bypass bench-host-guard.
+      - Run with THP set to madvise and relabel the evidence.
+      - Change host thresholds or validity rules.
+    reason: The frozen host protocol requires bench_profile=active and THP=never; automated sudo, polkit, and direct-specialisation activation routes were unavailable.
+  - date: 2026-08-24
+    decision: Run benchmark tasks with the verified mise 2026.8.0 executable from the sealed v15 tool directory.
+    alternatives:
+      - Use the remote wrapper's system mise 2026.7.0.
+      - Weaken or bypass the mise identity check.
+    reason: The benchmark profile passed unchanged, and the host guard rejected only the wrapper-selected mise version; the sealed executable satisfies the frozen tool identity.
+  - date: 2026-08-24
+    decision: Accept the fresh v15 transient-guard lane as final-candidate evidence.
+    alternatives:
+      - Reuse the earlier candidate's characterization.
+      - Rerun the valid lane under a different suffix.
+    reason: All 40 pairs validated against candidate 537ecf6c; the candidate/base geomean was 0.9449 and the one-sided CI95 upper was 0.9571, passing the unchanged 1.01 gate.
+  - date: 2026-08-24
+    decision: Treat the valid v15 nonzero-budget poll result as a binding performance RED and invoke only its recorded escalation lever.
+    alternatives:
+      - Rerun the valid lane as noise.
+      - Relax the 1.01 threshold.
+      - Continue scope closure despite the failed gate.
+    reason: All 40 pairs passed validity, but budget64/zero measured a 1.0570 geomean and 1.0700 one-sided CI95 upper; the frozen plan requires profiling and poll-boundary retention-work reduction.
+  - date: 2026-08-24
+    decision: Converge disabled and enabled post-epoch occupied-zero reclamation on one plain matured-drain source site.
+    alternatives:
+      - Keep the duplicate optimized loops and rerun unchanged.
+      - Remove current-slot or terminal-hint release selection.
+      - Remove or move the mandatory post-epoch occupied-budget Acquire.
+      - Route occupied frames through the plain drain.
+    reason: The sealed assembly attributes enabled-empty overhead to a second loop with extra per-frame moves; sharing the plain loop removes that duplication without changing release selection, epoch order, or retained-frame safety.
+  - date: 2026-08-24
+    decision: Freeze dddf923117c7bdf9c4b24483276a9dd77f09208b as the next clean timing candidate and invalidate prior v15 PASS evidence for final closure.
+    alternatives:
+      - Time the dirty controller checkout.
+      - Reuse v15 artifacts sealed to 537ecf6c.
+      - Cite the prior transient PASS without rerunning the new candidate.
+    reason: Nine clean reviews and independent verification passed, but every binding gate must attest the exact committed candidate and executable identities.
+  - date: 2026-08-24
+    decision: Use the isolated v16 seal for every final T8a lane.
+    alternatives:
+      - Reuse any v15 product, runner, input, or timing artifact.
+      - Build into shared unversioned target paths.
+    reason: The v16 baseline and candidate report clean runtime-matching source identities; executable hashes are 1cb3cef2 and 062243a8, the embedded runner digest is 99a9d917, and all versioned paths passed non-overwrite preflights.
+  - date: 2026-08-24
+    decision: Accept the v16 transient-guard lane as final-candidate evidence.
+    alternatives:
+      - Retain the superseded v15 PASS as closure evidence.
+      - Rerun the valid v16 lane without a validity failure.
+    reason: All 40 pairs validated against candidate dddf9231; candidate/base geomean 0.9111 and one-sided CI95 upper 0.9140 pass the unchanged 1.01 gate.
+  - date: 2026-08-24
+    decision: Treat the valid v16 nonzero result as a second binding RED and profile the residual before another code change.
+    alternatives:
+      - Round CI95 upper 1.0104 down to the 1.0100 threshold.
+      - Rerun the valid lane unchanged as noise.
+      - Relax the threshold.
+    reason: The shared loop reduced geomean from 1.0570 to 0.9998, but all 40 valid pairs still produced a one-sided CI95 upper 0.0004 above the frozen gate; only the recorded escalation lever remains admissible.
+  - date: 2026-08-24
+    decision: Derive disabled, enabled-idle, and enabled-ready reclaim states from one release-ring selector result.
+    alternatives:
+      - Keep the independent max-retained-frames and release-ring enablement loads.
+      - Remove current-slot readiness or the terminal pending hint.
+      - Slow the disabled path with an occupied-budget load.
+      - Conflate disabled and enabled-idle with a plain boolean.
+    reason: Option<bool> represents the three reachable states without an illegal combination and lets one release-ring load feed both enablement and readiness while preserving every mandatory enabled-path Acquire.
+  - date: 2026-08-24
+    decision: Freeze a2e01f5e710d0718fd3288e51e979fa2e6096c5f as the next clean timing candidate and supersede all v16 timing evidence for closure.
+    alternatives:
+      - Time the dirty reviewed worktree.
+      - Reuse v16 artifacts sealed to dddf9231.
+      - Rerun only the previously failed nonzero lane before resealing all final-candidate lanes.
+    reason: Corrected RED review, three-role source review, targeted fix rereview, and independent verification passed; optimized Linux codegen proves one inlined selector load, register-only tri-state control, disabled load avoidance, and one shared plain drain, while binding gates must attest the exact committed candidate.
+  - date: 2026-08-24
+    decision: Use the isolated v17 seal for every remaining T8a lane.
+    alternatives:
+      - Reuse v16 products, runner, input, or timing samples.
+      - Build timing products from the dirty controller checkout.
+      - Overwrite an earlier versioned seal.
+    reason: The clean baseline and candidate products report runtime-matching source identities 4264896e and a2e01f5e; the v17 bundle SHA-256 is 5164f8b9, runner source digest 05349415, baseline executable 514096bf, candidate executable cffc9afe, runner executable 2b2c993d, and input ce18cc20, with unchanged product and harness lock hashes.
+  - date: 2026-08-24
+    decision: Accept the v17 nonzero-budget poll lane as final-candidate evidence.
+    alternatives:
+      - Retain the superseded v16 binding FAIL.
+      - Rerun the valid v17 lane under another suffix.
+    reason: All 40 rich-row pairs validated against candidate a2e01f5e; budget64/zero geomean 0.9984 and one-sided CI95 upper 1.0071 pass the unchanged 1.0100 gate, with process, paired, and provenance SHA-256 values 5033d4d1, 8eebae89, and 21eeced6.
+  - date: 2026-08-24
+    decision: Treat the valid v17 transient-guard result as a binding performance RED and invoke only its recorded transient-path escalation lever.
+    alternatives:
+      - Rerun the valid lane unchanged as noise.
+      - Reuse the superseded v16 transient PASS.
+      - Relax or round the 1.0100 threshold.
+      - Continue other final-candidate lanes before freezing the transient fix.
+    reason: All 40 rich-row pairs validated, but candidate/base geomean 1.0113 and one-sided CI95 upper 1.0149 fail the frozen gate; the exact process, paired, and provenance artifacts are sealed by SHA-256 values 407983fb, 1eae193d, and 7689fbde, so profiling must identify removable retention work in begin_pin, guard minting, dereference, or release_guard.
+  - date: 2026-08-24
+    decision: Return only bytes plus frame in a 24-byte private pin carrier and construct the promotion-capable guard once from caller-owned metadata.
+    alternatives:
+      - Return only the frame and resolve bytes in each caller.
+      - Keep returning the complete 40-byte guard.
+      - Force the pin protocol inline at every caller.
+      - Pack, split, or allocate promotion metadata out of line.
+    reason: The reviewed frame-only experiment removed the large return but grew Pool::get to 0x847, rematerialized PageId, spilled four live values, and resolved frame bytes separately. The final borrowed PageId and ReaderSlot boundary returns only the byte slice and frame, yields Pool::get 0x503 with a 0x48 stack, and removes the full-guard temporary without replacement work; focused, Loom, zero-allocation, full, no-feature, lint, and three-agent targeted reviews pass.
+  - date: 2026-08-24
+    decision: Keep the reviewed compact carrier unchanged after the required Samply and cargo-flamegraph cost model, then commit and seal it for a fresh transient gate.
+    alternatives:
+      - Apply another source optimization before profiling established the remaining cost.
+      - Optimize the residual GOT-indirect pin_owned call before it causes a gate failure.
+      - Rerun the binding v17 products, which do not contain the compact carrier.
+      - Relax the frozen 1.0100 threshold.
+    reason: The binding regression remains candidate/base geomean 1.0113 and upper 1.0149. Exact assembly attributes it to seven extra instructions and 52 bytes of private carrier traffic per hit, including the mixed-width frame/file reload at 0x8f852. High-rate Samply puts inclusive get samples at 394 baseline, 422 sealed, and 306 compact, and inclusive pin_owned at 227, 266, and 207; the sealed hotspot receives 52 samples while the compact transfer receives 12. Cargo-flamegraph independently identifies the same transfer and gives whole-probe weighted ratios 1.007886 sealed/base and 1.003969 compact/base. The residual global-symbol GOT call is recorded, but both profilers place the complete compact hot chain below the predecessors, so changing it before the frozen gate would be speculative.

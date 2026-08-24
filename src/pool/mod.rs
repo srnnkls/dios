@@ -1108,6 +1108,7 @@ impl<D: PoolBackend> Pool<D> {
         page: PageId,
     ) -> Result<Get<'pool>, GetError> {
         self.assert_reader_owner(reader);
+        let reader_slot = reader.slot();
         assert_eq!(
             page.file().driver(),
             self.identity,
@@ -1119,7 +1120,7 @@ impl<D: PoolBackend> Pool<D> {
         ) {
             return Err(GetError::StaleFile { page });
         }
-        if let Some(guard) = self.pin_internal(reader, page) {
+        if let Some(guard) = self.pin_internal_borrowed(reader_slot, &page) {
             return Ok(Get::Hit(guard));
         }
         let mut control = self.control();
@@ -1132,7 +1133,7 @@ impl<D: PoolBackend> Pool<D> {
             .is_some_and(|frame| self.frames.state(frame) == FrameState::Resident)
         {
             drop(control);
-            return Ok(match self.pin_internal(reader, page) {
+            return Ok(match self.pin_internal_borrowed(reader_slot, &page) {
                 Some(guard) => Get::Hit(guard),
                 None => Get::Busy,
             });
@@ -1308,9 +1309,13 @@ impl<D: PoolBackend> Pool<D> {
                     Some(entry.frame()),
                     "a successful terminal record protects its exact mapped frame"
                 );
-                let guard = self
-                    .pin_owned(reader, entry.page())
+                let slot = reader.slot();
+                let page = entry.page();
+                let (bytes, frame) = self
+                    .pin_owned(&page, slot)
                     .expect("the protected successful frame remains pinnable");
+                let guard =
+                    FrameGuard::new(bytes, slot, frame, page.file().slot(), &self.retention);
                 let slot = token.slot;
                 let generation = token.generation;
                 let _ = token.consume();
@@ -1680,17 +1685,32 @@ impl<D: PoolBackend> Pool<D> {
         page: PageId,
     ) -> Option<FrameGuard<'ctx>> {
         self.assert_reader_owner(reader);
-        self.pin_owned(reader, page)
+        self.pin_internal_borrowed(reader.slot(), &page)
     }
 
-    fn pin_owned<'ctx>(
+    fn pin_internal_borrowed<'ctx>(
         &'ctx self,
-        reader: &'ctx ReaderCtx,
-        page: PageId,
+        slot: &'ctx epoch::ReaderSlot,
+        page: &PageId,
     ) -> Option<FrameGuard<'ctx>> {
-        let slot = reader.slot();
+        let (bytes, frame) = self.pin_owned(page, slot)?;
+        Some(FrameGuard::new(
+            bytes,
+            slot,
+            frame,
+            page.file().slot(),
+            &self.retention,
+        ))
+    }
+
+    #[inline(never)]
+    fn pin_owned<'pool>(
+        &'pool self,
+        page: &PageId,
+        slot: &epoch::ReaderSlot,
+    ) -> Option<(&'pool [u8], ReadFrameIdx)> {
         let first_guard = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
-        let mapped = self.table.lookup(page);
+        let mapped = self.table.lookup(*page);
         let Some(frame) = mapped else {
             if first_guard {
                 slot.abort_pin();
@@ -1699,13 +1719,7 @@ impl<D: PoolBackend> Pool<D> {
         };
         let _ = self.clock.reference(frame);
         slot.commit_pin();
-        Some(FrameGuard::new(
-            self.frames.frame_bytes(frame),
-            slot,
-            frame,
-            page.file().slot(),
-            &self.retention,
-        ))
+        Some((self.frames.frame_bytes(frame), frame))
     }
 
     fn assert_reader_owner(&self, reader: &ReaderCtx) {
