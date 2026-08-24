@@ -2046,44 +2046,51 @@ impl<D: PoolBackend> Pool<D> {
     fn advance_and_reclaim(&self, control: &mut Control) -> usize {
         let frames = &self.frames;
         let retention = &self.retention;
-        let retention_enabled = !retention.is_disabled();
         let Control {
             evict_queue,
             frame_pages,
             release_cursor,
             ..
         } = control;
-        let mut release_reclaimed = 0;
-        if retention_enabled && retention.release_drain_needed(*release_cursor) {
-            let pass_start_epoch = self.global_epoch.load(Ordering::Acquire);
-            retention.drain_releases(release_cursor, pass_start_epoch, |frame| {
-                assert_eq!(
-                    frames.state(frame),
-                    FrameState::Evicting,
-                    "a release-ring frame remains Evicting until direct free"
-                );
-                frames.advance(frame, FrameState::Free);
-                frame_pages[frame.get() as usize] = None;
-                release_reclaimed += 1;
-            });
-        }
+        let (retention_enabled, release_reclaimed) =
+            match retention.release_drain_needed(*release_cursor) {
+                Some(true) => {
+                    let pass_start_epoch = self.global_epoch.load(Ordering::Acquire);
+                    let mut reclaimed = 0;
+                    retention.drain_releases(release_cursor, pass_start_epoch, |frame| {
+                        assert_eq!(
+                            frames.state(frame),
+                            FrameState::Evicting,
+                            "a release-ring frame remains Evicting until direct free"
+                        );
+                        frames.advance(frame, FrameState::Free);
+                        frame_pages[frame.get() as usize] = None;
+                        reclaimed += 1;
+                    });
+                    (true, reclaimed)
+                }
+                Some(false) => (true, 0),
+                None => (false, 0),
+            };
         let global_epoch = advance_epoch(&self.global_epoch, self.readers.slots());
-        if !retention_enabled || retention.occupied_budget.load(Ordering::Acquire) == 0 {
-            let matured_reclaimed = evict_queue.drain_matured(global_epoch, |frame, _tag| {
+        let retention_occupied =
+            retention_enabled && retention.occupied_budget.load(Ordering::Acquire) != 0;
+        let matured_reclaimed = if retention_occupied {
+            evict_queue.drain_matured(global_epoch, |frame, tag| {
+                let outcome = retention.matured_outcome(frame, tag);
+                if outcome == FrameOutcome::Freed {
+                    frames.advance(frame, FrameState::Free);
+                    frame_pages[frame.get() as usize] = None;
+                }
+                outcome
+            })
+        } else {
+            evict_queue.drain_matured(global_epoch, |frame, _tag| {
                 frames.advance(frame, FrameState::Free);
                 frame_pages[frame.get() as usize] = None;
                 FrameOutcome::Freed
-            });
-            return release_reclaimed + matured_reclaimed;
-        }
-        let matured_reclaimed = evict_queue.drain_matured(global_epoch, |frame, tag| {
-            let outcome = retention.matured_outcome(frame, tag);
-            if outcome == FrameOutcome::Freed {
-                frames.advance(frame, FrameState::Free);
-                frame_pages[frame.get() as usize] = None;
-            }
-            outcome
-        });
+            })
+        };
         release_reclaimed + matured_reclaimed
     }
 

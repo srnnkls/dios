@@ -319,11 +319,9 @@ impl Retention {
     }
 
     #[inline]
-    pub(crate) fn release_drain_needed(&self, consumer: u64) -> bool {
-        self.release_ring
-            .as_ref()
-            .is_some_and(|ring| ring.is_ready(consumer))
-            || self.wait.ring_may_be_pending()
+    pub(crate) fn release_drain_needed(&self, consumer: u64) -> Option<bool> {
+        let ring = self.release_ring.as_ref()?;
+        Some(ring.is_ready(consumer) || self.wait.ring_may_be_pending())
     }
 
     pub(crate) fn mark_file_retiring(&self, file_slot: u32) {
@@ -859,10 +857,7 @@ mod tests {
         let retention = Retention::preallocated(4, 4, 1, Arc::clone(&wait));
         let frame = ReadFrameIdx::new(3);
         assert!(retention.promote(frame, 0, 1).is_ok());
-        let ring = retention
-            .release_ring
-            .as_ref()
-            .expect("nonzero retention budget preallocates a release ring");
+        let ring = retention.release_ring.as_ref().expect("release ring");
         assert_eq!(ring.slots.len(), 4);
         let mut cursor = 0;
         ring.push(0);
@@ -888,6 +883,8 @@ mod tests {
         assert_eq!(ring.pop(&mut cursor), Some(1));
         let next_published_at_advanced_cursor = observe(cursor);
         assert_eq!(ring.pop(&mut cursor), Some(2));
+        ring.push(3);
+        assert_eq!(ring.pop(&mut cursor), Some(3));
         let rearmed_stale_slots_after_consumption = observe(cursor);
         wait.set_ring_pending();
         let terminal_pending_after_consumption = observe(cursor);
@@ -914,15 +911,21 @@ mod tests {
                 terminal_pending_after_consumption,
             ),
             (
-                (1, 1, false),
-                (1, 1, false),
-                (1, 1, false),
-                (2, 3, true),
-                (3, 3, false),
-                (3, 3, true),
+                (1, 1, Some(false)),
+                (1, 1, Some(false)),
+                (1, 1, Some(false)),
+                (2, 3, Some(true)),
+                (4, 4, Some(false)),
+                (4, 4, Some(true)),
             ),
             "drain selection follows the current consumer slot or terminal pending hint"
         );
+    }
+
+    #[test]
+    fn disabled_retention_has_no_release_drain_selection() {
+        let retention = Retention::preallocated(4, 0, 4, Arc::new(WaitState::default()));
+        assert_eq!(retention.release_drain_needed(0), None);
     }
 
     #[test]

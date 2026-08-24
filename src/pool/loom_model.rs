@@ -581,16 +581,23 @@ impl PoolModel {
     where
         F: FnMut(ReadFrameIdx),
     {
-        let retention_enabled = self.retention_enabled;
-        let released = if retention_enabled && self.retention.release_drain_needed(*release_cursor)
-        {
-            let pass_start_epoch = self.global_epoch.load(Ordering::Acquire);
-            self.drain_release_entries(release_cursor, pass_start_epoch, &mut on_free)
-        } else {
-            0
-        };
+        let (retention_enabled, released) =
+            match self.retention.release_drain_needed(*release_cursor) {
+                Some(true) => {
+                    let pass_start_epoch = self.global_epoch.load(Ordering::Acquire);
+                    let released =
+                        self.drain_release_entries(release_cursor, pass_start_epoch, &mut on_free);
+                    (true, released)
+                }
+                Some(false) => (true, 0),
+                None => (false, 0),
+            };
         let global_epoch = advance_epoch(&self.global_epoch, &self.slots);
-        if !retention_enabled || self.retention.occupied_budget.load(Ordering::Acquire) == 0 {
+        let retention_occupied =
+            retention_enabled && self.retention.occupied_budget.load(Ordering::Acquire) != 0;
+        let mut report = if retention_occupied {
+            self.drain_matured_entries(evict_queue, global_epoch, on_free)
+        } else {
             let mut first = None;
             let mut matured = 0u32;
             let matured_freed = evict_queue.drain_matured(global_epoch, |frame, _tag| {
@@ -603,19 +610,14 @@ impl PoolModel {
                 on_free(frame);
                 FrameOutcome::Freed
             });
-            return DrainReport {
-                released,
+            DrainReport {
+                released: 0,
                 matured,
                 matured_freed: u32::try_from(matured_freed)
                     .expect("the bounded frame count fits u32"),
-                first: if released > 0 {
-                    Some(DrainSource::Release)
-                } else {
-                    first
-                },
-            };
-        }
-        let mut report = self.drain_matured_entries(evict_queue, global_epoch, on_free);
+                first,
+            }
+        };
         if released > 0 {
             report.first = Some(DrainSource::Release);
         }
@@ -658,6 +660,9 @@ impl PoolModel {
     /// Drains only the production release ring from the model's single-consumer cursor.
     pub fn drain_releases_only(&self) -> u32 {
         let mut control = self.control();
+        if !self.retention_enabled {
+            return 0;
+        }
         let pass_start_epoch = self.global_epoch.load(Ordering::Acquire);
         let Control { release_cursor, .. } = &mut *control;
         self.drain_release_entries(release_cursor, pass_start_epoch, |frame| {
@@ -674,9 +679,6 @@ impl PoolModel {
     where
         F: FnMut(ReadFrameIdx),
     {
-        if !self.retention_enabled {
-            return 0;
-        }
         let mut released = 0u32;
         self.retention
             .drain_releases(release_cursor, pass_start_epoch, |frame| {
