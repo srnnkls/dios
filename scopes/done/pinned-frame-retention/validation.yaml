@@ -381,3 +381,26 @@ decision_log:
       - Change production behavior while documenting it.
       - Modify epoch or pool modules that already expose accurate public behavior.
     reason: The reviewed documentation RED identified four exact owning sites and no missing behavior. README, sparse public rustdoc, and dios-v1 INV-1/INV-9 now describe bounded-session promotion, live-guard refusal, orthogonal HELD/count state, unchanged FrameState, and the augmented watermark. Fresh-target full tests, strict lint, rustdoc, and all configured native, Opus, and Gemini reviews pass without findings.
+  - date: 2026-08-25
+    decision: Commit the benchmark controller's candidate identity as ec09d66c7fabe86da723c06ea668e427278f14e8 after freezing the final performance product.
+    alternatives:
+      - Leave the correct identity as a dirty controller-only patch.
+      - Point the runner at the later documentation or closure commit.
+      - Rebuild and rerun already valid v18 products under a new source identity.
+    reason: The final compliance review found that a clean checkout still expected the superseded 10faa9e product and therefore rejected the sealed v18 candidate. CANDIDATE_SOURCE_COMMIT identifies the committed performance product under test, not the controller checkout, so pinning ec09d66c in the later 6932e02 controller commit is reproducible and non-circular; it changes neither sealed executables nor valid gate results.
+  - date: 2026-08-25
+    decision: Resolve the final compliance findings with one single-caller constructor extraction, removal of compile-probe lint suppressions, and deletion of stale task prose.
+    alternatives:
+      - Waive the hard 70-line function limit for Pool::preallocated.
+      - Remove only the two newest probe suppressions and retain the same banned directives in neighboring probes.
+      - Keep the obsolete future-task description on the completed Retention implementation.
+      - Add a source scanner or line-count compliance test.
+    reason: Commit 80c614a moves only Control initialization into preallocated_control, reducing preallocated from 78 to 64 lines without changing construction order or data. All probe suppressions were unnecessary for their E0432/E0505 oracles, and the Retention type name carries the remaining meaning without process narration. Focused API and compile-fail checks, the fresh-target full suite, strict lint, formatting, rustdoc, no-feature checks, 15 Loom cases, 18 Miri cases, and 6 ASan cases pass; no new compliance machinery was added.
+  - date: 2026-08-25
+    decision: Close pinned-frame-retention at 80c614a with exact-R8 T8b preserved as an external, non-closure obligation on arena-modernization:AM4.
+    alternatives:
+      - Keep the completed scope active until AM4 lands.
+      - Substitute scaled, registered, raised-memlock, or mock evidence for exact R8.
+      - Rerun valid v18 timing lanes after non-product closure fixes.
+      - Relax a frozen benchmark threshold.
+    reason: All closure tasks through T9 are done. Nine final-fix reports across general, architecture, and compliance roles approve the final target with no findings; fresh-target full, no-feature, Loom, Miri, ASan, Linux zero-allocation, and shipping-wake checks pass. All five T8a gates remain valid against the frozen ec09d66c performance product. T8b still requires the 8,035-page Unregistered AM4 posture and remains pending without weakening or substitution.

@@ -85,7 +85,7 @@ that same live guard for ordinary guarded access or copy-out.
 A performance consumer promotes each distinct frame once while setting up one
 bounded read session, not once per point. It then indexes bytes through the
 retained handles until the session drops them. The
-[R8 retained-set evidence and disposition](scopes/active/pinned-frame-retention/resources/r8-resident-set.md)
+[R8 retained-set evidence and disposition](scopes/done/pinned-frame-retention/resources/r8-resident-set.md)
 records the rejected prototype and the selected session shape.
 
 ## Development
