@@ -100,10 +100,7 @@ fn compile_probe(name: &str, source: &str) -> std::process::Output {
 }
 
 fn compile_root_import(symbol: &str) -> std::process::Output {
-    compile_probe(
-        "forbidden-root-import",
-        &format!("#![allow(unused_imports)]\n\nuse dios::{symbol};\n"),
-    )
+    compile_probe("forbidden-root-import", &format!("use dios::{symbol};\n"))
 }
 
 #[test]
@@ -136,9 +133,7 @@ fn advanced_driver_vocabulary_does_not_import_from_the_crate_root() {
 fn a_frame_guard_cannot_remain_live_across_reader_drop() {
     let output = compile_probe(
         "guard-reader-borrow",
-        r"#![allow(dead_code, elided_lifetimes_in_paths)]
-
-use dios::{PendingToken, Pool, ReaderCtx, ReadyResult};
+        r"use dios::{PendingToken, Pool, ReaderCtx, ReadyResult};
 
 fn reject_guard_across_reader_drop(
     pool: &Pool,
@@ -170,9 +165,7 @@ fn reject_guard_across_reader_drop(
 fn a_frame_guard_cannot_remain_live_across_pool_drop() {
     let output = compile_probe(
         "guard-pool-borrow",
-        r"#![allow(dead_code, elided_lifetimes_in_paths)]
-
-use dios::{PendingToken, Pool, ReaderCtx, ReadyResult};
+        r"use dios::{PendingToken, Pool, ReaderCtx, ReadyResult};
 
 fn reject_guard_across_pool_drop(
     pool: Pool,
@@ -204,9 +197,7 @@ fn reject_guard_across_pool_drop(
 fn a_retained_frame_cannot_remain_live_across_reader_drop() {
     let output = compile_probe(
         "retained-reader-borrow",
-        r"#![allow(dead_code, elided_lifetimes_in_paths)]
-
-use dios::{PendingToken, Pool, ReaderCtx, ReadyResult};
+        r"use dios::{PendingToken, Pool, ReaderCtx, ReadyResult};
 
 fn reject_retained_across_reader_drop(
     pool: &Pool,
@@ -242,9 +233,7 @@ fn reject_retained_across_reader_drop(
 fn a_retained_frame_cannot_remain_live_across_pool_drop() {
     let output = compile_probe(
         "retained-pool-borrow",
-        r"#![allow(dead_code, elided_lifetimes_in_paths)]
-
-use dios::{PendingToken, Pool, ReaderCtx, ReadyResult};
+        r"use dios::{PendingToken, Pool, ReaderCtx, ReadyResult};
 
 fn reject_retained_across_pool_drop(
     pool: Pool,
@@ -280,9 +269,7 @@ fn reject_retained_across_pool_drop(
 fn a_warm_hit_frame_guard_cannot_remain_live_across_reader_drop() {
     let output = compile_probe(
         "guard-reader-get-borrow",
-        r"#![allow(dead_code, elided_lifetimes_in_paths)]
-
-use dios::{Get, PageId, Pool, ReaderCtx};
+        r"use dios::{Get, PageId, Pool, ReaderCtx};
 
 fn reject_warm_hit_guard_across_reader_drop(
     pool: &Pool,

@@ -863,6 +863,25 @@ impl Pool<Driver> {
     reason = "the private sealed bound preserves static dispatch for the two crate-owned pool backends"
 )]
 impl<D: PoolBackend> Pool<D> {
+    fn preallocated_control(config: &PoolBuilder, backend_capacity: usize) -> Control {
+        assert!(backend_capacity > 0, "backend batch capacity is positive");
+        Control {
+            evict_queue: EvictQueue::with_capacity(config.frame_count),
+            miss: MissTable::with_capacity(config.frame_count),
+            frame_pages: (0..config.frame_count).map(|_| None).collect(),
+            files: (0..MAX_FILES).map(|_| None).collect(),
+            batch: CompletionBatch::with_capacity(backend_capacity),
+            product_ops: (0..config.max_inflight_product_ops)
+                .map(|_| ProductOpSlot {
+                    generation: 0,
+                    operation: None,
+                })
+                .collect(),
+            product_sequence: 0,
+            release_cursor: 0,
+        }
+    }
+
     fn preallocated(config: PoolBuilder, driver: D, frames: Arc<Frames>) -> Self {
         assert_eq!(
             frames.count(),
@@ -890,21 +909,7 @@ impl<D: PoolBackend> Pool<D> {
             .checked_add(config.max_inflight_product_ops)
             .expect("validated queue capacity")
             .max(1) as usize;
-        let control = Control {
-            evict_queue: EvictQueue::with_capacity(config.frame_count),
-            miss: MissTable::with_capacity(config.frame_count),
-            frame_pages: (0..config.frame_count).map(|_| None).collect(),
-            files: (0..MAX_FILES).map(|_| None).collect(),
-            batch: CompletionBatch::with_capacity(backend_capacity),
-            product_ops: (0..config.max_inflight_product_ops)
-                .map(|_| ProductOpSlot {
-                    generation: 0,
-                    operation: None,
-                })
-                .collect(),
-            product_sequence: 0,
-            release_cursor: 0,
-        };
+        let control = Self::preallocated_control(&config, backend_capacity);
         Self {
             frames,
             table: PageTable::with_frame_count(config.frame_count),

@@ -210,8 +210,6 @@ impl ReleaseRing {
     }
 }
 
-/// Preallocated retention bookkeeping. Promotion and frame reclamation join this
-/// state in later scope tasks; this task establishes its fixed storage and drain.
 #[derive(Debug)]
 pub(crate) struct Retention {
     words: Box<[AtomicU32]>,
