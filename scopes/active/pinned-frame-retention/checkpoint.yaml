@@ -2,9 +2,9 @@ checkpoint:
   scope_name: pinned-frame-retention
   scope_path: ./scopes/active/pinned-frame-retention
   branch: feat/pinned-frame-retention
-  timestamp: 2026-08-24T20:20:01Z
-  last_batch: 6
-  last_commit: 2e630b175f6c741d77b258d388df47df754567ed
+  timestamp: 2026-08-24T22:06:02Z
+  last_batch: 7
+  last_commit: ec09d66c7fabe86da723c06ea668e427278f14e8
   tasks:
     done:
       - id: T1
@@ -23,19 +23,20 @@ checkpoint:
         name: Loom retention cases
       - id: T7
         name: Wire public diagnostics and acceptance hardening
-    in_progress:
       - id: T8a
         name: Bench implementation and arena-independent gate run
+    in_progress:
+      - id: T9
+        name: Docs and invariant fold-back
     pending:
       - {id: T8b, name: Exact-R8-scale shipping arm}
-      - {id: T9, name: Docs and invariant fold-back}
   next_batch:
-    number: 7
-    id: B7
+    number: 8
+    id: B8
     tasks:
-      - id: T8a
-        name: Bench implementation and arena-independent gate run
-        files: [benches/, Cargo.toml]
+      - id: T9
+        name: Docs and invariant fold-back
+        files: [README.md, src/pool/retention.rs, src/pool/epoch.rs, src/pool/mod.rs, scopes/active/dios-v1/scope.md, scopes/active/dios-v1/design.md]
     parallel: false
   deferred_issues:
     - batch: 1
@@ -47,11 +48,12 @@ checkpoint:
     path: ./scopes/active/pinned-frame-retention/config.yaml
     epoch_id: 20260821T150300Z-376a8f
   phase_cursor:
-    batch: 7
-    phase: commit_and_seal
+    batch: 8
+    phase: tester
     status: in_progress
-    tasks: [T8a]
-    updated_at: 2026-08-24T20:20:01Z
+    tasks: [T9]
+    report_dir: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b8-tester-T9
+    updated_at: 2026-08-24T22:09:24Z
   review_history:
     batch_1_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-review-general
     batch_1_targeted_review_round_1: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-targeted-review
@@ -125,7 +127,8 @@ checkpoint:
     batch_7_v17_transient_value_flow_review_fix: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-transient-value-flow-review-fix-terra
     batch_7_v17_transient_value_flow_fix_rereview: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-transient-value-flow-fix-rereview
     batch_7_v17_transient_cost_model: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-transient-cost-model
-    batch_7_status: compact_carrier_verified_pending_commit_and_seal
+    batch_7_v18_gates: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-v18-gates
+    batch_7_status: clean
   incomplete_stages:
     - batch: 3
       task: T2
@@ -651,3 +654,47 @@ checkpoint:
           verification: |
             mise run test passed the complete bench/mock suite, including all 8 drp009 gate-contract cases, 23 zero-allocation cases, and every compile and doc test.
             The compact-carrier source remains unchanged from the reviewed and profiled product.
+    - batch: 7
+      task: T8a
+      phase: transient_v18_seal
+      agent: orchestrator
+      status: success
+      started_at: 2026-08-24T20:20:01Z
+      updated_at: 2026-08-24T20:23:00Z
+      evidence:
+        source_commit: ec09d66c7fabe86da723c06ea668e427278f14e8
+        bundle_sha256: 811c6cc3eb525633a642bbb4aa54f5a6e9e926af1d6da6cffe9a3043efaf3773
+        runner_source_sha256: 22499583b2b2c74d81c597eaa4c20206dd7ef703f16273a187a43e09984c1aff
+        runner_executable_sha256: 06a78da37399901cf1091f58756a031be95bb321692041492a4c6c67e47b63fe
+        baseline_executable_sha256: a0876a8fb2261567b5b2d718ea6859f0a85b45f0bdebe16e9f0536e45d4489b4
+        candidate_executable_sha256: 76e7c23bbb47cdc81440244ec7782ffd377e4f1ddcf93ddf37d624847b1addbe
+        input_sha256: ce18cc2046a523f1795ab7a9b07b338cf94a45e0f68d8d0b290feb0d97ba98f7
+        verification: Both isolated product trees were clean and both executable identities matched their sealed source, runner, lockfile, profile, and executable hashes.
+    - batch: 7
+      task: T8a
+      phase: final_v18_gates
+      agent: orchestrator
+      report_dir: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-v18-gates
+      status: success
+      started_at: 2026-08-24T20:23:00Z
+      updated_at: 2026-08-24T22:06:02Z
+      evidence:
+        pre_dispatch:
+          first_attempt: The host guard observed bench_profile=inactive and schedutil governors before repetition zero; no artifact was created.
+          resumed_posture: bench_profile=active, THP never, and every governor performance.
+        post_dispatch:
+          transient_guard:
+            result: "PASS: geomean 0.9333, CI95 upper 0.9449 <= 1.0100, 40 pairs"
+            sha256: [dc090e7996a7d9c9616c6014abe0cb9b672f34e2c8764f45ea42c7ae1d935c15, 02165fa5352c69127cfad66ffd2a02ddee3b278fa7d1114de36281ad1b46fbfe, f90ecfc3d19bf5f4db2320961f275f25d528031bdba392329ef8b09c9ab92e10]
+          nonzero_poll:
+            result: "PASS: geomean 0.9959, CI95 upper 1.0056 <= 1.0100, 40 pairs"
+            sha256: [8fa0ed18773539e2e167426afb3e145c3e2827bf8da4494b7e636feef7cd6780, e05fc75f4da9e45edd39807eb3915cd856eed13ced17803408ca6b554173de2f, a4e596573bbd3b41f61a747034d861b3017a0daf32173077658b81f3270a16ec]
+          zero_budget_bypass:
+            result: "PASS: geomean 0.9980, CI95 upper 0.9989 <= 1.0100, 40 pairs"
+            sha256: [6afb3b56dce5b794e0849241848279b927888edf225383e532c91829f8e64ff8, 370ed4cbcbf2ac7c6300b6d56e165a7efe59e26dadba980682544ba96fed4a91, 76b45959a136131ffa6ce55012f0a5b323deea17b67208f712392bae6843c8f3]
+          promote_release_wake:
+            result: "PASS: geomean 1.0879, CI95 upper 1.0919 <= 1.2500, 40 pairs"
+            sha256: [93e255d4c80df72c67a54f21cc684e8648d395760341e85b4e44f85b00952270, decece503340b5f6fab87bd2c2c8fd16ab98a0aeae7591bf057c73214e75b6c7, f2f69ecd3f869d4b3d0a7f2cbc5499b84223d1a6be07e79812dd30f421cfc011]
+          same_frame_promotion:
+            result: "PASS: mean refusal 0.00001862, CI95 upper 0.00001992 <= 0.00500000, 40 pairs"
+            sha256: [87bc1449cebf07c8c66b7d0c59a83fc6c18dfcebd432cf6bb3ea6126a26c7ab3, 33d555607333fd3cc4d1ed47f244d2eb02300705296e2241feadac370c777638]

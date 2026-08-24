@@ -350,3 +350,26 @@ decision_log:
       - Rerun the binding v17 products, which do not contain the compact carrier.
       - Relax the frozen 1.0100 threshold.
     reason: The binding regression remains candidate/base geomean 1.0113 and upper 1.0149. Exact assembly attributes it to seven extra instructions and 52 bytes of private carrier traffic per hit, including the mixed-width frame/file reload at 0x8f852. High-rate Samply puts inclusive get samples at 394 baseline, 422 sealed, and 306 compact, and inclusive pin_owned at 227, 266, and 207; the sealed hotspot receives 52 samples while the compact transfer receives 12. Cargo-flamegraph independently identifies the same transfer and gives whole-probe weighted ratios 1.007886 sealed/base and 1.003969 compact/base. The residual global-symbol GOT call is recorded, but both profilers place the complete compact hot chain below the predecessors, so changing it before the frozen gate would be speculative.
+  - date: 2026-08-25
+    decision: Freeze ec09d66c7fabe86da723c06ea668e427278f14e8 as the final T8a candidate and use only the isolated v18 seal for its binding gates.
+    alternatives:
+      - Reuse the v17 products after the compact-carrier source changed.
+      - Build either product from the dirty controller checkout.
+      - Overwrite a prior seal or timing artifact.
+    reason: The v18 bundle and both product trees resolve to clean committed source identities. The bundle SHA-256 is 811c6cc3, runner source digest 22499583, baseline executable a0876a8f, candidate executable 76e7c23b, runner executable 06a78da3, and input ce18cc20; each runtime identity matched its source, runner, lockfiles, profile, and executable.
+  - date: 2026-08-25
+    decision: Accept all five valid v18 results as final T8a evidence and advance to T9 without rerunning a passing lane.
+    alternatives:
+      - Retain a superseded v15, v16, or v17 result as final-candidate evidence.
+      - Rerun any valid v18 lane as noise.
+      - Relax a frozen threshold.
+      - Block current scope closure on the separate AM4-gated T8b obligation.
+    reason: >-
+      Every lane completed 40 rich-row order-alternated pairs against ec09d66c.
+      CI95 upper bounds pass unchanged gates: transient 0.9449 <= 1.0100,
+      nonzero poll 1.0056 <= 1.0100, zero-budget bypass 0.9989 <= 1.0100,
+      promote/release wake 1.0919 <= 1.2500, and same-frame refusal
+      0.00001992 <= 0.00500000. The exact local evidence is preserved under
+      .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-v18-gates;
+      T8b remains externally blocked by arena-modernization:AM4 and
+      non-closure-blocking.

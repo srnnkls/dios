@@ -47,10 +47,13 @@ batches:
     tasks: [T7]
   - id: B7
     tasks: [T8a]
+    status: done
   - id: B7b
     tasks: [T8b]
+    status: blocked_external_non_closure
   - id: B8
     tasks: [T9]
+    status: ready
 edges:
   - from: T1
     to: T2

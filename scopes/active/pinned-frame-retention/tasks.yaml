@@ -252,7 +252,7 @@ tasks:
       controls; a pair violating its per-arm fault rule (nonzero major
       fault anywhere; nonzero minor fault where zero is required) is
       invalid and rerun. Scope closure requires this task green.
-    status: in_progress
+    status: done
     depends_on: [T7]
     files: [benches/, Cargo.toml]
 
@@ -281,6 +281,6 @@ tasks:
       docs at close; preserve the R8 evidence/disposition reference and state
       explicitly that the performance consumer promotes once per bounded read
       session rather than once per point.
-    status: pending
+    status: in_progress
     depends_on: [T8a]
     files: [README.md, src/pool/retention.rs, src/pool/epoch.rs, src/pool/mod.rs, scopes/active/dios-v1/scope.md, scopes/active/dios-v1/design.md]
