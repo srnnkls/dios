@@ -508,3 +508,32 @@ decision_log:
       - Relax the frozen 1.0100 threshold.
       - Activate pfr_nonzero_poll despite no T12 work in poll or drain paths.
     reason: Each lane used 40 order-alternated pairs on the active nix benchmark profile with clean f6f816b baseline and a079c7c candidate products, identical lockfiles and runner, zero timed allocations, zero timed minor and major faults, and matching checksums. Candidate/baseline geomean and one-sided CI95 upper were 0.9256 and 0.9395 for pfr_transient_guard, 0.9327 and 0.9452 for pfr_nested_transient_guard, and 0.9993 and 1.0000 for pfr_zero_budget_bypass; every upper bound is below 1.0100. T12 remained mode-readback-only, so its recorded conditional gate did not activate.
+  - date: 2026-08-25
+    decision: Make physical closure monotonic for an older FileId after its driver slot advances to a newer generation.
+    alternatives:
+      - Serialize filesystem open/create and Pool publication under the Pool control lock.
+      - Retain generation-exact closure and add a Pool-side tombstone for every closed generation.
+      - Leave the old Retiring entry dependent on observing the transient Closed state before reuse.
+    reason: A driver slot can advance only from Closed and generation exhaustion prevents wrap, so a newer generation proves every older generation physically closed. The monotonic predicate fixes retirement publication, stale io_mode lookup, and capacity reuse at the shared lifecycle boundary without widening the control lock or adding storage.
+  - date: 2026-08-25
+    decision: Bound Pool shutdown with the driver's fixed consecutive-no-progress policy and add no bespoke completion-stall test seam.
+    alternatives:
+      - Keep retrying accepted I/O forever during Pool drop.
+      - Add a custom backend, child process, sleeping timeout, unkillable worker thread, or test-only CQE-withholding API.
+      - Close files or tear down the driver before accepted operations reach terminal routed states.
+    reason: One million consecutive bounded waits match DriverCore quiesce policy; only backend or caller completion progress resets the count, while successful backends still route terminal results before file close and driver teardown. Existing mocks always produce CQEs, so a deterministic synchronous-Drop RED would require more test machinery than the bound and is rejected under the recorded test-economy rule; the three existing progress-making shutdown checks remain binding.
+  - date: 2026-08-25
+    decision: Supersede v19 and reseal all three amendment timing lanes as v20 after the lifecycle production fixes.
+    alternatives:
+      - Reuse v19 timing evidence because the fixes target shutdown, retirement, and cold admission.
+      - Rebuild only the candidate executable while retaining the v19 runner identity and source bundle.
+      - Run fewer than 40 pairs or relax the 1.0100 thresholds.
+    reason: File closure, shutdown, and Pool::get production source changed after a079c7c, so final evidence must bind a new clean behavior commit and matching controller seal. Fresh versioned products, runner, input, bundle, and 40-pair artifacts prevent identity drift and preserve every recorded threshold.
+  - date: 2026-08-25
+    decision: Accept all three valid v20 results as the final amendment timing evidence.
+    alternatives:
+      - Retain superseded v19 results as final evidence.
+      - Rerun any valid v20 lane to seek a different estimate.
+      - Activate the conditional nonzero-poll lane without new poll or drain work.
+      - Relax a frozen threshold.
+    reason: The clean de6ab370 product and f6f816b baseline were built from bundle 1b3b883e under controller 9601491 with sealed executable, runner, lockfile, input, and gate hashes. Every lane completed 40 order-alternated pairs on the active performance/THP-never profile with matching checksums and zero timed allocations, minor faults, or major faults. Candidate/baseline geomean and one-sided CI95 upper were 0.9136 and 0.9223 for ordinary transient guards, 0.9158 and 0.9221 for nested transient guards, and 0.9966 and 0.9973 for zero-budget lifecycle; each upper bound passes the unchanged 1.0100 threshold.

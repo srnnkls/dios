@@ -1042,6 +1042,80 @@ batch_reviews:
     performance_gates: passed_via_final_amendment_benchmark
     outcome: correctness_approved
 
+  - batch: final-amendment-review-fix
+    timestamp: 2026-08-25T18:45:19Z
+    behavior_commit: de6ab37030b3773acd6b7d8522cdcecaf1d9d4bd
+    controller_commit: 9601491460a01d484a614bc9bd7d15de627a5e35
+    reviewed_fix_diff_sha256: 2223a52cbff1784ee5c9986de91ed0a23a62695266ea9a38031280fb9e34577a
+    initial_final_review:
+      report_dirs:
+        general: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-review-general
+        architecture: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-review-architecture
+        compliance: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-review-compliance
+      accepted_findings:
+        - A physically closed old driver generation became unobservable after same-slot reopen, wedging Pool retirement and capacity.
+        - Pool shutdown had no enclosing consecutive-no-progress bound and could retry a stalled accepted operation forever.
+        - Pool::get and two pool_progress tests exceeded the hard 70-line limit.
+    generation_regression:
+      red: Old-generation closure became false after exact-slot reopen.
+      green: A newer non-wrapping generation is a monotonic closure witness; the same generation still requires FileState::Closed.
+      test_review: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-review-fix-test-review
+    shutdown_test_economy:
+      report_dir: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-review-fix-shutdown-tester
+      decision: No bespoke CQE-stall seam; the fixed Pool bound matches DriverCore and three existing progress-making shutdown checks remain binding.
+    implementation:
+      agent: codex-gpt5.6-terra
+      execution_class: native
+      effort: high
+      report_dir: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-review-fix-implementer-terra
+    test_line_refactor:
+      agent: codex-native
+      report_dir: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-review-fix-test-line-refactor
+      spans: {read_credit_test: 66, retry_wait_test: 48}
+    targeted_rereview:
+      report_dirs:
+        general: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-review-fix-rereview-general
+        architecture: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-review-fix-rereview-architecture
+        compliance: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-review-fix-rereview-compliance
+        gemini_general_retry: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-review-fix-rereview-general-gemini-retry
+        gemini_architecture_retry: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-review-fix-rereview-architecture-gemini-retry
+        gemini_compliance_retry: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-review-fix-rereview-compliance-gemini-retry
+      reviewers:
+        - {id: codex-native, execution_class: native, roles: [general, architecture, compliance], status: approved}
+        - {id: claude-opus-cli, execution_class: external, roles: [general, architecture, compliance], status: approved}
+        - {id: gemini-3.7-flash, execution_class: external, roles: [general, architecture, compliance], status: approved}
+      findings: []
+    verification:
+      local:
+        - all-feature suite passed 304/304
+        - zero-allocation passed 23/23
+        - Loom passed 15/15
+        - strict all-target/all-feature Clippy, rustdoc, formatting, and diff checks passed
+        - no-default-feature library check and strict Clippy passed
+      linux_clean_candidate:
+        - hugepage alignment and backing passed 2/2
+        - io_uring, wait, and deferred-close paths passed 13/13
+        - registered-file lifecycle and allocation paths passed 14/14
+        - driver and pool-progress targets passed 42/42
+        - strict all-target/all-feature Clippy passed
+        - Miri pure-memory paths passed 18/18
+        - ASan syscall paths passed 6/6
+    performance_gates:
+      seal:
+        source_bundle_sha256: 1b3b883e421e4834dd96e308feb86414794c17747c170215947973b362414d2b
+        baseline_executable_sha256: e823eeed656c3112db98713de87f6e4212c67e264569704152eef21d5893c51c
+        candidate_executable_sha256: 121c07e4ea83a849a34c5a9e59536ae845703ab5f95b77cec1d9de1f41776caa
+        runner_executable_sha256: 231569b7e95901ef75c9393b5d88f756ea734c0524878e5b2b2402fe4ca9bc86
+        runner_source_sha256: 998e0cd44b7c470b5172f07c58138773f2c03e1d3b7bb578e117615a35faca33
+        input_sha256: ce18cc2046a523f1795ab7a9b07b338cf94a45e0f68d8d0b290feb0d97ba98f7
+      pfr_transient_guard: {pairs: 40, geomean: 0.9136, ci95_upper: 0.9223, threshold: 1.0100, status: passed}
+      pfr_nested_transient_guard: {pairs: 40, geomean: 0.9158, ci95_upper: 0.9221, threshold: 1.0100, status: passed}
+      pfr_zero_budget_bypass: {pairs: 40, geomean: 0.9966, ci95_upper: 0.9973, threshold: 1.0100, status: passed}
+      pfr_nonzero_poll: inactive
+      local_evidence: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-benchmark-artifacts-v20
+      remote_evidence: /home/srnnkls/build/dios/target/bench-samples/pfr-amendments-v20
+    outcome: implementation_and_gates_approved
+
 issues:
   critical: []
   high:
