@@ -959,6 +959,7 @@ fn validate_thread_evidence(lane: Lane, arm: &str, row: &Row) -> Result<(), Stri
         Lane::PromoteReleaseWake => "0;1",
         Lane::SameFramePromotion if arm == "eight_workers" => "0;1;2;3;32;33;34;35",
         Lane::TransientGuard
+        | Lane::NestedTransientGuard
         | Lane::NonzeroPoll
         | Lane::ZeroBudgetBypass
         | Lane::SameFramePromotion => "0",
@@ -1014,7 +1015,7 @@ fn validate_lane_row(lane: Lane, arm: &str, row: &Row) -> Result<(), String> {
         return Err("row iteration, timing, pool, or retention-budget identity differs".to_owned());
     }
     match lane {
-        Lane::TransientGuard => validate_transient(row),
+        Lane::TransientGuard | Lane::NestedTransientGuard => validate_transient(row),
         Lane::NonzeroPoll => validate_nonzero_poll(row),
         Lane::ZeroBudgetBypass => validate_zero_budget(row),
         Lane::PromoteReleaseWake => validate_wake(arm, row),
