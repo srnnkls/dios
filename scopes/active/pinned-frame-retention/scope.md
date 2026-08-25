@@ -1,8 +1,8 @@
 ---
 created: 2026-08-17
-status: done
+status: active
 issue_type: Feature
-revision: 13
+revision: 14
 ---
 
 # Scope: pinned-frame-retention
@@ -10,6 +10,14 @@ revision: 13
 Adds retained frame access beside the transient epoch guard: promoting a live
 `FrameGuard` yields a `RetainedFrame` that holds a per-frame retention count,
 releases the reader's epoch, and keeps its frame resident until dropped.
+
+Revision 14 adds the four missing Sira integration obligations: T10 enforces
+`peak_guards_per_reader`; T11 adds new-artifact creation, configurable file
+capacity, typed capacity refusal, and fallible preallocation; T12 exposes the
+negotiated direct-I/O mode and durability boundary; T13 integrates the reviewed
+T017 lifecycle-progress hardening from `d4203d95`. T10–T13 require their own
+implementation and review gates.
+
 Retention stops publishing the reader's epoch, and `peak_guards_per_reader`
 shrinks to bounding transient guards only. "Pin" remains the EBR epoch verb;
 retention uses the `retain` vocabulary, and the subsystem lives in its own

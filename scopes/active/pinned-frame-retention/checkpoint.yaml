@@ -1,10 +1,10 @@
 checkpoint:
   scope_name: pinned-frame-retention
-  scope_path: ./scopes/done/pinned-frame-retention
-  branch: feat/pinned-frame-retention
-  timestamp: 2026-08-24T23:13:48Z
+  scope_path: ./scopes/active/pinned-frame-retention
+  branch: feat/pinned-frame-retention-amendments
+  timestamp: 2026-08-25T09:30:00Z
   last_batch: 8
-  last_commit: 80c614aa5b7e157b03b6ddebe66cd4f186239e7a
+  last_commit: f6f816b33c13c121e02767735f861d46c8939371
   tasks:
     done:
       - id: T1
@@ -27,10 +27,19 @@ checkpoint:
         name: Bench implementation and arena-independent gate run
       - id: T9
         name: Docs and invariant fold-back
-    in_progress: []
+    in_progress:
+      - {id: T13, name: Integrate T017 lifecycle-progress hardening}
     pending:
+      - {id: T10, name: Peak-guard release assert}
+      - {id: T11, name: Artifact write-plane product API}
+      - {id: T12, name: Direct-I/O observability and durability boundary}
       - {id: T8b, name: Exact-R8-scale shipping arm}
-  next_batch: null
+  next_batch:
+    number: 9
+    id: B9
+    tasks:
+      - {id: T13, name: Integrate T017 lifecycle-progress hardening}
+    parallel: false
   deferred_issues:
     - batch: 1
       severity: medium
@@ -38,19 +47,14 @@ checkpoint:
       location: tests/pinned_frame_retention_plan.rs
       reason: deferred_hardening after two fix rounds and representative falsifiers
   implementation_config:
-    path: ./scopes/done/pinned-frame-retention/config.yaml
+    path: ./scopes/active/pinned-frame-retention/config.yaml
     epoch_id: 20260821T150300Z-376a8f
   phase_cursor:
-    batch: 8
-    phase: complete
-    status: success
-    tasks: [T1, T2, T3, T4, T5, T6, T6a, T7, T8a, T9]
-    report_dirs:
-      - .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/final-review-general-fix
-      - .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/final-review-architecture-fix
-      - .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/final-review-compliance-fix2
-      - .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/final-verification
-    updated_at: 2026-08-24T23:13:48Z
+    batch: 9
+    phase: implementer
+    status: in_progress
+    tasks: [T13]
+    updated_at: 2026-08-25T09:30:00Z
   review_history:
     batch_1_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-review-general
     batch_1_targeted_review_round_1: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-targeted-review
@@ -141,4 +145,10 @@ checkpoint:
     final_review_compliance_fix: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/final-review-compliance-fix2
     final_verification: .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/final-verification
     final_review_status: clean
-  incomplete_stages: []
+  incomplete_stages:
+    - batch: 9
+      task: T13
+      phase: implementer
+      agent: codex-native
+      status: in_progress
+      baseline: f6f816b33c13c121e02767735f861d46c8939371

@@ -284,3 +284,52 @@ tasks:
     status: done
     depends_on: [T8a]
     files: [README.md, src/pool/retention.rs, src/pool/epoch.rs, src/pool/mod.rs, scopes/active/dios-v1/scope.md, scopes/active/dios-v1/design.md]
+
+  - id: T10
+    title: Peak-guard release assert (Sira DM002)
+    description: >
+      Carry peak_guards_per_reader into every ReaderSlot and unconditionally
+      assert at commit_pin that the taken-guard count does not exceed the
+      declaration, including the first guard. A reader configured for N guards
+      taking N+1 is the RED. ReaderRegistry and Loom configure the same slot
+      method. The final transient-guard A/B gate must remain green.
+    status: pending
+    depends_on: [T1, T13]
+    files: [src/pool/mod.rs, src/pool/epoch.rs, src/pool/loom_model.rs, src/lib.rs, tests/]
+
+  - id: T11
+    title: Artifact write-plane product API (Sira DM002b sink half)
+    description: >
+      Create and register new whole-granule artifacts; replace MAX_FILES=64
+      with configured registered-file capacity across production, eager, mock,
+      pool, retention, and Loom; return a typed capacity refusal; cover more
+      than 64 live create/write/retire cycles; and make pool/arena
+      preallocation fallible through a typed PoolBuildError allocation variant.
+      Add deterministic fault seams only for introduced operations.
+    status: pending
+    depends_on: [T7, T10]
+    files: [src/pool/mod.rs, src/pool/retention.rs, src/pool/frames.rs, src/pool/write_arena.rs, src/driver.rs, src/error.rs, src/open.rs, src/backend/uring.rs, src/backend/eager.rs, src/mock.rs, src/pool/loom_model.rs, tests/]
+
+  - id: T12
+    title: Direct-I/O observability and durability boundary (Sira DM002b mode half)
+    description: >
+      Re-export IoMode at the crate root, expose Pool readback of the negotiated
+      mode for a registered FileId, and record the data-plane versus
+      metadata-plane durability boundary. DirectIo::Required and its typed
+      refusal already ship. Add no public driver bound unless the existing
+      sealed shape exposes it without a new abstraction.
+    status: pending
+    depends_on: [T11]
+    files: [src/pool/mod.rs, src/driver.rs, src/open.rs, src/lib.rs, tests/]
+
+  - id: T13
+    title: Integrate T017 lifecycle-progress hardening
+    description: >
+      Integrate reviewed commit d4203d95 onto main, composing its product-I/O
+      shutdown, progress accounting, retry handling, read-credit, and wake
+      rearm behavior with retained-frame lifecycle changes. Add no behavior
+      beyond conflict resolution; rerun the original targeted suites and review
+      the merge delta.
+    status: in_progress
+    depends_on: []
+    files: [src/backend/uring.rs, src/lib.rs, src/mock.rs, src/pool/mod.rs, src/product.rs, tests/]

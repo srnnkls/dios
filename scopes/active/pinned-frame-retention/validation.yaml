@@ -404,3 +404,11 @@ decision_log:
       - Rerun valid v18 timing lanes after non-product closure fixes.
       - Relax a frozen benchmark threshold.
     reason: All closure tasks through T9 are done. Nine final-fix reports across general, architecture, and compliance roles approve the final target with no findings; fresh-target full, no-feature, Loom, Miri, ASan, Linux zero-allocation, and shipping-wake checks pass. All five T8a gates remain valid against the frozen ec09d66c performance product. T8b still requires the 8,035-page Unregistered AM4 posture and remains pending without weakening or substitution.
+  - date: 2026-08-25
+    decision: Reactivate the scope for T10–T13 on a new branch and execute T13, T10, T11, then T12 before opening one amendment PR.
+    alternatives:
+      - Advance Sira to the retention-only squash before T017 lands.
+      - Split the four obligations across unrelated scopes or PRs.
+      - Treat the untracked revision-14 checkpoint as implementation evidence.
+      - Leave the original T11 file list unchanged despite fallible arena allocation crossing additional modules.
+    reason: Origin main contains the reviewed T1–T9 retention result but none of the four Sira obligations. T017 must compose with retention-era lifecycle behavior; T10–T12 then share pool and driver surfaces. The committed revision-13 task state remains the provenance for completed work, while revision 14 adds only the missing obligations and includes retention.rs, frames.rs, and write_arena.rs where configurable file capacity and fallible allocation actually terminate.
