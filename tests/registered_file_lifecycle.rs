@@ -147,7 +147,7 @@ fn registered_file_write_whole_granule(pool: &Pool, file: FileId, byte: u8) {
     let mut completions = PoolCompletionBatch::with_capacity(1);
 
     for _ in 0..POLL_BOUND {
-        pool.poll_report(&mut completions);
+        pool.poll_wait(&mut completions, std::time::Duration::from_secs(5));
         let completed = completions.iter().find(|completion| match completion {
             PoolCompletion::Write { token: seen, .. }
             | PoolCompletion::Fsync { token: seen, .. } => *seen == token,

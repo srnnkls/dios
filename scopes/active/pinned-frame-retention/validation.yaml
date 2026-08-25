@@ -494,3 +494,10 @@ decision_log:
       - Point the candidate source identity at the later controller-seal or tracking commit.
       - Omit the reviewed nested-transient lane from the candidate product.
     reason: The clean candidate contains T13, T10, T11, T12, and the reviewed nested lane. The lane's direct probes, 303 all-feature tests, 23 zero-allocation tests, 15 Loom models, strict Clippy, rustdoc, formatting, and all nine code-review reports pass. Source-comparison products must bind the exact behavior commit; the following controller-only seal changes no product behavior and avoids a circular self-identity.
+  - date: 2026-08-25
+    decision: Make the existing Linux lifecycle smoke wait through the public bounded progress entry after its async write submission.
+    alternatives:
+      - Re-run the unchanged 32 nonblocking polls and classify the failure as noise.
+      - Increase the nonblocking poll count, add sleeps, or yield between polls.
+      - Change product progress behavior or remove the lifecycle smoke.
+    reason: Final Linux verification reached 32 immediate poll_report calls before the io_uring write CQE became visible, so the test's scheduling assumption failed without a product failure. poll_wait preserves the exact-token and Ok(4096) oracle, returns immediately on completion, and retains the fixed 32-iteration outer bound with a five-second deadline per wait. All 12 lifecycle smokes pass on Linux after the one-line correction; product source and the sealed a079c7c executable are unchanged, so no benchmark reseal is required.
