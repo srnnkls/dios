@@ -570,8 +570,7 @@ pub mod testing {
 #[cfg(feature = "bench")]
 pub mod bench;
 
-pub use driver::FileId;
-pub use driver::SyncMode;
+pub use driver::{FileId, IoMode, SyncMode};
 pub use error::{FileRegistrationError, IoError};
 pub use open::DirectIo;
 pub use pool::{

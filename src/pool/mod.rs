@@ -21,7 +21,7 @@ use std::time::Instant;
 
 use crate::completion::CompletionBatch;
 use crate::driver::{
-    BackendProgress, Driver, DriverBuildError, FileHandle, FileId, OpKind, OpToken,
+    BackendProgress, Driver, DriverBuildError, FileHandle, FileId, IoMode, OpKind, OpToken,
 };
 use crate::error::{FileRegistrationError, IoError, SubmitError};
 use crate::open::DirectIo;
@@ -1368,6 +1368,35 @@ impl<D: PoolBackend> Pool<D> {
         Ok(file)
     }
 
+    /// Returns the negotiated data-plane mode for an exact live or retiring file
+    /// generation. Absent, retired, and replaced generations return `None`.
+    ///
+    /// # Panics
+    ///
+    /// If `file` belongs to another pool.
+    #[must_use]
+    pub fn io_mode(&self, file: FileId) -> Option<IoMode> {
+        assert_eq!(
+            file.driver(),
+            self.identity,
+            "file identity used with a foreign pool"
+        );
+        let control = self.control();
+        control.files[file.slot() as usize]
+            .as_ref()
+            .filter(|entry| {
+                entry.id == file
+                    && matches!(entry.state, PoolFileState::Live | PoolFileState::Retiring)
+            })
+            .map(|entry| {
+                entry
+                    .handle
+                    .as_ref()
+                    .expect("a live or retiring file retains its backend handle")
+                    .io_mode()
+            })
+    }
+
     /// Residency lookup: a warm hit borrows the frame; a miss submits a singleflight
     /// read (or joins one in flight); no evictable frame after one bounded reclaim
     /// attempt is `Busy`.
@@ -1704,8 +1733,9 @@ impl<D: PoolBackend> Pool<D> {
         Ok(token)
     }
 
-    /// Admits a durability barrier, withholding it behind prior writes to the
-    /// same file.
+    /// Admits a full-file durability barrier after prior writes to the same file.
+    /// A successful completion orders those writes and covers the opened file.
+    /// Rename, containing-directory fsync, and root publication remain outside Dios.
     ///
     /// # Errors
     ///

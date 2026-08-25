@@ -1,7 +1,11 @@
 use std::fs;
+#[cfg(feature = "mock")]
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
+#[cfg(feature = "mock")]
+use dios::IoMode;
 #[cfg(feature = "mock")]
 use dios::testing::{
     DirectIoSupport, MockDriver, MockPoolTestingExt, MockRingDriver, MockRingPoolBuilderTestingExt,
@@ -288,6 +292,62 @@ fn operating_emfile_with_a_logical_slot_free_is_io() {
         panic!("a successful logical reservation cannot report AtCapacity");
     };
     assert_eq!(error.raw_os_error(), Some(EMFILE));
+}
+
+#[cfg(feature = "mock")]
+#[test]
+fn negotiated_io_mode_tracks_exact_pool_file_generation() {
+    let pool = registered_file_mock_pool(2, DirectIoSupport::Supported);
+    let old = pool
+        .open(Path::new("io-mode-old"), DirectIo::Preferred)
+        .expect("the old generation registers with direct IO");
+    let Some(IoMode::Direct(alignment)) = pool.io_mode(old) else {
+        panic!("the preferred supported file must report direct IO");
+    };
+    assert_eq!(alignment.get(), GRANULE);
+
+    let absent_handle = pool
+        .driver()
+        .open(Path::new("io-mode-absent"), DirectIo::Disabled)
+        .expect("the second driver slot remains outside Pool registration");
+    let absent = absent_handle.file_id();
+    assert_eq!(pool.io_mode(absent), None);
+
+    let lease = pool
+        .lease_file(old)
+        .expect("the live generation admits a resident lease");
+    assert_eq!(pool.retire_file(old), RetireStatus::Retiring);
+    pool.poll();
+    assert_eq!(pool.retire_file(old), RetireStatus::Retiring);
+    let Some(IoMode::Direct(retiring_alignment)) = pool.io_mode(old) else {
+        panic!("the retiring generation must retain its negotiated mode");
+    };
+    assert_eq!(retiring_alignment.get(), GRANULE);
+
+    drop(lease);
+    for _ in 0..POLL_BOUND {
+        pool.poll();
+        if pool.retire_file(old) == RetireStatus::Retired {
+            break;
+        }
+    }
+    assert_eq!(pool.retire_file(old), RetireStatus::Retired);
+    assert_eq!(pool.io_mode(old), None);
+
+    let replacement = pool
+        .open(Path::new("io-mode-replacement"), DirectIo::Disabled)
+        .expect("physical close returns the old slot");
+    assert!(old.aliases_slot(&replacement));
+    assert_ne!(old, replacement);
+    assert_eq!(pool.io_mode(replacement), Some(IoMode::Buffered));
+    assert_eq!(pool.io_mode(old), None);
+
+    let foreign_pool = registered_file_mock_pool(1, DirectIoSupport::Supported);
+    let foreign = foreign_pool
+        .open(Path::new("io-mode-foreign"), DirectIo::Disabled)
+        .expect("the foreign pool registers one file");
+    let panic = catch_unwind(AssertUnwindSafe(|| pool.io_mode(foreign)));
+    assert!(panic.is_err(), "a foreign Pool identity must panic");
 }
 
 #[test]
