@@ -457,6 +457,71 @@ mod portable_read_ranges {
     }
 
     #[test]
+    fn direct_io_unaligned_positive_short_read_is_terminal_without_remainder_submission() {
+        const SHORT: u32 = 1500;
+
+        let mock = MockDriver::builder()
+            .seed(0xD357_1A7E)
+            .queue_capacity(1)
+            .frames(4)
+            .frame_bytes(GRANULE)
+            .retry_bound(0)
+            .build();
+        let handle = mock
+            .open(Path::new("portable-direct-short-read"), DirectIo::Required)
+            .expect("mock direct-I/O open");
+        let file = handle.file_id();
+        mock.inject_next(Injected::Short(SHORT));
+        let pool = mock_pool(mock);
+        pool.register_file(handle);
+        let reader = pool.register_reader().expect("one reader slot");
+        let mut token = pending(pool.get(&reader, PageId::new(file, 0)));
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            for _ in 0..POLLS_MAX {
+                pool.poll();
+                match pool.ready(&reader, token) {
+                    ReadyResult::NotYet(handed_back) => token = handed_back,
+                    ReadyResult::Err(error) => return Some(error),
+                    ReadyResult::Ready(_) => return None,
+                }
+            }
+            None
+        }));
+        let error = match outcome {
+            Ok(Some(error)) => error,
+            Ok(None) => {
+                let _pool = std::mem::ManuallyDrop::new(pool);
+                panic!("an unaligned direct-I/O short count must terminate as an error");
+            }
+            Err(_) => {
+                let _pool = std::mem::ManuallyDrop::new(pool);
+                panic!("an unaligned direct-I/O short count must not panic while polling");
+            }
+        };
+        let errno = error.raw_os_error();
+        let attempts = pool.driver().read_attempts_in_order();
+
+        let read_credit_released =
+            matches!(pool.get(&reader, PageId::new(file, 1)), Ok(Get::Pending(_)));
+        if !read_credit_released {
+            let _pool = std::mem::ManuallyDrop::new(pool);
+            panic!("the terminal direct-I/O error must release its logical read credit");
+        }
+
+        assert_eq!(errno, Some(EIO));
+        assert_eq!(
+            attempts,
+            vec![ReadAttempt {
+                file_offset: 0,
+                destination_offset: 0,
+                requested_len: GRANULE,
+            }],
+            "the invalid direct-I/O remainder must not be submitted"
+        );
+    }
+
+    #[test]
     fn short_read_resubmits_the_exact_tail_at_the_filled_destination_offset() {
         let short = GRANULE / 2;
         let mock = MockDriver::builder()

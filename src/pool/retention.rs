@@ -731,11 +731,13 @@ impl Retention {
 
 impl Drop for Retention {
     fn drop(&mut self) {
-        assert_eq!(
-            self.occupied_budget.load(Ordering::Acquire),
-            0,
-            "retention handles must not be forgotten"
-        );
+        if !std::thread::panicking() {
+            assert_eq!(
+                self.occupied_budget.load(Ordering::Acquire),
+                0,
+                "retention handles must not be forgotten"
+            );
+        }
         assert_eq!(
             self.words.len(),
             self.tags.len(),

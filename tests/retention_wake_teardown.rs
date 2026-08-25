@@ -180,6 +180,31 @@ fn pool_teardown_drains_a_held_final_drop() {
 }
 
 #[test]
+fn forgotten_retained_handle_panics_before_retiring_file_is_closed() {
+    let (pool, file) = mock_pool("forgotten-retained-before-close");
+    let io_observation = pool.observe_io();
+    let reader = pool.register_reader().expect("reader slot is available");
+    let (_frame, retained) = retain_held(&pool, &reader, file);
+    assert_eq!(pool.retire_file(file), RetireStatus::Retiring);
+    let _retained = std::mem::ManuallyDrop::new(retained);
+    drop(reader);
+
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(pool)));
+
+    assert!(
+        outcome.is_err(),
+        "forgetting a retained handle is a programmer error at pool teardown"
+    );
+    let events = io_observation.io_events_in_order();
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, MockIoEvent::Close { file: closed } if *closed == file)),
+        "the programmer-error panic must precede physical close: {events:?}"
+    );
+}
+
+#[test]
 fn pool_teardown_drains_a_held_release_before_product_shutdown_progress() {
     let mock = MockDriver::builder()
         .queue_capacity(2)

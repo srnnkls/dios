@@ -981,6 +981,11 @@ impl<D> Drop for Pool<D> {
                     frame_pages[frame.get() as usize] = None;
                 });
         }
+        assert_eq!(
+            self.retention.occupied_budget.load(Ordering::Acquire),
+            0,
+            "retention handles must not be forgotten"
+        );
         let drop_hook = self.drop_hook;
         drop_hook(self);
     }
@@ -2244,10 +2249,19 @@ impl<D: PoolBackend> Pool<D> {
                     } else {
                         let (offset, len) = read_span(entry.page(), self.granule, filled);
                         let fd = registered_file(&control.files, entry.page());
-                        if let Ok(token) =
+                        let token = if route_completion_batch_remainder_satisfies_io_mode(
+                            fd.io_mode(),
+                            offset,
+                            filled,
+                            len,
+                        ) {
                             self.driver
                                 .submit_read(fd, entry.frame(), offset, filled, len)
-                        {
+                                .ok()
+                        } else {
+                            None
+                        };
+                        if let Some(token) = token {
                             control.miss.advance_remainder(index, filled, token);
                         } else {
                             Self::release_read_credit(control);
@@ -2533,6 +2547,27 @@ pub(crate) fn pin_with_resident_hint(
 fn read_span(page: PageId, granule: u32, filled: u32) -> (u64, u32) {
     let base = u64::from(page.granule_idx()) * u64::from(granule);
     (base + u64::from(filled), granule - filled)
+}
+
+fn route_completion_batch_remainder_satisfies_io_mode(
+    io_mode: IoMode,
+    file_offset: u64,
+    destination_offset: u32,
+    len: u32,
+) -> bool {
+    let IoMode::Direct(alignment) = io_mode else {
+        return true;
+    };
+    if alignment.check(file_offset).is_err() {
+        return false;
+    }
+    if alignment.check(u64::from(destination_offset)).is_err() {
+        return false;
+    }
+    if alignment.check(u64::from(len)).is_err() {
+        return false;
+    }
+    true
 }
 
 fn registered_file(files: &[Option<PoolFile>], page: PageId) -> &FileHandle {
