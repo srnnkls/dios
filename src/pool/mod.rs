@@ -77,9 +77,8 @@ pub(crate) const SECTOR_BYTES: u32 = 4096;
 /// so the pool synthesizes `EIO`.
 const SHORT_READ_EOF_ERRNO: i32 = 5;
 
-/// Drop may wait indefinitely for accepted I/O, but each backend park remains
-/// bounded so held fsyncs and routed completions are reconsidered regularly.
 const DROP_PROGRESS_WAIT: Duration = Duration::from_millis(100);
+const SHUTDOWN_IDLE_MAX: u32 = 1_000_000;
 
 #[cfg(all(feature = "mock", not(loom)))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1143,6 +1142,7 @@ impl<D: PoolBackend> Pool<D> {
     /// composed driver tears down. Caller-owned results may be discarded here:
     /// dropping the Pool relinquishes their delivery, not the accepted I/O.
     fn shutdown_internal(&mut self) {
+        let mut idle = 0u32;
         loop {
             {
                 let mut control = self.control();
@@ -1168,7 +1168,7 @@ impl<D: PoolBackend> Pool<D> {
             }
 
             let mut waited = self.wait_batch();
-            let _ = self
+            let progress = self
                 .driver
                 .poll_wait_progress(&mut waited, DROP_PROGRESS_WAIT);
             let mut control = self.control();
@@ -1177,6 +1177,12 @@ impl<D: PoolBackend> Pool<D> {
             }
             drop(waited);
             self.route_completion_batch(&mut control);
+            if progress.backend_completions > 0 || progress.caller_completions > 0 {
+                idle = 0;
+            } else {
+                idle += 1;
+                assert!(idle < SHUTDOWN_IDLE_MAX, "pool drop made no progress");
+            }
         }
     }
 
@@ -1435,7 +1441,6 @@ impl<D: PoolBackend> Pool<D> {
         if !file_is_live(&control.files, page.file(), self.identity) {
             return Err(GetError::StaleFile { page });
         }
-        let _ = registered_file(&control.files, page);
         if self
             .table
             .lookup(page)
@@ -1447,29 +1452,33 @@ impl<D: PoolBackend> Pool<D> {
                 None => Get::Busy,
             });
         }
+        Ok(self.get_cold(page, &mut control))
+    }
+
+    fn get_cold<'pool>(&'pool self, page: PageId, control: &mut Control) -> Get<'pool> {
         if let Some(index) = control.miss.find_pending(page) {
             let (slot, generation) = control.miss.join(index, &self.miss_interests);
-            return Ok(Get::Pending(PendingToken::new(
+            return Get::Pending(PendingToken::new(
                 page,
                 slot,
                 generation,
                 Arc::clone(&self.miss_interests),
                 Arc::clone(&self.lifecycle),
-            )));
+            ));
         }
         if control.reads_in_flight >= self.max_inflight_reads {
-            return Ok(Get::Busy);
+            return Get::Busy;
         }
         let Some(miss_slot) = control.miss.admission_slot(&self.miss_interests) else {
-            return Ok(Get::Busy);
+            return Get::Busy;
         };
-        let Some(frame) = self.claim_frame(&mut control) else {
-            return Ok(Get::Busy);
+        let Some(frame) = self.claim_frame(control) else {
+            return Get::Busy;
         };
         self.frames.advance(frame, FrameState::InFlight);
-        let Ok(token) = self.submit_page_read(&control, page, frame, 0) else {
+        let Ok(token) = self.submit_page_read(control, page, frame, 0) else {
             self.frames.abort_inflight(frame);
-            return Ok(Get::Busy);
+            return Get::Busy;
         };
         control.reads_in_flight = control
             .reads_in_flight
@@ -1479,13 +1488,13 @@ impl<D: PoolBackend> Pool<D> {
             .miss
             .admit(miss_slot, page, frame, token, &self.miss_interests);
         self.wake.wake();
-        Ok(Get::Pending(PendingToken::new(
+        Get::Pending(PendingToken::new(
             page,
             miss_slot,
             generation,
             Arc::clone(&self.miss_interests),
             Arc::clone(&self.lifecycle),
-        )))
+        ))
     }
 
     /// Acquires one owned capability for an exact live file generation.

@@ -264,6 +264,29 @@ fn close_is_deferred_until_the_fds_in_flight_ops_drain() {
 }
 
 #[test]
+fn closed_generation_remains_closed_after_its_slot_is_reopened() {
+    let m = mock(1, 4, 4);
+    let old = open(&m);
+    let old_id = old.file_id();
+
+    m.close(old);
+    assert!(
+        m.is_closed(old_id),
+        "the old generation is physically closed"
+    );
+
+    let newer = open(&m);
+    assert!(
+        newer.file_id().aliases_slot(&old_id),
+        "the newer generation reuses the closed slot"
+    );
+    assert!(
+        m.is_closed(old_id),
+        "closure of the old generation remains observable after slot reuse"
+    );
+}
+
+#[test]
 fn submit_on_a_stale_handle_is_rejected_while_the_reused_slot_still_works() {
     let m = mock(1, 4, 4);
     let fd = open(&m);

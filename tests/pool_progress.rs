@@ -69,8 +69,8 @@ fn pool_with_file_product_capacity(
     (pool, file_id)
 }
 
-#[test]
-fn read_credit_saturation_preserves_product_reservations_and_singleflight_joins() {
+fn read_credit_saturation_preserves_product_reservations_and_singleflight_joins_setup()
+-> (Pool<MockDriver>, dios::FileId) {
     let mock = MockDriver::builder()
         .seed(0x00C4_ED17)
         .queue_capacity(3)
@@ -99,6 +99,13 @@ fn read_credit_saturation_preserves_product_reservations_and_singleflight_joins(
         .build_on(mock)
         .expect("valid partitioned-capacity pool");
     pool.register_file(file);
+    (pool, file_id)
+}
+
+#[test]
+fn read_credit_saturation_preserves_product_reservations_and_singleflight_joins() {
+    let (pool, file_id) =
+        read_credit_saturation_preserves_product_reservations_and_singleflight_joins_setup();
     let first_reader = pool.register_reader().expect("first reader slot");
     let second_reader = pool.register_reader().expect("second reader slot");
     let page = PageId::new(file_id, 0);
@@ -215,8 +222,11 @@ fn poll_report_counts_retry_cqes_before_the_terminal_product_result() {
 }
 
 #[cfg(target_os = "linux")]
-#[test]
-fn retry_cqe_early_return_is_progress_not_a_platform_wait_timeout() {
+fn retry_cqe_early_return_is_progress_not_a_platform_wait_timeout_setup() -> (
+    Pool<MockRingDriver>,
+    MockWaitObservation,
+    dios::driver::OpToken,
+) {
     let ring = MockRingDriver::builder()
         .queue_capacity(1)
         .frames(4)
@@ -249,6 +259,14 @@ fn retry_cqe_early_return_is_progress_not_a_platform_wait_timeout() {
         .ring_driver()
         .submit_fsync(&submit_file, SyncMode::Full)
         .expect("one barrier admits");
+    (pool, wait_observation, token)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn retry_cqe_early_return_is_progress_not_a_platform_wait_timeout() {
+    let (pool, wait_observation, token) =
+        retry_cqe_early_return_is_progress_not_a_platform_wait_timeout_setup();
 
     let started = Instant::now();
     let retry = pool.poll_wait_raw_progress(Duration::from_secs(1));

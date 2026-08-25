@@ -2218,7 +2218,8 @@ impl FileTable {
 
     fn is_closed(&self, id: FileId) -> bool {
         let slot = &self.slots[id.slot() as usize];
-        slot.generation == id.generation() && matches!(slot.state, FileState::Closed)
+        slot.generation > id.generation()
+            || slot.generation == id.generation() && matches!(slot.state, FileState::Closed)
     }
 
     fn on_submit(&mut self, id: FileId) {
