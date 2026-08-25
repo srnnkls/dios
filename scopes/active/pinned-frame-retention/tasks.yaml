@@ -295,7 +295,7 @@ tasks:
       unconditional assertion. ReaderRegistry and Loom configure the same slot
       method. Final ordinary and nested transient-guard A/B gates must remain
       green.
-    status: pending
+    status: done
     depends_on: [T1, T13]
     files: [src/pool/mod.rs, src/pool/epoch.rs, src/pool/loom_model.rs, src/lib.rs, tests/]
 
@@ -315,7 +315,7 @@ tasks:
       is mandatory.
     status: pending
     depends_on: [T7, T10]
-    files: [src/pool/mod.rs, src/pool/retention.rs, src/pool/frames.rs, src/pool/write_arena.rs, src/pool/table.rs, src/pool/clock.rs, src/pool/miss.rs, src/pool/epoch.rs, src/product.rs, src/driver.rs, src/error.rs, src/open.rs, src/backend/uring.rs, src/backend/eager.rs, src/mock.rs, src/pool/loom_model.rs, src/lib.rs, tests/]
+    files: [src/allocation.rs, src/pool/mod.rs, src/pool/retention.rs, src/pool/frames.rs, src/pool/write_arena.rs, src/pool/table.rs, src/pool/clock.rs, src/pool/miss.rs, src/pool/epoch.rs, src/product.rs, src/driver.rs, src/error.rs, src/open.rs, src/backend/uring.rs, src/backend/eager.rs, src/mock.rs, src/pool/loom_model.rs, src/lib.rs, tests/]
 
   - id: T12
     title: Direct-I/O observability and durability boundary (Sira DM002b mode half)

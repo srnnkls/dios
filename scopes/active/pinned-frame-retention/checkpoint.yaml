@@ -2,9 +2,9 @@ checkpoint:
   scope_name: pinned-frame-retention
   scope_path: ./scopes/active/pinned-frame-retention
   branch: feat/pinned-frame-retention-amendments
-  timestamp: 2026-08-25T12:00:00Z
-  last_batch: 9
-  last_commit: da2b814
+  timestamp: 2026-08-25T13:30:00Z
+  last_batch: 10
+  last_commit: 2a2f660
   tasks:
     done:
       - id: T1
@@ -29,17 +29,18 @@ checkpoint:
         name: Docs and invariant fold-back
       - id: T13
         name: Integrate T017 lifecycle-progress hardening
+      - id: T10
+        name: Peak-guard release assert
     in_progress: []
     pending:
-      - {id: T10, name: Peak-guard release assert}
       - {id: T11, name: Artifact write-plane product API}
       - {id: T12, name: Direct-I/O observability and durability boundary}
       - {id: T8b, name: Exact-R8-scale shipping arm}
   next_batch:
-    number: 10
-    id: B10
+    number: 11
+    id: B11
     tasks:
-      - {id: T10, name: Peak-guard release assert}
+      - {id: T11, name: Artifact write-plane product API}
     parallel: false
   deferred_issues:
     - batch: 1
@@ -51,11 +52,11 @@ checkpoint:
     path: ./scopes/active/pinned-frame-retention/config.yaml
     epoch_id: 20260821T150300Z-376a8f
   phase_cursor:
-    batch: 10
+    batch: 11
     phase: tester
     status: pending
-    tasks: [T10]
-    updated_at: 2026-08-25T12:00:00Z
+    tasks: [T11]
+    updated_at: 2026-08-25T13:30:00Z
   review_history:
     batch_1_review: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-review-general
     batch_1_targeted_review_round_1: .peer/pinned-frame-retention/20260821T150300Z-376a8f/b1-targeted-review
@@ -150,4 +151,8 @@ checkpoint:
     batch_9_shutdown_fix_commit: da2b814
     batch_9_verification: "54 targeted, 23 zero-allocation, 15 Loom, full check and re-review passed"
     batch_9_status: clean
+    batch_10_commit: 2a2f660
+    batch_10_verification: "release epoch guards 10, zero-allocation 23, Loom 15, strict lint and re-review passed"
+    batch_10_performance_gates: pending_final_candidate
+    batch_10_status: implementation_complete
   incomplete_stages: []

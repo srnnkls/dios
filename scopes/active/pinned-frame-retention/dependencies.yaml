@@ -78,7 +78,7 @@ batches:
     status: done
   - id: B10
     tasks: [T10]
-    status: pending
+    status: done
   - id: B11
     tasks: [T11]
     status: pending
