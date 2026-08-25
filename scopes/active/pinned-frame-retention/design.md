@@ -484,7 +484,8 @@ Every `ReaderSlot` stores its configured `peak_guards_per_reader`. The registry
 and Loom model configure slots through the same method before first use.
 `commit_pin` increments the taken-guard count, asserts the new count is at most
 the declaration, then publishes the count. The check applies to the first guard
-and every nested guard; release builds retain it.
+and every nested guard; release builds retain it. A release-built nested N+1
+smoke distinguishes the required `assert!` from `debug_assert!`.
 
 ### Registered artifacts
 
@@ -503,11 +504,23 @@ mode negotiation, backend registration, and pool registration. Any failure
 closes the handle and releases the reservation. Artifact length comes only from
 whole-granule positional writes.
 
-Pool construction returns `PoolBuildError::Allocation` for read-arena,
-write-arena, and fixed-capacity table allocation failure. Configuration is
-validated before allocation; backend setup failures remain
-`PoolBuildError::Driver`. Successful construction keeps runtime paths
-allocation-free.
+One executable lifecycle matrix fills a capacity above 64, proves the next
+create returns `AtCapacity` without creating its path, injects one
+post-reservation failure and proves immediate slot reuse, keeps a Retiring file
+charged until physical close, then reuses its slot and checks old/new generation
+`io_mode` results. This representative matrix pins the shared state machine
+without duplicating every operating-error permutation.
+
+Pool construction returns `PoolBuildError::Allocation` for every explicitly
+sized pool/arena capacity allocation: read and write arenas,
+page/clock/reader/eviction/miss/file state, completion storage, retention
+storage, and backend-independent scratch. Production and testing builders share
+`Result<Pool<_>, PoolBuildError>`. Small standard-library control blocks such as
+`Arc` headers retain Rust's process-OOM behavior; adding an allocator or
+shared-owner dependency for those fixed-size headers is outside this contract.
+Configuration is validated before any capacity allocation; backend setup
+failures remain `PoolBuildError::Driver`. Successful construction keeps runtime
+paths allocation-free.
 
 ### I/O mode and durability
 

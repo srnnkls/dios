@@ -22,6 +22,28 @@ mise run validate-pfr-pairs pfr_transient_guard target/bench-samples/pfr_transie
 
 Escalation lever: inspect the `ReaderSlot::commit_pin` guard-count data flow and generated transient-hit code. Remove redundant loads or branches without weakening the unconditional peak assertion. A valid failure blocks the PR; the threshold is not relaxed.
 
+## Nested transient guard gate
+
+Metric, host, sealing, pair count, bootstrap method, and threshold match the
+ordinary transient gate: candidate/baseline CI95 upper <= 1.0100 over 40
+order-alternated pairs.
+
+Workload: keep one outer ordinary `FrameGuard` live while repeatedly acquiring,
+folding 64 descriptor-selected bytes through, and dropping an inner guard over
+the same 128-page resident working set. Each arm runs 8,192 timed inner guards;
+the outer guard is established and dropped outside timing. Checksums,
+post-warmup allocations, and per-thread minor and major faults must match the
+ordinary gate controls.
+
+Compare command:
+
+```sh
+mise run validate-pfr-pairs pfr_nested_transient_guard target/bench-samples/pfr_nested_transient_guard_process.csv target/bench-samples/pfr_nested_transient_guard.csv target/bench-samples/pfr_nested_transient_guard_provenance.json && mise run gate target/bench-samples/pfr_nested_transient_guard.csv 1.01
+```
+
+Escalation lever: inspect the nested `commit_pin` count/ceiling load and branch;
+remove redundant work without weakening the release assertion.
+
 ## Allocation and lifecycle gates
 
 T13 retains T017's DIO-G4 requirement: warm get/miss, write, fsync, bounded reports, and overflow drains allocate zero times after warmup on both backends.
@@ -32,11 +54,20 @@ cargo test --features bench,mock --test zero_alloc
 
 T13's original `pool_progress`, `pool_retire`, `pool_write`, product-capacity, Loom, Linux, and strict lint suites must pass after conflict resolution.
 
-T11 and T12 add no timing gate while confined to build, file creation/registration, retirement, mode readback, and errors. Their gate is zero allocation on existing hot operations plus the transient guard gate above.
+T11 changes the file-retirement scratch used by the completion loop, so
+`pfr_zero_budget_bypass` is mandatory: 40 sealed, order-alternated pairs with
+candidate/baseline CI95 upper <= 1.0100 and the same checksum, allocation, and
+fault controls.
 
-If T11 or T12 adds steady-state work to ordinary poll, completion, or retention drain loops, the applicable existing lane becomes mandatory before merge:
+```sh
+mise run validate-pfr-pairs pfr_zero_budget_bypass target/bench-samples/pfr_zero_budget_bypass_process.csv target/bench-samples/pfr_zero_budget_bypass.csv target/bench-samples/pfr_zero_budget_bypass_provenance.json && mise run gate target/bench-samples/pfr_zero_budget_bypass.csv 1.01
+```
 
-- general mixed poll/lifecycle work: `pfr_zero_budget_bypass`, CI95 upper <= 1.0100;
-- retention-enabled poll-boundary work: `pfr_nonzero_poll`, CI95 upper <= 1.0100.
+Escalation lever: keep retirement traversal bounded by configured capacity but
+move scratch initialization and capacity bookkeeping to build or registration.
+
+T12 adds no additional timing gate while confined to mode readback and errors.
+If T12 adds steady-state work to retention-enabled poll or drain loops,
+`pfr_nonzero_poll` also becomes mandatory at CI95 upper <= 1.0100:
 
 The same 40-pair, sealed-product, warm-state, checksum, allocation, and fault controls apply. The escalation lever is to move file-capacity or mode bookkeeping back to registration/retirement control paths. A valid failure blocks the PR.

@@ -290,9 +290,11 @@ tasks:
     description: >
       Carry peak_guards_per_reader into every ReaderSlot and unconditionally
       assert at commit_pin that the taken-guard count does not exceed the
-      declaration, including the first guard. A reader configured for N guards
-      taking N+1 is the RED. ReaderRegistry and Loom configure the same slot
-      method. The final transient-guard A/B gate must remain green.
+      declaration, including the first guard. A release-built reader configured
+      for N guards taking a nested N+1 guard is the RED and must panic with an
+      unconditional assertion. ReaderRegistry and Loom configure the same slot
+      method. Final ordinary and nested transient-guard A/B gates must remain
+      green.
     status: pending
     depends_on: [T1, T13]
     files: [src/pool/mod.rs, src/pool/epoch.rs, src/pool/loom_model.rs, src/lib.rs, tests/]
@@ -303,12 +305,17 @@ tasks:
       Create and register new whole-granule artifacts; replace MAX_FILES=64
       with configured registered-file capacity across production, eager, mock,
       pool, retention, and Loom; return a typed capacity refusal; cover more
-      than 64 live create/write/retire cycles; and make pool/arena
-      preallocation fallible through a typed PoolBuildError allocation variant.
-      Add deterministic fault seams only for introduced operations.
+      than 64 simultaneous live files, at-capacity no-mutation, one
+      post-reservation rollback, Retiring capacity ownership, and exact-
+      generation reuse; and make every explicitly sized pool/arena capacity
+      allocation fallible through one PoolBuildError allocation variant. Small
+      standard-library control blocks retain Rust's process-OOM behavior; no
+      allocator or shared-owner dependency is added. Add deterministic fault
+      seams only for introduced operations. The final mixed lifecycle A/B gate
+      is mandatory.
     status: pending
     depends_on: [T7, T10]
-    files: [src/pool/mod.rs, src/pool/retention.rs, src/pool/frames.rs, src/pool/write_arena.rs, src/driver.rs, src/error.rs, src/open.rs, src/backend/uring.rs, src/backend/eager.rs, src/mock.rs, src/pool/loom_model.rs, tests/]
+    files: [src/pool/mod.rs, src/pool/retention.rs, src/pool/frames.rs, src/pool/write_arena.rs, src/pool/table.rs, src/pool/clock.rs, src/pool/miss.rs, src/pool/epoch.rs, src/product.rs, src/driver.rs, src/error.rs, src/open.rs, src/backend/uring.rs, src/backend/eager.rs, src/mock.rs, src/pool/loom_model.rs, src/lib.rs, tests/]
 
   - id: T12
     title: Direct-I/O observability and durability boundary (Sira DM002b mode half)
@@ -330,6 +337,6 @@ tasks:
       rearm behavior with retained-frame lifecycle changes. Add no behavior
       beyond conflict resolution; rerun the original targeted suites and review
       the merge delta.
-    status: in_progress
+    status: done
     depends_on: []
     files: [src/backend/uring.rs, src/lib.rs, src/mock.rs, src/pool/mod.rs, src/product.rs, tests/]

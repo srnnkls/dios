@@ -479,6 +479,23 @@ rounds:
       the 8 MiB memlock collision; review does not select that branch.
 
 amendments:
+  - revision: 14
+    date: 2026-08-25
+    reviewed: true
+    basis: >-
+      T10-T13 were absent from the retention squash and reactivated under one
+      amendment PR. Preimplementation review checked the Sira consumer, pool
+      construction, lifecycle state machine, and benchmark coverage.
+    findings:
+      - disposition: accepted
+        summary: One-PR pin advance requires Sira to adapt both new exhaustive error variants.
+      - disposition: narrowed
+        summary: Fallibility covers every explicitly sized capacity allocation, not fixed-size Arc headers requiring a new dependency.
+      - disposition: accepted
+        summary: One lifecycle matrix must cover capacity, no-mutation, rollback, Retiring ownership, generation reuse, and IoMode.
+      - disposition: accepted
+        summary: Release N+1, nested transient, and mixed lifecycle gates are mandatory.
+    gate_status: approved_after_scope_corrections
   - revision: 9
     date: 2026-08-19
     reviewed: true
@@ -821,6 +838,27 @@ batch_reviews:
         Nightly 1.100 emitted two deprecation warnings for pre-existing
         fetch_update calls in src/pool/miss.rs; no T7 path introduced them,
         and the pinned stable all-target strict Clippy gate remained warning-free.
+    outcome: approved
+
+  - batch: 9
+    timestamp: 2026-08-25T12:00:00Z
+    commits: [9bfd395, da2b814]
+    tasks: [T13]
+    initial_review:
+      status: failed
+      accepted_finding:
+        severity: high
+        description: Pending retention releases remained ring-pending through product-I/O shutdown, preventing Linux waits and potentially stalling teardown.
+        resolution: Pool drop drains releases and progresses resulting retirements before invoking product shutdown.
+    targeted_review:
+      status: approved
+      findings: []
+    verification:
+      - retention_wake_teardown: 4 passed
+      - T13 targeted suites: 54 passed
+      - zero_alloc: 23 passed
+      - Loom: 15 passed
+      - strict Clippy, formatting, rustdoc, and full check passed
     outcome: approved
 
 issues:

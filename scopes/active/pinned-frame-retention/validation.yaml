@@ -421,3 +421,12 @@ decision_log:
       - Add rename, directory-fsync, owner-routing, cancellation, or public driver APIs to Dios.
       - Reserve capacity after creating the pathname.
     reason: Both registration paths consume the same bounded table, and at-capacity create must leave the filesystem untouched. Sira needs later readback by FileId and already owns rename, directory fsync, root publication, and completion routing. The minimal surface is registered_file_capacity, create-new semantics, FileRegistrationError with AtCapacity and Io, PoolBuildError::Allocation, crate-root IoMode, and Pool::io_mode; existing write, fsync, completion, and retirement APIs remain sufficient.
+  - date: 2026-08-25
+    decision: Land one amendment PR, advance Sira only after all four tasks, make explicitly sized pool/arena capacity storage fallible, and require release N+1, nested-guard, lifecycle, and mixed-poll falsifiers.
+    alternatives:
+      - Land T13 separately solely to preserve the current Sira build.
+      - Keep fallible allocation limited to the two raw arenas.
+      - Add a shared-owner or allocator dependency solely to make fixed-size Arc control blocks fallible.
+      - Add one test for every operating-error permutation.
+      - Gate only first-pin transient guards and decide after implementation whether the completion loop changed.
+    reason: One PR is the owner-requested delivery unit, so Sira must adapt the new exhaustive error variants before its single pin advance. Restricting fallibility to the two raw arenas would leave large configured tables and scratch as reachable aborting allocations; extending it to fixed-size `Arc` headers would require a new dependency for disproportionate benefit. One representative lifecycle matrix covers capacity, no-mutation, rollback, retirement, reuse, and mode generation; a release-built nested N+1 smoke distinguishes unconditional enforcement. The nested transient and zero-budget lifecycle paths execute code the ordinary transient lane cannot measure, so both numeric gates are mandatory without changing their 1.0100 threshold.
