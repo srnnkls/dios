@@ -98,7 +98,7 @@ impl PoolModel {
             table: PageTable::with_frame_count(frames),
             clock: Clock::with_frame_count(frames),
             global_epoch: AtomicU64::new(0),
-            slots: [ReaderSlot::vacant(), ReaderSlot::vacant()],
+            slots: [ReaderSlot::vacant(2), ReaderSlot::vacant(2)],
             held_frames: [
                 held_frame_atomic::AtomicU32::new(0),
                 held_frame_atomic::AtomicU32::new(0),

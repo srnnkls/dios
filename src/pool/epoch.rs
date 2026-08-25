@@ -32,6 +32,7 @@ pub(crate) struct ReaderSlot {
     occupied: AtomicBool,
     local_epoch: AtomicU64,
     guard_count: AtomicU64,
+    peak_guards_per_reader: u32,
 }
 
 /// Arc-owned reader registration table. It deliberately retains no frames,
@@ -43,9 +44,15 @@ pub(crate) struct ReaderRegistry {
 }
 
 impl ReaderRegistry {
-    pub(crate) fn with_capacity(capacity: u32, lifecycle: Arc<LifecycleCounters>) -> Self {
+    pub(crate) fn with_capacity(
+        capacity: u32,
+        peak_guards_per_reader: u32,
+        lifecycle: Arc<LifecycleCounters>,
+    ) -> Self {
         Self {
-            slots: (0..capacity).map(|_| ReaderSlot::vacant()).collect(),
+            slots: (0..capacity)
+                .map(|_| ReaderSlot::vacant(peak_guards_per_reader))
+                .collect(),
             lifecycle,
         }
     }
@@ -68,11 +75,12 @@ impl ReaderRegistry {
 }
 
 impl ReaderSlot {
-    pub(crate) fn vacant() -> Self {
+    pub(crate) fn vacant(peak_guards_per_reader: u32) -> Self {
         Self {
             occupied: AtomicBool::new(false),
             local_epoch: AtomicU64::new(QUIESCENT),
             guard_count: AtomicU64::new(0),
+            peak_guards_per_reader,
         }
     }
 
@@ -142,9 +150,15 @@ impl ReaderSlot {
 
     /// Commits a validated pin, counting one more live guard for this reader.
     pub(crate) fn commit_pin(&self) {
-        let count = self.guard_count();
-        assert!(count < u64::MAX, "reader live-guard count within u64");
-        self.guard_count.store(count + 1, Ordering::Relaxed);
+        let taken = self
+            .guard_count()
+            .checked_add(1)
+            .expect("reader live-guard count within u64");
+        assert!(
+            taken <= u64::from(self.peak_guards_per_reader),
+            "reader live-guard count does not exceed its declared peak"
+        );
+        self.guard_count.store(taken, Ordering::Relaxed);
     }
 
     /// Abandons a first pin whose validation failed: no guard was minted, so the

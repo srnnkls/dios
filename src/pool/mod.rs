@@ -996,6 +996,7 @@ impl<D: PoolBackend> Pool<D> {
         let lifecycle = Arc::new(LifecycleCounters::default());
         let readers = Arc::new(ReaderRegistry::with_capacity(
             config.max_concurrent_readers,
+            config.peak_guards_per_reader,
             Arc::clone(&lifecycle),
         ));
         let wake = Arc::new(WaitState::default());
