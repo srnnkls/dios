@@ -78,6 +78,7 @@ pub enum PoolCompletion {
 #[derive(Debug)]
 pub struct PoolCompletionBatch {
     items: Vec<PoolCompletion>,
+    logical_capacity: usize,
 }
 
 impl PoolCompletionBatch {
@@ -85,6 +86,7 @@ impl PoolCompletionBatch {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             items: Vec::with_capacity(capacity),
+            logical_capacity: capacity,
         }
     }
 
@@ -101,12 +103,12 @@ impl PoolCompletionBatch {
     }
 
     pub(crate) fn push(&mut self, completion: PoolCompletion) {
-        assert!(self.items.len() < self.items.capacity());
+        assert!(self.items.len() < self.logical_capacity);
         self.items.push(completion);
     }
 
     pub(crate) fn remaining(&self) -> usize {
-        self.items.capacity() - self.items.len()
+        self.logical_capacity - self.items.len()
     }
 }
 
@@ -139,7 +141,8 @@ impl PollReport {
 /// Typed state of a deferred product file retirement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RetireStatus {
-    /// At least one admitted capability or resource still drains.
+    /// Retirement was just accepted, or at least one admitted capability or
+    /// resource still drains.
     Retiring,
     /// Every capability, frame, completion, and backend file is gone.
     Retired,
@@ -231,6 +234,13 @@ struct WaitGeneration {
     current: u64,
     consumed: u64,
     ring_pending: bool,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlatformWaitOutcome {
+    Progress,
+    Deadline,
 }
 
 /// One preallocated generation latch used by product I/O and external ingress.
@@ -402,7 +412,7 @@ impl WaitState {
     }
 
     #[cfg(target_os = "linux")]
-    pub(crate) fn finish_platform_wait(&self, armed: u64) {
+    pub(crate) fn finish_platform_wait(&self, armed: u64, outcome: PlatformWaitOutcome) {
         let mut generation = self.lock();
         let woken = generation.current != armed;
         if woken {
@@ -413,7 +423,7 @@ impl WaitState {
             .parks_in_progress
             .fetch_sub(1, Ordering::AcqRel);
         self.counters.parks_exited.fetch_add(1, Ordering::AcqRel);
-        if woken {
+        if woken || outcome == PlatformWaitOutcome::Progress {
             self.counters.wake_exits.fetch_add(1, Ordering::AcqRel);
         } else {
             self.counters.timeout_exits.fetch_add(1, Ordering::AcqRel);
@@ -707,5 +717,30 @@ mod ring_pending_tests {
         assert_eq!(wait.begin_platform_wait(), None);
 
         assert_never_parked(&observation);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PoolCompletion, PoolCompletionBatch, PoolToken};
+
+    #[test]
+    fn caller_delivery_uses_logical_capacity_not_vec_spare_capacity() {
+        let mut batch = PoolCompletionBatch {
+            items: Vec::with_capacity(8),
+            logical_capacity: 1,
+        };
+        assert!(
+            batch.items.capacity() >= 8,
+            "fixture has allocator spare room"
+        );
+
+        batch.push(PoolCompletion::Fsync {
+            token: PoolToken(1),
+            result: Ok(()),
+        });
+
+        assert_eq!(batch.remaining(), 0);
+        assert_eq!(batch.items.len(), 1);
     }
 }

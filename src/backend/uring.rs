@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use io_uring::{IoUring, opcode, squeue, types};
 
-use crate::driver::{Backend, Executor, MAX_FILES, OpKind, RingExecutor};
+use crate::driver::{Backend, Executor, MAX_FILES, OpKind, RingExecutor, RingReap};
 use crate::error::IoError;
 use crate::pool::Frames;
 use crate::pool::ReadFrameIdx;
@@ -285,7 +285,7 @@ impl RingExecutor for Uring {
         Self::check_enter(self.ring.submitter().submit_with_args(want as usize, &args));
     }
 
-    fn reap<F: FnMut(u64, i32)>(&self, limit: u32, mut sink: F) -> u32 {
+    fn reap<F: FnMut(u64, i32)>(&self, limit: u32, mut sink: F) -> RingReap {
         assert!(limit > 0, "a reap drains into a non-empty batch");
         // SAFETY: CQ userspace access is serialised by the caller holding the AD-4
         // mutex; no second completion handle exists concurrently.
@@ -304,10 +304,15 @@ impl RingExecutor for Uring {
         drop(cq);
         if woke {
             self.platform_wake.drain();
-            self.arm_wake();
-            self.submit();
         }
-        reaped
+        RingReap {
+            backend_completions: reaped,
+            rearm_needed: woke,
+        }
+    }
+
+    fn rearm_after_reap(&self) {
+        self.arm_wake();
     }
 
     fn blocking_write(&self, fd_slot: u32, buf: &[u8], offset: u64) -> Result<u32, i32> {

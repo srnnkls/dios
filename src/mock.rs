@@ -16,8 +16,9 @@ use std::time::Duration;
 
 use crate::completion::CompletionBatch;
 use crate::driver::{
-    Attempt, CompletionSlab, DriverCore, EagerExecutor, Executor, FileHandle, FileId, MAX_FILES,
-    OpContext, OpKind, OpToken, RingExecutor, Shared, SyncMode, next_driver_id,
+    Attempt, BackendProgress, CompletionSlab, DriverCore, EagerExecutor, Executor, FileHandle,
+    FileId, MAX_FILES, OpContext, OpKind, OpToken, RingExecutor, RingReap, Shared, SyncMode,
+    next_driver_id,
 };
 use crate::error::{IoError, SubmitError};
 use crate::open::DirectIo;
@@ -436,6 +437,10 @@ impl MockDriver {
         self.0.executor().io_events()
     }
 
+    pub(crate) fn io_event_log_internal(&self) -> Arc<Mutex<Vec<MockIoEvent>>> {
+        self.0.executor().event_log()
+    }
+
     #[must_use]
     pub fn copy_stored_bytes(&self, file: FileId, offset: u64, out: &mut [u8]) -> usize {
         self.0.executor().copy_stored_bytes(file, offset, out)
@@ -492,12 +497,12 @@ impl PoolBackend for MockDriver {
             .submit_read(fd, frame, file_offset, destination_offset, len, false)
     }
 
-    fn poll(&self, out: &mut CompletionBatch) -> usize {
-        self.0.poll(out)
+    fn poll_progress(&self, out: &mut CompletionBatch) -> BackendProgress {
+        BackendProgress::from_terminal(self.0.poll(out))
     }
 
-    fn poll_wait(&self, out: &mut CompletionBatch, timeout: Duration) -> usize {
-        self.0.poll_wait_eager_for_pool(out, timeout)
+    fn poll_wait_progress(&self, out: &mut CompletionBatch, timeout: Duration) -> BackendProgress {
+        BackendProgress::from_terminal(self.0.poll_wait_eager_for_pool(out, timeout))
     }
 
     fn write_arena_state(&self) -> &ArenaState {
@@ -528,6 +533,77 @@ impl PoolBackend for MockDriver {
 
 impl crate::pool::PoolBackendSealed for MockDriver {}
 
+impl PoolBackend for MockRingDriver {
+    fn identity(&self) -> u64 {
+        self.0.identity()
+    }
+
+    fn attach_pool_state(&self, _lifecycle: Arc<LifecycleCounters>, wake: Arc<WaitState>) {
+        self.0.attach_pool_wait(wake);
+    }
+
+    fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, IoError> {
+        self.open(path, direct_io)
+    }
+
+    fn submit_read(
+        &self,
+        fd: &FileHandle,
+        frame: ReadFrameIdx,
+        file_offset: u64,
+        destination_offset: u32,
+        len: u32,
+    ) -> Result<OpToken, SubmitError> {
+        let token = self
+            .0
+            .submit_read(fd, frame, file_offset, destination_offset, len, false)?;
+        self.0.executor().bind_pending(u64::from(token.slot()));
+        Ok(token)
+    }
+
+    fn poll_progress(&self, out: &mut CompletionBatch) -> BackendProgress {
+        self.0.poll_ring_progress(out)
+    }
+
+    fn poll_wait_progress(&self, out: &mut CompletionBatch, timeout: Duration) -> BackendProgress {
+        #[cfg(target_os = "linux")]
+        {
+            self.0.poll_wait_ring_for_pool(out, timeout)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.0.poll_wait_ring_progress(out, timeout)
+        }
+    }
+
+    fn write_arena_state(&self) -> &ArenaState {
+        self.0.write_arena_state()
+    }
+
+    fn submit_write<'arena>(
+        &self,
+        fd: &FileHandle,
+        slot: WriteSlot<'arena>,
+        offset: u64,
+    ) -> Result<OpToken, (SubmitError, WriteSlot<'arena>)> {
+        self.submit_write(fd, slot, offset)
+    }
+
+    fn submit_fsync(&self, fd: &FileHandle, mode: SyncMode) -> Result<OpToken, SubmitError> {
+        self.submit_fsync(fd, mode)
+    }
+
+    fn close(&self, fd: FileHandle) {
+        self.close(fd);
+    }
+
+    fn is_closed(&self, file: FileId) -> bool {
+        self.is_closed(file)
+    }
+}
+
+impl crate::pool::PoolBackendSealed for MockRingDriver {}
+
 /// The mock backend's own state: injected faults and the reordering PRNG behind
 /// an internal mutex (the execute phase runs outside the core's submit lock),
 /// plus the immutable clean transfer size. Admission, leases, retries, and
@@ -535,6 +611,8 @@ impl crate::pool::PoolBackendSealed for MockDriver {}
 #[derive(Debug)]
 struct MockExecutor {
     state: Mutex<MockState>,
+    io_events: Arc<Mutex<Vec<MockIoEvent>>>,
+    io_event_capacity: usize,
     arena: OnceLock<Arc<Frames>>,
     frames: u32,
     frame_bytes: u32,
@@ -547,7 +625,6 @@ struct MockExecutor {
 struct MockState {
     injected: VecDeque<Injected>,
     seeds: HashMap<(FileId, u32), u8>,
-    io_events: Vec<MockIoEvent>,
     stored: HashMap<FileId, Vec<u8>>,
     event_capacity: usize,
     rng: u64,
@@ -561,15 +638,17 @@ impl MockExecutor {
         injected_capacity: u32,
         direct_io_support: DirectIoSupport,
     ) -> Self {
+        let event_capacity = injected_capacity.saturating_mul(16) as usize;
         Self {
             state: Mutex::new(MockState {
                 injected: VecDeque::with_capacity(injected_capacity as usize),
                 seeds: HashMap::new(),
-                io_events: Vec::with_capacity(injected_capacity.saturating_mul(16) as usize),
                 stored: HashMap::with_capacity(MAX_FILES as usize),
-                event_capacity: injected_capacity.saturating_mul(16) as usize,
+                event_capacity,
                 rng: seed,
             }),
+            io_events: Arc::new(Mutex::new(Vec::with_capacity(event_capacity))),
+            io_event_capacity: event_capacity,
             arena: OnceLock::new(),
             frames,
             frame_bytes,
@@ -587,7 +666,11 @@ impl MockExecutor {
         let _ = self.pool_lifecycle.set(lifecycle);
         let _ = self.pool_wait.set(wait);
         // Retirement records the close under this mutex; initialize it before hot-path progress.
-        drop(self.lock());
+        drop(
+            self.io_events
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
     }
 
     fn observe_waits(&self) -> Arc<WaitState> {
@@ -607,8 +690,9 @@ impl MockExecutor {
     }
 
     fn attempts(&self) -> Vec<ReadAttempt> {
-        self.lock()
-            .io_events
+        self.io_events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .filter_map(|event| match event {
                 MockIoEvent::ReadAttempt {
@@ -627,21 +711,18 @@ impl MockExecutor {
     }
 
     fn record_read_attempt(&self, file: FileId, attempt: ReadAttempt) {
-        let mut state = self.lock();
-        Self::push_event(
-            &mut state,
-            MockIoEvent::ReadAttempt {
-                file,
-                file_offset: attempt.file_offset,
-                destination_offset: attempt.destination_offset,
-                requested_len: attempt.requested_len,
-            },
-        );
+        self.push_event(MockIoEvent::ReadAttempt {
+            file,
+            file_offset: attempt.file_offset,
+            destination_offset: attempt.destination_offset,
+            requested_len: attempt.requested_len,
+        });
     }
 
     fn write_attempts(&self) -> Vec<WriteAttempt> {
-        self.lock()
-            .io_events
+        self.io_events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .filter_map(|event| match event {
                 MockIoEvent::WriteAttempt {
@@ -660,15 +741,26 @@ impl MockExecutor {
     }
 
     fn io_events(&self) -> Vec<MockIoEvent> {
-        self.lock().io_events.clone()
+        self.io_events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
-    fn push_event(state: &mut MockState, event: MockIoEvent) {
+    fn event_log(&self) -> Arc<Mutex<Vec<MockIoEvent>>> {
+        Arc::clone(&self.io_events)
+    }
+
+    fn push_event(&self, event: MockIoEvent) {
+        let mut events = self
+            .io_events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         assert!(
-            state.io_events.len() < state.event_capacity,
+            events.len() < self.io_event_capacity,
             "mock event recorder stays within its construction-time bound"
         );
-        state.io_events.push(event);
+        events.push(event);
     }
 
     fn copy_stored_bytes(&self, file: FileId, offset: u64, out: &mut [u8]) -> usize {
@@ -736,17 +828,14 @@ impl EagerExecutor for MockExecutor {
             let mut state = self.lock();
             match kind {
                 OpKind::Read => {}
-                OpKind::Write => Self::push_event(
-                    &mut state,
-                    MockIoEvent::WriteAttempt {
-                        file: context.fd,
-                        file_offset: context.file_offset,
-                        source_offset: context.destination_offset,
-                        requested_len: context.requested_len,
-                    },
-                ),
+                OpKind::Write => self.push_event(MockIoEvent::WriteAttempt {
+                    file: context.fd,
+                    file_offset: context.file_offset,
+                    source_offset: context.destination_offset,
+                    requested_len: context.requested_len,
+                }),
                 OpKind::Fsync => {
-                    Self::push_event(&mut state, MockIoEvent::FsyncAttempt { file: context.fd });
+                    self.push_event(MockIoEvent::FsyncAttempt { file: context.fd });
                 }
             }
             state.injected.pop_front()
@@ -834,11 +923,11 @@ impl Executor for MockExecutor {
                 result: event_result.map(|_| ()),
             },
         };
-        Self::push_event(&mut self.lock(), event);
+        self.push_event(event);
     }
 
     fn on_file_closed(&self, file: FileId) {
-        Self::push_event(&mut self.lock(), MockIoEvent::Close { file });
+        self.push_event(MockIoEvent::Close { file });
     }
 
     fn on_quiesce(&self) {
@@ -1075,6 +1164,15 @@ impl MockRingDriver {
         self.0.poll_wait_ring(out, timeout)
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn poll_wait_for_pool_internal(
+        &self,
+        out: &mut CompletionBatch,
+        timeout: Duration,
+    ) -> BackendProgress {
+        self.0.poll_wait_ring_for_pool(out, timeout)
+    }
+
     /// A shared observation of the ring state that survives the driver drop.
     #[must_use]
     pub fn observe(&self) -> Arc<MockRingObservation> {
@@ -1281,7 +1379,7 @@ impl RingExecutor for MockRingExecutor {
 
     fn submit_and_wait(&self, _want: u32, _timeout: Duration) {}
 
-    fn reap<F: FnMut(u64, i32)>(&self, limit: u32, mut sink: F) -> u32 {
+    fn reap<F: FnMut(u64, i32)>(&self, limit: u32, mut sink: F) -> RingReap {
         assert!(limit > 0, "a reap drains into a non-empty batch");
         let mut state = self.lock();
         let mut reaped = 0u32;
@@ -1292,7 +1390,10 @@ impl RingExecutor for MockRingExecutor {
             sink(user_data, raw);
             reaped += 1;
         }
-        reaped
+        RingReap {
+            backend_completions: reaped,
+            rearm_needed: false,
+        }
     }
 
     fn on_op_finalized(&self) {

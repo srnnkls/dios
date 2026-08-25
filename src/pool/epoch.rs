@@ -315,8 +315,9 @@ impl Drop for ReaderCtx {
 /// reader's epoch stays published, so its frame cannot be reclaimed; dropping the
 /// last guard releases the epoch.
 ///
-/// The three `compile_fail` blocks below pin the guard/reader lifetime and thread
-/// invariants (INV-6, EBR per-thread slot) as library doctests.
+/// The executable blocks below pin the guard/reader lifetime and thread
+/// invariants plus the owned pending-token and namespace boundaries as library
+/// doctests (INV-6, EBR per-thread slot).
 ///
 /// A guard's borrow must not outlive the pool that minted it:
 ///
@@ -362,6 +363,33 @@ impl Drop for ReaderCtx {
 ///         .build().unwrap();
 ///     pool.register_reader().unwrap()
 /// }
+/// ```
+///
+/// A `PendingToken` is transferable to the destination owner thread:
+///
+/// ```no_run
+/// use dios::PendingToken;
+/// fn assert_send<T: Send>() {}
+/// assert_send::<PendingToken>();
+/// ```
+///
+/// A pending miss interest is affine rather than cloneable:
+///
+/// ```compile_fail
+/// use dios::PendingToken;
+/// fn assert_clone<T: Clone>() {}
+/// assert_clone::<PendingToken>();
+/// ```
+///
+/// Advanced driver vocabulary remains namespaced below `dios::driver`:
+///
+/// ```compile_fail
+/// use dios::{CompletionBatch, Driver, OpToken};
+/// ```
+///
+/// ```no_run
+/// use dios::driver::{CompletionBatch, Driver, OpToken};
+/// fn namespaced(_: Option<(CompletionBatch, Driver, OpToken)>) {}
 /// ```
 #[derive(Debug)]
 pub struct FrameGuard<'pool> {

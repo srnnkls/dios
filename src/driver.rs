@@ -39,6 +39,8 @@ use crate::open::DirectIo;
 use crate::pool::write_arena::{ArenaState, shared as shared_write_arena};
 pub use crate::pool::write_arena::{WriteArena, WriteSlot};
 use crate::pool::{Frames, ReadFrameIdx};
+#[cfg(target_os = "linux")]
+use crate::product::PlatformWaitOutcome;
 use crate::product::WaitState;
 
 pub(crate) const MAX_FILES: u32 = 64;
@@ -355,6 +357,17 @@ impl Driver {
         }
     }
 
+    pub(crate) fn poll_progress_for_pool(&self, out: &mut CompletionBatch) -> BackendProgress {
+        #[cfg(target_os = "linux")]
+        {
+            self.0.poll_ring_progress(out)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            BackendProgress::from_terminal(self.0.poll(out))
+        }
+    }
+
     /// Drains completions like [`Driver::poll`], parking in the kernel for up to
     /// `timeout` when none are ready. The wait runs outside the AD-4 submit mutex
     /// (INV-3), so a concurrent pool read admission never blocks on the poller.
@@ -373,14 +386,18 @@ impl Driver {
         }
     }
 
-    pub(crate) fn poll_wait_for_pool(&self, out: &mut CompletionBatch, timeout: Duration) -> usize {
+    pub(crate) fn poll_wait_for_pool(
+        &self,
+        out: &mut CompletionBatch,
+        timeout: Duration,
+    ) -> BackendProgress {
         #[cfg(target_os = "linux")]
         {
             self.0.poll_wait_ring_for_pool(out, timeout)
         }
         #[cfg(not(target_os = "linux"))]
         {
-            self.0.poll_wait_eager_for_pool(out, timeout)
+            BackendProgress::from_terminal(self.0.poll_wait_eager_for_pool(out, timeout))
         }
     }
 
@@ -781,9 +798,15 @@ pub(crate) trait RingExecutor: Executor {
     /// completions via the `EXT_ARG` kernel wait. Runs OUTSIDE the AD-4 mutex.
     fn submit_and_wait(&self, want: u32, timeout: Duration);
 
-    /// Drains at most `limit` ready CQEs, routing each `(user_data, raw_result)`
-    /// to `sink`, and returns the count. Called under the AD-4 mutex.
-    fn reap<F: FnMut(u64, i32)>(&self, limit: u32, sink: F) -> u32;
+    /// Drains at most `limit` ready operation CQEs, routing each
+    /// `(user_data, raw_result)` to `sink`. The private wake CQE is excluded
+    /// from `backend_completions` and reported only through `rearm_needed`.
+    /// Called under the AD-4 mutex and must not enter the kernel.
+    fn reap<F: FnMut(u64, i32)>(&self, limit: u32, sink: F) -> RingReap;
+
+    /// Enqueues a fresh private wake poll after reap consumed the prior one.
+    /// Called under the AD-4 mutex; the core submits it only after unlocking.
+    fn rearm_after_reap(&self) {}
 
     /// Fires once per op finalized in reap — never for a resubmitted
     /// `EAGAIN`/`EINTR` CQE, which keeps the op live. Defaults to a no-op.
@@ -797,6 +820,32 @@ pub(crate) trait RingExecutor: Executor {
     /// Metadata-plane blocking fsync barrier on the retained file (AD-3).
     #[cfg(target_os = "linux")]
     fn blocking_fsync(&self, fd_slot: u32) -> Result<(), i32>;
+}
+
+/// Raw progress from one ring reap. Retryable CQEs count even though they do
+/// not emit a terminal caller completion; the private wake CQE never counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RingReap {
+    pub(crate) backend_completions: u32,
+    pub(crate) rearm_needed: bool,
+}
+
+/// Private Pool-facing progress. The advanced Driver API continues to report
+/// only terminal caller completions, while Pool reports every backend CQE.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BackendProgress {
+    pub(crate) caller_completions: usize,
+    pub(crate) backend_completions: u32,
+}
+
+impl BackendProgress {
+    pub(crate) fn from_terminal(caller_completions: usize) -> Self {
+        Self {
+            caller_completions,
+            backend_completions: u32::try_from(caller_completions)
+                .expect("completion batch capacity fits u32"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1510,6 +1559,10 @@ impl<E: EagerExecutor> DriverCore<E> {
 /// CQEs arrive unordered relative to submission.
 impl<E: RingExecutor> DriverCore<E> {
     pub(crate) fn poll_ring(&self, out: &mut CompletionBatch) -> usize {
+        self.poll_ring_progress(out).caller_completions
+    }
+
+    pub(crate) fn poll_ring_progress(&self, out: &mut CompletionBatch) -> BackendProgress {
         assert!(
             out.capacity() > 0,
             "poll requires a non-empty completion batch"
@@ -1517,17 +1570,33 @@ impl<E: RingExecutor> DriverCore<E> {
         out.reset();
         let backlog = self.drain_completion_backlog(out);
         if backlog == out.capacity() {
-            return backlog;
+            return BackendProgress {
+                caller_completions: backlog,
+                backend_completions: 0,
+            };
         }
         let cap = u32::try_from(out.capacity() - backlog).expect("batch capacity fits u32");
         let filled = self.fill_ring(cap);
         if filled > 0 {
             self.executor.submit();
         }
-        backlog + self.reap_ring(out, cap)
+        let reaped = self.reap_ring(out, cap);
+        BackendProgress {
+            caller_completions: backlog + reaped.caller_completions,
+            backend_completions: reaped.backend_completions,
+        }
     }
 
     pub(crate) fn poll_wait_ring(&self, out: &mut CompletionBatch, timeout: Duration) -> usize {
+        self.poll_wait_ring_progress(out, timeout)
+            .caller_completions
+    }
+
+    pub(crate) fn poll_wait_ring_progress(
+        &self,
+        out: &mut CompletionBatch,
+        timeout: Duration,
+    ) -> BackendProgress {
         assert!(
             out.capacity() > 0,
             "poll requires a non-empty completion batch"
@@ -1535,7 +1604,10 @@ impl<E: RingExecutor> DriverCore<E> {
         out.reset();
         let backlog = self.drain_completion_backlog(out);
         if backlog > 0 {
-            return backlog;
+            return BackendProgress {
+                caller_completions: backlog,
+                backend_completions: 0,
+            };
         }
         let cap = u32::try_from(out.capacity()).expect("batch capacity fits u32");
         let filled = self.fill_ring(cap);
@@ -1548,31 +1620,42 @@ impl<E: RingExecutor> DriverCore<E> {
         &self,
         out: &mut CompletionBatch,
         timeout: Duration,
-    ) -> usize {
+    ) -> BackendProgress {
         let wait = self
             .pool_wait
             .get()
             .expect("the shipping driver is attached before Pool wait");
         let Some(armed) = wait.begin_platform_wait() else {
-            return self.poll_ring(out);
+            return self.poll_ring_progress(out);
         };
         let deadline = Instant::now() + timeout;
         let drained = loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                break 0;
+                break BackendProgress {
+                    caller_completions: 0,
+                    backend_completions: 0,
+                };
             }
             let drained = self.poll_wait_ring_one(out, remaining);
-            if drained > 0 || wait.platform_woken(armed) {
+            if drained.backend_completions > 0
+                || drained.caller_completions > 0
+                || wait.platform_woken(armed)
+            {
                 break drained;
             }
         };
-        wait.finish_platform_wait(armed);
+        let outcome = if drained.backend_completions > 0 || drained.caller_completions > 0 {
+            PlatformWaitOutcome::Progress
+        } else {
+            PlatformWaitOutcome::Deadline
+        };
+        wait.finish_platform_wait(armed, outcome);
         drained
     }
 
     #[cfg(target_os = "linux")]
-    fn poll_wait_ring_one(&self, out: &mut CompletionBatch, timeout: Duration) -> usize {
+    fn poll_wait_ring_one(&self, out: &mut CompletionBatch, timeout: Duration) -> BackendProgress {
         assert!(
             out.capacity() > 0,
             "pool wait requires a non-empty private completion batch"
@@ -1580,7 +1663,10 @@ impl<E: RingExecutor> DriverCore<E> {
         out.reset();
         let backlog = self.drain_completion_backlog(out);
         if backlog > 0 {
-            return backlog;
+            return BackendProgress {
+                caller_completions: backlog,
+                backend_completions: 0,
+            };
         }
         let cap = u32::try_from(out.capacity()).expect("batch capacity fits u32");
         let _ = self.fill_ring(cap);
@@ -1658,16 +1744,17 @@ impl<E: RingExecutor> DriverCore<E> {
     /// drops the in-flight count (progressing a deferred close), releases the
     /// write lease, and emits the completion. Retires run after the lock is
     /// released.
-    fn reap_ring(&self, out: &mut CompletionBatch, limit: u32) -> usize {
+    fn reap_ring(&self, out: &mut CompletionBatch, limit: u32) -> BackendProgress {
         assert!(limit > 0, "ring reap limit is positive");
         let retry_bound = self.retry_bound;
         let mut retire = [FileId::new(0, 0, 0); MAX_FILES as usize];
         let mut retire_len = 0usize;
-        let mut drained = 0usize;
+        let mut caller_completions = 0usize;
+        let reaped;
         {
             let mut shared = self.lock();
             let shared = &mut *shared;
-            self.executor.reap(limit, |user_data, raw| {
+            reaped = self.executor.reap(limit, |user_data, raw| {
                 let slot = u32::try_from(user_data).expect("uring user_data is a slab slot");
                 let entry = shared.slab.peek_mut(slot);
                 let RingProgress::Terminal(result) = ring_progress(entry, raw, retry_bound) else {
@@ -1686,16 +1773,25 @@ impl<E: RingExecutor> DriverCore<E> {
                     retire_len += 1;
                 }
                 self.executor.on_op_finalized();
-                drained += 1;
+                caller_completions += 1;
             });
+            if reaped.rearm_needed {
+                self.executor.rearm_after_reap();
+            }
         }
-        if drained > 0 {
+        if reaped.rearm_needed {
+            self.executor.submit();
+        }
+        if caller_completions > 0 {
             self.signal_pool_wait();
         }
         for fd in &retire[..retire_len] {
             self.retire(*fd);
         }
-        drained
+        BackendProgress {
+            caller_completions,
+            backend_completions: reaped.backend_completions,
+        }
     }
 
     /// Drains every in-flight op before teardown so no kernel-visible op is
@@ -1709,7 +1805,8 @@ impl<E: RingExecutor> DriverCore<E> {
         let mut out = CompletionBatch::with_capacity(capacity);
         let mut idle = 0u32;
         while self.inflight_total() > 0 {
-            if self.poll_ring(&mut out) > 0 {
+            let progress = self.poll_ring_progress(&mut out);
+            if progress.backend_completions > 0 || progress.caller_completions > 0 {
                 idle = 0;
             } else {
                 idle += 1;

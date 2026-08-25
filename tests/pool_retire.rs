@@ -12,6 +12,10 @@
 
 use std::path::Path;
 use std::sync::Arc;
+#[cfg(not(loom))]
+use std::thread;
+#[cfg(not(loom))]
+use std::time::Duration;
 
 use dios::testing::{
     FrameState, MockDriver, MockIoEvent, MockPoolObservation, MockPoolTestingExt,
@@ -199,6 +203,49 @@ fn a_waiter_dropped_before_retirement_leaves_dma_to_drain_before_close() {
     assert_eq!(observation.backend_ops_in_flight(), 0);
     assert_all_frames_free(&pool);
     assert_eq!(pool.retire_file(file), RetireStatus::Retired);
+}
+
+#[cfg(not(loom))]
+#[test]
+fn a_cold_get_rechecks_the_exact_generation_after_concurrent_retirement() {
+    let (pool, file, observation) = pool_with_file("pool-retire-racing-cold-get", 0xC7);
+    let pool = Arc::new(pool);
+    let page = PageId::new(file, 0);
+    let pause = pool.pause_next_cold_get();
+    let getter_pool = Arc::clone(&pool);
+
+    let getter = thread::spawn(move || {
+        let reader = getter_pool.register_reader().expect("one reader slot");
+        match getter_pool.get(&reader, page) {
+            Ok(_) => Ok(()),
+            Err(error) => Err(error),
+        }
+    });
+    assert!(
+        pause.wait_until_parked(Duration::from_secs(1)),
+        "the cold get reaches the post-check, pre-admission pause"
+    );
+    assert_eq!(pool.retire_file(file), RetireStatus::Retiring);
+    pause.release();
+
+    assert_eq!(
+        getter.join().expect("concurrent get must not panic"),
+        Err(GetError::StaleFile { page })
+    );
+    assert_eq!(observation.backend_ops_in_flight(), 0);
+    assert!(
+        pool.driver()
+            .io_events_in_order()
+            .iter()
+            .all(|event| !matches!(
+                event,
+                MockIoEvent::ReadAttempt {
+                    file: attempted_file,
+                    ..
+                } if *attempted_file == file
+            )),
+        "retirement wins before cold admission, so no backend read is attempted"
+    );
 }
 
 #[test]

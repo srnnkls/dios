@@ -14,7 +14,7 @@
 //! the failure to every waiter and frees the frame.
 
 use crate::completion::CompletionBatch;
-use crate::driver::{FileHandle, FileId, OpToken, SyncMode};
+use crate::driver::{BackendProgress, FileHandle, FileId, OpToken, SyncMode};
 use crate::error::IoError;
 use crate::error::SubmitError;
 use crate::open::DirectIo;
@@ -58,12 +58,12 @@ pub(crate) trait PoolBackend: sealed::Sealed {
         len: u32,
     ) -> Result<OpToken, SubmitError>;
 
-    /// Drains ready completions into `out`, returning the count.
-    fn poll(&self, out: &mut CompletionBatch) -> usize;
+    /// Drains ready completions and separately reports raw backend progress.
+    fn poll_progress(&self, out: &mut CompletionBatch) -> BackendProgress;
 
     /// Parks through the backend's real wait source, outside pool control, then
     /// drains ready completions into `out`.
-    fn poll_wait(&self, out: &mut CompletionBatch, timeout: Duration) -> usize;
+    fn poll_wait_progress(&self, out: &mut CompletionBatch, timeout: Duration) -> BackendProgress;
 
     fn write_arena_state(&self) -> &ArenaState;
 
