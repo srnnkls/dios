@@ -919,34 +919,33 @@ pub struct Pool<D = Driver> {
 
 impl<D> Drop for Pool<D> {
     fn drop(&mut self) {
+        if !self.retention.is_disabled() {
+            #[cfg(not(loom))]
+            let control = self
+                .control
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            #[cfg(loom)]
+            let control = self
+                .control
+                .get_mut()
+                .expect("loom mutex is never poisoned");
+            let pass_start_epoch = self.global_epoch.load(Ordering::Acquire);
+            let frames = &self.frames;
+            let frame_pages = &mut control.frame_pages;
+            self.retention
+                .drain_releases(&mut control.release_cursor, pass_start_epoch, |frame| {
+                    assert_eq!(
+                        frames.state(frame),
+                        FrameState::Evicting,
+                        "a release-ring frame remains Evicting until direct free"
+                    );
+                    frames.advance(frame, FrameState::Free);
+                    frame_pages[frame.get() as usize] = None;
+                });
+        }
         let drop_hook = self.drop_hook;
         drop_hook(self);
-        if self.retention.is_disabled() {
-            return;
-        }
-        #[cfg(not(loom))]
-        let control = self
-            .control
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        #[cfg(loom)]
-        let control = self
-            .control
-            .get_mut()
-            .expect("loom mutex is never poisoned");
-        let pass_start_epoch = self.global_epoch.load(Ordering::Acquire);
-        let frames = &self.frames;
-        let frame_pages = &mut control.frame_pages;
-        self.retention
-            .drain_releases(&mut control.release_cursor, pass_start_epoch, |frame| {
-                assert_eq!(
-                    frames.state(frame),
-                    FrameState::Evicting,
-                    "a release-ring frame remains Evicting until direct free"
-                );
-                frames.advance(frame, FrameState::Free);
-                frame_pages[frame.get() as usize] = None;
-            });
     }
 }
 
@@ -1053,6 +1052,10 @@ impl<D: PoolBackend> Pool<D> {
     }
 
     fn shutdown_for_drop(pool: &mut Pool<D>) {
+        if !pool.retention.is_disabled() {
+            let mut control = pool.control();
+            pool.progress_retirements(&mut control);
+        }
         pool.shutdown_internal();
     }
 
