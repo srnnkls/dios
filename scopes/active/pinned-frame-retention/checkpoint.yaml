@@ -2,9 +2,9 @@ checkpoint:
   scope_name: pinned-frame-retention
   scope_path: ./scopes/active/pinned-frame-retention
   branch: feat/pinned-frame-retention-amendments
-  timestamp: 2026-08-25T16:04:33Z
-  last_batch: 11
-  last_commit: 5392d85
+  timestamp: 2026-08-25T16:46:14Z
+  last_batch: 12
+  last_commit: 2ca27a7
   tasks:
     done:
       - id: T1
@@ -33,16 +33,18 @@ checkpoint:
         name: Peak-guard release assert
       - id: T11
         name: Artifact write-plane product API
+      - id: T12
+        name: Direct-I/O observability and durability boundary
     in_progress: []
     pending:
-      - {id: T12, name: Direct-I/O observability and durability boundary}
       - {id: T8b, name: Exact-R8-scale shipping arm}
   next_batch:
-    number: 12
-    id: B12
+    number: 7b
+    id: B7b
     tasks:
-      - {id: T12, name: Direct-I/O observability and durability boundary}
+      - {id: T8b, name: Exact-R8-scale shipping arm}
     parallel: false
+    status: blocked_external_non_closure
   deferred_issues:
     - batch: 1
       severity: medium
@@ -53,6 +55,53 @@ checkpoint:
     path: ./scopes/active/pinned-frame-retention/config.yaml
     epoch_id: 20260821T150300Z-376a8f
   phase_cursor:
+    batch: 12
+    phase: code_review
+    status: completed
+    tasks: [T12]
+    updated_at: 2026-08-25T16:46:14Z
+    reviewed_source_diff_sha256: 7f0f635379e018145727ee9b5e30d983895e90fd68f380c7b54b68ca0347b392
+    roles:
+      general:
+        status: completed
+        report_dir: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b12-review-general
+        agents:
+          codex-native: {status: approved, report_file: codex-native.yaml}
+          opus-cli: {status: stalled, report_file: claude-opus-cli.yaml}
+          gemini: {status: approved, report_file: gemini-3.7-flash.yaml}
+      architecture:
+        status: completed
+        report_dir: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b12-review-architecture
+        agents:
+          codex-native: {status: approved, report_file: codex-native.yaml}
+          opus-cli: {status: stalled, report_file: claude-opus-cli.yaml}
+          gemini: {status: approved, report_file: gemini-3.7-flash.yaml}
+      compliance:
+        status: completed
+        report_dir: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b12-review-compliance
+        agents:
+          codex-native: {status: approved, report_file: codex-native.yaml}
+          opus-cli: {status: stalled, report_file: claude-opus-cli.yaml}
+          gemini: {status: approved, report_file: gemini-3.7-flash.yaml}
+    implementer:
+      agent: terra
+      status: green
+      report_dir: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b12-implementer-T12-terra
+      report_file: codex-gpt5.6-terra.yaml
+    test_review:
+      status: approved
+      report_dir: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b12-test-rereview
+      agents:
+        codex-native: {status: approved, report_file: codex-native.yaml}
+        opus-cli: {status: stalled, report_file: claude-opus-cli.yaml}
+        gemini: {status: approved, report_file: gemini-3.7-flash.yaml}
+    tester:
+      agent: codex-native
+      status: red_confirmed
+      report_dir: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b12-tester-T12-r2
+      report_file: codex-native.yaml
+    verification: "focused mode smoke 1, public API 9, pool write 8, all-feature suite 303, strict Clippy, formatting, rustdoc, and diff check passed"
+  prior_phase_cursor:
     batch: 11
     phase: targeted_review
     status: completed
@@ -273,4 +322,11 @@ checkpoint:
     batch_11_final_review_compliance: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b11-compliance-fix-rereview-compliance
     batch_11_performance_gates: pending_final_amendment_candidate
     batch_11_status: implementation_complete
+    batch_12_commit: 2ca27a7
+    batch_12_source_diff_sha256: 7f0f635379e018145727ee9b5e30d983895e90fd68f380c7b54b68ca0347b392
+    batch_12_final_review_general: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b12-review-general
+    batch_12_final_review_architecture: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b12-review-architecture
+    batch_12_final_review_compliance: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b12-review-compliance
+    batch_12_performance_gates: pending_final_amendment_candidate
+    batch_12_status: implementation_complete
   incomplete_stages: []

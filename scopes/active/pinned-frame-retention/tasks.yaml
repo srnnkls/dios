@@ -325,7 +325,7 @@ tasks:
       metadata-plane durability boundary. DirectIo::Required and its typed
       refusal already ship. Add no public driver bound unless the existing
       sealed shape exposes it without a new abstraction.
-    status: pending
+    status: done
     depends_on: [T11]
     files: [src/pool/mod.rs, src/driver.rs, src/open.rs, src/lib.rs, tests/]
 

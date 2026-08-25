@@ -84,7 +84,7 @@ batches:
     status: done
   - id: B12
     tasks: [T12]
-    status: pending
+    status: done
 edges:
   - from: T1
     to: T2

@@ -471,10 +471,18 @@ decision_log:
       - Add a source scanner for lint directives.
     reason: Removing the expectations produced a strict-Clippy RED at exactly three sites. ReaderRegistry's infallible constructor has no caller and was deleted; EvictQueue's infallible constructor is Loom-only; backend operating build errors arise only from Linux io_uring, so the variant and both match arms are Linux-only. Local strict Clippy, 302 all-feature tests, 15 Loom cases, Linux strict Clippy, and 13 local plus 13 Linux lifecycle/allocation checks pass without suppressions or new test machinery.
   - date: 2026-08-25
-    decision: Snapshot each registered file's negotiated IoMode in Pool lifecycle state and read it back only for the exact Live or Retiring generation.
+    decision: Read each exact Live or Retiring generation's negotiated IoMode from its retained Pool file handle without duplicating mode storage.
     alternatives:
-      - Read IoMode only from the optional driver handle.
+      - Snapshot IoMode into a second PoolFile field at registration.
       - Reuse file_generation_is_live and exclude Retiring files.
       - Add an IoMode method to PoolBackend.
       - Expose driver handles or metadata-plane operations publicly.
-    reason: Retirement can take the handle before physical closure completes, leaving a valid Retiring generation without a handle. A copied mode in PoolFile survives that interval; full FileId equality prevents stale-generation aliasing, and the existing Pool identity assertion preserves foreign-ID panic behavior. The registration seam already receives FileHandle, so no backend bound or hot poll-path work is needed.
+    reason: Pool retirement keeps the handle while any resident lease, miss, frame, or product operation is live. Once the handle is taken, DriverCore closes synchronously when no driver lease remains and Pool immediately marks the entry Retired; no public Pool path reaches Retiring with handle None. Full FileId equality prevents stale-generation aliasing, the existing identity assertion preserves foreign-ID panic behavior, and reading the existing handle adds no field or hot poll-path work.
+  - date: 2026-08-25
+    decision: Use pfr_zero_budget_bypass as T11's recorded mixed-lifecycle gate, add only the missing nested-transient lane, and skip the conditional nonzero-poll gate for T12.
+    alternatives:
+      - Add a second lifecycle workload beside pfr_zero_budget_bypass.
+      - Re-run pfr_nonzero_poll despite no T12 poll or drain work.
+      - Treat the plan-only nested lane as already implemented.
+      - Reuse v18 products sealed to the earlier retention candidate.
+    reason: The existing amendment review binds pfr_zero_budget_bypass to T11's 1.0100 mixed-lifecycle requirement, and the generic runner already supports that lane plus ordinary transient. Nested transient exists only in the amendment plan and needs a small Lane/workload/validator extension. T12 remains registration/readback-only, so the plan's conditional nonzero gate does not activate. Final products must be resealed to main f6f816b and the committed T10-T12 candidate.

@@ -939,6 +939,41 @@ batch_reviews:
     performance_gates: pending_final_amendment_candidate
     outcome: implementation_approved
 
+  - batch: 12
+    timestamp: 2026-08-25T16:46:14Z
+    commit: 2ca27a7
+    tasks: [T12]
+    reviewed_source_diff_sha256: 7f0f635379e018145727ee9b5e30d983895e90fd68f380c7b54b68ca0347b392
+    test_review:
+      status: approved
+      report_dir: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b12-test-rereview
+      oracle: One direct behavioral API smoke covers negotiated alignment, absent registration, Retiring readback, retirement, exact-generation reuse, and foreign identity.
+    implementation:
+      agent: codex-gpt5.6-terra
+      execution_class: native
+      effort: high
+      report_dir: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b12-implementer-T12-terra
+    targeted_review:
+      report_dirs:
+        general: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b12-review-general
+        architecture: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b12-review-architecture
+        compliance: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b12-review-compliance
+      reviewers:
+        - {id: codex-native, execution_class: native, roles: [general, architecture, compliance], status: approved}
+        - {id: claude-opus-cli, execution_class: external, roles: [general, architecture, compliance], status: stalled}
+        - {id: gemini-3.7-flash, execution_class: external, roles: [general, architecture, compliance], status: approved}
+      findings: []
+    verification:
+      - negotiated IoMode lifecycle smoke passed 1/1
+      - public_api passed 9/9
+      - pool_write passed 8/8
+      - full all-feature suite passed 303/303
+      - strict all-target/all-feature Clippy, formatting, rustdoc, and git diff check passed
+      - all touched functions are at most 70 lines
+      - no poll or drain function changed
+    performance_gates: pending_final_amendment_candidate
+    outcome: implementation_approved
+
 issues:
   critical: []
   high:
