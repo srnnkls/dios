@@ -1009,8 +1009,38 @@ batch_reviews:
       - Loom passed 15/15
       - strict all-target/all-feature Clippy, formatting, rustdoc, and git diff check passed
       - all touched functions are at most 70 lines
-    performance_gates: pending_benchmark_profile
+    performance_gates:
+      pfr_transient_guard: {pairs: 40, geomean: 0.9256, ci95_upper: 0.9395, threshold: 1.0100, status: passed}
+      pfr_nested_transient_guard: {pairs: 40, geomean: 0.9327, ci95_upper: 0.9452, threshold: 1.0100, status: passed}
+      pfr_zero_budget_bypass: {pairs: 40, geomean: 0.9993, ci95_upper: 1.0000, threshold: 1.0100, status: passed}
+      pfr_nonzero_poll: inactive
+      evidence: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-benchmark-artifacts-v19
     outcome: implementation_approved
+
+  - batch: final-amendment-linux
+    timestamp: 2026-08-25T17:42:00Z
+    commit: 4bc95c3
+    tasks: [T11, T12]
+    verification:
+      - clean a079c7c candidate hugepage alignment and backing passed 2/2
+      - Linux io_uring, wait, and deferred-close paths passed 13/13
+      - registered-file lifecycle and allocation paths passed 14/14
+      - Miri pure-memory paths passed 18/18
+      - ASan syscall paths passed 6/6
+      - final 4bc95c3 branch rerun passed 303 all-feature tests, 23 zero-allocation tests, and 15 Loom models
+      - final strict all-target/all-feature Clippy, rustdoc with warnings denied, formatting, and diff checks passed
+      - fresh origin/main check found zero commits behind f6f816b
+    lifecycle_smoke_correction:
+      red: The io_uring write CQE was not visible within 32 immediate nonblocking polls.
+      green: The existing direct smoke waits through bounded poll_wait while preserving its exact-token and Ok(4096) oracle; all 12 lifecycle cases pass on Linux.
+      report_dir: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-smoke-test-review
+      reviewers:
+        - {id: codex-native, execution_class: native, status: approved}
+        - {id: claude-opus-cli, execution_class: external, status: approved}
+        - {id: gemini-3.7-flash, execution_class: external, status: approved}
+      findings: []
+    performance_gates: passed_via_final_amendment_benchmark
+    outcome: correctness_approved
 
 issues:
   critical: []

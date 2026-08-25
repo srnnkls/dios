@@ -501,3 +501,10 @@ decision_log:
       - Increase the nonblocking poll count, add sleeps, or yield between polls.
       - Change product progress behavior or remove the lifecycle smoke.
     reason: Final Linux verification reached 32 immediate poll_report calls before the io_uring write CQE became visible, so the test's scheduling assumption failed without a product failure. poll_wait preserves the exact-token and Ok(4096) oracle, returns immediately on completion, and retains the fixed 32-iteration outer bound with a five-second deadline per wait. All 12 lifecycle smokes pass on Linux after the one-line correction; product source and the sealed a079c7c executable are unchanged, so no benchmark reseal is required.
+  - date: 2026-08-25
+    decision: Accept all three sealed v19 amendment timing gates and leave the conditional nonzero-poll lane inactive.
+    alternatives:
+      - Re-run any passing lane to seek a different estimate.
+      - Relax the frozen 1.0100 threshold.
+      - Activate pfr_nonzero_poll despite no T12 work in poll or drain paths.
+    reason: Each lane used 40 order-alternated pairs on the active nix benchmark profile with clean f6f816b baseline and a079c7c candidate products, identical lockfiles and runner, zero timed allocations, zero timed minor and major faults, and matching checksums. Candidate/baseline geomean and one-sided CI95 upper were 0.9256 and 0.9395 for pfr_transient_guard, 0.9327 and 0.9452 for pfr_nested_transient_guard, and 0.9993 and 1.0000 for pfr_zero_budget_bypass; every upper bound is below 1.0100. T12 remained mode-readback-only, so its recorded conditional gate did not activate.

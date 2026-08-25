@@ -71,3 +71,15 @@ If T12 adds steady-state work to retention-enabled poll or drain loops,
 `pfr_nonzero_poll` also becomes mandatory at CI95 upper <= 1.0100:
 
 The same 40-pair, sealed-product, warm-state, checksum, allocation, and fault controls apply. The escalation lever is to move file-capacity or mode bookkeeping back to registration/retirement control paths. A valid failure blocks the PR.
+
+## Results
+
+The sealed v19 run on `nix` passed all active gates:
+
+| Lane | Pairs | Ratio geomean | One-sided CI95 upper | Threshold | Verdict |
+|---|---:|---:|---:|---:|---|
+| `pfr_transient_guard` | 40 | 0.9256 | 0.9395 | 1.0100 | PASS |
+| `pfr_nested_transient_guard` | 40 | 0.9327 | 0.9452 | 1.0100 | PASS |
+| `pfr_zero_budget_bypass` | 40 | 0.9993 | 1.0000 | 1.0100 | PASS |
+
+Each validated process artifact has 80 rows and each paired artifact has 40 rows. Checksums matched, and timed allocations, minor faults, and major faults were zero. The active host profile used the performance governor and THP `never`. `pfr_nonzero_poll` remained inactive because T12 added no poll or drain work. Evidence is retained at `.peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-benchmark-artifacts-v19` and on `nix` at `/home/srnnkls/build/dios/target/bench-samples/pfr-amendments-v19`.
