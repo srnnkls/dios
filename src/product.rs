@@ -1,7 +1,7 @@
 //! Closed product-level operation, progress, and wake vocabulary.
 
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -230,12 +230,16 @@ struct WaitCounters {
 struct WaitGeneration {
     current: u64,
     consumed: u64,
+    ring_pending: bool,
 }
 
 /// One preallocated generation latch used by product I/O and external ingress.
 #[derive(Debug, Default)]
 pub(crate) struct WaitState {
     generation: Mutex<WaitGeneration>,
+    #[cfg(test)]
+    generation_lock_acquisitions: std::sync::atomic::AtomicU64,
+    ring_pending_hint: AtomicBool,
     changed: Condvar,
     counters: WaitCounters,
     #[cfg(target_os = "linux")]
@@ -244,9 +248,17 @@ pub(crate) struct WaitState {
 
 impl WaitState {
     fn lock(&self) -> MutexGuard<'_, WaitGeneration> {
+        #[cfg(test)]
+        self.generation_lock_acquisitions
+            .fetch_add(1, Ordering::Relaxed);
         self.generation
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    #[cfg(test)]
+    fn generation_lock_acquisitions(&self) -> u64 {
+        self.generation_lock_acquisitions.load(Ordering::Relaxed)
     }
 
     pub(crate) fn wake(&self) {
@@ -258,6 +270,40 @@ impl WaitState {
         if let Some(platform) = self.platform.get() {
             platform.notify();
         }
+    }
+
+    pub(crate) fn publish_ring_pending_and_wake_if_parked(&self) {
+        let mut generation = self.lock();
+        generation.ring_pending = true;
+        self.ring_pending_hint.store(true, Ordering::Release);
+        if self.counters.parks_in_progress.load(Ordering::Acquire) == 0 {
+            return;
+        }
+        generation.current = generation.current.wrapping_add(1);
+        self.changed.notify_all();
+        #[cfg(target_os = "linux")]
+        if let Some(platform) = self.platform.get() {
+            platform.notify();
+        }
+        drop(generation);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_ring_pending(&self) {
+        let mut generation = self.lock();
+        generation.ring_pending = true;
+        self.ring_pending_hint.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn clear_ring_pending(&self) {
+        let mut generation = self.lock();
+        generation.ring_pending = false;
+        self.ring_pending_hint.store(false, Ordering::Release);
+    }
+
+    #[inline]
+    pub(crate) fn ring_may_be_pending(&self) -> bool {
+        self.ring_pending_hint.load(Ordering::Acquire)
     }
 
     pub(crate) fn consume_current(&self) {
@@ -272,10 +318,16 @@ impl WaitState {
             return;
         }
         let armed = generation.current;
-        self.counters.parks_entered.fetch_add(1, Ordering::AcqRel);
         self.counters
             .parks_in_progress
             .fetch_add(1, Ordering::AcqRel);
+        if generation.ring_pending {
+            self.counters
+                .parks_in_progress
+                .fetch_sub(1, Ordering::AcqRel);
+            return;
+        }
+        self.counters.parks_entered.fetch_add(1, Ordering::AcqRel);
         let deadline = Instant::now() + timeout;
         let mut timed_out = false;
         while generation.current == armed {
@@ -331,10 +383,16 @@ impl WaitState {
             return None;
         }
         let armed = generation.current;
-        self.counters.parks_entered.fetch_add(1, Ordering::AcqRel);
         self.counters
             .parks_in_progress
             .fetch_add(1, Ordering::AcqRel);
+        if generation.ring_pending {
+            self.counters
+                .parks_in_progress
+                .fetch_sub(1, Ordering::AcqRel);
+            return None;
+        }
+        self.counters.parks_entered.fetch_add(1, Ordering::AcqRel);
         Some(armed)
     }
 
@@ -464,7 +522,7 @@ impl WaitObservation {
     pub(crate) fn wait_until_parked(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            if self.parks_in_progress() > 0 {
+            if self.parks_in_progress() > 0 && self.parks_entered() != self.parks_exited() {
                 return true;
             }
             std::thread::yield_now();
@@ -498,5 +556,156 @@ impl WaitObservation {
     #[must_use]
     pub(crate) fn timeout_exits(&self) -> u32 {
         self.state.counters.timeout_exits.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(all(test, feature = "mock"))]
+mod ring_pending_tests {
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use super::{WaitObservation, WaitState};
+    use crate::testing::{FrameState, MockDriver, PoolBuilderTestingExt, PoolTestingExt};
+    use crate::{DirectIo, Get, PageId, Pool};
+
+    fn observation(wait: &Arc<WaitState>) -> WaitObservation {
+        WaitObservation {
+            state: Arc::clone(wait),
+        }
+    }
+
+    fn assert_never_parked(observation: &WaitObservation) {
+        assert_eq!(observation.parks_entered(), 0);
+        assert_eq!(observation.parks_in_progress(), 0);
+        assert_eq!(observation.parks_exited(), 0);
+        assert_eq!(observation.wake_exits(), 0);
+        assert_eq!(observation.timeout_exits(), 0);
+    }
+
+    fn held_final_release_wakes_a_parker_with_one_generation_lock_pool()
+    -> (Pool<MockDriver>, PageId) {
+        let mock = MockDriver::builder()
+            .queue_capacity(1)
+            .frames(6)
+            .frame_bytes(4096)
+            .build();
+        let file = mock
+            .open(Path::new("ring-pending-held-release"), DirectIo::Disabled)
+            .expect("mock file opens");
+        let file_id = file.file_id();
+        let pool = Pool::builder()
+            .frame_count(6)
+            .granule(4096)
+            .max_concurrent_readers(1)
+            .peak_guards_per_reader(2)
+            .max_inflight_reads(1)
+            .miss_headroom(3)
+            .max_retained_frames(1)
+            .build_on(mock)
+            .expect("retention fixture satisfies its watermark");
+        pool.register_file(file);
+        (pool, PageId::new(file_id, 0))
+    }
+
+    #[test]
+    fn held_final_release_wakes_a_parker_with_one_generation_lock() {
+        let (pool, page) = held_final_release_wakes_a_parker_with_one_generation_lock_pool();
+        let reader = pool.register_reader().expect("reader slot is available");
+        let frame = pool.insert_resident_frame(page, 0xA5);
+        let Get::Hit(guard) = pool.get(&reader, page).expect("inserted page remains live") else {
+            panic!("the inserted page must hit");
+        };
+        let Ok(retained) = guard.into_retained() else {
+            panic!("the configured budget must admit one retained frame");
+        };
+        assert_eq!(pool.evict_frame(page), frame);
+        for _ in 0..4 {
+            pool.poll();
+        }
+        assert_eq!(pool.frame_state(frame), FrameState::Evicting);
+        let wait = pool.wait_internal();
+        let observation = observation(&wait);
+
+        let (generation_locks_before, generation_locks_after, pending) =
+            std::thread::scope(|scope| {
+                let waiter_wait = Arc::clone(&wait);
+                let waiter = scope.spawn(move || waiter_wait.wait(Duration::from_secs(5)));
+                assert!(
+                    observation.wait_until_parked(Duration::from_secs(1)),
+                    "WaitState::wait enters its parked path"
+                );
+                let generation_locks_before = wait.generation_lock_acquisitions();
+
+                drop(retained);
+                let generation_locks_after = wait.generation_lock_acquisitions();
+                let pending = wait.ring_may_be_pending();
+
+                waiter.join().expect("HELD final release wakes the waiter");
+                (generation_locks_before, generation_locks_after, pending)
+            });
+        let park_outcome = (
+            observation.parks_entered(),
+            observation.parks_in_progress(),
+            observation.parks_exited(),
+            observation.wake_exits(),
+            observation.timeout_exits(),
+        );
+        pool.poll();
+
+        assert_eq!(
+            (
+                pending,
+                generation_locks_after - generation_locks_before,
+                park_outcome,
+            ),
+            (true, 1, (1, 0, 1, 1, 0)),
+            "pending publication and the parked-wake decision share one generation lock"
+        );
+    }
+
+    #[test]
+    fn wait_until_parked_requires_entered_park_publication() {
+        let wait = Arc::new(WaitState::default());
+        let observation = observation(&wait);
+        wait.counters
+            .parks_in_progress
+            .store(1, std::sync::atomic::Ordering::Release);
+
+        assert!(
+            !observation.wait_until_parked(Duration::from_millis(1)),
+            "pre-park progress is not an entered park"
+        );
+
+        wait.counters
+            .parks_entered
+            .store(1, std::sync::atomic::Ordering::Release);
+        assert!(
+            observation.wait_until_parked(Duration::from_millis(1)),
+            "entered park state is observable"
+        );
+    }
+
+    #[test]
+    fn eager_wait_does_not_park_when_a_ring_release_is_pending() {
+        let wait = Arc::new(WaitState::default());
+        let observation = observation(&wait);
+        wait.set_ring_pending();
+
+        wait.wait(Duration::from_millis(10));
+
+        assert_never_parked(&observation);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn platform_wait_is_not_armed_when_a_ring_release_is_pending() {
+        let wait = Arc::new(WaitState::default());
+        let observation = observation(&wait);
+        wait.set_ring_pending();
+
+        assert_eq!(wait.begin_platform_wait(), None);
+
+        assert_never_parked(&observation);
     }
 }

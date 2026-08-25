@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-use dios::{FrameGuard, PendingToken, ReaderCtx};
+use dios::{FrameGuard, PendingToken, ReaderCtx, RetainedFrame};
 
 struct SecondImpl;
 
@@ -67,6 +67,13 @@ fn frame_guard_is_neither_send_nor_sync() {
     assert_not_sync!(FrameGuard<'static>);
 }
 
+#[test]
+fn retained_frame_is_neither_send_sync_nor_clone() {
+    assert_not_send!(RetainedFrame<'static>);
+    assert_not_sync!(RetainedFrame<'static>);
+    assert_not_clone!(RetainedFrame<'static>);
+}
+
 fn compile_probe(name: &str, source: &str) -> std::process::Output {
     let probe = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
     fs::create_dir_all(probe.join("src")).expect("create the isolated compile-fail probe");
@@ -93,10 +100,7 @@ fn compile_probe(name: &str, source: &str) -> std::process::Output {
 }
 
 fn compile_root_import(symbol: &str) -> std::process::Output {
-    compile_probe(
-        "forbidden-root-import",
-        &format!("#![allow(unused_imports)]\n\nuse dios::{symbol};\n"),
-    )
+    compile_probe("forbidden-root-import", &format!("use dios::{symbol};\n"))
 }
 
 #[test]
@@ -129,9 +133,7 @@ fn advanced_driver_vocabulary_does_not_import_from_the_crate_root() {
 fn a_frame_guard_cannot_remain_live_across_reader_drop() {
     let output = compile_probe(
         "guard-reader-borrow",
-        r"#![allow(dead_code, elided_lifetimes_in_paths)]
-
-use dios::{PendingToken, Pool, ReaderCtx, ReadyResult};
+        r"use dios::{PendingToken, Pool, ReaderCtx, ReadyResult};
 
 fn reject_guard_across_reader_drop(
     pool: &Pool,
@@ -163,9 +165,7 @@ fn reject_guard_across_reader_drop(
 fn a_frame_guard_cannot_remain_live_across_pool_drop() {
     let output = compile_probe(
         "guard-pool-borrow",
-        r"#![allow(dead_code, elided_lifetimes_in_paths)]
-
-use dios::{PendingToken, Pool, ReaderCtx, ReadyResult};
+        r"use dios::{PendingToken, Pool, ReaderCtx, ReadyResult};
 
 fn reject_guard_across_pool_drop(
     pool: Pool,
@@ -194,12 +194,82 @@ fn reject_guard_across_pool_drop(
 }
 
 #[test]
+fn a_retained_frame_cannot_remain_live_across_reader_drop() {
+    let output = compile_probe(
+        "retained-reader-borrow",
+        r"use dios::{PendingToken, Pool, ReaderCtx, ReadyResult};
+
+fn reject_retained_across_reader_drop(
+    pool: &Pool,
+    reader: ReaderCtx,
+    token: PendingToken,
+) {
+    let guard = match pool.ready(&reader, token) {
+        ReadyResult::Ready(guard) => guard,
+        ReadyResult::NotYet(_) | ReadyResult::Err(_) => return,
+    };
+    let retained = match guard.into_retained() {
+        Ok(retained) => retained,
+        Err(_) => return,
+    };
+    drop(reader);
+    std::hint::black_box(&retained);
+}
+",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "a RetainedFrame unexpectedly outlived the ReaderCtx epoch pin"
+    );
+    assert!(
+        stderr.contains("E0505")
+            && stderr.contains("cannot move out of `reader` because it is borrowed"),
+        "the compiler probe must fail specifically because reader remains borrowed by the retained frame:\n{stderr}"
+    );
+}
+
+#[test]
+fn a_retained_frame_cannot_remain_live_across_pool_drop() {
+    let output = compile_probe(
+        "retained-pool-borrow",
+        r"use dios::{PendingToken, Pool, ReaderCtx, ReadyResult};
+
+fn reject_retained_across_pool_drop(
+    pool: Pool,
+    reader: &ReaderCtx,
+    token: PendingToken,
+) {
+    let guard = match pool.ready(reader, token) {
+        ReadyResult::Ready(guard) => guard,
+        ReadyResult::NotYet(_) | ReadyResult::Err(_) => return,
+    };
+    let retained = match guard.into_retained() {
+        Ok(retained) => retained,
+        Err(_) => return,
+    };
+    drop(pool);
+    std::hint::black_box(&retained);
+}
+",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "a RetainedFrame unexpectedly outlived its Pool"
+    );
+    assert!(
+        stderr.contains("E0505")
+            && stderr.contains("cannot move out of `pool` because it is borrowed"),
+        "the compiler probe must fail specifically because pool remains borrowed by the retained frame:\n{stderr}"
+    );
+}
+
+#[test]
 fn a_warm_hit_frame_guard_cannot_remain_live_across_reader_drop() {
     let output = compile_probe(
         "guard-reader-get-borrow",
-        r"#![allow(dead_code, elided_lifetimes_in_paths)]
-
-use dios::{Get, PageId, Pool, ReaderCtx};
+        r"use dios::{Get, PageId, Pool, ReaderCtx};
 
 fn reject_warm_hit_guard_across_reader_drop(
     pool: &Pool,

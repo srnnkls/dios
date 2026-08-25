@@ -288,9 +288,9 @@ scope.
   to the scope owner — it is not relaxed silently.
 - Minimum pool size (deadlock freedom): a reader's k-way merge holds one
   pinned guard per source plus key/column blocks concurrently.
-  `frame_count >= watermark = max_concurrent_readers × peak_guards_per_reader
-  + miss_headroom`, where `peak_guards_per_reader` derives from the
-  STATIC maximum merge fan-out — the whole-stack merge bound
+  `frame_count >= (max_concurrent_readers × peak_guards_per_reader + miss_headroom).max(1) + max_retained_frames`,
+  where `peak_guards_per_reader` derives from the STATIC maximum merge fan-out —
+  the whole-stack merge bound
   `f(ln_runs [default 20] + level count)` from config — not the
   open-time source count, and `max_concurrent_readers` counts compaction
   as a concurrent reader at that peak fan-out (compaction reads through
@@ -385,7 +385,7 @@ scope.
 | Entity | Purpose | Key Fields |
 |--------|---------|------------|
 | `PageId` | Stable address of an aligned file extent | `file: FileId` (generational — stale generation rejected at submit, INV-11), `granule_idx: u32` |
-| `Frame` | Preallocated, sector-aligned buffer slot; ring-registered on uring, unregistered on eager | `data: [u8; GRANULE]` (aligned 4096), `state: Free\|InFlight\|Resident\|Evicting`, `page: PageId`, clock bit (set check-then-set on hit) |
+| `Frame` | Preallocated, sector-aligned buffer slot; ring-registered on uring, unregistered on eager | `data: [u8; GRANULE]` (aligned 4096); packed state/generation with `FrameState` remaining exactly `Free`\|`InFlight`\|`Resident`\|`Evicting`; separate orthogonal `HELD`/count word; `page: PageId`; clock bit (set check-then-set on hit). Logical eviction remains allowed while retained; after EBR maturity, physical `Free`/reuse waits for the last retained release. |
 | `PageTable` | PageId → frame lookup | open-addressed, fixed capacity = 2× frame count rounded up to a power of two (≤ 50% occupancy at full pool, bounding negative-probe length); lock-free probes are advisory — the miss path re-probes authoritatively under the AD-4 lock before submitting, guard-create recheck catches stale hits; insert/delete only under the lock, delete by backward-shift (no tombstones); no rehash ever |
 | `CompletionSlab` | Op slots at fixed capacity from open — `frame_count + write_slots + metadata_headroom` bounds in-flight ops, so no growth path exists (a lazily-growing slab is amortized-zero, not zero); slots acquired at submit (issuing an `OpToken` = slot + generation, generation bumped at reclaim so a reused slot never aliases a stale token) and reclaimed at completion drain — never caller-chosen (INV-11); `user_data` = slot index | op kind, fd, offset, frame index, waker/callback token |
 | `ReaderCtx` | Lifetime-free affine registration; owns an `Arc` to the reader registry plus its slot identity; `!Send + !Sync`; may outlive the `Pool` value and releases exactly its slot on Drop | pool identity, reader slot, thread-affinity marker |

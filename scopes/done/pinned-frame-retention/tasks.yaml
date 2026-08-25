@@ -1,0 +1,286 @@
+scope: pinned-frame-retention
+discipline: >
+  T6a establishes a conservative callable scaffold so later tests compile.
+  T2 through T7 each capture a task-local runtime RED against that scaffold or
+  the preceding GREEN before implementation (AGENTS.md). T1 gates all code.
+tasks:
+  - id: T1
+    title: Author bench plan (pre-code, per AGENTS.md)
+    description: >
+      benches/plans/pinned-frame-retention.md with the required fields:
+      metric+direction, pinned workload, baseline, >= 30 reps, one-sided 95%
+      CI threshold with ratio orientation, compare command, escalation
+      lever. Arms: transient guard path A/B (gated), poll boundary
+      nonzero-budget A/B (gated), zero-budget bypass A/B (gated, parity),
+      promote/release including the mutex-mediated wake_if_parked
+      (GATED — the wake is a syscall on a hot-path-adjacent drop), plus
+      a contended same-frame promotion arm with a numeric refusal-rate
+      gate (pinned workload, one-sided 95% CI upper bound, threshold and
+      escalation lever stated in the plan). Add the R8-shaped primary arm:
+      setup promotes a bounded distinct page set and freezes a fixed-capacity
+      integer descriptor sequence outside the timer; the measured candidate
+      indexes RetainedFrame bytes directly with zero get/pin/promotion/touch,
+      while the baseline performs transient guarded access with identical
+      descriptor order and useful-byte consumption. Use the shipping backend
+      on nix; mock-only evidence cannot close this gate. The memlock owner
+      decision is recorded (scope.md revision 11): the baseline operates
+      under the stock unprivileged 8 MiB limit (systemd DefaultLimitMEMLOCK;
+      the kernel's own 64 KiB default is not a target), so the exact
+      8,035-page shipping arm runs the Unregistered posture from
+      arena-modernization:AM4 and is blocked until AM4 lands (the causal
+      probe passed 1,024 registered frames and failed at 1,984 — 7.75 MiB,
+      below the limit; attribution open, see resources/r8-resident-set.md).
+      Arena posture is part of each arm's pinned identity, recorded as a
+      precondition, not an after-the-fact field; a registered raised-limit
+      arm may appear only as an opt-in optimization comparison, and a
+      smaller preflighted scaled workload stays explicitly non-equivalent
+      to R8. Record retained pages, pool
+      capacity, memlock limits, registration mode, and
+      retained_evictions_held. The plan cites resources/r8-resident-set.md and
+      preserves R8's formal FAIL.
+      Pin warm-state controls for every timed arm: timed-region ru_minflt
+      AND ru_majflt (RUSAGE_THREAD, pinned bench thread) recorded for both
+      sides of each pair; a nonzero major count invalidates the pair under
+      every posture; registered and exact-R8 arms additionally require zero
+      minor faults; other unregistered arms record minor faults as warmth
+      evidence. Rerun identity also pins the segment layout: both arms of a
+      pair run one identical layout, and a pair on the SAP1 superblock
+      layout (feat/sira-sap1-format, postdating the frozen R8 source bases)
+      is a new baseline, not an R8 reproduction. The retained-vs-locator
+      tie gate (<= 1.02, equal-regime qualifier per scope.md) is a
+      SIRA-SIDE companion run — its locator mmap, BlockVerification mode,
+      and corpus are sira artifacts; T1 records the obligation and controls
+      (prefaulted locator via MADV_POPULATE_READ, identical
+      BlockVerification, both sides' page-size state) but does NOT author
+      that arm. The plan may add THP-backed-arena (MADV_HUGEPAGE,
+      2 MiB-aligned base, THP policy recorded, populate and verify
+      AnonHugePages before any registration — pins freeze page size) and
+      sparse-registration (hot sub-arena in 2 MiB granules within the
+      8 MiB budget) exploratory arms, labelled non-gating.
+      Re-review design.md against the pinned DRP010 branch and freeze how the
+      separate HELD/count word interoperates with its packed frame-state/
+      generation and reclaim baseline; HELD never becomes a frame-state bit.
+    status: done
+    depends_on: []
+    external_depends_on: ["dios-r1-r7-read-performance:DRP010"]
+    files:
+      - benches/plans/pinned-frame-retention.md
+      - scopes/draft/pinned-frame-retention/
+
+  - id: T2
+    title: Retention context, budget tally, builder knob
+    description: >
+      First capture a compiling runtime RED against T6a: a valid nonzero
+      retention configuration is still conservatively refused and the default
+      zero-budget pool remains unchanged. Then implement the following.
+      Non-generic Retention struct per design.md: packed words, tag
+      slots, retiring flags, occupied-budget tally, four by-cause refusal
+      counters, retained_evictions_held diagnostic, Arc<WaitState>,
+      max_retained_frames, frame count — all
+      preallocated at build; Retention::drop asserts occupied_budget==0.
+      The wait-free ticket ring TYPE with push AND pop (unit-tested here
+      so T3 has a producer primitive); WaitState gains the pub(crate)
+      wake_if_parked (parked-check and wake under the generation mutex),
+      the ring-pending flag, and the pre-park flag recheck in BOTH park
+      paths — WaitState::wait and begin_platform_wait's do-not-park None,
+      with parks incremented BEFORE the flag check (src/product.rs only;
+      the driver caller already handles None). impl<D> Drop for Pool<D>:
+      exclusive-access final release drain from the Control-owned cursor
+      before Retention's field-drop assert. RetentionUnrepresentable
+      builder validation per design.md Capacity. ARCH-3: proof-bearing atomics via crate::sync;
+      refusal counters allowlisted in src/pool/alias_guard.rs with the
+      doc note in src/sync.rs. PoolBuilder::max_retained_frames (default
+      0, zero-budget bypass; ring capacity rounded to a power of two)
+      with the corrected INV-9 watermark validation (BelowWatermark
+      reports the augmented value). Populate the private counters behind the
+      T6a-defined RetentionStats shape; T7 wires their real accessor
+      (LifecycleCounters remains pub(crate)/mock-gated).
+    status: done
+    depends_on: [T1, T6a]
+    files: [src/pool/retention.rs, src/pool/mod.rs, src/product.rs, src/sync.rs, src/pool/alias_guard.rs, src/lib.rs, tests/public_api.rs]
+
+  - id: T3
+    title: RetainedFrame and into_retained promotion
+    description: >
+      First capture compiling runtime REDs against T6a for successful
+      promotion, refusal-carries-guard, independent same-frame promotions,
+      lifetime bounds, and dominant-cycle recovery. Then implement the
+      following.
+      FrameGuard gains frame index, file-slot index (captured at mint in
+      pin_owned, which has the page in hand), and non-generic &'pool
+      Retention backref; FrameGuard/Get/ReadyResult stay non-generic
+      (pinned in tests/public_api.rs). into_retained via ManuallyDrop
+      moves bytes + frame index + backref into RetainedFrame and
+      implements the design.md bounded lock-free promotion loop
+      (saturating count refusing Exhausted; budget reserve/rollback/retry
+      with the exact (0,HELD-clear)->(1,HELD-clear) CAS and the
+      never-observes-HELD assert; Release/Acquire flag ordering per the
+      normative design.md block; word-state rollback). Retiring-flag STORE/
+      CLEAR and retirement lifecycle integration are deliberately deferred to
+      T5. RetainedFrame
+      (!Send + !Sync + !Clone, Deref over moved bytes, len-only Debug,
+      loop-free fetch_sub Drop with the word-state budget rule: count>0
+      done; count==0 with HELD clear releases the budget unit; count==0
+      with HELD set pushes the ring entry, Release-sets the ring-pending
+      flag, and calls WaitState::wake_if_parked); RetainRefused carrying the guard,
+      reasons Exhausted | FileRetiring; populate the T2-owned private counters;
+      crate-root exports; compile_fail doctests (pool lifetime,
+      ReaderCtx lifetime, !Send), assert_not_sync!, assert_not_clone!.
+    status: done
+    depends_on: [T2]
+    files: [src/pool/retention.rs, src/pool/epoch.rs, src/pool/mod.rs, src/lib.rs, tests/guard_compile_fail.rs, tests/public_api.rs]
+
+  - id: T4
+    title: Drain integration, release ring, direct free, accounting
+    description: >
+      drain_matured count-bounded CAS protocol (pop matured; count>0 ->
+      set HELD + write tag slot + LEAVE frame_pages intact; count==0 ->
+      PLAIN pre-existing reclaim, no tally interaction); signature change:
+      drain_matured returns frames-reaching-Free and passes the tag to
+      its closure (production caller mod.rs:1598 and loom caller
+      loom_model.rs:159 updated); release drain as the FIRST step of
+      advance_and_reclaim (before drain_matured, covering
+      claim_frame_bounded) with the four-condition assert (epoch operand:
+      pass-start read) and the full reclaim step (clear HELD, Evicting ->
+      Free, frame_pages[frame] = None, release budget unit, count as
+      reclaimed); wire the T2-owned release-ring producer/consumer into the
+      reclaim paths; zero-budget bypass; exact retained_evictions_held increment on the
+      count>0 -> HELD transition; evict_one_victim frame_pages conditional
+      hardened to an asserted expect. Victim selection must not skip retained
+      frames. Begin with a failing in-module primitive test for the
+      publish-between-pending-clear-and-ring-scan ordering, then add the
+      cfg(test)/testing-extension barrier that makes the schedule
+      deterministic; implementation follows only after the RED is captured.
+    status: done
+    depends_on: [T3]
+    files: [src/pool/retention.rs, src/pool/epoch.rs, src/pool/mod.rs, src/pool/loom_model.rs, src/lib.rs]
+
+  - id: T5
+    title: Integrate retention with file retirement and slot reuse
+    description: >
+      First capture compiling runtime REDs against the live T3/T4 primitive:
+      retirement does not yet set the retention retiring flag or delay close.
+      Then add the retiring-flag store in retire_file and clear in
+      register_file_internal, and wire retained HELD/release progress into file
+      closure and slot reuse. Make green: FileRetiring refusal; a
+      pre-retirement guard observes FileRetiring and blocks closure
+      until dropped; retired-while-HELD stays Retiring then closes on
+      release; retire-then-reopen-same-slot with a FRESH guard on the
+      new generation promoting successfully (flag cleared at
+      register_file_internal, absent-or-Retired assert).
+    status: done
+    depends_on: [T4]
+    files: [src/pool/retention.rs, src/pool/mod.rs, src/lib.rs, tests/retention_retirement.rs]
+
+  - id: T6a
+    title: Land the conservative callable retention scaffold
+    description: >
+      First add one compiling runtime source-boundary RED that fails because
+      the callable scaffold is absent; it proves API shape only. Then define
+      the exact public builder knob, RetainedFrame, RetainRefused, refusal
+      reason, RetentionStats, into_retained, and stats signatures. The
+      conservative implementation preserves the live guard and always refuses
+      nonzero retention as Exhausted, reports zero stats, and leaves the
+      default pool path unchanged. It adds no retention atomics, unsafe code,
+      ring, HELD state, allocation, or shadow model. Add only cfg(test)/
+      test-util observation seams over actual production primitives, plus the
+      second ReaderSlot/state-space fixture needed by later real-primitives
+      Loom REDs. Missing imports and compile errors never count as RED. The
+      scaffold is an intermediate scope-branch state and cannot ship alone.
+    status: done
+    depends_on: [T1]
+    files: [src/lib.rs, src/pool/mod.rs, src/pool/loom_model.rs, tests/public_api.rs]
+
+  - id: T6
+    title: Loom retention cases
+    description: >
+      Real-primitive cases: retain-while-Evicting vs
+      drain_matured; concurrent last-drops (unique release ownership);
+      concurrent first promotions at the budget boundary incl. rollback
+      racing a concurrent increment (oracle: tally never below the number
+      of frames with count > 0); nested-guard promotion; two ring
+      producers vs consumer; direct-free soundness. Named stand-ins: ring
+      turnover via a "drain driver" entry running release-drain +
+      drain_matured in advance_and_reclaim order (for
+      claim_frame_bounded); promotion vs retire_file on a model flag. Within
+      this task, add each new Loom case as a failing model check before the
+      corresponding model extension.
+    status: done
+    depends_on: [T4, T6a]
+    files: [src/pool/loom_model.rs, tests/loom_pool.rs]
+
+  - id: T7
+    title: Wire public diagnostics and acceptance hardening
+    description: >
+      First capture compiling runtime REDs showing the T6a stats accessor still
+      reports zero after real retention events and that event attribution is
+      absent. Then wire RetentionStats to the T2/T3/T4 counters and complete
+      the test-only observation surface without adding a second protocol. Make
+      green the scope.md integration matrix: dominant-cycle
+      recovery (retain/drop-while-Resident past budget, no Exhausted,
+      tally 0 at rest); budget boundary and post-drain recovery; refusal
+      returns the same live guard; N retentions one frame = one unit;
+      non-last vs last drop; unrelated reclamation unaffected; default-0
+      bypass; PollReport == frames reaching Free; push-before-park AND
+      push-during-park via MockWaitObservation; a Linux-lane wake case
+      through begin_platform_wait/eventfd; the publish-between-clear-and-scan interleaving; pool teardown immediately after a HELD
+      last-drop; contended same-frame promotion refusal-rate recording;
+      multiple retained handles stay lifetime-bound and byte-stable while a
+      logical eviction makes their frames HELD. retention_stats behavioral test,
+      including retained_evictions_held changing exactly once and staying zero
+      under the zero-budget bypass. Count-ceiling refusal is T3's
+      in-module unit test (not here — this task owns integration files
+      only). zero_alloc over promote/release/drain; miri and asan run
+      ad hoc on the Linux host per dios-v1 precedent (no CI lane
+      wiring in this scope).
+    status: done
+    depends_on: [T5, T6]
+    files: [src/pool/retention.rs, src/pool/mod.rs, src/lib.rs, tests/retention_acceptance.rs, tests/zero_alloc.rs]
+
+  - id: T8a
+    title: Bench implementation and arena-independent gate run
+    description: >
+      Implement plan T1 (Cargo.toml [[bench]] registration with
+      harness = false and required-features); run ALL FOUR existing gated A/B
+      arms plus the contended-promotion arm on the nix host (transient,
+      nonzero-budget poll boundary, zero-budget parity, promote/release with
+      gated wake, contended same-frame promotion); gates green or the
+      pre-recorded escalation lever exercised. These arms are
+      arena-independent by construction and run BEFORE any
+      arena-modernization work touches src/pool — that isolation is the
+      point of the split. Every arm runs under the plan's warm-state
+      controls; a pair violating its per-arm fault rule (nonzero major
+      fault anywhere; nonzero minor fault where zero is required) is
+      invalid and rerun. Scope closure requires this task green.
+    status: done
+    depends_on: [T7]
+    files: [benches/, Cargo.toml]
+
+  - id: T8b
+    title: Exact-R8-scale shipping arm
+    description: >
+      Run the R8-shaped retained-session A/B arm at exact scale (8,035
+      retained pages) on the nix host under the Unregistered posture from
+      arena-modernization:AM4, per the arm identity pinned in T1. A scaled
+      arm, raised-limit arm, sparse arm, or mock arm has its own identity
+      and cannot close exact R8-scale shipping validation. This task does
+      NOT block scope closure (T9 waits only on T8a); it discharges the
+      R8-scale shipping claim whenever AM4 lands, and the claim remains
+      open — never silently substituted — until then.
+    status: pending
+    depends_on: [T8a]
+    external_depends_on: ["arena-modernization:AM4"]
+    files: [benches/, Cargo.toml]
+
+  - id: T9
+    title: Docs and invariant fold-back
+    description: >
+      README API section; rustdoc on RetainedFrame/RetainRefused/
+      RetentionStats; INV-1 note (retention word orthogonal, FrameState
+      unchanged) and INV-9 delta folded into the owning dios-v1 scope
+      docs at close; preserve the R8 evidence/disposition reference and state
+      explicitly that the performance consumer promotes once per bounded read
+      session rather than once per point.
+    status: done
+    depends_on: [T8a]
+    files: [README.md, src/pool/retention.rs, src/pool/epoch.rs, src/pool/mod.rs, scopes/active/dios-v1/scope.md, scopes/active/dios-v1/design.md]

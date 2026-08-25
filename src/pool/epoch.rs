@@ -13,7 +13,7 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use crate::pool::ReadFrameIdx;
+use crate::pool::{ReadFrameIdx, retention::Retention};
 use crate::product::LifecycleCounters;
 use crate::sync::{AtomicBool, AtomicU64, Ordering, fence};
 
@@ -217,6 +217,12 @@ pub(crate) struct EvictQueue {
     capacity: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FrameOutcome {
+    Freed,
+    Held,
+}
+
 impl EvictQueue {
     pub(crate) fn with_capacity(capacity: u32) -> Self {
         Self {
@@ -244,13 +250,13 @@ impl EvictQueue {
         self.entries.front().map(|entry| entry.1)
     }
 
-    /// Reclaims every frame that has aged two full epochs, running `reclaim` for
-    /// each. Entries are tagged in non-decreasing epoch order, so the front
-    /// matures first and a not-yet-matured front ends the pass.
-    pub(crate) fn drain_matured<F: FnMut(ReadFrameIdx)>(
+    /// Processes every frame that has aged two full epochs. Entries are tagged
+    /// in non-decreasing epoch order, so the front matures first and a
+    /// not-yet-matured front ends the pass.
+    pub(crate) fn drain_matured<F: FnMut(ReadFrameIdx, u64) -> FrameOutcome>(
         &mut self,
         global_epoch: u64,
-        mut reclaim: F,
+        mut process: F,
     ) -> usize {
         let mut reclaimed = 0usize;
         while let Some(&(frame, tagged_epoch)) = self.entries.front() {
@@ -262,8 +268,9 @@ impl EvictQueue {
                 "a reclaimed frame has aged two full epochs past its evict tag"
             );
             self.entries.pop_front();
-            reclaim(frame);
-            reclaimed += 1;
+            if process(frame, tagged_epoch) == FrameOutcome::Freed {
+                reclaimed += 1;
+            }
         }
         reclaimed
     }
@@ -358,16 +365,28 @@ impl Drop for ReaderCtx {
 /// ```
 #[derive(Debug)]
 pub struct FrameGuard<'pool> {
-    bytes: &'pool [u8],
-    slot: &'pool ReaderSlot,
+    pub(crate) bytes: &'pool [u8],
+    pub(crate) slot: &'pool ReaderSlot,
+    pub(crate) frame: ReadFrameIdx,
+    pub(crate) file_slot: u32,
+    pub(crate) retention: &'pool Retention,
     _thread_bound: PhantomData<*const ()>,
 }
 
 impl<'pool> FrameGuard<'pool> {
-    pub(crate) fn new(bytes: &'pool [u8], slot: &'pool ReaderSlot) -> Self {
+    pub(crate) fn new(
+        bytes: &'pool [u8],
+        slot: &'pool ReaderSlot,
+        frame: ReadFrameIdx,
+        file_slot: u32,
+        retention: &'pool Retention,
+    ) -> Self {
         Self {
             bytes,
             slot,
+            frame,
+            file_slot,
+            retention,
             _thread_bound: PhantomData,
         }
     }

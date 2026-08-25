@@ -12,12 +12,17 @@
 //! the seqlock write and read back after, so the seqlock's Release/Acquire pairing
 //! is what excludes the torn coupling.
 
+use std::sync::atomic as held_frame_atomic;
+
 use crate::driver::FileId;
 use crate::pool::ReadFrameIdx;
 use crate::product::WaitState;
 use crate::sync::{Arc, AtomicU32, AtomicU64, Mutex, MutexGuard, Ordering};
 
-use super::epoch::{EvictQueue, ReaderSlot, advance_epoch};
+use super::epoch::{
+    EvictQueue, FrameGuard as PoolFrameGuard, FrameOutcome, ReaderSlot, advance_epoch,
+};
+use super::retention::{RetainRefused, RetainedFrame, Retention};
 use super::{
     Clock, FrameState, Frames, PageId, PageTable, PoolFile, PoolFileState, ResidentFileLease,
     ResidentHint, ResidentLeaseError, ResidentLeaseState, SECTOR_BYTES,
@@ -27,45 +32,87 @@ use super::{
 
 struct Control {
     evict_queue: EvictQueue,
+    release_cursor: u64,
     files: Box<[Option<PoolFile>]>,
 }
 
-/// One shared control plane, `N` frames, and a single reader slot — the bounded
-/// entry the T009 loom models drive.
+/// The transition that ran first in one bounded reclaim pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrainSource {
+    /// A zero-count HELD frame from the release ring.
+    Release,
+    /// A matured frame from the epoch queue.
+    Matured,
+}
+
+/// Observable outcomes from the scoped drain-driver stand-in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DrainReport {
+    /// Frames freed from the release ring.
+    pub released: u32,
+    /// Matured queue entries processed, including entries that became HELD.
+    pub matured: u32,
+    /// Matured entries that reached Free.
+    pub matured_freed: u32,
+    /// The first transition performed by the pass.
+    pub first: Option<DrainSource>,
+}
+
+/// One shared control plane, `N` frames, and two reader slots — the bounded
+/// entry the Loom models drive.
 pub struct PoolModel {
     frames: Frames,
     table: PageTable,
     clock: Clock,
     global_epoch: AtomicU64,
-    slot: ReaderSlot,
+    slots: [ReaderSlot; 2],
     // Model scaffolding no loom proof reads: it bypasses `crate::sync` (aliasing it
-    // would add loom state the proofs never use) and is fully qualified so the
-    // sync-alias regression guard allowlists it by name (ARCH-3).
-    held_frame: std::sync::atomic::AtomicU32,
+    // would add loom state the proofs never use) through the diagnostics-only
+    // `held_frame_atomic` allowlist entry (ARCH-3).
+    held_frames: [held_frame_atomic::AtomicU32; 2],
     locked_get_checks: AtomicU32,
     file_live_generations: Box<[AtomicU64]>,
     resident_lease_states: Box<[std::sync::Arc<ResidentLeaseState>]>,
+    retention: Retention,
+    retention_enabled: bool,
     control: Mutex<Control>,
 }
 
 impl PoolModel {
     #[must_use]
     pub fn new(frames: u32) -> Arc<Self> {
+        Self::with_retention(frames, 0)
+    }
+
+    /// Builds the bounded model with the production retention primitives enabled.
+    #[must_use]
+    pub fn with_retention(frames: u32, max_retained_frames: u32) -> Arc<Self> {
+        assert!(frames > 0, "the bounded model has at least one frame");
+        assert!(
+            max_retained_frames <= frames,
+            "the modeled budget does not exceed its frame arena"
+        );
         let wake = std::sync::Arc::new(WaitState::default());
         Arc::new(Self {
             frames: Frames::preallocated(frames, SECTOR_BYTES),
             table: PageTable::with_frame_count(frames),
             clock: Clock::with_frame_count(frames),
             global_epoch: AtomicU64::new(0),
-            slot: ReaderSlot::vacant(),
-            held_frame: std::sync::atomic::AtomicU32::new(0),
+            slots: [ReaderSlot::vacant(), ReaderSlot::vacant()],
+            held_frames: [
+                held_frame_atomic::AtomicU32::new(0),
+                held_frame_atomic::AtomicU32::new(0),
+            ],
             locked_get_checks: AtomicU32::new(0),
             file_live_generations: Box::new([AtomicU64::new(0)]),
             resident_lease_states: Box::new([std::sync::Arc::new(
-                ResidentLeaseState::preallocated(0, wake),
+                ResidentLeaseState::preallocated(0, wake.clone()),
             )]),
+            retention: Retention::preallocated(frames, max_retained_frames, 2, wake),
+            retention_enabled: max_retained_frames > 0,
             control: Mutex::new(Control {
                 evict_queue: EvictQueue::with_capacity(frames),
+                release_cursor: 0,
                 files: (0..crate::driver::MAX_FILES).map(|_| None).collect(),
             }),
         })
@@ -100,8 +147,19 @@ impl PoolModel {
 
     /// Setup, single-threaded before threads spawn: `page` resident in frame 0.
     pub fn make_resident(&self, page: u32, generation: u8) {
+        self.make_resident_in_frame(0, page, generation);
+    }
+
+    /// Setup, single-threaded before threads spawn: installs one exact frame/page pair.
+    pub fn make_resident_in_frame(&self, frame: u32, page: u32, generation: u8) {
+        assert!(frame < self.frames.count(), "setup frame is in range");
         let _control = self.control();
-        self.install(ReadFrameIdx::new(0), Self::page_id(page), generation);
+        self.install(ReadFrameIdx::new(frame), Self::page_id(page), generation);
+    }
+
+    /// Publishes retirement through the production retention flag.
+    pub fn begin_model_file_retirement(&self) {
+        self.retention.mark_file_retiring(0);
     }
 
     /// Reader: publishes the local epoch (real `begin_pin` + `SeqCst` fence) THEN
@@ -116,34 +174,43 @@ impl PoolModel {
     /// proof needs: dropping the inner guard must not republish quiescent while the
     /// outer holds the frame (the last-drop property of `release_guard`).
     pub fn pin(&self, page: u32) -> Option<Guard<'_>> {
-        self.pin_page(Self::page_id(page))
+        self.pin_reader(0, page)
     }
 
-    fn pin_page(&self, page: PageId) -> Option<Guard<'_>> {
-        let first = self
-            .slot
-            .begin_pin(self.global_epoch.load(Ordering::Acquire));
+    pub fn pin_reader(&self, reader: u32, page: u32) -> Option<Guard<'_>> {
+        self.pin_page(reader, Self::page_id(page))
+    }
+
+    fn pin_page(&self, reader: u32, page: PageId) -> Option<Guard<'_>> {
+        let reader = reader as usize;
+        assert!(reader < self.slots.len(), "reader index is in range");
+        let slot = &self.slots[reader];
+        let first = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
         let frame = if first {
             let mapped = self.table.lookup(page);
             let Some(frame) = mapped else {
-                self.slot.abort_pin();
+                slot.abort_pin();
                 return None;
             };
-            self.held_frame.store(frame.get(), Ordering::Relaxed);
+            self.held_frames[reader].store(frame.get(), Ordering::Relaxed);
             frame
         } else {
-            ReadFrameIdx::new(self.held_frame.load(Ordering::Relaxed))
+            ReadFrameIdx::new(self.held_frames[reader].load(Ordering::Relaxed))
         };
         debug_assert!(
             frame.get() < self.frames.count(),
             "a pinned frame — resolved or the held frame a nested pin reuses — is in range"
         );
         let _ = self.clock.reference(frame);
-        self.slot.commit_pin();
+        slot.commit_pin();
         Some(Guard {
-            slot: &self.slot,
-            frames: &self.frames,
-            frame,
+            inner: PoolFrameGuard::new(
+                self.frames.frame_bytes(frame),
+                slot,
+                frame,
+                0,
+                &self.retention,
+            ),
         })
     }
 
@@ -173,7 +240,7 @@ impl PoolModel {
         if !file_generation_is_live(&self.file_live_generations[0], page.file()) {
             return None;
         }
-        if let Some(guard) = self.pin_page(page) {
+        if let Some(guard) = self.pin_page(0, page) {
             return Some(guard);
         }
         let control = self.control();
@@ -182,7 +249,7 @@ impl PoolModel {
             return None;
         }
         drop(control);
-        self.pin_page(page)
+        self.pin_page(0, page)
     }
 
     #[must_use]
@@ -218,16 +285,20 @@ impl PoolModel {
             &self.frames,
             &self.clock,
             &self.global_epoch,
-            &self.slot,
+            &self.slots[0],
             page,
             hint,
         ) else {
             return self.get_file(file_generation, page.granule_idx());
         };
         Some(Guard {
-            slot: &self.slot,
-            frames: &self.frames,
-            frame,
+            inner: PoolFrameGuard::new(
+                self.frames.frame_bytes(frame),
+                &self.slots[0],
+                frame,
+                0,
+                &self.retention,
+            ),
         })
     }
 
@@ -275,12 +346,17 @@ impl PoolModel {
     }
 
     /// Runs one bounded reclaim pass and reopens the reused file slot only when
-    /// its frame has matured through the real epoch queue.
+    /// its frame reaches Free through retention-aware reclaim.
     ///
     /// # Panics
     ///
     /// Panics if the bounded one-frame model attempts to reopen more than once.
-    pub fn poll_reopen(&self, new_file_generation: u32, page: u32, content_generation: u8) {
+    pub fn poll_reopen(
+        &self,
+        new_file_generation: u32,
+        page: u32,
+        content_generation: u8,
+    ) -> DrainReport {
         let mut control = self.control();
         let retiring = control.files[0]
             .as_ref()
@@ -289,27 +365,49 @@ impl PoolModel {
         if let Some(retiring_page) = retiring {
             self.retire_file_frame(&mut control, retiring_page);
         }
-        let global_epoch = advance_epoch(&self.global_epoch, std::slice::from_ref(&self.slot));
+
         let id = FileId::new(0, 0, new_file_generation);
-        let Control { evict_queue, files } = &mut *control;
-        let reopened = evict_queue.drain_matured(global_epoch, |frame| {
-            self.frames.advance(frame, FrameState::Free);
-            self.install(frame, PageId::new(id, page), content_generation);
-            files[0]
-                .as_mut()
-                .expect("the modeled retiring file remains registered")
-                .state = PoolFileState::Retired;
-            publish_live_file(
-                files,
-                &self.file_live_generations[0],
-                &self.resident_lease_states[0],
-                id,
-                None,
-            );
+        let mut reopened = 0u32;
+        let Control {
+            evict_queue,
+            release_cursor,
+            files,
+        } = &mut *control;
+        let report = self.advance_and_reclaim(evict_queue, release_cursor, |frame| {
+            self.reopen_frame(files, frame, id, page, content_generation);
+            reopened += 1;
         });
         assert!(
             reopened <= 1,
             "the one-frame file model reopens at most once"
+        );
+        assert!(
+            report.matured_freed <= 1,
+            "at most one matured frame reaches Free"
+        );
+        report
+    }
+
+    fn reopen_frame(
+        &self,
+        files: &mut [Option<PoolFile>],
+        frame: ReadFrameIdx,
+        id: FileId,
+        page: u32,
+        content_generation: u8,
+    ) {
+        self.frames.advance(frame, FrameState::Free);
+        self.install(frame, PageId::new(id, page), content_generation);
+        files[0]
+            .as_mut()
+            .expect("the modeled retiring file remains registered")
+            .state = PoolFileState::Retired;
+        publish_live_file(
+            files,
+            &self.file_live_generations[0],
+            &self.resident_lease_states[0],
+            id,
+            None,
         );
     }
 
@@ -344,7 +442,9 @@ impl PoolModel {
             .load(Ordering::Acquire)
             .checked_add(1)
             .expect("the bounded Loom epoch remains below the quiescent sentinel");
-        self.slot.permits_advance(next_epoch)
+        self.slots
+            .iter()
+            .all(|slot| slot.permits_advance(next_epoch))
     }
 
     /// Poller: take `page` Resident → Evicting, unmap it, tag the eviction with the
@@ -390,17 +490,26 @@ impl PoolModel {
     /// Poller under the control lock: advance the epoch iff every reader permits,
     /// reclaim two-advance-expired frames, and refill each freed frame by mapping
     /// `refill_page` resident with content-generation `refill_gen`.
-    pub fn poll_pass(&self, refill_page: u32, refill_gen: u8) {
-        self.poll_file_pass(0, refill_page, refill_gen);
+    pub fn poll_pass(&self, refill_page: u32, refill_gen: u8) -> DrainReport {
+        self.poll_file_pass(0, refill_page, refill_gen)
     }
 
     /// Poller under the control lock: advances the epoch and refills each matured
     /// frame with the exact `(file generation, page)` identity and content
     /// generation supplied by the bounded model.
-    pub fn poll_file_pass(&self, file_generation: u32, refill_page: u32, refill_gen: u8) {
+    pub fn poll_file_pass(
+        &self,
+        file_generation: u32,
+        refill_page: u32,
+        refill_gen: u8,
+    ) -> DrainReport {
         let mut control = self.control();
-        let global_epoch = advance_epoch(&self.global_epoch, std::slice::from_ref(&self.slot));
-        let reclaimed = control.evict_queue.drain_matured(global_epoch, |frame| {
+        let Control {
+            evict_queue,
+            release_cursor,
+            ..
+        } = &mut *control;
+        let report = self.advance_and_reclaim(evict_queue, release_cursor, |frame| {
             self.frames.advance(frame, FrameState::Free);
             self.install(
                 frame,
@@ -408,7 +517,7 @@ impl PoolModel {
                 refill_gen,
             );
         });
-        if reclaimed > 0
+        if (report.released > 0 || report.matured_freed > 0)
             && control.files[0]
                 .as_ref()
                 .is_some_and(|file| file.id.generation() != file_generation)
@@ -427,9 +536,172 @@ impl PoolModel {
             );
         }
         debug_assert!(
-            reclaimed <= self.frames.count() as usize,
+            report.matured_freed <= self.frames.count(),
             "a poll pass reclaims at most every frame"
         );
+        report
+    }
+
+    /// Advances the epoch without consuming either reclaim queue.
+    pub fn advance_epoch_only(&self) -> u64 {
+        let _control = self.control();
+        advance_epoch(&self.global_epoch, &self.slots)
+    }
+
+    /// Consumes matured epoch entries without invoking the drain-driver stand-in.
+    #[must_use]
+    pub fn drain_matured_only(&self) -> DrainReport {
+        let mut control = self.control();
+        let global_epoch = advance_epoch(&self.global_epoch, &self.slots);
+        self.drain_matured_entries(&mut control.evict_queue, global_epoch, |frame| {
+            self.frames.advance(frame, FrameState::Free);
+        })
+    }
+
+    /// Runs the scoped advance-and-reclaim stand-in and reports transition order.
+    #[must_use]
+    pub fn drain_driver(&self) -> DrainReport {
+        let mut control = self.control();
+        let Control {
+            evict_queue,
+            release_cursor,
+            ..
+        } = &mut *control;
+        self.advance_and_reclaim(evict_queue, release_cursor, |frame| {
+            self.frames.advance(frame, FrameState::Free);
+        })
+    }
+
+    fn advance_and_reclaim<F>(
+        &self,
+        evict_queue: &mut EvictQueue,
+        release_cursor: &mut u64,
+        mut on_free: F,
+    ) -> DrainReport
+    where
+        F: FnMut(ReadFrameIdx),
+    {
+        let (retention_enabled, released) =
+            match self.retention.release_drain_needed(*release_cursor) {
+                Some(true) => {
+                    let pass_start_epoch = self.global_epoch.load(Ordering::Acquire);
+                    let released =
+                        self.drain_release_entries(release_cursor, pass_start_epoch, &mut on_free);
+                    (true, released)
+                }
+                Some(false) => (true, 0),
+                None => (false, 0),
+            };
+        let global_epoch = advance_epoch(&self.global_epoch, &self.slots);
+        let retention_occupied =
+            retention_enabled && self.retention.occupied_budget.load(Ordering::Acquire) != 0;
+        let mut report = if retention_occupied {
+            self.drain_matured_entries(evict_queue, global_epoch, on_free)
+        } else {
+            let mut first = None;
+            let mut matured = 0u32;
+            let matured_freed = evict_queue.drain_matured(global_epoch, |frame, _tag| {
+                if first.is_none() {
+                    first = Some(DrainSource::Matured);
+                }
+                matured = matured
+                    .checked_add(1)
+                    .expect("a pass processes at most the bounded frame count");
+                on_free(frame);
+                FrameOutcome::Freed
+            });
+            DrainReport {
+                released: 0,
+                matured,
+                matured_freed: u32::try_from(matured_freed)
+                    .expect("the bounded frame count fits u32"),
+                first,
+            }
+        };
+        if released > 0 {
+            report.first = Some(DrainSource::Release);
+        }
+        report.released = released;
+        report
+    }
+
+    fn drain_matured_entries<F>(
+        &self,
+        evict_queue: &mut EvictQueue,
+        global_epoch: u64,
+        mut on_free: F,
+    ) -> DrainReport
+    where
+        F: FnMut(ReadFrameIdx),
+    {
+        let mut first = None;
+        let mut matured = 0u32;
+        let matured_freed = evict_queue.drain_matured(global_epoch, |frame, tag| {
+            if first.is_none() {
+                first = Some(DrainSource::Matured);
+            }
+            matured = matured
+                .checked_add(1)
+                .expect("a pass processes at most the bounded frame count");
+            let outcome = self.retention.matured_outcome(frame, tag);
+            if matches!(outcome, FrameOutcome::Freed) {
+                on_free(frame);
+            }
+            outcome
+        });
+        DrainReport {
+            released: 0,
+            matured,
+            matured_freed: u32::try_from(matured_freed).expect("the bounded frame count fits u32"),
+            first,
+        }
+    }
+
+    /// Drains only the production release ring from the model's single-consumer cursor.
+    pub fn drain_releases_only(&self) -> u32 {
+        let mut control = self.control();
+        if !self.retention_enabled {
+            return 0;
+        }
+        let pass_start_epoch = self.global_epoch.load(Ordering::Acquire);
+        let Control { release_cursor, .. } = &mut *control;
+        self.drain_release_entries(release_cursor, pass_start_epoch, |frame| {
+            self.frames.advance(frame, FrameState::Free);
+        })
+    }
+
+    fn drain_release_entries<F>(
+        &self,
+        release_cursor: &mut u64,
+        pass_start_epoch: u64,
+        mut on_free: F,
+    ) -> u32
+    where
+        F: FnMut(ReadFrameIdx),
+    {
+        let mut released = 0u32;
+        self.retention
+            .drain_releases(release_cursor, pass_start_epoch, |frame| {
+                on_free(frame);
+                released = released
+                    .checked_add(1)
+                    .expect("a release pass frees at most the bounded frame count");
+            });
+        released
+    }
+
+    /// Observes whether a frame has reached the direct-free terminal state.
+    #[must_use]
+    pub fn frame_is_free(&self, frame: u32) -> bool {
+        assert!(frame < self.frames.count(), "observed frame is in range");
+        self.frames.state(ReadFrameIdx::new(frame)) == FrameState::Free
+    }
+
+    /// Observes whether a matured retained frame remains physically held.
+    #[must_use]
+    pub fn frame_is_evicting(&self, frame: u32) -> bool {
+        assert!(frame < self.frames.count(), "observed frame is in range");
+        self.frames.state(ReadFrameIdx::new(frame)) == FrameState::Evicting
     }
 
     /// Writer under the control lock: remap `page` to a fresh frame (frame 1)
@@ -455,22 +727,19 @@ impl PoolModel {
 /// guard drops (nested guards share the published epoch via the real per-thread
 /// count).
 pub struct Guard<'pool> {
-    slot: &'pool ReaderSlot,
-    frames: &'pool Frames,
-    frame: ReadFrameIdx,
+    inner: PoolFrameGuard<'pool>,
 }
 
-impl Guard<'_> {
+impl<'pool> Guard<'pool> {
     /// Re-reads the LIVE frame content, not a pin-time copy.
     #[must_use]
     pub fn generation(&self) -> u8 {
-        self.frames.frame_bytes(self.frame)[0]
+        self.inner[0]
     }
-}
 
-impl Drop for Guard<'_> {
-    fn drop(&mut self) {
-        self.slot.release_guard();
+    /// Promotes through the production retention word while the epoch guard is live.
+    pub fn into_retained(self) -> Result<RetainedFrame<'pool>, RetainRefused<'pool>> {
+        self.inner.into_retained()
     }
 }
 

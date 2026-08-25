@@ -35,11 +35,13 @@ mod frames;
 #[cfg(loom)]
 pub mod loom_model;
 mod miss;
+mod retention;
 mod table;
 pub(crate) mod write_arena;
 
-use epoch::{EvictQueue, ReaderRegistry, advance_epoch};
+use epoch::{EvictQueue, FrameOutcome, ReaderRegistry, advance_epoch};
 use miss::{MissEntry, MissInterests, MissOutcome, MissSlot, MissTable};
+use retention::Retention;
 
 pub use clock::Clock;
 pub use epoch::{FrameGuard, ReaderCtx};
@@ -47,6 +49,7 @@ pub(crate) use frames::Frames;
 pub use frames::{FrameState, ReadFrameIdx};
 pub(crate) use miss::PoolBackend;
 pub(crate) use miss::sealed::Sealed as PoolBackendSealed;
+pub use retention::{RetainRefused, RetainRefusedReason, RetainedFrame, RetentionStats};
 pub use table::PageTable;
 #[cfg(feature = "bench")]
 pub(crate) use table::page_hash;
@@ -311,6 +314,13 @@ impl Drop for PendingToken {
 /// — an open-time typed error, never a runtime deadlock (INV-9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PoolConfigError {
+    /// Retention bookkeeping cannot represent the requested fixed budget.
+    RetentionUnrepresentable {
+        /// Requested retained-frame budget or reader bound.
+        requested: u32,
+        /// Largest value representable by the constrained fixed counter.
+        limit: u32,
+    },
     /// `frame_count` is below the deadlock-freedom watermark.
     BelowWatermark {
         /// Configured frame count.
@@ -348,6 +358,10 @@ pub enum PoolConfigError {
 impl std::fmt::Display for PoolConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::RetentionUnrepresentable { requested, limit } => write!(
+                f,
+                "retention-capacity request {requested} exceeds the representable limit {limit}"
+            ),
             Self::BelowWatermark {
                 frame_count,
                 watermark,
@@ -479,6 +493,7 @@ pub struct PoolBuilder {
     peak_guards_per_reader: u32,
     max_inflight_reads: u32,
     miss_headroom: u32,
+    max_retained_frames: u32,
     write_slots: u32,
     max_inflight_product_ops: u32,
 }
@@ -492,6 +507,7 @@ impl Default for PoolBuilder {
             peak_guards_per_reader: 0,
             max_inflight_reads: 0,
             miss_headroom: 0,
+            max_retained_frames: 0,
             write_slots: 0,
             max_inflight_product_ops: 0,
         }
@@ -541,6 +557,12 @@ impl PoolBuilder {
         self
     }
 
+    #[must_use]
+    pub fn max_retained_frames(mut self, max_retained_frames: u32) -> Self {
+        self.max_retained_frames = max_retained_frames;
+        self
+    }
+
     /// Sets the exact number of product write staging slots.
     #[must_use]
     pub fn write_slots(mut self, write_slots: u32) -> Self {
@@ -578,6 +600,7 @@ impl PoolBuilder {
                 sector: SECTOR_BYTES,
             });
         }
+        self.validate_retention_capacity()?;
         let Some(minimum) = self.max_inflight_reads.checked_mul(3) else {
             return Err(PoolConfigError::MissHeadroomTooSmall {
                 miss_headroom: self.miss_headroom,
@@ -593,11 +616,41 @@ impl PoolBuilder {
         let watermark = (u64::from(self.max_concurrent_readers)
             * u64::from(self.peak_guards_per_reader)
             + u64::from(self.miss_headroom))
-        .max(1);
+        .max(1)
+            + u64::from(self.max_retained_frames);
         if u64::from(self.frame_count) < watermark {
             return Err(PoolConfigError::BelowWatermark {
                 frame_count: self.frame_count,
                 watermark: u32::try_from(watermark).unwrap_or(u32::MAX),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_retention_capacity(&self) -> Result<(), PoolConfigError> {
+        const RING_LIMIT: u32 = 1 << 31;
+        if self.max_retained_frames > RING_LIMIT {
+            return Err(PoolConfigError::RetentionUnrepresentable {
+                requested: self.max_retained_frames,
+                limit: RING_LIMIT,
+            });
+        }
+        let Some(tally_limit) = u32::MAX.checked_sub(self.max_concurrent_readers) else {
+            return Err(PoolConfigError::RetentionUnrepresentable {
+                requested: self.max_concurrent_readers,
+                limit: u32::MAX - 1,
+            });
+        };
+        if self.max_retained_frames > tally_limit {
+            return Err(PoolConfigError::RetentionUnrepresentable {
+                requested: self.max_retained_frames,
+                limit: tally_limit,
+            });
+        }
+        if self.max_concurrent_readers.checked_add(1).is_none() {
+            return Err(PoolConfigError::RetentionUnrepresentable {
+                requested: self.max_concurrent_readers,
+                limit: u32::MAX - 1,
             });
         }
         Ok(())
@@ -664,6 +717,7 @@ struct Control {
     batch: CompletionBatch,
     product_ops: Box<[ProductOpSlot]>,
     product_sequence: u64,
+    release_cursor: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -754,6 +808,7 @@ pub struct Pool<D = Driver> {
     control: Mutex<Control>,
     file_live_generations: Box<[AtomicU64]>,
     resident_lease_states: Box<[Arc<ResidentLeaseState>]>,
+    retention: Retention,
     #[cfg(feature = "mock")]
     control_acquisitions: ObservationAtomicU64,
     driver: D,
@@ -762,6 +817,37 @@ pub struct Pool<D = Driver> {
     max_concurrent_readers: u32,
     write_slots: u32,
     identity: u64,
+}
+
+impl<D> Drop for Pool<D> {
+    fn drop(&mut self) {
+        if self.retention.is_disabled() {
+            return;
+        }
+        #[cfg(not(loom))]
+        let control = self
+            .control
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(loom)]
+        let control = self
+            .control
+            .get_mut()
+            .expect("loom mutex is never poisoned");
+        let pass_start_epoch = self.global_epoch.load(Ordering::Acquire);
+        let frames = &self.frames;
+        let frame_pages = &mut control.frame_pages;
+        self.retention
+            .drain_releases(&mut control.release_cursor, pass_start_epoch, |frame| {
+                assert_eq!(
+                    frames.state(frame),
+                    FrameState::Evicting,
+                    "a release-ring frame remains Evicting until direct free"
+                );
+                frames.advance(frame, FrameState::Free);
+                frame_pages[frame.get() as usize] = None;
+            });
+    }
 }
 
 impl Pool<Driver> {
@@ -777,6 +863,25 @@ impl Pool<Driver> {
     reason = "the private sealed bound preserves static dispatch for the two crate-owned pool backends"
 )]
 impl<D: PoolBackend> Pool<D> {
+    fn preallocated_control(config: &PoolBuilder, backend_capacity: usize) -> Control {
+        assert!(backend_capacity > 0, "backend batch capacity is positive");
+        Control {
+            evict_queue: EvictQueue::with_capacity(config.frame_count),
+            miss: MissTable::with_capacity(config.frame_count),
+            frame_pages: (0..config.frame_count).map(|_| None).collect(),
+            files: (0..MAX_FILES).map(|_| None).collect(),
+            batch: CompletionBatch::with_capacity(backend_capacity),
+            product_ops: (0..config.max_inflight_product_ops)
+                .map(|_| ProductOpSlot {
+                    generation: 0,
+                    operation: None,
+                })
+                .collect(),
+            product_sequence: 0,
+            release_cursor: 0,
+        }
+    }
+
     fn preallocated(config: PoolBuilder, driver: D, frames: Arc<Frames>) -> Self {
         assert_eq!(
             frames.count(),
@@ -804,20 +909,7 @@ impl<D: PoolBackend> Pool<D> {
             .checked_add(config.max_inflight_product_ops)
             .expect("validated queue capacity")
             .max(1) as usize;
-        let control = Control {
-            evict_queue: EvictQueue::with_capacity(config.frame_count),
-            miss: MissTable::with_capacity(config.frame_count),
-            frame_pages: (0..config.frame_count).map(|_| None).collect(),
-            files: (0..MAX_FILES).map(|_| None).collect(),
-            batch: CompletionBatch::with_capacity(backend_capacity),
-            product_ops: (0..config.max_inflight_product_ops)
-                .map(|_| ProductOpSlot {
-                    generation: 0,
-                    operation: None,
-                })
-                .collect(),
-            product_sequence: 0,
-        };
+        let control = Self::preallocated_control(&config, backend_capacity);
         Self {
             frames,
             table: PageTable::with_frame_count(config.frame_count),
@@ -838,6 +930,12 @@ impl<D: PoolBackend> Pool<D> {
                     ))
                 })
                 .collect(),
+            retention: Retention::preallocated(
+                config.frame_count,
+                config.max_retained_frames,
+                config.max_concurrent_readers,
+                Arc::clone(&wake),
+            ),
             #[cfg(feature = "mock")]
             control_acquisitions: ObservationAtomicU64::new(0),
             driver,
@@ -847,6 +945,10 @@ impl<D: PoolBackend> Pool<D> {
             write_slots: config.write_slots,
             identity: pool_identity,
         }
+    }
+
+    pub fn retention_stats(&self) -> RetentionStats {
+        self.retention.retention_stats()
     }
 
     /// Borrows the composed driver — a test/observation seam.
@@ -966,6 +1068,13 @@ impl<D: PoolBackend> Pool<D> {
         let slot = fd.file_id().slot() as usize;
         let id = fd.file_id();
         let mut control = self.control();
+        assert!(
+            control.files[slot]
+                .as_ref()
+                .is_none_or(|entry| entry.state == PoolFileState::Retired),
+            "a file slot is absent or retired before registration"
+        );
+        self.retention.clear_file_retiring(id.slot());
         publish_live_file(
             &mut control.files,
             &self.file_live_generations[slot],
@@ -1004,6 +1113,7 @@ impl<D: PoolBackend> Pool<D> {
         page: PageId,
     ) -> Result<Get<'pool>, GetError> {
         self.assert_reader_owner(reader);
+        let reader_slot = reader.slot();
         assert_eq!(
             page.file().driver(),
             self.identity,
@@ -1015,7 +1125,7 @@ impl<D: PoolBackend> Pool<D> {
         ) {
             return Err(GetError::StaleFile { page });
         }
-        if let Some(guard) = self.pin_internal(reader, page) {
+        if let Some(guard) = self.pin_internal_borrowed(reader_slot, &page) {
             return Ok(Get::Hit(guard));
         }
         let mut control = self.control();
@@ -1028,7 +1138,7 @@ impl<D: PoolBackend> Pool<D> {
             .is_some_and(|frame| self.frames.state(frame) == FrameState::Resident)
         {
             drop(control);
-            return Ok(match self.pin_internal(reader, page) {
+            return Ok(match self.pin_internal_borrowed(reader_slot, &page) {
                 Some(guard) => Get::Hit(guard),
                 None => Get::Busy,
             });
@@ -1154,6 +1264,9 @@ impl<D: PoolBackend> Pool<D> {
         Ok(Get::Hit(FrameGuard::new(
             self.frames.frame_bytes(frame),
             reader.slot(),
+            frame,
+            page.file().slot(),
+            &self.retention,
         )))
     }
 
@@ -1201,9 +1314,13 @@ impl<D: PoolBackend> Pool<D> {
                     Some(entry.frame()),
                     "a successful terminal record protects its exact mapped frame"
                 );
-                let guard = self
-                    .pin_owned(reader, entry.page())
+                let slot = reader.slot();
+                let page = entry.page();
+                let (bytes, frame) = self
+                    .pin_owned(&page, slot)
                     .expect("the protected successful frame remains pinnable");
+                let guard =
+                    FrameGuard::new(bytes, slot, frame, page.file().slot(), &self.retention);
                 let slot = token.slot;
                 let generation = token.generation;
                 let _ = token.consume();
@@ -1437,6 +1554,7 @@ impl<D: PoolBackend> Pool<D> {
         if entry.state == PoolFileState::Retired {
             return RetireStatus::Retired;
         }
+        self.retention.mark_file_retiring(file.slot());
         let started = begin_file_retirement(entry, &self.file_live_generations[index], file);
         self.progress_retirements(&mut control);
         if started {
@@ -1572,17 +1690,32 @@ impl<D: PoolBackend> Pool<D> {
         page: PageId,
     ) -> Option<FrameGuard<'ctx>> {
         self.assert_reader_owner(reader);
-        self.pin_owned(reader, page)
+        self.pin_internal_borrowed(reader.slot(), &page)
     }
 
-    fn pin_owned<'ctx>(
+    fn pin_internal_borrowed<'ctx>(
         &'ctx self,
-        reader: &'ctx ReaderCtx,
-        page: PageId,
+        slot: &'ctx epoch::ReaderSlot,
+        page: &PageId,
     ) -> Option<FrameGuard<'ctx>> {
-        let slot = reader.slot();
+        let (bytes, frame) = self.pin_owned(page, slot)?;
+        Some(FrameGuard::new(
+            bytes,
+            slot,
+            frame,
+            page.file().slot(),
+            &self.retention,
+        ))
+    }
+
+    #[inline(never)]
+    fn pin_owned<'pool>(
+        &'pool self,
+        page: &PageId,
+        slot: &epoch::ReaderSlot,
+    ) -> Option<(&'pool [u8], ReadFrameIdx)> {
         let first_guard = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
-        let mapped = self.table.lookup(page);
+        let mapped = self.table.lookup(*page);
         let Some(frame) = mapped else {
             if first_guard {
                 slot.abort_pin();
@@ -1591,7 +1724,7 @@ impl<D: PoolBackend> Pool<D> {
         };
         let _ = self.clock.reference(frame);
         slot.commit_pin();
-        Some(FrameGuard::new(self.frames.frame_bytes(frame), slot))
+        Some((self.frames.frame_bytes(frame), frame))
     }
 
     fn assert_reader_owner(&self, reader: &ReaderCtx) {
@@ -1732,9 +1865,13 @@ impl<D: PoolBackend> Pool<D> {
             if !control.miss.prepare_eviction(victim, &self.miss_interests) {
                 continue;
             }
-            if let Some(page) = control.frame_pages[victim.get() as usize] {
-                self.table.remove_shared(page);
-            }
+            let page = control.frame_pages[victim.get() as usize]
+                .expect("a resident eviction victim has a reverse page mapping");
+            let removed = self
+                .table
+                .remove_shared(page)
+                .expect("a resident eviction victim remains mapped");
+            assert_eq!(removed, victim, "the reverse mapping names the victim");
             self.frames.advance(victim, FrameState::Evicting);
             control.evict_queue.push(victim, epoch);
             return;
@@ -1926,13 +2063,54 @@ impl<D: PoolBackend> Pool<D> {
     }
 
     fn advance_and_reclaim(&self, control: &mut Control) -> usize {
-        let global_epoch = advance_epoch(&self.global_epoch, self.readers.slots());
         let frames = &self.frames;
-        let frame_pages = &mut control.frame_pages;
-        control.evict_queue.drain_matured(global_epoch, |frame| {
-            frames.advance(frame, FrameState::Free);
-            frame_pages[frame.get() as usize] = None;
-        })
+        let retention = &self.retention;
+        let Control {
+            evict_queue,
+            frame_pages,
+            release_cursor,
+            ..
+        } = control;
+        let (retention_enabled, release_reclaimed) =
+            match retention.release_drain_needed(*release_cursor) {
+                Some(true) => {
+                    let pass_start_epoch = self.global_epoch.load(Ordering::Acquire);
+                    let mut reclaimed = 0;
+                    retention.drain_releases(release_cursor, pass_start_epoch, |frame| {
+                        assert_eq!(
+                            frames.state(frame),
+                            FrameState::Evicting,
+                            "a release-ring frame remains Evicting until direct free"
+                        );
+                        frames.advance(frame, FrameState::Free);
+                        frame_pages[frame.get() as usize] = None;
+                        reclaimed += 1;
+                    });
+                    (true, reclaimed)
+                }
+                Some(false) => (true, 0),
+                None => (false, 0),
+            };
+        let global_epoch = advance_epoch(&self.global_epoch, self.readers.slots());
+        let retention_occupied =
+            retention_enabled && retention.occupied_budget.load(Ordering::Acquire) != 0;
+        let matured_reclaimed = if retention_occupied {
+            evict_queue.drain_matured(global_epoch, |frame, tag| {
+                let outcome = retention.matured_outcome(frame, tag);
+                if outcome == FrameOutcome::Freed {
+                    frames.advance(frame, FrameState::Free);
+                    frame_pages[frame.get() as usize] = None;
+                }
+                outcome
+            })
+        } else {
+            evict_queue.drain_matured(global_epoch, |frame, _tag| {
+                frames.advance(frame, FrameState::Free);
+                frame_pages[frame.get() as usize] = None;
+                FrameOutcome::Freed
+            })
+        };
+        release_reclaimed + matured_reclaimed
     }
 
     /// Cumulative clear→set CLOCK reference-bit stores across every `get()` hit

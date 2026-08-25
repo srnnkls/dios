@@ -1,0 +1,406 @@
+scope: pinned-frame-retention
+created: 2026-08-17
+issue_type: Feature
+validation_depth: standard
+
+ambiguity_scan:
+  scope: clear        # pin promotion; boundaries to sira adapter and victim policy stated
+  behavior: clear     # promotion ordering, refusal-carries-guard, HELD release resolved
+  data_model: clear   # per-frame packed retention word + HELD bit, preallocated
+  constraints: clear  # INV-9; memlock fork resolved r11 — kernel-default baseline, raised limit demoted to opt-in knob
+  edge_cases: clear   # exhaustion, partial-session rollback, promote/evict race
+  integration: clear  # R8 consumer contract plus DRP010 serialization/rebase stated
+  terminology: clear  # retain / promote / transient guard / HELD defined in design.md
+
+questions:
+  - area: behavior
+    question: RetainedFrame cloneable (shared retentions) or one handle per promotion?
+    answer: No Clone in v1; N values in one frame take N independent pins.
+  - area: affinity
+    question: Should RetainedFrame be Send?
+    answer: "!Send in v1; release stays on the owning thread and the consumer session is thread-local."
+  - area: edge_cases
+    question: How is retention capacity bounded?
+    answer: PoolBuilder::max_retained_frames, validated against the augmented INV-9 watermark at build.
+  - area: benchmark
+    question: How can the exact 8,035-page R8 arm run on the registered shipping backend under the host's 8 MiB hard memlock limit?
+    answer: >-
+      It cannot on the registered backend under defaults. Owner decision
+      (revision 11, terminology corrected r13): the baseline operates under
+      the stock unprivileged 8 MiB limit (systemd DefaultLimitMEMLOCK; the
+      kernel's own 64 KiB default is not a target), so the exact arm runs
+      the Unregistered posture from arena-modernization:AM4; raising the
+      limit is an opt-in optimization knob only, and a smaller workload
+      stays labelled non-equivalent to R8.
+  - area: benchmark
+    question: What distinguishes a valid warm comparison from mere page-cache residency in the retained-vs-locator arm?
+    answer: >-
+      Prefaulted locator mapping (MADV_POPULATE_READ), zero timed-region
+      minor AND major faults on both arms (RUSAGE_THREAD), an identical
+      pinned BlockVerification mode, one identical segment layout across
+      arms (a pair on the SAP1 superblock layout is a new baseline, not an
+      R8 reproduction), and both sides' recorded page-size state — page-
+      cache residency proves neither PTE presence nor TLB state. The
+      <= 1.02 threshold is a tie gate with the equal-regime qualifier: a
+      sub-1.0 ratio is interpretable only where the arms' page-size states
+      differ (the Capacity lever). The arm itself is a sira-side companion
+      run recorded in dependencies.yaml, not authored by T1.
+
+context_sources:
+  - resources/r8-resident-set.md (formal R8 evidence, rejected prototype, selected performance shape)
+  - .artifacts/r8/resident-set/formal/ (manifested local evidence)
+  - src/pool/epoch.rs (EBR slots, EvictQueue, advance_epoch)
+  - src/pool/mod.rs (INV-9 watermark validation)
+  - AGENTS.md (bench-driven development, safety rules)
+  - scopes/draft/plan-prefetch/resources/landscape-audit.md (causal memlock probe)
+  - scopes/draft/dios-r1-r7-read-performance/ (serialized frame-state/reclaim predecessor)
+
+review_config:
+  reviewers:
+    - alias: opus
+      class: host-native
+      effort: inherit
+    - alias: gpt
+      class: peer
+      harness: codex
+      effort: high
+    - alias: gemini
+      class: peer
+      harness: pi
+      effort: high
+
+terminology_note: >
+  Rounds 1-2 records use the original vocabulary; renamed at revision 2/5:
+  PinnedFrame -> RetainedFrame, max_pinned_frames -> max_retained_frames,
+  PinnedEvicted -> HELD. Historical entries are preserved verbatim.
+
+review_gate:
+  status: passed
+  passed_revision: 9
+  pending_revision: 13
+  pending_note: >-
+    Round 9 (2026-08-20) reviewed revision 12 with two focused reviewers
+    (retention-r12-consistency-review, retention-r12-claims-review): FAILED
+    with 8 blocking findings, all resolved in revision 13 — T8 split into
+    T8a (arena-independent gates, closure-blocking) and T8b (exact-R8 arm,
+    AM4-gated, non-closure-blocking); retained-vs-locator tie gate
+    reassigned to a sira-side companion run with the cross-repo obligation
+    recorded; arena posture made part of arm identity (exact-R8 arm =
+    Unregistered); "kernel-default RLIMIT_MEMLOCK" corrected to the stock
+    systemd 8 MiB unprivileged limit vs the kernel's 64 KiB default; the
+    probe ENOMEM causal claim demoted to an open attribution with
+    candidates (two registered arenas; compound-page pinning), bounds, and
+    the VmPin rerun observable; the tie gate given its equal-regime
+    qualifier; the XFS file-THP correction propagated to design.md and the
+    R8 resource with "MAY (unverified on 6.6.64)" register; fault rules
+    extended to ru_majflt with RUSAGE_THREAD and stated per-arm; sparse
+    registration corrected (nr fixed at registration, 2 MiB granule
+    quantisation under THP, at most four granules in the 8 MiB budget);
+    resolvable citations added. Nine non-blocking nits folded in the same
+    pass. Mechanism, API, and protocol remain unchanged from revision 9.
+    Prior pending note follows.
+    ---
+    Revision 10 adds bench warm-state controls (prefault, timed-region
+    minor-fault counts, BlockVerification-mode pin), tie-gate framing for
+    the retained-vs-locator threshold, and memory-architecture consequences
+    on the memlock fork. Revision 11 records the owner decision resolving
+    that fork (kernel-default baseline, raised limit demoted to opt-in
+    knob, T8 external dependency), corrects the THP claim, and pins rerun
+    layout identity against the SAP1 superblock change. Revision 12 folds
+    the 2026-08-20 research sweep: sparse registration
+    (BUFFERS2/BUFFERS_UPDATE, 5.13+) recorded as the intermediate memlock
+    posture; registration-is-a-THP-freeze ordering pin; hugepage-lever
+    asymmetry narrowed (XFS >= 5.18 madvised file mappings can obtain PMD
+    folios — bench arms record both sides' page-size state); memlock-probe
+    ring-accounting reinterpretation noted in the R8 resource; the T8
+    external dependency retargeted from the unscoped
+    dios-unregistered-buffer-backend placeholder to arena-modernization
+    AM4. Mechanism, API, and protocol remain unchanged.
+  date: 2026-08-19
+  reviewers: [retention-r9-performance-review, retention-r9-consistency-review]
+  rounds_run: 8
+  blocking_resolved_total: 33
+  deferred_nits: []
+  rounds:
+    - round: 1
+      date: 2026-08-17
+      reviewed_revision: 1
+      result: failed
+      reviewers: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+      blocking_found: 9
+      blocking_resolved: 9
+      detail: review.yaml
+    - round: 2
+      reviewed_revision: 2
+      result: failed
+      reviewers: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+      blocking_found: 8
+      blocking_resolved: 8
+      detail: review.yaml
+      note: gemini first dispatch returned empty; solo redispatch succeeded (pass)
+    - round: 3
+      reviewed_revision: 3
+      result: failed
+      reviewers: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+      blocking_found: 7
+      blocking_resolved: 7
+      detail: review.yaml
+      note: two criticals found convergently by all three reviewers; revision-3 architecture otherwise verified by native review
+    - round: 4
+      reviewed_revision: 4
+      result: failed
+      reviewers: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+      blocking_found: 6
+      blocking_resolved: 6
+      detail: review.yaml
+      note: core mechanism verified by native review; findings confined to auxiliary mechanisms (ring producer progress, wake liveness, orderings, task hygiene)
+    - round: 5
+      reviewed_revision: 5
+      result: failed
+      reviewers: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+      blocking_found: 7
+      blocking_resolved: 7
+      detail: review.yaml
+      note: core proofs verified by native review; criticals confined to the wake handshake (atomics -> mutex-mediated) and the Linux park path
+    - round: 6
+      reviewed_revision: 6
+      result: failed
+      reviewers: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+      blocking_found: 4
+      blocking_resolved: 4
+      detail: review.yaml
+      note: no criticals; native review passed 4/5 gates and verified the wake protocol exhaustively; gemini passed all gates
+    - round: 7
+      reviewed_revision: 7
+      result: passed_after_triage
+      reviewers: [opus, codex-gpt5.6-sol, gemini-3.5-flash]
+      blocking_found: 0
+      deferred_nits_folded: 8
+      detail: review.yaml
+      note: opus and gemini passed all gates; gpt's two highs triaged non-blocking (rationale in review.yaml) and materially folded into revision 8
+    - round: 8
+      reviewed_revision: 9
+      result: passed
+      reviewers: [retention-r9-performance-review, retention-r9-consistency-review]
+      blocking_found: 0
+      detail: review.yaml
+      note: >-
+        Focused final review verified the R8-shaped session consumer, HELD
+        reclamation policy, DRP010 serialization, task-local RED pipeline, and
+        explicit unresolved shipping-memlock fork. Execution remains blocked
+        by DRP010 and the T1 owner decision.
+
+decision_log:
+  - date: 2026-08-23
+    decision: Select release draining from the current consumer slot's published sequence or the terminal pending hint.
+    alternatives:
+      - Select from occupied budget, which performs enabled-empty work and cannot distinguish resident retentions from consumable releases.
+      - Select from ring tail, which mistakes ticket reservation for slot publication.
+    reason: Current-slot readiness is the earliest safe consumability signal; the pending hint preserves the push-before-pending terminal race.
+  - date: 2026-08-23
+    decision: Publish HELD pending state and choose any parked wake under one generation-mutex acquisition.
+    alternatives:
+      - Keep separate pending-publication and wake acquisitions.
+      - Wake unconditionally on every final drop.
+    reason: One acquisition preserves the mutex-mediated handshake without duplicate locking or an unconditional eventfd syscall.
+  - date: 2026-08-23
+    decision: Keep epoch advancement unconditional, defer the pass-start epoch load until a release drain is selected, and retain the post-epoch occupied-budget Acquire.
+    alternatives:
+      - Reuse a pre-epoch zero observation.
+      - Skip epoch advancement on an enabled-empty pass.
+    reason: Loom falsified the pre-epoch reuse; only the pass-start load is avoidable when no release is consumable.
+  - date: 2026-08-23
+    decision: Define wait_until_parked as an in-progress park with unmatched entered and exited publications.
+    alternatives:
+      - Treat pre-park progress as parked.
+      - Treat any historical entered publication as parked.
+    reason: The former produced a witnessed false-positive; the latter would report completed parks as current.
+  - date: 2026-08-23
+    decision: Preserve every recorded T8a threshold and close the scope after T8a and T9 while retaining T8b as an explicit AM4-blocked obligation.
+    alternatives:
+      - Relax a failed threshold.
+      - Substitute a scaled or raised-memlock arm for the exact R8 shipping arm.
+      - Block scope closure on the non-closure dependency.
+    reason: The bench plan forbids silent relaxation and substitution; scope revision 13 makes T8b non-closure-blocking.
+  - date: 2026-08-23
+    decision: Continue autonomously through verification, gates, documentation, and closure, choosing the smallest conformant path without interactive decisions.
+    alternatives:
+      - Pause for each reversible implementation or gate decision.
+    reason: Explicit execution authorization delegates reasonable path selection; irreversible external actions remain outside this scope.
+  - date: 2026-08-23
+    decision: Rerun the transient guard gate against the final candidate identity.
+    alternatives:
+      - Reuse the v11 PASS from candidate 2e630b1 as final closure evidence.
+    reason: The binding validator requires the exact candidate source commit; the earlier PASS remains characterization only.
+  - date: 2026-08-23
+    decision: Build v15 from clean isolated product clones on nix while keeping the controller checkout limited to the runner identity edit.
+    alternatives:
+      - Build products from the dirty controller checkout.
+      - Reuse v14 executables after the source commit changes.
+    reason: Product and executable seals must bind to clean baseline and final-candidate commits; target artifacts are versioned to prevent evidence overwrite.
+  - date: 2026-08-23
+    decision: Wait for the root-owned benchmark profile before running timing lanes.
+    alternatives:
+      - Bypass bench-host-guard.
+      - Run with THP set to madvise and relabel the evidence.
+      - Change host thresholds or validity rules.
+    reason: The frozen host protocol requires bench_profile=active and THP=never; automated sudo, polkit, and direct-specialisation activation routes were unavailable.
+  - date: 2026-08-24
+    decision: Run benchmark tasks with the verified mise 2026.8.0 executable from the sealed v15 tool directory.
+    alternatives:
+      - Use the remote wrapper's system mise 2026.7.0.
+      - Weaken or bypass the mise identity check.
+    reason: The benchmark profile passed unchanged, and the host guard rejected only the wrapper-selected mise version; the sealed executable satisfies the frozen tool identity.
+  - date: 2026-08-24
+    decision: Accept the fresh v15 transient-guard lane as final-candidate evidence.
+    alternatives:
+      - Reuse the earlier candidate's characterization.
+      - Rerun the valid lane under a different suffix.
+    reason: All 40 pairs validated against candidate 537ecf6c; the candidate/base geomean was 0.9449 and the one-sided CI95 upper was 0.9571, passing the unchanged 1.01 gate.
+  - date: 2026-08-24
+    decision: Treat the valid v15 nonzero-budget poll result as a binding performance RED and invoke only its recorded escalation lever.
+    alternatives:
+      - Rerun the valid lane as noise.
+      - Relax the 1.01 threshold.
+      - Continue scope closure despite the failed gate.
+    reason: All 40 pairs passed validity, but budget64/zero measured a 1.0570 geomean and 1.0700 one-sided CI95 upper; the frozen plan requires profiling and poll-boundary retention-work reduction.
+  - date: 2026-08-24
+    decision: Converge disabled and enabled post-epoch occupied-zero reclamation on one plain matured-drain source site.
+    alternatives:
+      - Keep the duplicate optimized loops and rerun unchanged.
+      - Remove current-slot or terminal-hint release selection.
+      - Remove or move the mandatory post-epoch occupied-budget Acquire.
+      - Route occupied frames through the plain drain.
+    reason: The sealed assembly attributes enabled-empty overhead to a second loop with extra per-frame moves; sharing the plain loop removes that duplication without changing release selection, epoch order, or retained-frame safety.
+  - date: 2026-08-24
+    decision: Freeze dddf923117c7bdf9c4b24483276a9dd77f09208b as the next clean timing candidate and invalidate prior v15 PASS evidence for final closure.
+    alternatives:
+      - Time the dirty controller checkout.
+      - Reuse v15 artifacts sealed to 537ecf6c.
+      - Cite the prior transient PASS without rerunning the new candidate.
+    reason: Nine clean reviews and independent verification passed, but every binding gate must attest the exact committed candidate and executable identities.
+  - date: 2026-08-24
+    decision: Use the isolated v16 seal for every final T8a lane.
+    alternatives:
+      - Reuse any v15 product, runner, input, or timing artifact.
+      - Build into shared unversioned target paths.
+    reason: The v16 baseline and candidate report clean runtime-matching source identities; executable hashes are 1cb3cef2 and 062243a8, the embedded runner digest is 99a9d917, and all versioned paths passed non-overwrite preflights.
+  - date: 2026-08-24
+    decision: Accept the v16 transient-guard lane as final-candidate evidence.
+    alternatives:
+      - Retain the superseded v15 PASS as closure evidence.
+      - Rerun the valid v16 lane without a validity failure.
+    reason: All 40 pairs validated against candidate dddf9231; candidate/base geomean 0.9111 and one-sided CI95 upper 0.9140 pass the unchanged 1.01 gate.
+  - date: 2026-08-24
+    decision: Treat the valid v16 nonzero result as a second binding RED and profile the residual before another code change.
+    alternatives:
+      - Round CI95 upper 1.0104 down to the 1.0100 threshold.
+      - Rerun the valid lane unchanged as noise.
+      - Relax the threshold.
+    reason: The shared loop reduced geomean from 1.0570 to 0.9998, but all 40 valid pairs still produced a one-sided CI95 upper 0.0004 above the frozen gate; only the recorded escalation lever remains admissible.
+  - date: 2026-08-24
+    decision: Derive disabled, enabled-idle, and enabled-ready reclaim states from one release-ring selector result.
+    alternatives:
+      - Keep the independent max-retained-frames and release-ring enablement loads.
+      - Remove current-slot readiness or the terminal pending hint.
+      - Slow the disabled path with an occupied-budget load.
+      - Conflate disabled and enabled-idle with a plain boolean.
+    reason: Option<bool> represents the three reachable states without an illegal combination and lets one release-ring load feed both enablement and readiness while preserving every mandatory enabled-path Acquire.
+  - date: 2026-08-24
+    decision: Freeze a2e01f5e710d0718fd3288e51e979fa2e6096c5f as the next clean timing candidate and supersede all v16 timing evidence for closure.
+    alternatives:
+      - Time the dirty reviewed worktree.
+      - Reuse v16 artifacts sealed to dddf9231.
+      - Rerun only the previously failed nonzero lane before resealing all final-candidate lanes.
+    reason: Corrected RED review, three-role source review, targeted fix rereview, and independent verification passed; optimized Linux codegen proves one inlined selector load, register-only tri-state control, disabled load avoidance, and one shared plain drain, while binding gates must attest the exact committed candidate.
+  - date: 2026-08-24
+    decision: Use the isolated v17 seal for every remaining T8a lane.
+    alternatives:
+      - Reuse v16 products, runner, input, or timing samples.
+      - Build timing products from the dirty controller checkout.
+      - Overwrite an earlier versioned seal.
+    reason: The clean baseline and candidate products report runtime-matching source identities 4264896e and a2e01f5e; the v17 bundle SHA-256 is 5164f8b9, runner source digest 05349415, baseline executable 514096bf, candidate executable cffc9afe, runner executable 2b2c993d, and input ce18cc20, with unchanged product and harness lock hashes.
+  - date: 2026-08-24
+    decision: Accept the v17 nonzero-budget poll lane as final-candidate evidence.
+    alternatives:
+      - Retain the superseded v16 binding FAIL.
+      - Rerun the valid v17 lane under another suffix.
+    reason: All 40 rich-row pairs validated against candidate a2e01f5e; budget64/zero geomean 0.9984 and one-sided CI95 upper 1.0071 pass the unchanged 1.0100 gate, with process, paired, and provenance SHA-256 values 5033d4d1, 8eebae89, and 21eeced6.
+  - date: 2026-08-24
+    decision: Treat the valid v17 transient-guard result as a binding performance RED and invoke only its recorded transient-path escalation lever.
+    alternatives:
+      - Rerun the valid lane unchanged as noise.
+      - Reuse the superseded v16 transient PASS.
+      - Relax or round the 1.0100 threshold.
+      - Continue other final-candidate lanes before freezing the transient fix.
+    reason: All 40 rich-row pairs validated, but candidate/base geomean 1.0113 and one-sided CI95 upper 1.0149 fail the frozen gate; the exact process, paired, and provenance artifacts are sealed by SHA-256 values 407983fb, 1eae193d, and 7689fbde, so profiling must identify removable retention work in begin_pin, guard minting, dereference, or release_guard.
+  - date: 2026-08-24
+    decision: Return only bytes plus frame in a 24-byte private pin carrier and construct the promotion-capable guard once from caller-owned metadata.
+    alternatives:
+      - Return only the frame and resolve bytes in each caller.
+      - Keep returning the complete 40-byte guard.
+      - Force the pin protocol inline at every caller.
+      - Pack, split, or allocate promotion metadata out of line.
+    reason: The reviewed frame-only experiment removed the large return but grew Pool::get to 0x847, rematerialized PageId, spilled four live values, and resolved frame bytes separately. The final borrowed PageId and ReaderSlot boundary returns only the byte slice and frame, yields Pool::get 0x503 with a 0x48 stack, and removes the full-guard temporary without replacement work; focused, Loom, zero-allocation, full, no-feature, lint, and three-agent targeted reviews pass.
+  - date: 2026-08-24
+    decision: Keep the reviewed compact carrier unchanged after the required Samply and cargo-flamegraph cost model, then commit and seal it for a fresh transient gate.
+    alternatives:
+      - Apply another source optimization before profiling established the remaining cost.
+      - Optimize the residual GOT-indirect pin_owned call before it causes a gate failure.
+      - Rerun the binding v17 products, which do not contain the compact carrier.
+      - Relax the frozen 1.0100 threshold.
+    reason: The binding regression remains candidate/base geomean 1.0113 and upper 1.0149. Exact assembly attributes it to seven extra instructions and 52 bytes of private carrier traffic per hit, including the mixed-width frame/file reload at 0x8f852. High-rate Samply puts inclusive get samples at 394 baseline, 422 sealed, and 306 compact, and inclusive pin_owned at 227, 266, and 207; the sealed hotspot receives 52 samples while the compact transfer receives 12. Cargo-flamegraph independently identifies the same transfer and gives whole-probe weighted ratios 1.007886 sealed/base and 1.003969 compact/base. The residual global-symbol GOT call is recorded, but both profilers place the complete compact hot chain below the predecessors, so changing it before the frozen gate would be speculative.
+  - date: 2026-08-25
+    decision: Freeze ec09d66c7fabe86da723c06ea668e427278f14e8 as the final T8a candidate and use only the isolated v18 seal for its binding gates.
+    alternatives:
+      - Reuse the v17 products after the compact-carrier source changed.
+      - Build either product from the dirty controller checkout.
+      - Overwrite a prior seal or timing artifact.
+    reason: The v18 bundle and both product trees resolve to clean committed source identities. The bundle SHA-256 is 811c6cc3, runner source digest 22499583, baseline executable a0876a8f, candidate executable 76e7c23b, runner executable 06a78da3, and input ce18cc20; each runtime identity matched its source, runner, lockfiles, profile, and executable.
+  - date: 2026-08-25
+    decision: Accept all five valid v18 results as final T8a evidence and advance to T9 without rerunning a passing lane.
+    alternatives:
+      - Retain a superseded v15, v16, or v17 result as final-candidate evidence.
+      - Rerun any valid v18 lane as noise.
+      - Relax a frozen threshold.
+      - Block current scope closure on the separate AM4-gated T8b obligation.
+    reason: >-
+      Every lane completed 40 rich-row order-alternated pairs against ec09d66c.
+      CI95 upper bounds pass unchanged gates: transient 0.9449 <= 1.0100,
+      nonzero poll 1.0056 <= 1.0100, zero-budget bypass 0.9989 <= 1.0100,
+      promote/release wake 1.0919 <= 1.2500, and same-frame refusal
+      0.00001992 <= 0.00500000. The exact local evidence is preserved under
+      .peer/pinned-frame-retention/20260824T124500Z-3e1f7a/b7-v18-gates;
+      T8b remains externally blocked by arena-modernization:AM4 and
+      non-closure-blocking.
+  - date: 2026-08-25
+    decision: Fold retention into the public API and owning dios-v1 invariants as documentation only, using existing API smoke, doctest, rustdoc, and lint gates.
+    alternatives:
+      - Add source scanners, token checks, or a generated API-compliance crate.
+      - Duplicate the complete retention protocol across every public type.
+      - Change production behavior while documenting it.
+      - Modify epoch or pool modules that already expose accurate public behavior.
+    reason: The reviewed documentation RED identified four exact owning sites and no missing behavior. README, sparse public rustdoc, and dios-v1 INV-1/INV-9 now describe bounded-session promotion, live-guard refusal, orthogonal HELD/count state, unchanged FrameState, and the augmented watermark. Fresh-target full tests, strict lint, rustdoc, and all configured native, Opus, and Gemini reviews pass without findings.
+  - date: 2026-08-25
+    decision: Commit the benchmark controller's candidate identity as ec09d66c7fabe86da723c06ea668e427278f14e8 after freezing the final performance product.
+    alternatives:
+      - Leave the correct identity as a dirty controller-only patch.
+      - Point the runner at the later documentation or closure commit.
+      - Rebuild and rerun already valid v18 products under a new source identity.
+    reason: The final compliance review found that a clean checkout still expected the superseded 10faa9e product and therefore rejected the sealed v18 candidate. CANDIDATE_SOURCE_COMMIT identifies the committed performance product under test, not the controller checkout, so pinning ec09d66c in the later 6932e02 controller commit is reproducible and non-circular; it changes neither sealed executables nor valid gate results.
+  - date: 2026-08-25
+    decision: Resolve the final compliance findings with one single-caller constructor extraction, removal of compile-probe lint suppressions, and deletion of stale task prose.
+    alternatives:
+      - Waive the hard 70-line function limit for Pool::preallocated.
+      - Remove only the two newest probe suppressions and retain the same banned directives in neighboring probes.
+      - Keep the obsolete future-task description on the completed Retention implementation.
+      - Add a source scanner or line-count compliance test.
+    reason: Commit 80c614a moves only Control initialization into preallocated_control, reducing preallocated from 78 to 64 lines without changing construction order or data. All probe suppressions were unnecessary for their E0432/E0505 oracles, and the Retention type name carries the remaining meaning without process narration. Focused API and compile-fail checks, the fresh-target full suite, strict lint, formatting, rustdoc, no-feature checks, 15 Loom cases, 18 Miri cases, and 6 ASan cases pass; no new compliance machinery was added.
+  - date: 2026-08-25
+    decision: Close pinned-frame-retention at 80c614a with exact-R8 T8b preserved as an external, non-closure obligation on arena-modernization:AM4.
+    alternatives:
+      - Keep the completed scope active until AM4 lands.
+      - Substitute scaled, registered, raised-memlock, or mock evidence for exact R8.
+      - Rerun valid v18 timing lanes after non-product closure fixes.
+      - Relax a frozen benchmark threshold.
+    reason: All closure tasks through T9 are done. Nine final-fix reports across general, architecture, and compliance roles approve the final target with no findings; fresh-target full, no-feature, Loom, Miri, ASan, Linux zero-allocation, and shipping-wake checks pass. All five T8a gates remain valid against the frozen ec09d66c performance product. T8b still requires the 8,035-page Unregistered AM4 posture and remains pending without weakening or substitution.

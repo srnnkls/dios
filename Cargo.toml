@@ -16,6 +16,9 @@ mock = []
 serde_json = { version = "1", optional = true }
 sha2 = { version = "0.10", optional = true }
 
+[build-dependencies]
+sha2 = "0.10"
+
 [dev-dependencies]
 criterion = "0.8"
 serde = { version = "1", features = ["derive"] }
@@ -79,6 +82,11 @@ required-features = ["bench", "mock"]
 name = "mmap_tlb_pressure"
 harness = false
 required-features = ["bench", "mock"]
+
+[[bench]]
+name = "pinned_frame_retention"
+harness = false
+required-features = ["bench"]
 
 [[bench]]
 name = "ring_read_bracket"

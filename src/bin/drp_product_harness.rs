@@ -84,7 +84,7 @@ fn write_harness(product: &Path, harness: &Path) -> Result<(), String> {
         return Err("product path cannot be represented in the harness manifest".to_owned());
     }
     let manifest = format!(
-        "[package]\nname = \"dios-drp-product-harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\nrust-version = \"1.95\"\npublish = false\nbuild = \"build.rs\"\n\n[features]\nbench = []\n\n[dependencies]\ndios = {{ path = \"{product_text}\", features = [\"bench\"] }}\nserde_json = \"1\"\nsha2 = \"0.10\"\n\n[profile.profiling]\ninherits = \"release\"\ndebug = true\nstrip = false\n\n[[bin]]\nname = \"read_path_product\"\npath = \"read_path_product.rs\"\n"
+        "[package]\nname = \"dios-drp-product-harness\"\nversion = \"0.0.0\"\nedition = \"2024\"\nrust-version = \"1.95\"\npublish = false\nbuild = \"build.rs\"\n\n[features]\nbench = []\n\n[dependencies]\ndios = {{ path = \"{product_text}\", features = [\"bench\"] }}\nserde_json = \"1\"\nsha2 = \"0.10\"\n\n[build-dependencies]\nsha2 = \"0.10\"\n\n[profile.profiling]\ninherits = \"release\"\ndebug = true\nstrip = false\n\n[[bin]]\nname = \"read_path_product\"\npath = \"read_path_product.rs\"\n"
     );
     let config = format!(
         "[env]\nDIOS_DRP_PRODUCT_HARNESS = {{ value = \"1\", force = true }}\nDIOS_PRODUCT_WORKTREE = {{ value = \"{product_text}\", force = true }}\n"

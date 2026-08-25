@@ -20,12 +20,13 @@ use dios::driver::{
     WriteSlot,
 };
 #[cfg(feature = "mock")]
-use dios::testing::{DirectIoSupport, MockDriver, PoolBuilderTestingExt};
+use dios::testing::{DirectIoSupport, MockDriver, PoolBuilderTestingExt, PoolTestingExt};
 use dios::{
-    DirectIo, FileId, Get, GetError, IoError, PageId, PendingToken, PollReport, Pool,
+    DirectIo, FileId, FrameGuard, Get, GetError, IoError, PageId, PendingToken, PollReport, Pool,
     PoolBuildError, PoolBuilder, PoolCompletion, PoolCompletionBatch, PoolConfigError,
     PoolSubmitError, PoolToken, PoolWakeHandle, PoolWriteArena, PoolWriteSlot, ReaderCtx,
-    ReadyResult, RegisterError, RetireStatus, SyncMode,
+    ReadyResult, RegisterError, RetainRefused, RetainRefusedReason, RetainedFrame, RetentionStats,
+    RetireStatus, SyncMode,
 };
 
 const GRANULE: u32 = 4096;
@@ -256,6 +257,73 @@ fn pin_callable_scaffold() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_resident_file_lease_not_clone();
+}
+
+#[test]
+fn retention_api_is_directly_callable() {
+    fn promote<'pool>(
+        guard: FrameGuard<'pool>,
+    ) -> Result<RetainedFrame<'pool>, RetainRefused<'pool>> {
+        guard.into_retained()
+    }
+
+    let configure: fn(PoolBuilder, u32) -> PoolBuilder = PoolBuilder::max_retained_frames;
+    let stats: fn(&Pool) -> RetentionStats = Pool::retention_stats;
+    let exhausted = RetainRefusedReason::Exhausted;
+
+    std::hint::black_box((configure, promote, stats, exhausted));
+}
+
+#[cfg(feature = "mock")]
+#[test]
+fn zero_budget_retention_refuses_with_live_guard_and_budget_stat() {
+    let mock = MockDriver::builder()
+        .queue_capacity(1)
+        .frames(5)
+        .frame_bytes(GRANULE)
+        .build();
+    let file = mock
+        .open(Path::new("conservative-retention"), DirectIo::Disabled)
+        .expect("mock open");
+    let file_id = file.file_id();
+    mock.seed_page(&file, 0, 0xA5);
+    let pool = Pool::builder()
+        .frame_count(5)
+        .granule(GRANULE)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .max_retained_frames(0)
+        .build_on(mock)
+        .expect("valid zero-budget pool");
+    pool.register_file(file);
+    let reader = pool.register_reader().expect("one reader slot");
+    let Get::Pending(token) = pool
+        .get(&reader, PageId::new(file_id, 0))
+        .expect("the registered file is live")
+    else {
+        panic!("the seeded page starts cold");
+    };
+    pool.poll();
+    let ReadyResult::Ready(guard) = pool.ready(&reader, token) else {
+        panic!("the deterministic read completes in one poll");
+    };
+
+    let Err(RetainRefused { guard, reason }) = guard.into_retained() else {
+        panic!("disabled retention must refuse promotion");
+    };
+    assert!(matches!(reason, RetainRefusedReason::Exhausted));
+    assert_eq!(guard.len(), GRANULE as usize);
+    assert!(guard.iter().all(|&byte| byte == 0xA5));
+
+    let stats = pool.retention_stats();
+    assert_eq!(stats.occupied_budget, 0);
+    assert_eq!(stats.refused_budget, 1);
+    assert_eq!(stats.refused_ceiling, 0);
+    assert_eq!(stats.refused_contention, 0);
+    assert_eq!(stats.refused_retiring, 0);
+    assert_eq!(stats.retained_evictions_held, 0);
 }
 
 #[test]
