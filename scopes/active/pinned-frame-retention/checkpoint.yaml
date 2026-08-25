@@ -4,7 +4,7 @@ checkpoint:
   branch: feat/pinned-frame-retention-amendments
   timestamp: 2026-08-25T16:04:33Z
   last_batch: 11
-  last_commit: 79d251d
+  last_commit: 5392d85
   tasks:
     done:
       - id: T1

@@ -884,6 +884,7 @@ batch_reviews:
 
   - batch: 11
     timestamp: 2026-08-25T16:04:33Z
+    commit: 5392d85
     tasks: [T11]
     reviewed_source_diff_sha256: 9d0d406459a61a0dde974075da2b3d9fac3c87158b0bc7866de91b22e85761b2
     initial_review:
