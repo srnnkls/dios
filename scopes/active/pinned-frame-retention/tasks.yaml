@@ -313,7 +313,7 @@ tasks:
       allocator or shared-owner dependency is added. Add deterministic fault
       seams only for introduced operations. The final mixed lifecycle A/B gate
       is mandatory.
-    status: pending
+    status: done
     depends_on: [T7, T10]
     files: [src/allocation.rs, src/pool/mod.rs, src/pool/retention.rs, src/pool/frames.rs, src/pool/write_arena.rs, src/pool/table.rs, src/pool/clock.rs, src/pool/miss.rs, src/pool/epoch.rs, src/product.rs, src/driver.rs, src/error.rs, src/open.rs, src/backend/uring.rs, src/backend/eager.rs, src/mock.rs, src/pool/loom_model.rs, src/lib.rs, tests/]
 

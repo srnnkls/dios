@@ -68,6 +68,13 @@ impl CompletionBatch {
         }
     }
 
+    pub(crate) fn try_with_capacity(capacity: u32) -> Option<Self> {
+        assert!(capacity > 0, "completion batch capacity must be positive");
+        Some(Self {
+            items: crate::allocation::try_vec_with_exact_capacity(capacity)?,
+        })
+    }
+
     /// Iterates over completions drained by the latest poll.
     pub fn iter(&self) -> std::slice::Iter<'_, Completion> {
         self.items.iter()

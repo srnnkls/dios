@@ -110,17 +110,22 @@ impl PageTable {
     /// overflows `u32` (`frame_count` above `2^30`).
     #[must_use]
     pub fn with_frame_count(frame_count: u32) -> Self {
+        Self::try_with_frame_count(frame_count)
+            .unwrap_or_else(|| panic!("page table allocation failed for capacity {frame_count}"))
+    }
+
+    pub(crate) fn try_with_frame_count(frame_count: u32) -> Option<Self> {
         assert!(frame_count > 0, "frame count must be positive");
         let capacity = frame_count
             .checked_mul(2)
             .and_then(u32::checked_next_power_of_two)
             .expect("page-table capacity within u32");
-        Self {
-            slots: (0..capacity).map(|_| Cell::vacant()).collect(),
+        Some(Self {
+            slots: crate::allocation::try_boxed_slice_with(capacity, Cell::vacant)?,
             capacity,
             mask: capacity - 1,
             len: AtomicU32::new(0),
-        }
+        })
     }
 
     #[must_use]

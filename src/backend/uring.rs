@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use io_uring::{IoUring, opcode, squeue, types};
 
-use crate::driver::{Backend, Executor, MAX_FILES, OpKind, RingExecutor, RingReap};
+use crate::driver::{Backend, DriverBuildError, Executor, OpKind, RingExecutor, RingReap};
 use crate::error::IoError;
 use crate::pool::Frames;
 use crate::pool::ReadFrameIdx;
@@ -48,6 +48,7 @@ pub(crate) struct Uring {
     files: Mutex<Box<[Option<File>]>>,
     platform_wake: Arc<PlatformWake>,
     frame_bytes: u32,
+    file_capacity: u32,
 }
 
 impl std::fmt::Debug for Uring {
@@ -65,22 +66,31 @@ impl Uring {
         frames: Arc<Frames>,
         write_arena: Arc<ArenaState>,
         queue_capacity: u32,
-    ) -> Result<Self, IoError> {
+        file_capacity: u32,
+    ) -> Result<Self, DriverBuildError> {
         assert!(frames.count() > 0, "frame count must be positive");
         let frame_bytes = frames.granule();
         assert!(frame_bytes > 0, "frame size must be positive");
         assert!(queue_capacity > 0, "queue capacity must be positive");
-
+        let files = crate::allocation::try_boxed_slice_with(file_capacity, || None)
+            .ok_or(DriverBuildError::Allocation)?;
         let ring_entries = queue_capacity
             .checked_add(1)
             .expect("the product queue sum leaves room for one private wake request")
             .next_power_of_two();
-        let ring = IoUring::new(ring_entries).map_err(IoError::from)?;
-        let platform_wake = PlatformWake::new().map_err(IoError::from)?;
+        let ring = IoUring::new(ring_entries)
+            .map_err(IoError::from)
+            .map_err(DriverBuildError::Driver)?;
+        let platform_wake = PlatformWake::new()
+            .map_err(IoError::from)
+            .map_err(DriverBuildError::Driver)?;
 
-        ring.submitter()
-            .register_files_sparse(MAX_FILES)
-            .map_err(IoError::from)?;
+        if file_capacity > 0 {
+            ring.submitter()
+                .register_files_sparse(file_capacity)
+                .map_err(IoError::from)
+                .map_err(DriverBuildError::Driver)?;
+        }
         let iov = [
             Iovec {
                 iov_base: frames.base_ptr().cast(),
@@ -96,17 +106,18 @@ impl Uring {
         let bufs = unsafe { std::slice::from_raw_parts(iov.as_ptr().cast(), iov.len()) };
         // SAFETY: both arenas keep fixed addresses and the ring drops before
         // them, so registered buffer indexes 0 and 1 remain valid for every op.
-        unsafe { ring.submitter().register_buffers(bufs) }.map_err(IoError::from)?;
+        unsafe { ring.submitter().register_buffers(bufs) }
+            .map_err(IoError::from)
+            .map_err(DriverBuildError::Driver)?;
 
-        let mut files = Vec::with_capacity(MAX_FILES as usize);
-        files.resize_with(MAX_FILES as usize, || None);
         let backend = Self {
             ring,
             frames,
             _write_arena: write_arena,
-            files: Mutex::new(files.into_boxed_slice()),
+            files: Mutex::new(files),
             platform_wake,
             frame_bytes,
+            file_capacity,
         };
         backend.arm_wake();
         Ok(backend)
@@ -150,10 +161,7 @@ impl Executor for Uring {
     fn register_file(&self, slot: u32, file: File) -> Result<(), IoError> {
         let raw = file.as_raw_fd();
         assert!(raw >= 0, "a retained File yields a valid descriptor");
-        assert!(
-            (slot as usize) < MAX_FILES as usize,
-            "fd slot within the table"
-        );
+        assert!(slot < self.file_capacity, "fd slot within the table");
         self.ring
             .submitter()
             .register_files_update(slot, &[raw])
@@ -179,10 +187,7 @@ impl Executor for Uring {
     }
 
     fn retire_file(&self, slot: u32) {
-        assert!(
-            (slot as usize) < MAX_FILES as usize,
-            "retire slot within the table"
-        );
+        assert!(slot < self.file_capacity, "retire slot within the table");
         self.ring
             .submitter()
             .register_files_update(slot, &[-1])
@@ -216,10 +221,7 @@ impl RingExecutor for Uring {
         destination_offset: u32,
         requested_len: u32,
     ) {
-        assert!(
-            (fd_slot as usize) < MAX_FILES as usize,
-            "read targets a table slot"
-        );
+        assert!(fd_slot < self.file_capacity, "read targets a table slot");
         assert!(
             requested_len <= self.frame_bytes,
             "a read spans at most one frame"
@@ -243,10 +245,7 @@ impl RingExecutor for Uring {
         file_offset: u64,
         requested_len: u32,
     ) {
-        assert!(
-            (fd_slot as usize) < MAX_FILES as usize,
-            "write targets a table slot"
-        );
+        assert!(fd_slot < self.file_capacity, "write targets a table slot");
         assert!(
             !source.is_null(),
             "a leased staging slot has a live pointer"
@@ -265,10 +264,7 @@ impl RingExecutor for Uring {
     }
 
     fn push_fsync(&self, user_data: u64, fd_slot: u32) {
-        assert!(
-            (fd_slot as usize) < MAX_FILES as usize,
-            "fsync targets a table slot"
-        );
+        assert!(fd_slot < self.file_capacity, "fsync targets a table slot");
         let entry = opcode::Fsync::new(types::Fixed(fd_slot))
             .build()
             .user_data(user_data);
@@ -285,7 +281,7 @@ impl RingExecutor for Uring {
         Self::check_enter(self.ring.submitter().submit_with_args(want as usize, &args));
     }
 
-    fn reap<F: FnMut(u64, i32)>(&self, limit: u32, mut sink: F) -> RingReap {
+    fn reap<F: FnMut(u64, i32) -> bool>(&self, limit: u32, mut sink: F) -> RingReap {
         assert!(limit > 0, "a reap drains into a non-empty batch");
         // SAFETY: CQ userspace access is serialised by the caller holding the AD-4
         // mutex; no second completion handle exists concurrently.
@@ -298,8 +294,11 @@ impl RingExecutor for Uring {
                 woke = true;
                 continue;
             }
-            sink(cqe.user_data(), cqe.result());
+            let keep_reaping = sink(cqe.user_data(), cqe.result());
             reaped += 1;
+            if !keep_reaping {
+                break;
+            }
         }
         drop(cq);
         if woke {

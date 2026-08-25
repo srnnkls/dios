@@ -16,11 +16,11 @@ use std::time::Duration;
 
 use crate::completion::CompletionBatch;
 use crate::driver::{
-    Attempt, BackendProgress, CompletionSlab, DriverCore, EagerExecutor, Executor, FileHandle,
-    FileId, MAX_FILES, OpContext, OpKind, OpToken, RingExecutor, RingReap, Shared, SyncMode,
-    next_driver_id,
+    Attempt, BackendProgress, DEFAULT_REGISTERED_FILE_CAPACITY, DriverCore, EagerExecutor,
+    Executor, FileHandle, FileId, OpContext, OpKind, OpToken, RingExecutor, RingReap, Shared,
+    SyncMode, file_registration_error_into_io, next_driver_id,
 };
-use crate::error::{IoError, SubmitError};
+use crate::error::{FileRegistrationError, IoError, SubmitError};
 use crate::open::DirectIo;
 use crate::pool::write_arena::{ArenaState, WriteSlot, shared as shared_write_arena};
 use crate::pool::{Frames, PoolBackend, ReadFrameIdx};
@@ -197,11 +197,9 @@ impl MockDriverBuilder {
             self.queue_capacity,
             self.direct_io_support,
         );
-        let shared = Shared::new(
-            CompletionSlab::with_capacity(self.queue_capacity),
-            self.queue_capacity,
-        );
-        MockDriver(DriverCore::new(
+        let shared = Shared::try_new(self.queue_capacity, DEFAULT_REGISTERED_FILE_CAPACITY)
+            .expect("the mock driver configured storage allocates");
+        let core = DriverCore::try_new(
             shared,
             executor,
             write_arena,
@@ -209,7 +207,9 @@ impl MockDriverBuilder {
             self.retry_bound,
             self.queue_capacity,
             id,
-        ))
+        )
+        .expect("the mock driver runtime storage allocates");
+        MockDriver(core)
     }
 }
 
@@ -230,6 +230,17 @@ impl MockDriver {
         MockDriverBuilder::default()
     }
 
+    #[doc(hidden)]
+    pub fn inject_next_open_error_after_reservation(&self, raw_errno: i32) {
+        self.0
+            .executor()
+            .inject_open_error_after_reservation(raw_errno);
+    }
+
+    pub(crate) fn try_reconfigure_file_capacity(&mut self, file_capacity: u32) -> Option<()> {
+        self.0.try_reconfigure_file_capacity(file_capacity)
+    }
+
     pub(crate) fn share_frames_for_pool(&self, frames: Arc<Frames>) {
         self.0.executor().set_arena(frames);
     }
@@ -245,19 +256,33 @@ impl MockDriver {
     /// Returns `EMFILE` when the fixed fd table is exhausted.
     pub fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, IoError> {
         self.open_with_direct_io(path, direct_io)
+            .map_err(file_registration_error_into_io)
     }
 
-    fn open_with_direct_io(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, IoError> {
+    fn open_with_direct_io(
+        &self,
+        path: &Path,
+        direct_io: DirectIo,
+    ) -> Result<FileHandle, FileRegistrationError> {
+        let id = self
+            .0
+            .reserve_file()
+            .ok_or(FileRegistrationError::AtCapacity)?;
+        debug_assert!(!path.as_os_str().is_empty(), "open path must be non-empty");
+        if let Some(raw_errno) = self.0.executor().take_open_error_after_reservation() {
+            self.0.abort_file(id);
+            return Err(FileRegistrationError::Io(IoError::from_raw(raw_errno)));
+        }
         if direct_io == DirectIo::Required
             && self.0.executor().direct_io_support == DirectIoSupport::Unsupported
         {
+            self.0.abort_file(id);
             let error = std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "direct IO is unsupported for this mock file",
             );
-            return Err(IoError::from(error));
+            return Err(FileRegistrationError::Io(IoError::from(error)));
         }
-        let handle = self.0.open_mock(path)?;
         let io_mode = if direct_io != DirectIo::Disabled
             && self.0.executor().direct_io_support == DirectIoSupport::Supported
         {
@@ -267,7 +292,7 @@ impl MockDriver {
         } else {
             crate::driver::IoMode::Buffered
         };
-        Ok(FileHandle::from_parts(handle.file_id(), io_mode))
+        Ok(FileHandle::from_parts(id, io_mode))
     }
 
     /// Consumes the handle; the deferred close(2) is observable once the fd's
@@ -473,7 +498,15 @@ impl PoolBackend for MockDriver {
         self.0.attach_pool_wait(wake);
     }
 
-    fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, IoError> {
+    fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, FileRegistrationError> {
+        self.open_with_direct_io(path, direct_io)
+    }
+
+    fn create(
+        &self,
+        path: &Path,
+        direct_io: DirectIo,
+    ) -> Result<FileHandle, FileRegistrationError> {
         self.open_with_direct_io(path, direct_io)
     }
 
@@ -542,8 +575,16 @@ impl PoolBackend for MockRingDriver {
         self.0.attach_pool_wait(wake);
     }
 
-    fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, IoError> {
-        self.open(path, direct_io)
+    fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, FileRegistrationError> {
+        self.open_for_pool(path, direct_io)
+    }
+
+    fn create(
+        &self,
+        path: &Path,
+        direct_io: DirectIo,
+    ) -> Result<FileHandle, FileRegistrationError> {
+        self.open_for_pool(path, direct_io)
     }
 
     fn submit_read(
@@ -612,10 +653,12 @@ impl crate::pool::PoolBackendSealed for MockRingDriver {}
 struct MockExecutor {
     state: Mutex<MockState>,
     io_events: Arc<Mutex<Vec<MockIoEvent>>>,
+    operation_event_capacity: usize,
     io_event_capacity: usize,
     arena: OnceLock<Arc<Frames>>,
     frames: u32,
     frame_bytes: u32,
+    file_capacity: u32,
     direct_io_support: DirectIoSupport,
     pool_lifecycle: OnceLock<Arc<LifecycleCounters>>,
     pool_wait: OnceLock<Arc<WaitState>>,
@@ -624,6 +667,7 @@ struct MockExecutor {
 #[derive(Debug)]
 struct MockState {
     injected: VecDeque<Injected>,
+    open_error_after_reservation: Option<i32>,
     seeds: HashMap<(FileId, u32), u8>,
     stored: HashMap<FileId, Vec<u8>>,
     event_capacity: usize,
@@ -642,16 +686,19 @@ impl MockExecutor {
         Self {
             state: Mutex::new(MockState {
                 injected: VecDeque::with_capacity(injected_capacity as usize),
+                open_error_after_reservation: None,
                 seeds: HashMap::new(),
-                stored: HashMap::with_capacity(MAX_FILES as usize),
+                stored: HashMap::with_capacity(DEFAULT_REGISTERED_FILE_CAPACITY as usize),
                 event_capacity,
                 rng: seed,
             }),
             io_events: Arc::new(Mutex::new(Vec::with_capacity(event_capacity))),
+            operation_event_capacity: event_capacity,
             io_event_capacity: event_capacity,
             arena: OnceLock::new(),
             frames,
             frame_bytes,
+            file_capacity: DEFAULT_REGISTERED_FILE_CAPACITY,
             direct_io_support,
             pool_lifecycle: OnceLock::new(),
             pool_wait: OnceLock::new(),
@@ -683,6 +730,20 @@ impl MockExecutor {
 
     fn inject(&self, fault: Injected) {
         self.lock().injected.push_back(fault);
+    }
+
+    fn inject_open_error_after_reservation(&self, raw_errno: i32) {
+        assert!(raw_errno > 0, "injected open errno must be positive");
+        let mut state = self.lock();
+        assert!(
+            state.open_error_after_reservation.is_none(),
+            "only one open error may be pending"
+        );
+        state.open_error_after_reservation = Some(raw_errno);
+    }
+
+    fn take_open_error_after_reservation(&self) -> Option<i32> {
+        self.lock().open_error_after_reservation.take()
     }
 
     fn seed(&self, file_id: FileId, granule_idx: u32, fill: u8) {
@@ -795,12 +856,29 @@ impl MockExecutor {
             );
         }
     }
+
+    fn persist_successful_write(&self, context: &OpContext<'_>, bytes: u32) {
+        let mut state = self.lock();
+        let capacity = state
+            .event_capacity
+            .saturating_mul(self.frame_bytes as usize);
+        let stored = state
+            .stored
+            .entry(context.fd)
+            .or_insert_with(|| Vec::with_capacity(capacity));
+        let start = usize::try_from(context.file_offset).expect("mock offset fits usize");
+        let end = start + bytes as usize;
+        if stored.len() < end {
+            stored.resize(end, 0);
+        }
+        stored[start..end].copy_from_slice(&context.write_buf[..bytes as usize]);
+    }
 }
 
 impl EagerExecutor for MockExecutor {
     fn attempt(&self, kind: OpKind, clean_bytes: u32, context: OpContext<'_>) -> Attempt {
         debug_assert!(
-            context.fd.slot() < MAX_FILES,
+            context.fd.slot() < self.file_capacity,
             "the driver admits ops only on live fd-table slots"
         );
         debug_assert!(
@@ -853,20 +931,7 @@ impl EagerExecutor for MockExecutor {
             Some(Injected::Eagain) => Attempt::WouldBlock,
         };
         if let (OpKind::Write, Attempt::Done(bytes)) = (kind, attempt) {
-            let mut state = self.lock();
-            let capacity = state
-                .event_capacity
-                .saturating_mul(self.frame_bytes as usize);
-            let stored = state
-                .stored
-                .entry(context.fd)
-                .or_insert_with(|| Vec::with_capacity(capacity));
-            let start = usize::try_from(context.file_offset).expect("mock offset fits usize");
-            let end = start + bytes as usize;
-            if stored.len() < end {
-                stored.resize(end, 0);
-            }
-            stored[start..end].copy_from_slice(&context.write_buf[..bytes as usize]);
+            self.persist_successful_write(&context, bytes);
         }
         attempt
     }
@@ -875,6 +940,30 @@ impl EagerExecutor for MockExecutor {
 impl Executor for MockExecutor {
     fn register_file(&self, _slot: u32, _file: File) -> Result<(), IoError> {
         Ok(())
+    }
+
+    fn try_reconfigure_file_capacity(&mut self, file_capacity: u32) -> Option<()> {
+        let event_capacity = self
+            .operation_event_capacity
+            .checked_add(file_capacity as usize)?;
+        let mut events = self
+            .io_events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let additional = event_capacity.saturating_sub(events.len());
+        events.try_reserve_exact(additional).ok()?;
+        drop(events);
+        let state = self.state.get_mut().unwrap_or_else(PoisonError::into_inner);
+        let mut stored = HashMap::new();
+        stored
+            .try_reserve((file_capacity as usize).max(state.stored.len()))
+            .ok()?;
+        stored.extend(state.stored.drain());
+        state.stored = stored;
+        state.event_capacity = event_capacity;
+        self.io_event_capacity = event_capacity;
+        self.file_capacity = file_capacity;
+        Some(())
     }
 
     fn clean_bytes(&self, kind: OpKind) -> u32 {
@@ -1018,11 +1107,9 @@ impl MockRingDriverBuilder {
         let id = next_driver_id();
         let write_arena = shared_write_arena(self.write_slots, self.frame_bytes, id);
         let executor = MockRingExecutor::new(self.seed, self.frame_bytes, self.queue_capacity);
-        let shared = Shared::new(
-            CompletionSlab::with_capacity(self.queue_capacity),
-            self.queue_capacity,
-        );
-        MockRingDriver(DriverCore::new(
+        let shared = Shared::try_new(self.queue_capacity, DEFAULT_REGISTERED_FILE_CAPACITY)
+            .expect("the mock ring configured storage allocates");
+        let core = DriverCore::try_new(
             shared,
             executor,
             write_arena,
@@ -1030,7 +1117,9 @@ impl MockRingDriverBuilder {
             self.retry_bound,
             self.queue_capacity,
             id,
-        ))
+        )
+        .expect("the mock ring runtime storage allocates");
+        MockRingDriver(core)
     }
 }
 
@@ -1054,13 +1143,31 @@ impl MockRingDriver {
         MockRingDriverBuilder::default()
     }
 
+    pub(crate) fn try_reconfigure_file_capacity(&mut self, file_capacity: u32) -> Option<()> {
+        self.0.try_reconfigure_file_capacity(file_capacity)
+    }
+
     /// Opens a fresh generational handle. Never touches disk.
     ///
     /// # Errors
     ///
     /// Returns `EMFILE` when the fixed fd table is exhausted.
-    pub fn open(&self, path: &Path, _direct_io: DirectIo) -> Result<FileHandle, IoError> {
-        self.0.open_mock(path)
+    pub fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, IoError> {
+        self.open_for_pool(path, direct_io)
+            .map_err(file_registration_error_into_io)
+    }
+
+    fn open_for_pool(
+        &self,
+        path: &Path,
+        _direct_io: DirectIo,
+    ) -> Result<FileHandle, FileRegistrationError> {
+        let id = self
+            .0
+            .reserve_file()
+            .ok_or(FileRegistrationError::AtCapacity)?;
+        debug_assert!(!path.as_os_str().is_empty(), "open path must be non-empty");
+        Ok(FileHandle::from_id(id))
     }
 
     /// Consumes the handle; the deferred close(2) is observable once the fd's
@@ -1233,6 +1340,7 @@ impl MockRingObservation {
 struct MockRingExecutor {
     state: Mutex<MockRingState>,
     frame_bytes: u32,
+    file_capacity: u32,
     observation: Arc<MockRingObservation>,
 }
 
@@ -1257,6 +1365,7 @@ impl MockRingExecutor {
                 write_attempts: Vec::with_capacity(capacity),
             }),
             frame_bytes,
+            file_capacity: DEFAULT_REGISTERED_FILE_CAPACITY,
             observation: Arc::new(MockRingObservation::default()),
         }
     }
@@ -1310,6 +1419,11 @@ impl Executor for MockRingExecutor {
         Ok(())
     }
 
+    fn try_reconfigure_file_capacity(&mut self, file_capacity: u32) -> Option<()> {
+        self.file_capacity = file_capacity;
+        Some(())
+    }
+
     fn clean_bytes(&self, kind: OpKind) -> u32 {
         match kind {
             OpKind::Fsync => 0,
@@ -1335,12 +1449,13 @@ impl RingExecutor for MockRingExecutor {
     fn push_read(
         &self,
         user_data: u64,
-        _fd_slot: u32,
+        fd_slot: u32,
         _frame: ReadFrameIdx,
         _file_offset: u64,
         _destination_offset: u32,
         len: u32,
     ) {
+        assert!(fd_slot < self.file_capacity, "read targets a table slot");
         let mut state = self.lock();
         let raw = Self::next_raw(&mut state, user_data, len);
         state.cqes.push_back((user_data, raw));
@@ -1349,12 +1464,13 @@ impl RingExecutor for MockRingExecutor {
     fn push_write(
         &self,
         user_data: u64,
-        _fd_slot: u32,
+        fd_slot: u32,
         source: *const u8,
         source_offset: u32,
         file_offset: u64,
         requested_len: u32,
     ) {
+        assert!(fd_slot < self.file_capacity, "write targets a table slot");
         assert!(
             !source.is_null(),
             "a mock write receives a live staging slot"
@@ -1369,7 +1485,8 @@ impl RingExecutor for MockRingExecutor {
         state.cqes.push_back((user_data, raw));
     }
 
-    fn push_fsync(&self, user_data: u64, _fd_slot: u32) {
+    fn push_fsync(&self, user_data: u64, fd_slot: u32) {
+        assert!(fd_slot < self.file_capacity, "fsync targets a table slot");
         let mut state = self.lock();
         let raw = Self::next_raw(&mut state, user_data, 0);
         state.cqes.push_back((user_data, raw));
@@ -1379,7 +1496,7 @@ impl RingExecutor for MockRingExecutor {
 
     fn submit_and_wait(&self, _want: u32, _timeout: Duration) {}
 
-    fn reap<F: FnMut(u64, i32)>(&self, limit: u32, mut sink: F) -> RingReap {
+    fn reap<F: FnMut(u64, i32) -> bool>(&self, limit: u32, mut sink: F) -> RingReap {
         assert!(limit > 0, "a reap drains into a non-empty batch");
         let mut state = self.lock();
         let mut reaped = 0u32;
@@ -1387,8 +1504,11 @@ impl RingExecutor for MockRingExecutor {
             let Some((user_data, raw)) = state.cqes.pop_front() else {
                 break;
             };
-            sink(user_data, raw);
+            let keep_reaping = sink(user_data, raw);
             reaped += 1;
+            if !keep_reaping {
+                break;
+            }
         }
         RingReap {
             backend_completions: reaped,

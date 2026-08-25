@@ -20,8 +20,10 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crate::completion::CompletionBatch;
-use crate::driver::{BackendProgress, Driver, FileHandle, FileId, MAX_FILES, OpKind, OpToken};
-use crate::error::{IoError, SubmitError};
+use crate::driver::{
+    BackendProgress, Driver, DriverBuildError, FileHandle, FileId, OpKind, OpToken,
+};
+use crate::error::{FileRegistrationError, IoError, SubmitError};
 use crate::open::DirectIo;
 use crate::product::{
     LifecycleCounters, PollReport, PoolCompletion, PoolCompletionBatch, PoolSubmitError, PoolToken,
@@ -482,6 +484,8 @@ impl std::error::Error for PoolConfigError {}
 pub enum PoolBuildError {
     /// The fixed capacities violate a pool invariant.
     Configuration(PoolConfigError),
+    /// A fixed-capacity allocation could not be satisfied.
+    Allocation,
     /// The selected driver could not initialize its operating resources.
     Driver(IoError),
 }
@@ -490,6 +494,7 @@ impl std::fmt::Display for PoolBuildError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Configuration(error) => write!(f, "invalid pool configuration: {error}"),
+            Self::Allocation => f.write_str("pool allocation failed"),
             Self::Driver(error) => write!(f, "driver initialization failed: {error}"),
         }
     }
@@ -499,6 +504,7 @@ impl std::error::Error for PoolBuildError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Configuration(error) => Some(error),
+            Self::Allocation => None,
             Self::Driver(error) => Some(error),
         }
     }
@@ -578,6 +584,7 @@ pub struct PoolBuilder {
     max_retained_frames: u32,
     write_slots: u32,
     max_inflight_product_ops: u32,
+    registered_file_capacity: u32,
 }
 
 impl Default for PoolBuilder {
@@ -592,6 +599,7 @@ impl Default for PoolBuilder {
             max_retained_frames: 0,
             write_slots: 0,
             max_inflight_product_ops: 0,
+            registered_file_capacity: crate::driver::DEFAULT_REGISTERED_FILE_CAPACITY,
         }
     }
 }
@@ -656,6 +664,13 @@ impl PoolBuilder {
     #[must_use]
     pub fn max_inflight_product_ops(mut self, operations: u32) -> Self {
         self.max_inflight_product_ops = operations;
+        self
+    }
+
+    /// Sets the exact number of registered file slots.
+    #[must_use]
+    pub fn registered_file_capacity(mut self, registered_file_capacity: u32) -> Self {
+        self.registered_file_capacity = registered_file_capacity;
         self
     }
 
@@ -753,8 +768,11 @@ impl PoolBuilder {
     /// If internally validated capacities are changed before driver construction.
     pub fn build(self) -> Result<Pool<Driver>, PoolBuildError> {
         self.validate().map_err(PoolBuildError::Configuration)?;
-        let frames = Arc::new(Frames::preallocated(self.frame_count, self.granule));
-        let driver = Driver::builder()
+        let frames = Arc::new(
+            Frames::try_preallocated(self.frame_count, self.granule)
+                .ok_or(PoolBuildError::Allocation)?,
+        );
+        let driver = match Driver::builder()
             .frames(self.frame_count)
             .frame_bytes(self.granule)
             .queue_capacity(
@@ -763,9 +781,15 @@ impl PoolBuilder {
                     .max(1),
             )
             .write_slots(self.write_slots.max(1))
+            .registered_file_capacity(self.registered_file_capacity)
             .build_with_frames(Arc::clone(&frames))
-            .map_err(PoolBuildError::Driver)?;
-        Ok(Pool::preallocated(self, driver, frames))
+        {
+            Ok(driver) => driver,
+            Err(DriverBuildError::Allocation) => return Err(PoolBuildError::Allocation),
+            #[cfg(target_os = "linux")]
+            Err(DriverBuildError::Driver(error)) => return Err(PoolBuildError::Driver(error)),
+        };
+        Pool::try_preallocated(self, driver, frames)
     }
 
     /// Preallocates a pool composed over the supplied `driver`, unifying its read
@@ -777,25 +801,39 @@ impl PoolBuilder {
     #[cfg(feature = "mock")]
     pub(crate) fn build_on_internal(
         self,
-        driver: crate::mock::MockDriver,
-    ) -> Result<Pool<crate::mock::MockDriver>, PoolConfigError> {
-        self.validate()?;
-        let frames = Arc::new(Frames::preallocated(self.frame_count, self.granule));
+        mut driver: crate::mock::MockDriver,
+    ) -> Result<Pool<crate::mock::MockDriver>, PoolBuildError> {
+        self.validate().map_err(PoolBuildError::Configuration)?;
+        let frames = Arc::new(
+            Frames::try_preallocated(self.frame_count, self.granule)
+                .ok_or(PoolBuildError::Allocation)?,
+        );
+        driver
+            .try_reconfigure_file_capacity(self.registered_file_capacity)
+            .ok_or(PoolBuildError::Allocation)?;
         driver.share_frames_for_pool(Arc::clone(&frames));
-        Ok(Pool::preallocated(self, driver, frames))
+        Pool::try_preallocated(self, driver, frames)
     }
 
     /// Preallocates a product pool over the mock ring's real reap/retry path.
     #[cfg(feature = "mock")]
     pub(crate) fn build_on_ring_internal(
         self,
-        driver: crate::mock::MockRingDriver,
-    ) -> Result<Pool<crate::mock::MockRingDriver>, PoolConfigError> {
-        self.validate()?;
-        let frames = Arc::new(Frames::preallocated(self.frame_count, self.granule));
-        Ok(Pool::preallocated(self, driver, frames))
+        mut driver: crate::mock::MockRingDriver,
+    ) -> Result<Pool<crate::mock::MockRingDriver>, PoolBuildError> {
+        self.validate().map_err(PoolBuildError::Configuration)?;
+        let frames = Arc::new(
+            Frames::try_preallocated(self.frame_count, self.granule)
+                .ok_or(PoolBuildError::Allocation)?,
+        );
+        driver
+            .try_reconfigure_file_capacity(self.registered_file_capacity)
+            .ok_or(PoolBuildError::Allocation)?;
+        Pool::try_preallocated(self, driver, frames)
     }
 }
+
+type PreallocatedFileState = (Box<[AtomicU64]>, Box<[Arc<ResidentLeaseState>]>, Retention);
 
 /// Control-plane state guarded by the AD-4 pool mutex: the CLOCK sweep (its
 /// reference bits live lock-free on the pool for the warm-hit path), the
@@ -962,45 +1000,84 @@ impl Pool<Driver> {
     reason = "the private sealed bound preserves static dispatch for the two crate-owned pool backends"
 )]
 impl<D: PoolBackend> Pool<D> {
-    fn preallocated_control(config: &PoolBuilder, backend_capacity: usize) -> Control {
+    fn try_preallocated_control(
+        config: &PoolBuilder,
+        backend_capacity: u32,
+    ) -> Result<Control, PoolBuildError> {
         assert!(backend_capacity > 0, "backend batch capacity is positive");
-        Control {
-            evict_queue: EvictQueue::with_capacity(config.frame_count),
-            miss: MissTable::with_capacity(config.frame_count),
-            frame_pages: (0..config.frame_count).map(|_| None).collect(),
-            files: (0..MAX_FILES).map(|_| None).collect(),
-            batch: CompletionBatch::with_capacity(backend_capacity),
-            product_ops: (0..config.max_inflight_product_ops)
-                .map(|_| ProductOpSlot {
+        Ok(Control {
+            evict_queue: EvictQueue::try_with_capacity(config.frame_count)
+                .ok_or(PoolBuildError::Allocation)?,
+            miss: MissTable::try_with_capacity(config.frame_count)
+                .ok_or(PoolBuildError::Allocation)?,
+            frame_pages: crate::allocation::try_boxed_slice_with(config.frame_count, || None)
+                .ok_or(PoolBuildError::Allocation)?,
+            files: crate::allocation::try_boxed_slice_with(config.registered_file_capacity, || {
+                None
+            })
+            .ok_or(PoolBuildError::Allocation)?,
+            batch: CompletionBatch::try_with_capacity(backend_capacity)
+                .ok_or(PoolBuildError::Allocation)?,
+            product_ops: crate::allocation::try_boxed_slice_with(
+                config.max_inflight_product_ops,
+                || ProductOpSlot {
                     generation: 0,
                     operation: None,
-                })
-                .collect(),
+                },
+            )
+            .ok_or(PoolBuildError::Allocation)?,
             product_sequence: 0,
             release_cursor: 0,
             reads_in_flight: 0,
-        }
+        })
     }
 
-    fn preallocated(config: PoolBuilder, driver: D, frames: Arc<Frames>) -> Self {
-        assert_eq!(
-            frames.count(),
+    fn try_preallocated_file_state(
+        config: &PoolBuilder,
+        pool_identity: u64,
+        wake: &Arc<WaitState>,
+    ) -> Result<PreallocatedFileState, PoolBuildError> {
+        let file_live_generations =
+            crate::allocation::try_boxed_slice_with(config.registered_file_capacity, || {
+                AtomicU64::new(0)
+            })
+            .ok_or(PoolBuildError::Allocation)?;
+        let resident_lease_states =
+            crate::allocation::try_boxed_slice_with(config.registered_file_capacity, || {
+                Arc::new(ResidentLeaseState::preallocated(
+                    pool_identity,
+                    Arc::clone(wake),
+                ))
+            })
+            .ok_or(PoolBuildError::Allocation)?;
+        let retention = Retention::try_preallocated_with_file_capacity(
             config.frame_count,
-            "pool and arena counts match"
-        );
-        assert_eq!(
-            frames.granule(),
-            config.granule,
-            "pool and arena sizes match"
-        );
-        let lifecycle = Arc::new(LifecycleCounters::default());
-        let readers = Arc::new(ReaderRegistry::with_capacity(
+            config.max_retained_frames,
             config.max_concurrent_readers,
-            config.peak_guards_per_reader,
-            Arc::clone(&lifecycle),
-        ));
+            config.registered_file_capacity,
+            Arc::clone(wake),
+        )
+        .ok_or(PoolBuildError::Allocation)?;
+        Ok((file_live_generations, resident_lease_states, retention))
+    }
+
+    fn try_preallocated(
+        config: PoolBuilder,
+        driver: D,
+        frames: Arc<Frames>,
+    ) -> Result<Self, PoolBuildError> {
+        assert_eq!(frames.count(), config.frame_count, "frame count");
+        assert_eq!(frames.granule(), config.granule, "pool/arena granules");
+        let lifecycle = Arc::new(LifecycleCounters::default());
+        let readers = Arc::new(
+            ReaderRegistry::try_with_capacity(
+                config.max_concurrent_readers,
+                config.peak_guards_per_reader,
+                Arc::clone(&lifecycle),
+            )
+            .ok_or(PoolBuildError::Allocation)?,
+        );
         let wake = Arc::new(WaitState::default());
-        // Finish the platform's lazy wake initialization before hot-path lease drops.
         wake.wake();
         wake.consume_current();
         let pool_identity = driver.identity();
@@ -1009,34 +1086,36 @@ impl<D: PoolBackend> Pool<D> {
             .max_inflight_reads
             .checked_add(config.max_inflight_product_ops)
             .expect("validated queue capacity")
-            .max(1) as usize;
-        let control = Self::preallocated_control(&config, backend_capacity);
-        Self {
+            .max(1);
+        let control = Self::try_preallocated_control(&config, backend_capacity)?;
+        let table = PageTable::try_with_frame_count(config.frame_count)
+            .ok_or(PoolBuildError::Allocation)?;
+        let clock =
+            Clock::try_with_frame_count(config.frame_count).ok_or(PoolBuildError::Allocation)?;
+        let miss_interests = Arc::new(
+            MissInterests::try_with_capacity(config.frame_count)
+                .ok_or(PoolBuildError::Allocation)?,
+        );
+        let wait_batch = Mutex::new(
+            CompletionBatch::try_with_capacity(backend_capacity)
+                .ok_or(PoolBuildError::Allocation)?,
+        );
+        let (file_live_generations, resident_lease_states, retention) =
+            Self::try_preallocated_file_state(&config, pool_identity, &wake)?;
+        Ok(Self {
             frames,
-            table: PageTable::with_frame_count(config.frame_count),
-            clock: Clock::with_frame_count(config.frame_count),
+            table,
+            clock,
             global_epoch: AtomicU64::new(0),
             readers,
-            miss_interests: Arc::new(MissInterests::with_capacity(config.frame_count)),
+            miss_interests,
             lifecycle,
-            wake: Arc::clone(&wake),
-            wait_batch: Mutex::new(CompletionBatch::with_capacity(backend_capacity)),
+            wake,
+            wait_batch,
             control: Mutex::new(control),
-            file_live_generations: (0..MAX_FILES).map(|_| AtomicU64::new(0)).collect(),
-            resident_lease_states: (0..MAX_FILES)
-                .map(|_| {
-                    Arc::new(ResidentLeaseState::preallocated(
-                        pool_identity,
-                        Arc::clone(&wake),
-                    ))
-                })
-                .collect(),
-            retention: Retention::preallocated(
-                config.frame_count,
-                config.max_retained_frames,
-                config.max_concurrent_readers,
-                Arc::clone(&wake),
-            ),
+            file_live_generations,
+            resident_lease_states,
+            retention,
             #[cfg(feature = "mock")]
             control_acquisitions: ObservationAtomicU64::new(0),
             driver,
@@ -1049,7 +1128,7 @@ impl<D: PoolBackend> Pool<D> {
             #[cfg(all(feature = "mock", not(loom)))]
             cold_get_pause: Mutex::new(None),
             drop_hook: Self::shutdown_for_drop,
-        }
+        })
     }
 
     fn shutdown_for_drop(pool: &mut Pool<D>) {
@@ -1266,8 +1345,24 @@ impl<D: PoolBackend> Pool<D> {
     /// # Errors
     ///
     /// Returns the open, direct-I/O policy, or fixed-file registration failure.
-    pub fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileId, IoError> {
+    pub fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileId, FileRegistrationError> {
         let handle = self.driver.open(path, direct_io)?;
+        let file = handle.file_id();
+        self.register_file_internal(handle);
+        Ok(file)
+    }
+
+    /// Creates a new readable and writable file and registers it with this pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns capacity exhaustion or an operating registration failure.
+    pub fn create(
+        &self,
+        path: &Path,
+        direct_io: DirectIo,
+    ) -> Result<FileId, FileRegistrationError> {
+        let handle = self.driver.create(path, direct_io)?;
         let file = handle.file_id();
         self.register_file_internal(handle);
         Ok(file)
@@ -2498,8 +2593,16 @@ impl PoolBackend for Driver {
         self.attach_pool_wait(wake);
     }
 
-    fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, IoError> {
+    fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, FileRegistrationError> {
         self.open_with_direct_io(path, direct_io)
+    }
+
+    fn create(
+        &self,
+        path: &Path,
+        direct_io: DirectIo,
+    ) -> Result<FileHandle, FileRegistrationError> {
+        self.create_with_direct_io(path, direct_io)
     }
 
     fn submit_read(

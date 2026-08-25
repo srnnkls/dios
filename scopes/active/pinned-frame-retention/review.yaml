@@ -882,6 +882,62 @@ batch_reviews:
     performance_gates: pending_final_candidate
     outcome: implementation_approved
 
+  - batch: 11
+    timestamp: 2026-08-25T16:04:33Z
+    tasks: [T11]
+    reviewed_source_diff_sha256: 9d0d406459a61a0dde974075da2b3d9fac3c87158b0bc7866de91b22e85761b2
+    initial_review:
+      report_dirs:
+        general: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b11-review-general
+        architecture: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b11-review-architecture
+        compliance: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b11-review-compliance
+      accepted_findings:
+        - Logical registration exhaustion and post-reservation operating EMFILE shared raw errno 24 and could be misclassified.
+        - Supplied mock drivers retained a fixed capacity of 64 and inspected policy or path before reservation.
+        - Large per-frame metadata allocations remained infallible at the public PoolBuilder boundary.
+        - Read-arena zeroing ran before MADV_HUGEPAGE, reproducing 0 KiB AnonHugePages on nix.
+        - Linux sparse registration rejected configured capacity zero.
+        - io_uring retirement scratch locked on every completion reap, including retirement-free workloads.
+        - Pool::try_preallocated and MockExecutor::attempt exceeded the hard 70-line limit.
+    test_review:
+      corrected_oracles:
+        - Post-reservation mock EMFILE now proves Io provenance and reservation rollback without first exhausting logical capacity.
+        - One exact frame-state metadata allocation fails once and disarms before later exempt control-block allocation.
+      rereviewers: [codex-native, claude-opus-cli, gemini-3.7-flash]
+      status: approved
+    final_compliance_fix:
+      finding: Three cfg-only dead-code expectations violated the no-lint-suppression boundary.
+      resolution: Deleted the callerless ReaderRegistry constructor and applied exact Loom/Linux cfg boundaries to the remaining items and match arms.
+      red: strict Clippy failed at exactly the three exposed sites
+      green:
+        - local strict all-target/all-feature Clippy passed
+        - Linux strict all-target/all-feature Clippy passed
+        - local all-feature suite passed 302/302
+        - Loom passed 15/15
+        - local and Linux lifecycle/allocation targets passed 13/13 each
+    targeted_review:
+      report_dirs:
+        general: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b11-compliance-fix-rereview-general
+        architecture: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b11-compliance-fix-rereview-architecture
+        compliance: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b11-compliance-fix-rereview-compliance
+      reviewers:
+        - {id: codex-native, execution_class: native, roles: [general, architecture, compliance], status: approved}
+        - {id: claude-opus-cli, execution_class: external, roles: [general, architecture, compliance], status: stalled}
+        - {id: gemini-3.7-flash, execution_class: external, roles: [general, architecture, compliance], status: approved}
+      findings: []
+    verification:
+      - registered_file_lifecycle passed 11/11
+      - pool_allocation_failure passed 2/2
+      - zero_alloc passed 23/23
+      - faults passed 18/18
+      - Loom passed 15/15
+      - Linux hugepage assertion passed with hugepage backing
+      - Linux io_uring and close paths passed 10/10
+      - full all-feature suite, strict Clippy, formatting, and git diff check passed
+      - all touched functions are at most 70 lines
+    performance_gates: pending_final_amendment_candidate
+    outcome: implementation_approved
+
 issues:
   critical: []
   high:

@@ -8,7 +8,9 @@ use std::fs::File;
 use std::os::unix::fs::FileExt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use crate::driver::{Attempt, Backend, EagerExecutor, Executor, MAX_FILES, OpContext, OpKind};
+use crate::driver::{
+    Attempt, Backend, DriverBuildError, EagerExecutor, Executor, OpContext, OpKind,
+};
 use crate::error::IoError;
 use crate::pool::Frames;
 use crate::pool::write_arena::ArenaState;
@@ -38,20 +40,19 @@ impl Eager {
         frames: Arc<Frames>,
         write_arena: Arc<ArenaState>,
         _queue_capacity: u32,
-    ) -> Self {
+        file_capacity: u32,
+    ) -> Result<Self, DriverBuildError> {
         assert!(frames.count() > 0, "frame count must be positive");
         let frame_bytes = frames.granule();
         assert!(frame_bytes > 0, "frame size must be positive");
-        let mut files = Vec::with_capacity(MAX_FILES as usize);
-        files.resize_with(MAX_FILES as usize, || None);
-        Self {
-            state: Mutex::new(EagerState {
-                files: files.into_boxed_slice(),
-            }),
+        let files = crate::allocation::try_boxed_slice_with(file_capacity, || None)
+            .ok_or(DriverBuildError::Allocation)?;
+        Ok(Self {
+            state: Mutex::new(EagerState { files }),
             frames,
             _write_arena: write_arena,
             frame_bytes,
-        }
+        })
     }
 
     fn lock(&self) -> MutexGuard<'_, EagerState> {

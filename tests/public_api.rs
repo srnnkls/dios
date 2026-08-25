@@ -15,6 +15,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+#[cfg(feature = "mock")]
+use dios::FileRegistrationError;
 use dios::driver::{
     Completion, CompletionBatch, Driver, FileHandle, OpKind, OpToken, SubmitError, WriteArena,
     WriteSlot,
@@ -106,10 +108,6 @@ fn configured_driver() -> Result<Driver, IoError> {
         .frame_bytes(GRANULE)
         .write_slots(1)
         .build()
-}
-
-fn open_pool_file(pool: &Pool, path: &Path) -> Result<FileId, IoError> {
-    pool.open(path, DirectIo::Disabled)
 }
 
 fn open_driver_file(
@@ -389,12 +387,19 @@ fn pool_build_errors_distinguish_configuration_from_driver_initialization() {
         PoolBuildError::Configuration(PoolConfigError::GranuleNotPowerOfTwo { granule: 3 })
     ));
 
+    let allocation = PoolBuildError::Allocation;
     let driver = PoolBuildError::Driver(IoError::from(std::io::Error::from_raw_os_error(5)));
     assert_ne!(
         std::mem::discriminant(&configuration),
-        std::mem::discriminant(&driver),
-        "configuration rejection and backend initialization failure are distinct values"
+        std::mem::discriminant(&allocation),
+        "configuration rejection and allocation failure are distinct values"
     );
+    assert_ne!(
+        std::mem::discriminant(&allocation),
+        std::mem::discriminant(&driver),
+        "allocation failure and backend initialization failure are distinct values"
+    );
+    assert!(matches!(allocation, PoolBuildError::Allocation));
     assert!(matches!(driver, PoolBuildError::Driver(_)));
 
     let capacity_overflow = Pool::builder()
@@ -439,6 +444,9 @@ fn required_direct_io_refuses_unsupported_files_while_preferred_falls_back() {
     let required = pool
         .open(path, DirectIo::Required)
         .expect_err("Required never silently falls back");
+    let FileRegistrationError::Io(required) = required else {
+        panic!("direct-I/O refusal must remain an operating failure");
+    };
     assert_eq!(
         required.kind(),
         std::io::ErrorKind::Unsupported,
@@ -500,7 +508,6 @@ fn public_signatures_preserve_the_existing_residency_adt() {
     let wake_signature: fn(&PoolWakeHandle) = PoolWakeHandle::wake;
     assert_clone_send_sync::<PoolWakeHandle>();
     let build_pool_signature: fn() -> Result<Pool, PoolBuildError> = configured_pool;
-    let open_pool_file_signature: fn(&Pool, &Path) -> Result<FileId, IoError> = open_pool_file;
     let open_driver_file_signature: fn(&Driver, &Path, DirectIo) -> Result<FileHandle, IoError> =
         open_driver_file;
     let build_driver_signature: fn() -> Result<Driver, IoError> = configured_driver;
@@ -528,7 +535,6 @@ fn public_signatures_preserve_the_existing_residency_adt() {
         wake_handle_signature,
         wake_signature,
         build_pool_signature,
-        open_pool_file_signature,
         open_driver_file_signature,
         build_driver_signature,
         construct_page_signature,

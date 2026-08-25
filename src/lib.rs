@@ -34,6 +34,7 @@
 )]
 
 mod alignment;
+mod allocation;
 mod backend;
 mod completion;
 pub mod driver;
@@ -156,12 +157,11 @@ pub mod testing {
         ///
         /// # Errors
         ///
-        /// Returns the pool configuration error when the fixed capacities do
-        /// not satisfy the residency invariants.
+        /// Returns configuration or fixed-allocation failure.
         fn build_on(
             self,
             driver: MockDriver,
-        ) -> Result<crate::pool::Pool<MockDriver>, crate::pool::PoolConfigError>;
+        ) -> Result<crate::pool::Pool<MockDriver>, crate::pool::PoolBuildError>;
     }
 
     #[cfg(feature = "mock")]
@@ -169,7 +169,7 @@ pub mod testing {
         fn build_on(
             self,
             driver: MockDriver,
-        ) -> Result<crate::pool::Pool<MockDriver>, crate::pool::PoolConfigError> {
+        ) -> Result<crate::pool::Pool<MockDriver>, crate::pool::PoolBuildError> {
             self.build_on_internal(driver)
         }
     }
@@ -181,12 +181,11 @@ pub mod testing {
         ///
         /// # Errors
         ///
-        /// Returns the Pool configuration error when fixed capacities violate
-        /// the residency invariants.
+        /// Returns configuration or fixed-allocation failure.
         fn build_on_ring(
             self,
             driver: MockRingDriver,
-        ) -> Result<crate::pool::Pool<MockRingDriver>, crate::pool::PoolConfigError>;
+        ) -> Result<crate::pool::Pool<MockRingDriver>, crate::pool::PoolBuildError>;
     }
 
     #[cfg(feature = "mock")]
@@ -194,7 +193,7 @@ pub mod testing {
         fn build_on_ring(
             self,
             driver: MockRingDriver,
-        ) -> Result<crate::pool::Pool<MockRingDriver>, crate::pool::PoolConfigError> {
+        ) -> Result<crate::pool::Pool<MockRingDriver>, crate::pool::PoolBuildError> {
             self.build_on_ring_internal(driver)
         }
     }
@@ -573,7 +572,7 @@ pub mod bench;
 
 pub use driver::FileId;
 pub use driver::SyncMode;
-pub use error::IoError;
+pub use error::{FileRegistrationError, IoError};
 pub use open::DirectIo;
 pub use pool::{
     FrameGuard, GRANULE_DEFAULT, Get, GetError, PageId, PendingToken, Pool, PoolBuildError,

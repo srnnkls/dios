@@ -27,17 +27,20 @@ impl Clock {
     /// If `frame_count` is zero.
     #[must_use]
     pub fn with_frame_count(frame_count: u32) -> Self {
+        Self::try_with_frame_count(frame_count)
+            .unwrap_or_else(|| panic!("clock allocation failed for {frame_count} frames"))
+    }
+
+    pub(crate) fn try_with_frame_count(frame_count: u32) -> Option<Self> {
         assert!(frame_count > 0, "frame count must be positive");
-        let mut bits = Vec::with_capacity(frame_count as usize);
-        for _ in 0..frame_count {
-            bits.push(AtomicBool::new(false));
-        }
-        Self {
-            reference_bits: bits.into_boxed_slice(),
+        Some(Self {
+            reference_bits: crate::allocation::try_boxed_slice_with(frame_count, || {
+                AtomicBool::new(false)
+            })?,
             count: frame_count,
             hand: AtomicU32::new(0),
             reference_stores: std::sync::atomic::AtomicU64::new(0),
-        }
+        })
     }
 
     /// Records a touch of `frame`, returning `true` iff this call set a

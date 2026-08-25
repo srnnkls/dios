@@ -93,6 +93,7 @@ impl PoolModel {
             "the modeled budget does not exceed its frame arena"
         );
         let wake = std::sync::Arc::new(WaitState::default());
+        let registered_file_capacity = 1;
         Arc::new(Self {
             frames: Frames::preallocated(frames, SECTOR_BYTES),
             table: PageTable::with_frame_count(frames),
@@ -104,16 +105,30 @@ impl PoolModel {
                 held_frame_atomic::AtomicU32::new(0),
             ],
             locked_get_checks: AtomicU32::new(0),
-            file_live_generations: Box::new([AtomicU64::new(0)]),
-            resident_lease_states: Box::new([std::sync::Arc::new(
-                ResidentLeaseState::preallocated(0, wake.clone()),
-            )]),
-            retention: Retention::preallocated(frames, max_retained_frames, 2, wake),
+            file_live_generations: crate::allocation::try_boxed_slice_with(
+                registered_file_capacity,
+                || AtomicU64::new(0),
+            )
+            .expect("loom file-generation allocation succeeds"),
+            resident_lease_states: crate::allocation::try_boxed_slice_with(
+                registered_file_capacity,
+                || std::sync::Arc::new(ResidentLeaseState::preallocated(0, wake.clone())),
+            )
+            .expect("loom lease-state allocation succeeds"),
+            retention: Retention::try_preallocated_with_file_capacity(
+                frames,
+                max_retained_frames,
+                2,
+                registered_file_capacity,
+                wake,
+            )
+            .expect("loom retention allocation succeeds"),
             retention_enabled: max_retained_frames > 0,
             control: Mutex::new(Control {
                 evict_queue: EvictQueue::with_capacity(frames),
                 release_cursor: 0,
-                files: (0..crate::driver::MAX_FILES).map(|_| None).collect(),
+                files: crate::allocation::try_boxed_slice_with(registered_file_capacity, || None)
+                    .expect("loom file-table allocation succeeds"),
             }),
         })
     }

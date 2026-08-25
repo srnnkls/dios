@@ -6,7 +6,6 @@ use std::mem::ManuallyDrop;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use crate::driver::MAX_FILES;
 use crate::product::WaitState;
 #[cfg(test)]
 use crate::sync::Mutex;
@@ -143,7 +142,14 @@ struct ReleaseRing {
 }
 
 impl ReleaseRing {
+    #[cfg(test)]
     fn preallocated(max_retained_frames: u32) -> Self {
+        Self::try_preallocated(max_retained_frames).unwrap_or_else(|| {
+            panic!("release-ring allocation failed for {max_retained_frames} slots")
+        })
+    }
+
+    fn try_preallocated(max_retained_frames: u32) -> Option<Self> {
         assert!(
             max_retained_frames > 0,
             "a release ring needs a positive budget"
@@ -152,19 +158,23 @@ impl ReleaseRing {
             max_retained_frames <= RING_CAPACITY_MAX,
             "a release ring capacity must remain representable"
         );
-        let capacity = u64::from(max_retained_frames.next_power_of_two().max(2));
-        let slots = (0..capacity)
-            .map(|index| ReleaseSlot {
-                sequence: crate::sync::AtomicU64::new(index),
-                frame: AtomicU32::new(0),
-            })
-            .collect();
-        Self {
+        let capacity = max_retained_frames.next_power_of_two().max(2);
+        let slots = crate::allocation::try_boxed_slice_with(capacity, || ReleaseSlot {
+            sequence: crate::sync::AtomicU64::new(0),
+            frame: AtomicU32::new(0),
+        })?;
+        for (index, slot) in slots.iter().enumerate() {
+            slot.sequence.store(
+                u64::try_from(index).expect("release-ring index fits u64"),
+                Ordering::Relaxed,
+            );
+        }
+        Some(Self {
             slots,
             tail: crate::sync::AtomicU64::new(0),
-            capacity,
-            mask: capacity - 1,
-        }
+            capacity: u64::from(capacity),
+            mask: u64::from(capacity - 1),
+        })
     }
 
     fn push(&self, frame: u32) {
@@ -263,21 +273,41 @@ struct PromotionTestHook {
 }
 
 impl Retention {
+    #[cfg(test)]
     pub(crate) fn preallocated(
         frame_count: u32,
         max_retained_frames: u32,
         max_concurrent_readers: u32,
         wait: Arc<WaitState>,
     ) -> Self {
+        Self::try_preallocated_with_file_capacity(
+            frame_count,
+            max_retained_frames,
+            max_concurrent_readers,
+            crate::driver::DEFAULT_REGISTERED_FILE_CAPACITY,
+            wait,
+        )
+        .unwrap_or_else(|| panic!("retention allocation failed"))
+    }
+
+    pub(crate) fn try_preallocated_with_file_capacity(
+        frame_count: u32,
+        max_retained_frames: u32,
+        max_concurrent_readers: u32,
+        registered_file_capacity: u32,
+        wait: Arc<WaitState>,
+    ) -> Option<Self> {
         if max_retained_frames == 0 {
-            return Self::disabled(frame_count, max_concurrent_readers, wait);
+            return Some(Self::disabled(frame_count, max_concurrent_readers, wait));
         }
-        let words = (0..frame_count).map(|_| AtomicU32::new(0)).collect();
-        let tags = (0..frame_count)
-            .map(|_| crate::sync::AtomicU64::new(0))
-            .collect();
-        let retiring = (0..MAX_FILES).map(|_| AtomicBool::new(false)).collect();
-        Self {
+        let words = crate::allocation::try_boxed_slice_with(frame_count, || AtomicU32::new(0))?;
+        let tags = crate::allocation::try_boxed_slice_with(frame_count, || {
+            crate::sync::AtomicU64::new(0)
+        })?;
+        let retiring = crate::allocation::try_boxed_slice_with(registered_file_capacity, || {
+            AtomicBool::new(false)
+        })?;
+        Some(Self {
             words,
             tags,
             retiring,
@@ -287,7 +317,7 @@ impl Retention {
             refused_contention: std::sync::atomic::AtomicU64::new(0), // refused_contention
             refused_retiring: std::sync::atomic::AtomicU64::new(0), // refused_retiring
             retained_evictions_held: std::sync::atomic::AtomicU64::new(0), // retained_evictions_held
-            release_ring: Some(ReleaseRing::preallocated(max_retained_frames)),
+            release_ring: Some(ReleaseRing::try_preallocated(max_retained_frames)?),
             wait,
             max_retained_frames,
             max_concurrent_readers,
@@ -298,7 +328,7 @@ impl Retention {
             release_pending_test_hook: Mutex::new(None),
             #[cfg(all(test, not(loom)))]
             promotion_test_hook: Mutex::new(None),
-        }
+        })
     }
 
     fn disabled(frame_count: u32, max_concurrent_readers: u32, wait: Arc<WaitState>) -> Self {
@@ -714,10 +744,6 @@ impl Drop for Retention {
         assert!(
             self.is_disabled() || self.words.len() == self.frame_count as usize,
             "enabled retention covers every frame"
-        );
-        assert!(
-            self.is_disabled() || self.retiring.len() == MAX_FILES as usize,
-            "enabled retention covers every file slot"
         );
         assert_eq!(HELD & COUNT_MASK, 0, "held and count bits never overlap");
     }

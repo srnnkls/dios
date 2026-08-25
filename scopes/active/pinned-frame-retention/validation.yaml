@@ -430,3 +430,51 @@ decision_log:
       - Add one test for every operating-error permutation.
       - Gate only first-pin transient guards and decide after implementation whether the completion loop changed.
     reason: One PR is the owner-requested delivery unit, so Sira must adapt the new exhaustive error variants before its single pin advance. Restricting fallibility to the two raw arenas would leave large configured tables and scratch as reachable aborting allocations; extending it to fixed-size `Arc` headers would require a new dependency for disproportionate benefit. One representative lifecycle matrix covers capacity, no-mutation, rollback, retirement, reuse, and mode generation; a release-built nested N+1 smoke distinguishes unconditional enforcement. The nested transient and zero-budget lifecycle paths execute code the ordinary transient lane cannot measure, so both numeric gates are mandatory without changing their 1.0100 threshold.
+  - date: 2026-08-25
+    decision: Preserve the public DriverBuilder error contract and carry Pool construction allocation failures through a private driver-build error bridge.
+    alternatives:
+      - Add Allocation to the public driver error surface.
+      - Collapse configured-storage allocation failures into PoolBuildError::Driver.
+      - Leave driver-owned configured storage infallible.
+    reason: PoolBuilder must distinguish configured-capacity allocation failure from backend and kernel operating failure, while standalone DriverBuilder already exposes Result<Driver, IoError>. The private bridge preserves that API, maps allocation to PoolBuildError::Allocation for Pool construction, maps standalone allocation to ErrorKind::OutOfMemory, and leaves backend setup as Driver.
+  - date: 2026-08-25
+    decision: Route every remaining Terra implementation pass through the native implementer subagent at high effort.
+    alternatives:
+      - Invoke Terra through peer and accept its external harness cap.
+      - Substitute the native Opus implementer definition.
+      - Recover implementer routing from the checkpoint instead of live config.yaml.
+    reason: Terra is the selected implementer and native dispatch avoids the peer/Bash hard-cap path that interrupted long T11 passes. config.yaml remains the live routing source; checkpoints record completed agents without overriding later config changes.
+  - date: 2026-08-25
+    decision: Resolve the T11 code review by preserving typed registration provenance privately, adopting PoolBuilder capacity in supplied mocks, restoring hugepage-first frame construction, and removing unconditional retirement-scratch locking.
+    alternatives:
+      - Continue decoding raw errno 24 as logical capacity exhaustion.
+      - Require a second matching registered-file capacity on each mock builder.
+      - Declare capacity zero invalid only on Linux.
+      - Waive the 0 KiB hugepage result as environmental.
+      - Keep the extra mutex on every completion reap and rely on the final benchmark.
+      - Waive the two touched functions above 70 lines.
+    reason: Independent source traces confirmed operating EMFILE and logical exhaustion share errno 24, default-built mock tables diverge from PoolBuilder, Linux sparse registration rejects zero, and alloc_zeroed reversed the measured advise-before-first-touch fix. The retirement-free gate path performs at least 8,192 reaps, making its new scratch lock known excluded work. Private provenance and mock adoption preserve the selected public API; fallible metadata plus advise-before-zero restores allocation and THP contracts; lazy scratch acquisition keeps bounded reuse without steady-state synchronization; two single-caller extractions restore the hard line limit.
+  - date: 2026-08-25
+    decision: Bind the review fixes with one post-reservation mock EMFILE seam and one exact one-shot frame-metadata allocation fault.
+    alternatives:
+      - Exhaust mock file slots and mislabel the resulting logical EMFILE as operating failure.
+      - Change process-wide descriptor limits in an integration test.
+      - Fault every allocation after the raw arena and risk rejecting an exempt Arc header.
+      - Add one allocation test per metadata field.
+    reason: The first test review rejected both original oracles because they would stay RED after valid reorderings. The corrected EMFILE seam reserves, injects raw errno 24, rolls back, and proves slot reuse before checking the public error. The corrected allocator rejects only the 1,016-byte aligned frame-state slice once and disarms immediately. Native, Opus, and Gemini targeted rereviews approved both corrections.
+  - date: 2026-08-25
+    decision: Replace T11's three dead-code lint expectations with exact reachability boundaries.
+    alternatives:
+      - Keep the expectations because strict Clippy passed.
+      - Compile the callerless ReaderRegistry constructor under Loom.
+      - Preserve DriverBuildError::Driver on eager-only targets.
+      - Add a source scanner for lint directives.
+    reason: Removing the expectations produced a strict-Clippy RED at exactly three sites. ReaderRegistry's infallible constructor has no caller and was deleted; EvictQueue's infallible constructor is Loom-only; backend operating build errors arise only from Linux io_uring, so the variant and both match arms are Linux-only. Local strict Clippy, 302 all-feature tests, 15 Loom cases, Linux strict Clippy, and 13 local plus 13 Linux lifecycle/allocation checks pass without suppressions or new test machinery.
+  - date: 2026-08-25
+    decision: Snapshot each registered file's negotiated IoMode in Pool lifecycle state and read it back only for the exact Live or Retiring generation.
+    alternatives:
+      - Read IoMode only from the optional driver handle.
+      - Reuse file_generation_is_live and exclude Retiring files.
+      - Add an IoMode method to PoolBackend.
+      - Expose driver handles or metadata-plane operations publicly.
+    reason: Retirement can take the handle before physical closure completes, leaving a valid Retiring generation without a handle. A copied mode in PoolFile survives that interval; full FileId equality prevents stale-generation aliasing, and the existing Pool identity assertion preserves foreign-ID panic behavior. The registration seam already receives FileHandle, so no backend bound or hot poll-path work is needed.

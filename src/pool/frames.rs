@@ -4,7 +4,7 @@
 
 #[cfg(target_os = "linux")]
 use core::ffi::{c_int, c_void};
-use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
+use std::alloc::{Layout, dealloc, handle_alloc_error};
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::ptr::NonNull;
@@ -38,12 +38,12 @@ struct ExactPageCells {
 unsafe impl Sync for ExactPageCells {}
 
 impl ExactPageCells {
-    fn preallocated(count: u32) -> Self {
-        Self {
-            cells: (0..count)
-                .map(|_| UnsafeCell::new(MaybeUninit::uninit()))
-                .collect(),
-        }
+    fn try_preallocated(count: u32) -> Option<Self> {
+        Some(Self {
+            cells: crate::allocation::try_boxed_slice_with(count, || {
+                UnsafeCell::new(MaybeUninit::uninit())
+            })?,
+        })
     }
 
     fn write(&self, index: usize, page: PageId) {
@@ -173,6 +173,34 @@ unsafe impl Send for Frames {}
 unsafe impl Sync for Frames {}
 
 impl Frames {
+    pub(crate) fn try_preallocated(count: u32, granule: u32) -> Option<Self> {
+        assert!(count > 0, "frame count must be positive");
+        assert!(granule.is_power_of_two(), "granule must be a power of two");
+        assert!(
+            granule >= SECTOR_BYTES,
+            "granule must not fall below the sector floor"
+        );
+        let span = (count as usize).checked_mul(granule as usize)?;
+        let layout = Layout::from_size_align(span, arena_alignment(span, granule)).ok()?;
+        let states = crate::allocation::try_boxed_slice_with(count, || {
+            AtomicU64::new(u64::from(FrameState::Free.to_tag()))
+        })?;
+        let pages = ExactPageCells::try_preallocated(count)?;
+        let base = crate::allocation::allocate(layout)?;
+        advise_hugepage(base, span);
+        // SAFETY: `base` addresses `span` writable bytes owned solely here; no
+        // reference to them exists yet.
+        unsafe { std::ptr::write_bytes(base.as_ptr(), 0, span) };
+        Some(Self {
+            base,
+            layout,
+            states,
+            pages,
+            count,
+            granule,
+        })
+    }
+
     /// Preallocates `count` frames of `granule` bytes each, sector-aligned and
     /// all `Free`. The whole span is allocated once and never grows.
     ///
@@ -188,30 +216,14 @@ impl Frames {
             granule >= SECTOR_BYTES,
             "granule must not fall below the sector floor"
         );
-        let span = (count as usize)
-            .checked_mul(granule as usize)
-            .expect("frame arena span within isize::MAX");
-        let layout = Layout::from_size_align(span, arena_alignment(span, granule))
-            .expect("valid frame arena layout");
-        // SAFETY: `layout` has a non-zero size (count, granule both positive); a
-        // null return is routed to `handle_alloc_error`, so `base` is a live,
-        // sector-aligned allocation of `span` bytes.
-        let ptr = unsafe { alloc(layout) };
-        let base = NonNull::new(ptr).unwrap_or_else(|| handle_alloc_error(layout));
-        advise_hugepage(base, span);
-        // SAFETY: `base` addresses `span` writable bytes owned solely here; no
-        // reference to them exists yet.
-        unsafe { std::ptr::write_bytes(base.as_ptr(), 0, span) };
-        Self {
-            base,
-            layout,
-            states: (0..count)
-                .map(|_| AtomicU64::new(u64::from(FrameState::Free.to_tag())))
-                .collect(),
-            pages: ExactPageCells::preallocated(count),
-            count,
-            granule,
-        }
+        Self::try_preallocated(count, granule).unwrap_or_else(|| {
+            let span = (count as usize)
+                .checked_mul(granule as usize)
+                .expect("frame arena span within isize::MAX");
+            let layout = Layout::from_size_align(span, arena_alignment(span, granule))
+                .expect("valid frame arena layout");
+            handle_alloc_error(layout)
+        })
     }
 
     #[must_use]
@@ -467,7 +479,7 @@ fn advise_hugepage(base: NonNull<u8>, len: usize) {
     {
         if len >= HUGEPAGE_BYTES {
             // SAFETY: `base`/`len` name the live allocation just returned by
-            // `alloc_zeroed` and owned solely here; `madvise` only sets a VMA hint
+            // `alloc` and owned solely here; `madvise` only sets a VMA hint
             // and reads or writes no user bytes. The result is ignored on purpose:
             // the hint is best-effort — a `THP=never` kernel returns `EINVAL` and
             // the arena runs correctly on 4 KiB pages, so a rejected hint must

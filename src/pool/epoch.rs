@@ -44,17 +44,17 @@ pub(crate) struct ReaderRegistry {
 }
 
 impl ReaderRegistry {
-    pub(crate) fn with_capacity(
+    pub(crate) fn try_with_capacity(
         capacity: u32,
         peak_guards_per_reader: u32,
         lifecycle: Arc<LifecycleCounters>,
-    ) -> Self {
-        Self {
-            slots: (0..capacity)
-                .map(|_| ReaderSlot::vacant(peak_guards_per_reader))
-                .collect(),
+    ) -> Option<Self> {
+        Some(Self {
+            slots: crate::allocation::try_boxed_slice_with(capacity, || {
+                ReaderSlot::vacant(peak_guards_per_reader)
+            })?,
             lifecycle,
-        }
+        })
     }
 
     pub(crate) fn slots(&self) -> &[ReaderSlot] {
@@ -238,11 +238,17 @@ pub(crate) enum FrameOutcome {
 }
 
 impl EvictQueue {
+    #[cfg(loom)]
     pub(crate) fn with_capacity(capacity: u32) -> Self {
-        Self {
-            entries: VecDeque::with_capacity(capacity as usize),
+        Self::try_with_capacity(capacity)
+            .unwrap_or_else(|| panic!("eviction queue allocation failed for {capacity} frames"))
+    }
+
+    pub(crate) fn try_with_capacity(capacity: u32) -> Option<Self> {
+        Some(Self {
+            entries: crate::allocation::try_vec_deque_with_exact_capacity(capacity)?,
             capacity,
-        }
+        })
     }
 
     pub(crate) fn push(&mut self, frame: ReadFrameIdx, tagged_epoch: u64) {
