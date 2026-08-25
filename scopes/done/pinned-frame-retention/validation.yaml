@@ -530,10 +530,44 @@ decision_log:
       - Run fewer than 40 pairs or relax the 1.0100 thresholds.
     reason: File closure, shutdown, and Pool::get production source changed after a079c7c, so final evidence must bind a new clean behavior commit and matching controller seal. Fresh versioned products, runner, input, bundle, and 40-pair artifacts prevent identity drift and preserve every recorded threshold.
   - date: 2026-08-25
-    decision: Accept all three valid v20 results as the final amendment timing evidence.
+    decision: Accept all three valid v20 results as amendment evidence for de6ab370 only.
     alternatives:
       - Retain superseded v19 results as final evidence.
       - Rerun any valid v20 lane to seek a different estimate.
       - Activate the conditional nonzero-poll lane without new poll or drain work.
       - Relax a frozen threshold.
     reason: The clean de6ab370 product and f6f816b baseline were built from bundle 1b3b883e under controller 9601491 with sealed executable, runner, lockfile, input, and gate hashes. Every lane completed 40 order-alternated pairs on the active performance/THP-never profile with matching checksums and zero timed allocations, minor faults, or major faults. Candidate/baseline geomean and one-sided CI95 upper were 0.9136 and 0.9223 for ordinary transient guards, 0.9158 and 0.9221 for nested transient guards, and 0.9966 and 0.9973 for zero-budget lifecycle; each upper bound passes the unchanged 1.0100 threshold.
+  - date: 2026-08-26
+    decision: Reject the final architecture review's mock-builder allocation finding as outside the documented Pool construction boundary.
+    alternatives:
+      - Make MockDriverBuilder::build fallible under PoolBuildError.
+      - Extend the PoolBuilder contract to every separately constructed supplied backend.
+    reason: MockDriverBuilder::build returns a MockDriver before PoolBuilderTestingExt::build_on begins. Every allocation performed after build_on accepts that supplied driver is fallible and maps to PoolBuildError::Allocation, so the finding names no reachable wrong outcome under the reviewed contract.
+  - date: 2026-08-26
+    decision: Terminate an unaligned positive short direct-I/O completion at the Pool completion root with synthetic EIO and one read-credit release.
+    alternatives:
+      - Submit the unaligned remainder and rely on the driver assertion.
+      - Round the remainder to an aligned span.
+      - Apply the gate separately in each backend.
+    reason: The Pool owns logical short-read continuation and has the negotiated IoMode plus file, destination, and length offsets. Rejecting before the shared submit seam prevents every backend from issuing an invalid direct request, preserves buffered and aligned continuation, and routes the existing failure transition exactly once.
+  - date: 2026-08-26
+    decision: Drain legal pending releases and assert forgotten retention in Pool::drop before invoking drop_hook, while Retention::drop skips only its duplicate occupied-budget assertion during unwind.
+    alternatives:
+      - Leave the assertion in Retention::drop after file closure.
+      - Skip final legal release draining.
+      - Suppress every Retention structural assertion during unwind.
+    reason: Physical close must not precede detection of a forgotten retention. Pool has exclusive access to the release cursor and reverse map at teardown, so it can free legal pending releases before asserting zero occupancy; standalone Retention still detects forgotten handles and structural invariants remain checked during unwind.
+  - date: 2026-08-26
+    decision: Use ManuallyDrop only on defective pre-credit and intentionally forgotten-handle regression paths.
+    alternatives:
+      - Use mem::forget and violate strict Clippy.
+      - Let a failing oracle enter the one-million-pass shutdown bound.
+      - Add a test-only shutdown or CQE-withholding API.
+    reason: The direct behavioral tests must report the intended RED promptly without adding production test seams. ManuallyDrop is bounded to branches where the deliberately defective state cannot be safely destroyed and keeps the regression lint-clean.
+  - date: 2026-08-26
+    decision: Supersede v20 after commit 30800df changed production behavior and accept the fresh v21 seal under every unchanged 1.0100 threshold.
+    alternatives:
+      - Reuse v20 because the late fixes target cold completion and teardown paths.
+      - Run fewer than 40 pairs.
+      - Relax a threshold or rerun a valid failure unchanged.
+    reason: Final evidence must bind the exact behavior commit. Bundle e2b68b6e, controller 538cdad, baseline c005d73f, candidate 7a7d3431, runner b7d17e20, input ce18cc20, and gate 4bcf1940 sealed v21. Every lane completed 40 valid pairs with matching checksums and zero timed allocations or faults; geomean and CI95 upper were 0.9337 and 0.9460 for transient guards, 0.9398 and 0.9531 for nested guards, and 1.0001 and 1.0009 for zero-budget lifecycle.

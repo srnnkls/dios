@@ -1116,6 +1116,82 @@ batch_reviews:
       remote_evidence: /home/srnnkls/build/dios/target/bench-samples/pfr-amendments-v20
     outcome: implementation_and_gates_approved
 
+  - batch: final-amendment-lifecycle-fix
+    timestamp: 2026-08-25T23:23:43Z
+    behavior_commit: 30800df1ea61f187baa033a3dcaabfaabba7526b
+    controller_commit: 538cdad0c859c9fc5229b4884b041de7ca76d49b
+    reviewed_fix_diff_sha256: 3e0c1bdb5e021e3e2f4141772cb8962b36af93a995b07cb5c8e3472157426bb6
+    complete_branch_review:
+      report_dirs:
+        general: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-complete-review-general
+        architecture: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-complete-review-architecture
+        compliance: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-complete-review-compliance
+      accepted_findings:
+        - An unaligned positive direct-I/O short completion resubmitted an invalid remainder and panicked in DriverCore instead of reaching a terminal operating error.
+        - Pool teardown invoked drop_hook and physically closed retiring files before Retention::drop detected a forgotten handle.
+      refuted_finding:
+        summary: Supplied mock builders allegedly bypass PoolBuildError::Allocation.
+        evidence: MockDriverBuilder::build completes before PoolBuilderTestingExt::build_on; every explicitly sized allocation inside build_on is fallible and maps to PoolBuildError::Allocation.
+        triage: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-complete-review-architecture/codex-native-triage.yaml
+    test_review:
+      initial: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-complete-review-fix-2-test-review
+      corrected: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-complete-review-fix-2-test-rereview-r2
+      reviewers: [codex-native, claude-opus-peer, gemini-3.7-flash]
+      status: approved
+      red:
+        - Direct-I/O short completion panicked at offset 1500 with 4096-byte alignment; the oracle rejected polling panic.
+        - Forgotten retention emitted Close before the occupied-budget assertion; the oracle rejected physical close before panic.
+      oracle: The direct API smokes require synthetic EIO, one aligned attempt, no remainder submission, reusable sole read credit, and panic-before-close ordering.
+    implementation:
+      agent: codex-gpt5.6-terra
+      execution_class: native
+      effort: high
+      report_dir: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-complete-review-fix-2-implementer-terra-r2
+      status: green
+    final_fix_review:
+      report_dirs:
+        general: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-complete-review-fix-2-review-general
+        architecture: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-complete-review-fix-2-review-architecture
+        compliance: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-complete-review-fix-2-review-compliance
+      reviewers:
+        - {id: codex-native, execution_class: native, roles: [general, architecture, compliance], status: approved}
+        - {id: claude-opus-peer, execution_class: external, roles: [general, architecture, compliance], status: approved}
+        - {id: gemini-3.7-flash, execution_class: external, roles: [general, architecture, compliance], status: approved}
+      findings: []
+    verification:
+      local:
+        - all-feature suite passed 306 tests across 41 targets
+        - zero-allocation passed 23/23
+        - Loom passed 15/15
+        - strict all-target/all-feature Clippy, rustdoc, formatting, and diff checks passed
+        - no-default-feature library check and strict Clippy passed
+      linux_clean_candidate:
+        - exact source commit 30800df1ea61f187baa033a3dcaabfaabba7526b
+        - hugepage alignment and backing passed 2/2
+        - io_uring, wait, and deferred-close paths passed 13/13
+        - registered lifecycle and allocation passed 14/14
+        - driver and pool-progress targets passed 42/42
+        - real-pool and retention teardown paths passed 11/11
+        - strict all-target/all-feature Clippy passed
+        - Miri pure-memory paths passed 18/18
+        - ASan retention, real-pool, and teardown paths passed 13/13
+    performance_gates:
+      seal:
+        source_bundle_sha256: e2b68b6ee518d80f00909af34270b4cff929183bc89e26face2c194db632bde0
+        baseline_executable_sha256: c005d73f18d7e196de38b85f15d379f49e84924028068e2c6d0eff36c08406e4
+        candidate_executable_sha256: 7a7d34319dfbe76fd15eb39915f6b0d489ad41bb189092eed5018deb3eb4759c
+        runner_executable_sha256: b7d17e201e4274dc08b4e9ac6bb124c66236c3d1654c9de71324ed3c4184c6de
+        runner_source_sha256: 7750d7d4cc3b5f2d2ac1fdc1e41b018a6c42a6cdbabd07d3a8aff5335127d5db
+        input_sha256: ce18cc2046a523f1795ab7a9b07b338cf94a45e0f68d8d0b290feb0d97ba98f7
+        gate_executable_sha256: 4bcf1940964a7166c0c03bd5c627ad9fb8009b2a646b3c64768ac49e64d991f2
+      pfr_transient_guard: {pairs: 40, geomean: 0.9337, ci95_upper: 0.9460, threshold: 1.0100, status: passed}
+      pfr_nested_transient_guard: {pairs: 40, geomean: 0.9398, ci95_upper: 0.9531, threshold: 1.0100, status: passed}
+      pfr_zero_budget_bypass: {pairs: 40, geomean: 1.0001, ci95_upper: 1.0009, threshold: 1.0100, status: passed}
+      pfr_nonzero_poll: inactive
+      local_evidence: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-benchmark-artifacts-v21
+      remote_evidence: /home/srnnkls/build/dios/target/bench-samples/pfr-amendments-v21
+    outcome: approved
+
 issues:
   critical: []
   high:

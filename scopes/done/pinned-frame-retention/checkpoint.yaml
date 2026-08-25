@@ -2,9 +2,9 @@ checkpoint:
   scope_name: pinned-frame-retention
   scope_path: ./scopes/done/pinned-frame-retention
   branch: feat/pinned-frame-retention-amendments
-  timestamp: 2026-08-25T20:55:27Z
+  timestamp: 2026-08-25T23:23:43Z
   last_batch: 12
-  last_commit: 9601491
+  last_commit: 538cdad
   tasks:
     done:
       - id: T1
@@ -55,38 +55,49 @@ checkpoint:
     path: ./scopes/done/pinned-frame-retention/config.yaml
     epoch_id: 20260821T150300Z-376a8f
   phase_cursor:
-    batch: final-amendment
-    phase: final_review
-    status: in_progress
-    tasks: [T10, T11, T12, T13]
-    updated_at: 2026-08-25T20:55:27Z
-    reviewed_fix_diff_sha256: 2223a52cbff1784ee5c9986de91ed0a23a62695266ea9a38031280fb9e34577a
-    candidate_source_commit: de6ab37030b3773acd6b7d8522cdcecaf1d9d4bd
-    controller_source_commit: 9601491460a01d484a614bc9bd7d15de627a5e35
+    batch: final-amendment-lifecycle-fix
+    phase: complete
+    status: completed
+    tasks: [T13]
+    updated_at: 2026-08-25T23:23:43Z
+    reviewed_fix_diff_sha256: 3e0c1bdb5e021e3e2f4141772cb8962b36af93a995b07cb5c8e3472157426bb6
+    candidate_source_commit: 30800df1ea61f187baa033a3dcaabfaabba7526b
+    controller_source_commit: 538cdad0c859c9fc5229b4884b041de7ca76d49b
     baseline_source_commit: f6f816b33c13c121e02767735f861d46c8939371
-    final_review_target: pending_tracking_commit
+    final_review_target: 30800df1ea61f187baa033a3dcaabfaabba7526b
     roles:
       general:
-        status: in_progress
-        report_dir: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-complete-review-general
+        status: completed
+        report_dir: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-complete-review-fix-2-review-general
         agents:
-          codex-native: {status: pending, report_file: codex-native.yaml}
-          opus-cli: {status: pending, report_file: claude-opus-cli.yaml}
-          gemini: {status: pending, report_file: gemini-3.7-flash.yaml}
+          codex-native: {status: approved, report_file: codex-native.yaml}
+          opus-cli: {status: approved, report_file: claude-opus-peer.yaml}
+          gemini: {status: approved, report_file: gemini-3.7-flash.raw.yaml}
       architecture:
-        status: in_progress
-        report_dir: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-complete-review-architecture
+        status: completed
+        report_dir: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-complete-review-fix-2-review-architecture
         agents:
-          codex-native: {status: pending, report_file: codex-native.yaml}
-          opus-cli: {status: pending, report_file: claude-opus-cli.yaml}
-          gemini: {status: pending, report_file: gemini-3.7-flash.yaml}
+          codex-native: {status: approved, report_file: codex-native.yaml}
+          opus-cli: {status: approved, report_file: claude-opus-peer.yaml}
+          gemini: {status: approved, report_file: gemini-3.7-flash.raw.yaml}
       compliance:
-        status: in_progress
-        report_dir: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-complete-review-compliance
+        status: completed
+        report_dir: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-complete-review-fix-2-review-compliance
         agents:
-          codex-native: {status: pending, report_file: codex-native.yaml}
-          opus-cli: {status: pending, report_file: claude-opus-cli.yaml}
-          gemini: {status: pending, report_file: gemini-3.7-flash.yaml}
+          codex-native: {status: approved, report_file: codex-native.yaml}
+          opus-cli: {status: approved, report_file: claude-opus-peer.yaml}
+          gemini: {status: approved, report_file: gemini-3.7-flash.raw.yaml}
+    final_fix_test_review:
+      status: approved
+      report_dir: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-complete-review-fix-2-test-rereview-r2
+      agents:
+        codex-native: {status: approved, report_file: codex-native.yaml}
+        opus-cli: {status: approved, report_file: claude-opus-peer.yaml}
+    final_fix_implementation:
+      agent: terra
+      status: green
+      report_dir: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-complete-review-fix-2-implementer-terra-r2
+      report_file: codex-gpt5.6-terra.yaml
     benchmark_review_roles:
       general:
         status: completed
@@ -129,9 +140,9 @@ checkpoint:
         report_file: codex-gpt5.6-terra.yaml
       green: "both direct probes completed 8192 operations with identical checksums; benchmark compile, strict Clippy, formatting, and 159 tests passed"
     local_verification:
-      branch_commit: 9601491460a01d484a614bc9bd7d15de627a5e35
-      rerun_at: 2026-08-25T20:55:27Z
-      all_feature_tests: "304 passed"
+      branch_commit: 30800df1ea61f187baa033a3dcaabfaabba7526b
+      rerun_at: 2026-08-25T22:56:00Z
+      all_feature_tests: "306 passed across 41 targets"
       zero_allocation: "23 passed"
       loom: "15 passed"
       clippy: passed
@@ -141,61 +152,55 @@ checkpoint:
       formatting: passed
       diff_check: passed
     linux_verification:
-      source_commit: de6ab37030b3773acd6b7d8522cdcecaf1d9d4bd
+      source_commit: 30800df1ea61f187baa033a3dcaabfaabba7526b
       hugepage: "2 passed"
       io_uring_close_wait: "13 passed"
       registered_lifecycle_and_allocation: "14 passed"
       driver_and_pool_progress: "42 passed"
+      real_pool_and_retention_teardown: "11 passed"
       clippy: passed
       miri_pure_memory: "18 passed"
-      asan_syscall_paths: "6 passed"
-      lifecycle_smoke_fix_commit: 4bc95c3
-      lifecycle_smoke_review:
-        status: approved
-        report_dir: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-smoke-test-review
-        agents:
-          codex-native: {status: approved, report_file: codex-native.yaml}
-          opus-cli: {status: approved, report_file: claude-opus-cli.yaml}
-          gemini: {status: approved, report_file: gemini-3.7-flash.yaml}
+      asan_syscall_paths: "13 passed"
     timing_gates:
       status: passed
       profile: "nix active; performance governor; THP never"
-      source_bundle_sha256: 1b3b883e421e4834dd96e308feb86414794c17747c170215947973b362414d2b
-      baseline_executable_sha256: e823eeed656c3112db98713de87f6e4212c67e264569704152eef21d5893c51c
-      candidate_executable_sha256: 121c07e4ea83a849a34c5a9e59536ae845703ab5f95b77cec1d9de1f41776caa
-      runner_executable_sha256: 231569b7e95901ef75c9393b5d88f756ea734c0524878e5b2b2402fe4ca9bc86
-      runner_source_sha256: 998e0cd44b7c470b5172f07c58138773f2c03e1d3b7bb578e117615a35faca33
+      source_bundle_sha256: e2b68b6ee518d80f00909af34270b4cff929183bc89e26face2c194db632bde0
+      baseline_executable_sha256: c005d73f18d7e196de38b85f15d379f49e84924028068e2c6d0eff36c08406e4
+      candidate_executable_sha256: 7a7d34319dfbe76fd15eb39915f6b0d489ad41bb189092eed5018deb3eb4759c
+      runner_executable_sha256: b7d17e201e4274dc08b4e9ac6bb124c66236c3d1654c9de71324ed3c4184c6de
+      runner_source_sha256: 7750d7d4cc3b5f2d2ac1fdc1e41b018a6c42a6cdbabd07d3a8aff5335127d5db
       input_sha256: ce18cc2046a523f1795ab7a9b07b338cf94a45e0f68d8d0b290feb0d97ba98f7
-      remote_artifacts: /home/srnnkls/build/dios/target/bench-samples/pfr-amendments-v20
-      local_evidence: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-benchmark-artifacts-v20
+      gate_executable_sha256: 4bcf1940964a7166c0c03bd5c627ad9fb8009b2a646b3c64768ac49e64d991f2
+      remote_artifacts: /home/srnnkls/build/dios/target/bench-samples/pfr-amendments-v21
+      local_evidence: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-benchmark-artifacts-v21
       lanes:
         pfr_transient_guard:
           pairs: 40
-          ratio_geomean: 0.9136
-          ratio_ci95_upper: 0.9223
+          ratio_geomean: 0.9337
+          ratio_ci95_upper: 0.9460
           threshold: 1.0100
           verdict: passed
-          process_sha256: 50486b39d0306e08fb5eea2713bfa150a8c111ccd0c69562ec657a23520ccc26
-          paired_sha256: f9ea88fdaea4adf5f479a2f2825da09ba528ce2729c6934842be395901576971
-          provenance_sha256: 014f1b685a49dd0e41b6ca9266e2dd90fbccbd6581289d4398948738a933bad2
+          process_sha256: 0a676f956ca54f7e109b3cdad6d41b33cbf47ad6a5f5c3812cea559fac011aea
+          paired_sha256: 60b6868ef527764113e94e923a38644a7111d1ec4de3ffe7d514f03df0e33ebc
+          provenance_sha256: 61ab5aca7d28c503e0ca2b18b3800acfe11dc0af51ee7cbb48cb82d0aa976b43
         pfr_nested_transient_guard:
           pairs: 40
-          ratio_geomean: 0.9158
-          ratio_ci95_upper: 0.9221
+          ratio_geomean: 0.9398
+          ratio_ci95_upper: 0.9531
           threshold: 1.0100
           verdict: passed
-          process_sha256: 12ff97458069f3a5ff822bbce421991c49fb136fcb1c6170375217b9af6cb42e
-          paired_sha256: be06d435bffda8c15e71425e262ce4ea30cc4dde14c9cbc32afd8238b1c32d25
-          provenance_sha256: 877c9210b6cc8cba29b2e1467694e2d8dbd6643628d8927fe351df7d1c6b07e3
+          process_sha256: 9d169c3e7446bda102b30638a21ba6ffeb4e30ec6487ce16901f33e598fec6ab
+          paired_sha256: 9b14e067796d8e80ac198909cad66c86c5f6e9af257fbd4fa0fdcae47d74bc08
+          provenance_sha256: 0cdcc07bb2705c1891d37c3ab4e1ad36812b2989fc2c4d1a666a62fea2a5688d
         pfr_zero_budget_bypass:
           pairs: 40
-          ratio_geomean: 0.9966
-          ratio_ci95_upper: 0.9973
+          ratio_geomean: 1.0001
+          ratio_ci95_upper: 1.0009
           threshold: 1.0100
           verdict: passed
-          process_sha256: 34097edfd2b6d3565d55a367eb5d9c626a621b633c9e9257b14f7a325eccde5c
-          paired_sha256: 31321e92cd49e576402aef8e9a0d77581547bdf2f277d79725b6f1486b51e403
-          provenance_sha256: 1a05f24c7ea93efd10194cc703fbeb0d64d816619af7f757979c9021adc6091a
+          process_sha256: 5fc02394f18c836246baa6ced2228ef5c227e598fb470abb807ed07332e6d62b
+          paired_sha256: 4005a1253c09fb472640ba2383c5aa48b42544187561fde1101e78403b6dc75e
+          provenance_sha256: 8290cdf24c799bdc4e53c45513b60fcc0a2332f8c03f946e5a61b8137cff4b0b
       pfr_nonzero_poll: inactive
   prior_phase_cursor:
     batch: 12
@@ -485,4 +490,12 @@ checkpoint:
     final_amendment_fix_rereview_architecture: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-review-fix-rereview-architecture
     final_amendment_fix_rereview_compliance: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-review-fix-rereview-compliance
     final_amendment_v20_gates: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-benchmark-artifacts-v20
+    final_amendment_v20_status: superseded_by_30800df_production_change
+    final_amendment_lifecycle_fix_commit: 30800df1ea61f187baa033a3dcaabfaabba7526b
+    final_amendment_v21_controller_commit: 538cdad0c859c9fc5229b4884b041de7ca76d49b
+    final_amendment_lifecycle_test_review: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-complete-review-fix-2-test-rereview-r2
+    final_amendment_lifecycle_review_general: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-complete-review-fix-2-review-general
+    final_amendment_lifecycle_review_architecture: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-complete-review-fix-2-review-architecture
+    final_amendment_lifecycle_review_compliance: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-complete-review-fix-2-review-compliance
+    final_amendment_v21_gates: .peer/pinned-frame-retention/20260825T173039Z-2ce5ae/final-benchmark-artifacts-v21
   incomplete_stages: []
