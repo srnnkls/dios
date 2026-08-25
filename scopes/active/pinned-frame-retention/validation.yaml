@@ -412,3 +412,12 @@ decision_log:
       - Treat the untracked revision-14 checkpoint as implementation evidence.
       - Leave the original T11 file list unchanged despite fallible arena allocation crossing additional modules.
     reason: Origin main contains the reviewed T1–T9 retention result but none of the four Sira obligations. T017 must compose with retention-era lifecycle behavior; T10–T12 then share pool and driver surfaces. The committed revision-13 task state remains the provenance for completed work, while revision 14 adds only the missing obligations and includes retention.rs, frames.rs, and write_arena.rs where configurable file capacity and fallible allocation actually terminate.
+  - date: 2026-08-25
+    decision: Use one configured registration capacity, reserve before create, share a typed registration error across open and create, expose generation-safe IoMode readback, and keep namespace durability in Sira.
+    alternatives:
+      - Encode capacity exhaustion as an IoError.
+      - Give create a typed error while open retains an incompatible error contract.
+      - Return IoMode only alongside create/open.
+      - Add rename, directory-fsync, owner-routing, cancellation, or public driver APIs to Dios.
+      - Reserve capacity after creating the pathname.
+    reason: Both registration paths consume the same bounded table, and at-capacity create must leave the filesystem untouched. Sira needs later readback by FileId and already owns rename, directory fsync, root publication, and completion routing. The minimal surface is registered_file_capacity, create-new semantics, FileRegistrationError with AtCapacity and Io, PoolBuildError::Allocation, crate-root IoMode, and Pool::io_mode; existing write, fsync, completion, and retirement APIs remain sufficient.
