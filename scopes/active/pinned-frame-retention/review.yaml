@@ -974,6 +974,44 @@ batch_reviews:
     performance_gates: pending_final_amendment_candidate
     outcome: implementation_approved
 
+  - batch: final-amendment-benchmark
+    timestamp: 2026-08-25T17:02:55Z
+    commit: a079c7c
+    tasks: [T10, T11, T12]
+    reviewed_benchmark_diff_sha256: 7a49548a29bc8ab2e3a850a8ea06b1cd1f1a35810828623be6a3e1e535ef0916
+    tester:
+      status: red_confirmed
+      report_dir: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/final-benchmark-tester
+      failure: 'unknown frozen PFR lane "pfr_nested_transient_guard"'
+    test_review:
+      status: approved
+      report_dir: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/final-benchmark-test-review
+      reviewers: [codex-native, claude-opus-cli, gemini-3.7-flash]
+    implementation:
+      agent: codex-gpt5.6-terra
+      execution_class: native
+      effort: high
+      report_dir: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/final-benchmark-implementer-terra
+      green: Both direct arms completed 8,192 operations with identical checksums and zero timed allocations or faults.
+    targeted_review:
+      report_dirs:
+        general: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/final-benchmark-review-general
+        architecture: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/final-benchmark-review-architecture
+        compliance: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/final-benchmark-review-compliance
+      reviewers:
+        - {id: codex-native, execution_class: native, roles: [general, architecture, compliance], status: approved}
+        - {id: claude-opus-cli, execution_class: external, roles: [general, architecture, compliance], status: approved}
+        - {id: gemini-3.7-flash, execution_class: external, roles: [general, architecture, compliance], status: approved}
+      findings: []
+    verification:
+      - full all-feature suite passed 303/303
+      - zero_alloc passed 23/23
+      - Loom passed 15/15
+      - strict all-target/all-feature Clippy, formatting, rustdoc, and git diff check passed
+      - all touched functions are at most 70 lines
+    performance_gates: pending_benchmark_profile
+    outcome: implementation_approved
+
 issues:
   critical: []
   high:

@@ -2,9 +2,9 @@ checkpoint:
   scope_name: pinned-frame-retention
   scope_path: ./scopes/active/pinned-frame-retention
   branch: feat/pinned-frame-retention-amendments
-  timestamp: 2026-08-25T16:46:14Z
+  timestamp: 2026-08-25T17:02:55Z
   last_batch: 12
-  last_commit: 2ca27a7
+  last_commit: a079c7c
   tasks:
     done:
       - id: T1
@@ -55,6 +55,65 @@ checkpoint:
     path: ./scopes/active/pinned-frame-retention/config.yaml
     epoch_id: 20260821T150300Z-376a8f
   phase_cursor:
+    batch: final-amendment
+    phase: verification
+    status: in_progress
+    tasks: [T10, T11, T12]
+    updated_at: 2026-08-25T17:02:55Z
+    candidate_source_commit: a079c7c84912239d59d4804cabb103b80890c729
+    baseline_source_commit: f6f816b33c13c121e02767735f861d46c8939371
+    reviewed_benchmark_diff_sha256: 7a49548a29bc8ab2e3a850a8ea06b1cd1f1a35810828623be6a3e1e535ef0916
+    roles:
+      general:
+        status: completed
+        report_dir: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/final-benchmark-review-general
+        agents:
+          codex-native: {status: approved, report_file: codex-native.yaml}
+          opus-cli: {status: approved, report_file: claude-opus-cli.yaml}
+          gemini: {status: approved, report_file: gemini-3.7-flash.yaml}
+      architecture:
+        status: completed
+        report_dir: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/final-benchmark-review-architecture
+        agents:
+          codex-native: {status: approved, report_file: codex-native.yaml}
+          opus-cli: {status: approved, report_file: claude-opus-cli.yaml}
+          gemini: {status: approved, report_file: gemini-3.7-flash.yaml}
+      compliance:
+        status: completed
+        report_dir: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/final-benchmark-review-compliance
+        agents:
+          codex-native: {status: approved, report_file: codex-native.yaml}
+          opus-cli: {status: approved, report_file: claude-opus-cli.yaml}
+          gemini: {status: approved, report_file: gemini-3.7-flash.yaml}
+    benchmark_lane:
+      tester:
+        agent: codex-native
+        status: red_confirmed
+        report_dir: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/final-benchmark-tester
+        report_file: codex-native.yaml
+      test_review:
+        status: approved
+        report_dir: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/final-benchmark-test-review
+        agents:
+          codex-native: {status: approved, report_file: codex-native.yaml}
+          opus-cli: {status: approved, report_file: claude-opus-cli.yaml}
+          gemini: {status: approved, report_file: gemini-3.7-flash.yaml}
+      implementer:
+        agent: terra
+        status: green
+        report_dir: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/final-benchmark-implementer-terra
+        report_file: codex-gpt5.6-terra.yaml
+      green: "both direct probes completed 8192 operations with identical checksums; benchmark compile, strict Clippy, formatting, and 159 tests passed"
+    local_verification:
+      all_feature_tests: "303 passed"
+      zero_allocation: "23 passed"
+      loom: "15 passed"
+      clippy: passed
+      rustdoc: passed
+      formatting: passed
+      diff_check: passed
+    timing_gates: pending_benchmark_profile
+  prior_phase_cursor:
     batch: 12
     phase: code_review
     status: completed
@@ -101,7 +160,7 @@ checkpoint:
       report_dir: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b12-tester-T12-r2
       report_file: codex-native.yaml
     verification: "focused mode smoke 1, public API 9, pool write 8, all-feature suite 303, strict Clippy, formatting, rustdoc, and diff check passed"
-  prior_phase_cursor:
+  earlier_phase_cursor:
     batch: 11
     phase: targeted_review
     status: completed
@@ -329,4 +388,11 @@ checkpoint:
     batch_12_final_review_compliance: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/b12-review-compliance
     batch_12_performance_gates: pending_final_amendment_candidate
     batch_12_status: implementation_complete
+    final_amendment_candidate_commit: a079c7c84912239d59d4804cabb103b80890c729
+    final_amendment_benchmark_diff_sha256: 7a49548a29bc8ab2e3a850a8ea06b1cd1f1a35810828623be6a3e1e535ef0916
+    final_amendment_benchmark_test_review: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/final-benchmark-test-review
+    final_amendment_benchmark_review_general: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/final-benchmark-review-general
+    final_amendment_benchmark_review_architecture: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/final-benchmark-review-architecture
+    final_amendment_benchmark_review_compliance: .peer/pinned-frame-retention/20260825T102754Z-dedfb4/final-benchmark-review-compliance
+    final_amendment_timing_gates: pending_benchmark_profile
   incomplete_stages: []

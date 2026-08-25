@@ -486,3 +486,11 @@ decision_log:
       - Treat the plan-only nested lane as already implemented.
       - Reuse v18 products sealed to the earlier retention candidate.
     reason: The existing amendment review binds pfr_zero_budget_bypass to T11's 1.0100 mixed-lifecycle requirement, and the generic runner already supports that lane plus ordinary transient. Nested transient exists only in the amendment plan and needs a small Lane/workload/validator extension. T12 remains registration/readback-only, so the plan's conditional nonzero gate does not activate. Final products must be resealed to main f6f816b and the committed T10-T12 candidate.
+  - date: 2026-08-25
+    decision: Freeze a079c7c84912239d59d4804cabb103b80890c729 as the final amendment product and f6f816b33c13c121e02767735f861d46c8939371 as its baseline.
+    alternatives:
+      - Reuse v18 products sealed to the retention-only candidate.
+      - Build either product from the dirty controller checkout.
+      - Point the candidate source identity at the later controller-seal or tracking commit.
+      - Omit the reviewed nested-transient lane from the candidate product.
+    reason: The clean candidate contains T13, T10, T11, T12, and the reviewed nested lane. The lane's direct probes, 303 all-feature tests, 23 zero-allocation tests, 15 Loom models, strict Clippy, rustdoc, formatting, and all nine code-review reports pass. Source-comparison products must bind the exact behavior commit; the following controller-only seal changes no product behavior and avoids a circular self-identity.
