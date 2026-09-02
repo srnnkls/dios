@@ -14,8 +14,8 @@
 //! the failure to every waiter and frees the frame.
 
 use crate::completion::CompletionBatch;
-use crate::driver::{FileHandle, FileId, OpToken, SyncMode};
-use crate::error::IoError;
+use crate::driver::{BackendProgress, FileHandle, FileId, OpToken, SyncMode};
+use crate::error::FileRegistrationError;
 use crate::error::SubmitError;
 use crate::open::DirectIo;
 use crate::pool::write_arena::{ArenaState, WriteSlot};
@@ -39,7 +39,10 @@ pub(crate) trait PoolBackend: sealed::Sealed {
     fn attach_pool_state(&self, lifecycle: Arc<LifecycleCounters>, wake: Arc<WaitState>);
 
     /// Opens and retains a data file according to `direct_io`.
-    fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, IoError>;
+    fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, FileRegistrationError>;
+
+    fn create(&self, path: &Path, direct_io: DirectIo)
+    -> Result<FileHandle, FileRegistrationError>;
 
     /// Enqueues a read of `len` bytes at `file_offset` into `frame`. The pool
     /// always requests the whole granule first, then the remainder tail after a
@@ -58,12 +61,12 @@ pub(crate) trait PoolBackend: sealed::Sealed {
         len: u32,
     ) -> Result<OpToken, SubmitError>;
 
-    /// Drains ready completions into `out`, returning the count.
-    fn poll(&self, out: &mut CompletionBatch) -> usize;
+    /// Drains ready completions and separately reports raw backend progress.
+    fn poll_progress(&self, out: &mut CompletionBatch) -> BackendProgress;
 
     /// Parks through the backend's real wait source, outside pool control, then
     /// drains ready completions into `out`.
-    fn poll_wait(&self, out: &mut CompletionBatch, timeout: Duration) -> usize;
+    fn poll_wait_progress(&self, out: &mut CompletionBatch, timeout: Duration) -> BackendProgress;
 
     fn write_arena_state(&self) -> &ArenaState;
 
@@ -110,15 +113,19 @@ pub(crate) struct MissInterests {
 }
 
 impl MissInterests {
+    #[cfg(test)]
     pub(crate) fn with_capacity(capacity: u32) -> Self {
-        Self {
-            slots: (0..capacity)
-                .map(|_| MissInterest {
-                    generation: AtomicU64::new(0),
-                    waiters: AtomicU32::new(0),
-                })
-                .collect(),
-        }
+        Self::try_with_capacity(capacity)
+            .unwrap_or_else(|| panic!("miss-interest allocation failed for {capacity} slots"))
+    }
+
+    pub(crate) fn try_with_capacity(capacity: u32) -> Option<Self> {
+        Some(Self {
+            slots: crate::allocation::try_boxed_slice_with(capacity, || MissInterest {
+                generation: AtomicU64::new(0),
+                waiters: AtomicU32::new(0),
+            })?,
+        })
     }
 
     fn begin(&self, slot: MissSlot) -> NonZeroU64 {
@@ -236,11 +243,17 @@ pub(crate) struct MissTable {
 }
 
 impl MissTable {
+    #[cfg(test)]
     pub(crate) fn with_capacity(capacity: u32) -> Self {
-        Self {
-            slots: (0..capacity).map(|_| None).collect(),
-            success_frames: (0..capacity).map(|_| None).collect(),
-        }
+        Self::try_with_capacity(capacity)
+            .unwrap_or_else(|| panic!("miss-table allocation failed for {capacity} slots"))
+    }
+
+    pub(crate) fn try_with_capacity(capacity: u32) -> Option<Self> {
+        Some(Self {
+            slots: crate::allocation::try_boxed_slice_with(capacity, || None)?,
+            success_frames: crate::allocation::try_boxed_slice_with(capacity, || None)?,
+        })
     }
 
     pub(crate) fn find_pending(&self, page: PageId) -> Option<usize> {

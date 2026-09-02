@@ -476,6 +476,69 @@ residual); its wins over the guarded path come from deleted per-read
 software work, and any win over mmap itself must come from the memory
 architecture recorded under Capacity, not from further access-path work.
 
+## Amendment API boundaries
+
+### Declared guard ceiling
+
+Every `ReaderSlot` stores its configured `peak_guards_per_reader`. The registry
+and Loom model configure slots through the same method before first use.
+`commit_pin` increments the taken-guard count, asserts the new count is at most
+the declaration, then publishes the count. The check applies to the first guard
+and every nested guard; release builds retain it. A release-built nested N+1
+smoke distinguishes the required `assert!` from `debug_assert!`.
+
+### Registered artifacts
+
+`PoolBuilder::registered_file_capacity(u32)` configures one exact capacity for
+all pool, driver, backend, retention, mock, and Loom file-slot storage. The
+default remains 64. Live and Retiring generations consume capacity until
+physical close completes.
+
+`Pool::open` and `Pool::create` return
+`Result<FileId, FileRegistrationError>`, where
+`FileRegistrationError::{AtCapacity, Io(IoError)}` separates logical capacity
+from operating failure. `create` uses create-new semantics: it opens a new,
+readable and writable file and never truncates an existing path. A slot is
+reserved before the pathname can be created and remains reserved through I/O
+mode negotiation, backend registration, and pool registration. Any failure
+closes the handle and releases the reservation. Artifact length comes only from
+whole-granule positional writes.
+
+One executable lifecycle matrix fills a capacity above 64, proves the next
+create returns `AtCapacity` without creating its path, injects one
+post-reservation failure and proves immediate slot reuse, keeps a Retiring file
+charged until physical close, then reuses its slot and checks old/new generation
+`io_mode` results. This representative matrix pins the shared state machine
+without duplicating every operating-error permutation.
+
+Pool construction returns `PoolBuildError::Allocation` for every explicitly
+sized pool/arena capacity allocation: read and write arenas,
+page/clock/reader/eviction/miss/file state, completion storage, retention
+storage, and backend-independent scratch. Production and testing builders share
+`Result<Pool<_>, PoolBuildError>`. Small standard-library control blocks such as
+`Arc` headers retain Rust's process-OOM behavior; adding an allocator or
+shared-owner dependency for those fixed-size headers is outside this contract.
+Configuration is validated before any capacity allocation; backend setup
+failures remain `PoolBuildError::Driver`. Successful construction keeps runtime
+paths allocation-free.
+
+### I/O mode and durability
+
+`IoMode` is exported from the crate root. `Pool::io_mode(FileId) ->
+Option<IoMode>` returns the negotiated mode for the exact live or physically
+Retiring generation. It returns `None` for absent, Retired, or stale
+generations and never reveals a replacement generation through an old
+`FileId`. A foreign pool identity is a caller error and panics consistently
+with the existing file APIs.
+
+Dios owns positional whole-granule writes, their completion ordering, file
+`SyncMode::Full`, registration, and safe retirement. A successful file fsync
+does not make a pathname or root generation durable. Sira owns private names,
+rename, directory fsync, root publication, unlink, and sweep. The publication
+order is file writes, successful file fsync, rename, directory fsync, then root
+publication. Dios adds no rename, directory, owner-routing, cancellation, tail
+I/O, public driver-bound, or public file-handle API.
+
 ## Complexity
 
 Per frame: one `AtomicU32` word + one `AtomicU64` tag slot. Per file

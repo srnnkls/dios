@@ -957,9 +957,10 @@ mod pool_gates {
         );
     }
 
-    #[test]
-    fn a_busy_backpressure_get_allocates_nothing_and_disturbs_no_pinned_frame() {
-        let frames = 4u32;
+    fn a_busy_backpressure_get_setup(
+        frames: u32,
+        peak: u32,
+    ) -> (Pool<MockDriver>, dios::FileId, ReaderCtx) {
         let mock = a_mock(frames);
         let file = mock
             .open(Path::new("za-busy"), DirectIo::Disabled)
@@ -968,12 +969,23 @@ mod pool_gates {
         for idx in 0..frames {
             mock.seed_page(&file, idx, 0xF0 | u8::try_from(idx).expect("fits u8"));
         }
-        let pool = pool_on(mock, frames, 1, 3);
+        let pool = pool_on(mock, frames, peak, 3);
         pool.register_file(file);
         let reader = pool.register_reader().expect("a reader slot");
-
-        let mut guards = Vec::with_capacity(frames as usize);
         for idx in 0..frames {
+            drop(resolve(&pool, &reader, PageId::new(file_id, idx)));
+        }
+        (pool, file_id, reader)
+    }
+
+    #[test]
+    fn a_busy_backpressure_get_allocates_nothing_and_disturbs_no_pinned_frame() {
+        let frames = 7u32;
+        let peak = 4u32;
+        let (pool, file_id, reader) = a_busy_backpressure_get_setup(frames, peak);
+
+        let mut guards = Vec::with_capacity(peak as usize);
+        for idx in 0..peak {
             guards.push(resolve(&pool, &reader, PageId::new(file_id, idx)));
         }
         let absent = PageId::new(file_id, frames + 1);

@@ -32,6 +32,7 @@ pub(crate) struct ReaderSlot {
     occupied: AtomicBool,
     local_epoch: AtomicU64,
     guard_count: AtomicU64,
+    peak_guards_per_reader: u32,
 }
 
 /// Arc-owned reader registration table. It deliberately retains no frames,
@@ -43,11 +44,17 @@ pub(crate) struct ReaderRegistry {
 }
 
 impl ReaderRegistry {
-    pub(crate) fn with_capacity(capacity: u32, lifecycle: Arc<LifecycleCounters>) -> Self {
-        Self {
-            slots: (0..capacity).map(|_| ReaderSlot::vacant()).collect(),
+    pub(crate) fn try_with_capacity(
+        capacity: u32,
+        peak_guards_per_reader: u32,
+        lifecycle: Arc<LifecycleCounters>,
+    ) -> Option<Self> {
+        Some(Self {
+            slots: crate::allocation::try_boxed_slice_with(capacity, || {
+                ReaderSlot::vacant(peak_guards_per_reader)
+            })?,
             lifecycle,
-        }
+        })
     }
 
     pub(crate) fn slots(&self) -> &[ReaderSlot] {
@@ -68,11 +75,12 @@ impl ReaderRegistry {
 }
 
 impl ReaderSlot {
-    pub(crate) fn vacant() -> Self {
+    pub(crate) fn vacant(peak_guards_per_reader: u32) -> Self {
         Self {
             occupied: AtomicBool::new(false),
             local_epoch: AtomicU64::new(QUIESCENT),
             guard_count: AtomicU64::new(0),
+            peak_guards_per_reader,
         }
     }
 
@@ -142,9 +150,15 @@ impl ReaderSlot {
 
     /// Commits a validated pin, counting one more live guard for this reader.
     pub(crate) fn commit_pin(&self) {
-        let count = self.guard_count();
-        assert!(count < u64::MAX, "reader live-guard count within u64");
-        self.guard_count.store(count + 1, Ordering::Relaxed);
+        let taken = self
+            .guard_count()
+            .checked_add(1)
+            .expect("reader live-guard count within u64");
+        assert!(
+            taken <= u64::from(self.peak_guards_per_reader),
+            "reader live-guard count does not exceed its declared peak"
+        );
+        self.guard_count.store(taken, Ordering::Relaxed);
     }
 
     /// Abandons a first pin whose validation failed: no guard was minted, so the
@@ -224,11 +238,17 @@ pub(crate) enum FrameOutcome {
 }
 
 impl EvictQueue {
+    #[cfg(loom)]
     pub(crate) fn with_capacity(capacity: u32) -> Self {
-        Self {
-            entries: VecDeque::with_capacity(capacity as usize),
+        Self::try_with_capacity(capacity)
+            .unwrap_or_else(|| panic!("eviction queue allocation failed for {capacity} frames"))
+    }
+
+    pub(crate) fn try_with_capacity(capacity: u32) -> Option<Self> {
+        Some(Self {
+            entries: crate::allocation::try_vec_deque_with_exact_capacity(capacity)?,
             capacity,
-        }
+        })
     }
 
     pub(crate) fn push(&mut self, frame: ReadFrameIdx, tagged_epoch: u64) {
@@ -315,8 +335,9 @@ impl Drop for ReaderCtx {
 /// reader's epoch stays published, so its frame cannot be reclaimed; dropping the
 /// last guard releases the epoch.
 ///
-/// The three `compile_fail` blocks below pin the guard/reader lifetime and thread
-/// invariants (INV-6, EBR per-thread slot) as library doctests.
+/// The executable blocks below pin the guard/reader lifetime and thread
+/// invariants plus the owned pending-token and namespace boundaries as library
+/// doctests (INV-6, EBR per-thread slot).
 ///
 /// A guard's borrow must not outlive the pool that minted it:
 ///
@@ -362,6 +383,33 @@ impl Drop for ReaderCtx {
 ///         .build().unwrap();
 ///     pool.register_reader().unwrap()
 /// }
+/// ```
+///
+/// A `PendingToken` is transferable to the destination owner thread:
+///
+/// ```no_run
+/// use dios::PendingToken;
+/// fn assert_send<T: Send>() {}
+/// assert_send::<PendingToken>();
+/// ```
+///
+/// A pending miss interest is affine rather than cloneable:
+///
+/// ```compile_fail
+/// use dios::PendingToken;
+/// fn assert_clone<T: Clone>() {}
+/// assert_clone::<PendingToken>();
+/// ```
+///
+/// Advanced driver vocabulary remains namespaced below `dios::driver`:
+///
+/// ```compile_fail
+/// use dios::{CompletionBatch, Driver, OpToken};
+/// ```
+///
+/// ```no_run
+/// use dios::driver::{CompletionBatch, Driver, OpToken};
+/// fn namespaced(_: Option<(CompletionBatch, Driver, OpToken)>) {}
 /// ```
 #[derive(Debug)]
 pub struct FrameGuard<'pool> {

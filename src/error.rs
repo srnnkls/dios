@@ -40,6 +40,33 @@ impl std::error::Error for IoError {
     }
 }
 
+/// Failure while reserving and registering a pool file.
+#[derive(Debug)]
+pub enum FileRegistrationError {
+    /// Every configured registered-file slot is occupied.
+    AtCapacity,
+    /// An operating failure occurred after capacity was reserved.
+    Io(IoError),
+}
+
+impl std::fmt::Display for FileRegistrationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AtCapacity => f.write_str("registered-file capacity exhausted"),
+            Self::Io(error) => std::fmt::Display::fmt(error, f),
+        }
+    }
+}
+
+impl std::error::Error for FileRegistrationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::AtCapacity => None,
+            Self::Io(error) => Some(error),
+        }
+    }
+}
+
 /// Why a submission was refused: backpressure, never a block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SubmitError {

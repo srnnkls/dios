@@ -4,8 +4,8 @@ use std::path::Path;
 
 use sha2::{Digest as _, Sha256};
 
-pub(crate) const BASE_SOURCE_COMMIT: &str = "4264896e7d2e1a2a5d6d71322a46cb7d8a3de7e7";
-pub(crate) const CANDIDATE_SOURCE_COMMIT: &str = "ec09d66c7fabe86da723c06ea668e427278f14e8";
+pub(crate) const BASE_SOURCE_COMMIT: &str = "f6f816b33c13c121e02767735f861d46c8939371";
+pub(crate) const CANDIDATE_SOURCE_COMMIT: &str = "30800df1ea61f187baa033a3dcaabfaabba7526b";
 pub(crate) const GRANULE_BYTES: u32 = 4096;
 pub(crate) const PAIR_COUNT: u32 = 40;
 pub(crate) const SEGMENT_LAYOUT: &str = "pfr-flat-4096-v1";
@@ -14,6 +14,7 @@ pub(crate) const PROCESS_HEADER: &str = "lane,pair,order,arm,workload,process_id
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Lane {
     TransientGuard,
+    NestedTransientGuard,
     NonzeroPoll,
     ZeroBudgetBypass,
     PromoteReleaseWake,
@@ -24,6 +25,7 @@ impl Lane {
     pub(crate) fn parse(value: &str) -> Result<Self, String> {
         match value {
             "pfr_transient_guard" => Ok(Self::TransientGuard),
+            "pfr_nested_transient_guard" => Ok(Self::NestedTransientGuard),
             "pfr_nonzero_poll" => Ok(Self::NonzeroPoll),
             "pfr_zero_budget_bypass" => Ok(Self::ZeroBudgetBypass),
             "pfr_promote_release_wake" => Ok(Self::PromoteReleaseWake),
@@ -35,6 +37,7 @@ impl Lane {
     pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::TransientGuard => "pfr_transient_guard",
+            Self::NestedTransientGuard => "pfr_nested_transient_guard",
             Self::NonzeroPoll => "pfr_nonzero_poll",
             Self::ZeroBudgetBypass => "pfr_zero_budget_bypass",
             Self::PromoteReleaseWake => "pfr_promote_release_wake",
@@ -44,7 +47,9 @@ impl Lane {
 
     pub(crate) const fn arms(self) -> (&'static str, &'static str) {
         match self {
-            Self::TransientGuard | Self::ZeroBudgetBypass => ("base", "candidate"),
+            Self::TransientGuard | Self::NestedTransientGuard | Self::ZeroBudgetBypass => {
+                ("base", "candidate")
+            }
             Self::NonzeroPoll => ("zero", "budget64"),
             Self::PromoteReleaseWake => ("transient", "retained"),
             Self::SameFramePromotion => ("one_worker", "eight_workers"),
@@ -64,13 +69,16 @@ impl Lane {
         match self {
             Self::PromoteReleaseWake => "0-1",
             Self::SameFramePromotion => "0-3,32-35",
-            Self::TransientGuard | Self::NonzeroPoll | Self::ZeroBudgetBypass => "0",
+            Self::TransientGuard
+            | Self::NestedTransientGuard
+            | Self::NonzeroPoll
+            | Self::ZeroBudgetBypass => "0",
         }
     }
 
     pub(crate) const fn iterations(self) -> u64 {
         match self {
-            Self::TransientGuard => 8_192,
+            Self::TransientGuard | Self::NestedTransientGuard => 8_192,
             Self::NonzeroPoll | Self::ZeroBudgetBypass => 256,
             Self::PromoteReleaseWake => 4_096,
             Self::SameFramePromotion => 1_000_000,
@@ -79,7 +87,7 @@ impl Lane {
 
     pub(crate) const fn pool_capacity(self) -> u32 {
         match self {
-            Self::TransientGuard | Self::NonzeroPoll => 256,
+            Self::TransientGuard | Self::NestedTransientGuard | Self::NonzeroPoll => 256,
             Self::ZeroBudgetBypass => 128,
             Self::PromoteReleaseWake => 64,
             Self::SameFramePromotion => 20,
@@ -89,6 +97,9 @@ impl Lane {
     pub(crate) const fn workload(self) -> &'static str {
         match self {
             Self::TransientGuard => "shipping_registered_128_page_warm_get_64_byte_fold_v1",
+            Self::NestedTransientGuard => {
+                "shipping_registered_128_page_nested_warm_get_64_byte_fold_v1"
+            }
             Self::NonzeroPoll => "shipping_registered_256_batches_64_matured_reclaims_v1",
             Self::ZeroBudgetBypass => "shipping_registered_96_hit_16_miss_clock_cycle_v1",
             Self::PromoteReleaseWake => "shipping_registered_4096_ownership_64_parked_wakes_v1",
@@ -107,7 +118,10 @@ impl Lane {
     }
 
     pub(crate) const fn source_comparison(self) -> bool {
-        matches!(self, Self::TransientGuard | Self::ZeroBudgetBypass)
+        matches!(
+            self,
+            Self::TransientGuard | Self::NestedTransientGuard | Self::ZeroBudgetBypass
+        )
     }
 }
 

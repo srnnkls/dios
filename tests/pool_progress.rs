@@ -18,8 +18,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use dios::testing::{
-    FrameState, MockDriver, MockPoolTestingExt, MockWaitObservation, PoolBuilderTestingExt,
-    PoolTestingExt,
+    FrameState, MockDriver, MockPoolTestingExt, MockRingDriver, MockRingPoolBuilderTestingExt,
+    MockRingPoolTestingExt, MockWaitObservation, PoolBuilderTestingExt, PoolTestingExt,
 };
 use dios::{
     DirectIo, Get, PageId, PollReport, Pool, PoolCompletion, PoolCompletionBatch, PoolToken,
@@ -67,6 +67,300 @@ fn pool_with_file_product_capacity(
         .expect("valid progress pool");
     pool.register_file(file);
     (pool, file_id)
+}
+
+fn read_credit_saturation_preserves_product_reservations_and_singleflight_joins_setup()
+-> (Pool<MockDriver>, dios::FileId) {
+    let mock = MockDriver::builder()
+        .seed(0x00C4_ED17)
+        .queue_capacity(3)
+        .frames(5)
+        .frame_bytes(GRANULE)
+        .write_slots(1)
+        .build();
+    let file = mock
+        .open(
+            Path::new("pool-progress-read-product-partition"),
+            DirectIo::Disabled,
+        )
+        .expect("mock open");
+    let file_id = file.file_id();
+    mock.seed_page(&file, 0, 0x41);
+    mock.seed_page(&file, 1, 0x42);
+    let pool = Pool::builder()
+        .frame_count(5)
+        .granule(GRANULE)
+        .max_concurrent_readers(2)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .write_slots(1)
+        .max_inflight_product_ops(2)
+        .build_on(mock)
+        .expect("valid partitioned-capacity pool");
+    pool.register_file(file);
+    (pool, file_id)
+}
+
+#[test]
+fn read_credit_saturation_preserves_product_reservations_and_singleflight_joins() {
+    let (pool, file_id) =
+        read_credit_saturation_preserves_product_reservations_and_singleflight_joins_setup();
+    let first_reader = pool.register_reader().expect("first reader slot");
+    let second_reader = pool.register_reader().expect("second reader slot");
+    let page = PageId::new(file_id, 0);
+    let Get::Pending(first_waiter) = pool.get(&first_reader, page).expect("live file") else {
+        panic!("the first cold read must admit");
+    };
+    let Get::Pending(joined_waiter) = pool.get(&second_reader, page).expect("live file") else {
+        panic!("a same-page join must not require another read credit");
+    };
+    assert!(matches!(
+        pool.get(&first_reader, PageId::new(file_id, 1)),
+        Ok(Get::Busy)
+    ));
+
+    let mut slot = pool.write_arena().alloc().expect("one write slot");
+    slot.fill(0x5A);
+    let write = pool
+        .submit_write(file_id, slot, 0)
+        .expect("the product reservation remains available beside a saturated read");
+    let fsync = pool
+        .submit_fsync(file_id, SyncMode::Full)
+        .expect("the full product bound admits a held barrier");
+
+    let mut completions = PoolCompletionBatch::with_capacity(2);
+    let mut saw_write = false;
+    let mut saw_fsync = false;
+    for _ in 0..POLL_BOUND {
+        let _ = pool.poll_report(&mut completions);
+        for completion in completions.iter() {
+            match completion {
+                PoolCompletion::Write {
+                    token,
+                    result: Ok(bytes),
+                } if *token == write => {
+                    assert_eq!(*bytes, GRANULE);
+                    saw_write = true;
+                }
+                PoolCompletion::Fsync {
+                    token,
+                    result: Ok(()),
+                } if *token == fsync => saw_fsync = true,
+                completion => panic!("unexpected product completion: {completion:?}"),
+            }
+        }
+        if saw_write && saw_fsync {
+            break;
+        }
+    }
+    assert!(saw_write, "the admitted write drains");
+    assert!(saw_fsync, "the held fsync cannot starve behind the read");
+    assert!(matches!(
+        pool.ready(&first_reader, first_waiter),
+        ReadyResult::Ready(_)
+    ));
+    assert!(matches!(
+        pool.ready(&second_reader, joined_waiter),
+        ReadyResult::Ready(_)
+    ));
+    assert!(matches!(
+        pool.get(&first_reader, PageId::new(file_id, 1)),
+        Ok(Get::Pending(_))
+    ));
+}
+
+#[test]
+fn poll_report_counts_retry_cqes_before_the_terminal_product_result() {
+    let ring = MockRingDriver::builder()
+        .queue_capacity(2)
+        .frames(4)
+        .frame_bytes(GRANULE)
+        .write_slots(1)
+        .retry_bound(1)
+        .build();
+    let file = ring
+        .open(Path::new("pool-progress-ring-retry"), DirectIo::Disabled)
+        .expect("mock ring open");
+    let file_id = file.file_id();
+    ring.inject_for_next_submit(&[dios::testing::Injected::Eintr]);
+    let pool = Pool::builder()
+        .frame_count(4)
+        .granule(GRANULE)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .write_slots(1)
+        .max_inflight_product_ops(1)
+        .build_on_ring(ring)
+        .expect("valid mock-ring pool");
+    pool.register_file(file);
+    let token = pool
+        .submit_fsync(file_id, SyncMode::Full)
+        .expect("one barrier admits");
+    let mut completions = PoolCompletionBatch::with_capacity(1);
+
+    let retry = pool.poll_report(&mut completions);
+    assert_eq!(retry.backend_completions(), 1, "the EINTR CQE was drained");
+    assert_eq!(completions.iter().count(), 0, "retry is not terminal");
+
+    let terminal = pool.poll_report(&mut completions);
+    assert_eq!(
+        terminal.backend_completions(),
+        1,
+        "the clean CQE was drained"
+    );
+    assert!(matches!(
+        completions.iter().next(),
+        Some(PoolCompletion::Fsync {
+            token: completed,
+            result: Ok(())
+        }) if *completed == token
+    ));
+    assert_eq!(pool.ring_driver().observe().reaped(), 1);
+}
+
+#[cfg(target_os = "linux")]
+fn retry_cqe_early_return_is_progress_not_a_platform_wait_timeout_setup() -> (
+    Pool<MockRingDriver>,
+    MockWaitObservation,
+    dios::driver::OpToken,
+) {
+    let ring = MockRingDriver::builder()
+        .queue_capacity(1)
+        .frames(4)
+        .frame_bytes(GRANULE)
+        .write_slots(1)
+        .retry_bound(1)
+        .build();
+    let file = ring
+        .open(
+            Path::new("pool-progress-ring-retry-wait-exit"),
+            DirectIo::Disabled,
+        )
+        .expect("mock ring open");
+    let submit_file = ring.duplicate_handle(&file);
+    ring.inject_for_next_submit(&[dios::testing::Injected::Eintr]);
+    let pool = Pool::builder()
+        .frame_count(4)
+        .granule(GRANULE)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .write_slots(1)
+        .max_inflight_product_ops(1)
+        .build_on_ring(ring)
+        .expect("valid mock-ring pool");
+    let wait_observation = pool.observe_ring_waits();
+    pool.register_file(file);
+    let token = pool
+        .ring_driver()
+        .submit_fsync(&submit_file, SyncMode::Full)
+        .expect("one barrier admits");
+    (pool, wait_observation, token)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn retry_cqe_early_return_is_progress_not_a_platform_wait_timeout() {
+    let (pool, wait_observation, token) =
+        retry_cqe_early_return_is_progress_not_a_platform_wait_timeout_setup();
+
+    let started = Instant::now();
+    let retry = pool.poll_wait_raw_progress(Duration::from_secs(1));
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "the injected retry CQE returns promptly rather than consuming the deadline"
+    );
+    assert_eq!(retry, 1, "the EINTR raw CQE counts as backend progress");
+    assert_eq!(wait_observation.parks_entered(), 1);
+    assert_eq!(wait_observation.parks_exited(), 1);
+    assert_eq!(wait_observation.parks_in_progress(), 0);
+    assert_eq!(wait_observation.wake_exits(), 1);
+    assert_eq!(
+        wait_observation.timeout_exits(),
+        0,
+        "a drained retry CQE is backend progress, never a deadline expiry"
+    );
+
+    let mut terminal = dios::driver::CompletionBatch::with_capacity(1);
+    assert_eq!(pool.ring_driver().poll(&mut terminal), 1);
+    assert_eq!(
+        terminal.iter().next().expect("terminal fsync").token(),
+        token
+    );
+
+    let remembered_wake = pool.poll_wait_raw_progress(Duration::from_millis(20));
+    assert_eq!(remembered_wake, 0);
+    assert_eq!(
+        wait_observation.parks_entered(),
+        1,
+        "the terminal completion's remembered wake is consumed before parking"
+    );
+
+    let idle = pool.poll_wait_raw_progress(Duration::from_millis(20));
+    assert_eq!(idle, 0);
+    assert_eq!(wait_observation.parks_entered(), 2);
+    assert_eq!(wait_observation.parks_exited(), 2);
+    assert_eq!(wait_observation.parks_in_progress(), 0);
+    assert_eq!(wait_observation.wake_exits(), 1);
+    assert_eq!(
+        wait_observation.timeout_exits(),
+        1,
+        "an idle wait that reaches its actual deadline remains a timeout"
+    );
+}
+
+#[test]
+fn poll_report_counts_retryable_eagain_read_cqe_without_releasing_its_credit() {
+    let ring = MockRingDriver::builder()
+        .queue_capacity(1)
+        .frames(4)
+        .frame_bytes(GRANULE)
+        .write_slots(1)
+        .retry_bound(1)
+        .build();
+    let file = ring
+        .open(Path::new("pool-progress-ring-eagain"), DirectIo::Disabled)
+        .expect("mock ring open");
+    let file_id = file.file_id();
+    ring.inject_for_next_submit(&[dios::testing::Injected::Eagain]);
+    let pool = Pool::builder()
+        .frame_count(4)
+        .granule(GRANULE)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .build_on_ring(ring)
+        .expect("valid mock-ring read pool");
+    pool.register_file(file);
+    let reader = pool.register_reader().expect("one reader");
+    let Get::Pending(token) = pool
+        .get(&reader, PageId::new(file_id, 0))
+        .expect("live file")
+    else {
+        panic!("the cold read admits");
+    };
+    let mut completions = PoolCompletionBatch::with_capacity(0);
+
+    let retry = pool.poll_report(&mut completions);
+    assert_eq!(retry.backend_completions(), 1, "the EAGAIN CQE counts");
+    let token = match pool.ready(&reader, token) {
+        ReadyResult::NotYet(token) => token,
+        ReadyResult::Ready(_) => panic!("a retry CQE cannot finish the logical read"),
+        ReadyResult::Err(error) => panic!("retryable EAGAIN surfaced early: {error}"),
+    };
+    assert!(matches!(
+        pool.get(&reader, PageId::new(file_id, 1)),
+        Ok(Get::Busy)
+    ));
+
+    let terminal = pool.poll_report(&mut completions);
+    assert_eq!(terminal.backend_completions(), 1, "the clean CQE counts");
+    assert!(matches!(pool.ready(&reader, token), ReadyResult::Ready(_)));
 }
 
 #[test]

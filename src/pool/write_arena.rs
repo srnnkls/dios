@@ -6,7 +6,7 @@
 //! beyond the driver. An admitted write records a slot index in the driver's
 //! fixed completion slab; no ownership pointer or refcount crosses the hot path.
 
-use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
+use std::alloc::{Layout, dealloc, handle_alloc_error};
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::sync::{Arc, PoisonError};
@@ -37,7 +37,7 @@ unsafe impl Sync for ArenaState {}
 
 impl ArenaState {
     #[must_use]
-    pub(crate) fn preallocated(slot_count: u32, granule: u32, owner: u64) -> Self {
+    pub(crate) fn try_preallocated(slot_count: u32, granule: u32, owner: u64) -> Option<Self> {
         assert!(slot_count > 0, "write slot count must be positive");
         assert!(granule.is_power_of_two(), "granule must be a power of two");
         let span = (slot_count as usize)
@@ -45,12 +45,10 @@ impl ArenaState {
             .expect("write arena span within isize::MAX");
         let layout = Layout::from_size_align(span, granule as usize)
             .expect("valid granule-aligned write arena layout");
-        // SAFETY: `layout` is non-empty and valid. A null result is routed to the
-        // allocation error handler, leaving a live zeroed allocation.
-        let ptr = unsafe { alloc_zeroed(layout) };
-        let base = NonNull::new(ptr).unwrap_or_else(|| handle_alloc_error(layout));
-        Self {
-            free: (0..slot_count).map(|_| AtomicBool::new(true)).collect(),
+        let free = crate::allocation::try_boxed_slice_with(slot_count, || AtomicBool::new(true))?;
+        let base = crate::allocation::allocate_zeroed(layout)?;
+        Some(Self {
+            free,
             base,
             layout,
             granule,
@@ -58,7 +56,19 @@ impl ArenaState {
             wait_gate: Mutex::new(()),
             waiters: AtomicU32::new(0),
             released: Condvar::new(),
-        }
+        })
+    }
+
+    #[must_use]
+    pub(crate) fn preallocated(slot_count: u32, granule: u32, owner: u64) -> Self {
+        Self::try_preallocated(slot_count, granule, owner).unwrap_or_else(|| {
+            let span = (slot_count as usize)
+                .checked_mul(granule as usize)
+                .expect("write arena span within isize::MAX");
+            let layout = Layout::from_size_align(span, granule as usize)
+                .expect("valid granule-aligned write arena layout");
+            handle_alloc_error(layout)
+        })
     }
 
     pub(crate) fn alloc(&self) -> Option<WriteSlot<'_>> {
@@ -253,4 +263,10 @@ impl Drop for WriteSlot<'_> {
 
 pub(crate) fn shared(slot_count: u32, granule: u32, owner: u64) -> Arc<ArenaState> {
     Arc::new(ArenaState::preallocated(slot_count, granule, owner))
+}
+
+pub(crate) fn try_shared(slot_count: u32, granule: u32, owner: u64) -> Option<Arc<ArenaState>> {
+    Some(Arc::new(ArenaState::try_preallocated(
+        slot_count, granule, owner,
+    )?))
 }

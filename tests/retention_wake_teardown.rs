@@ -6,11 +6,12 @@ use std::thread;
 use std::time::Duration;
 
 use dios::testing::{
-    FrameState, MockDriver, MockPoolTestingExt, MockWaitObservation, PoolBuilderTestingExt,
-    PoolTestingExt, ReadFrameIdx,
+    FrameState, MockDriver, MockIoEvent, MockPoolIoTestingExt, MockPoolTestingExt,
+    MockWaitObservation, PoolBuilderTestingExt, PoolTestingExt, ReadFrameIdx,
 };
 use dios::{
     DirectIo, FileId, FrameGuard, Get, PageId, Pool, PoolCompletionBatch, ReaderCtx, RetainedFrame,
+    RetireStatus, SyncMode,
 };
 
 const GRANULE: u32 = 4096;
@@ -175,6 +176,99 @@ fn pool_teardown_drains_a_held_final_drop() {
     assert!(
         outcome.is_ok(),
         "pool teardown must consume a pending HELD release without panicking"
+    );
+}
+
+#[test]
+fn forgotten_retained_handle_panics_before_retiring_file_is_closed() {
+    let (pool, file) = mock_pool("forgotten-retained-before-close");
+    let io_observation = pool.observe_io();
+    let reader = pool.register_reader().expect("reader slot is available");
+    let (_frame, retained) = retain_held(&pool, &reader, file);
+    assert_eq!(pool.retire_file(file), RetireStatus::Retiring);
+    let _retained = std::mem::ManuallyDrop::new(retained);
+    drop(reader);
+
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(pool)));
+
+    assert!(
+        outcome.is_err(),
+        "forgetting a retained handle is a programmer error at pool teardown"
+    );
+    let events = io_observation.io_events_in_order();
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, MockIoEvent::Close { file: closed } if *closed == file)),
+        "the programmer-error panic must precede physical close: {events:?}"
+    );
+}
+
+#[test]
+fn pool_teardown_drains_a_held_release_before_product_shutdown_progress() {
+    let mock = MockDriver::builder()
+        .queue_capacity(2)
+        .frames(FRAME_COUNT)
+        .frame_bytes(GRANULE)
+        .build();
+    let retained_file = mock
+        .open(
+            Path::new("retention-release-before-shutdown"),
+            DirectIo::Disabled,
+        )
+        .expect("retained-frame file opens");
+    let retained_file_id = retained_file.file_id();
+    let product_file = mock
+        .open(Path::new("retention-product-shutdown"), DirectIo::Disabled)
+        .expect("product-I/O file opens");
+    let product_file_id = product_file.file_id();
+    let pool = Pool::builder()
+        .frame_count(FRAME_COUNT)
+        .granule(GRANULE)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(2)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .max_retained_frames(1)
+        .max_inflight_product_ops(1)
+        .build_on(mock)
+        .expect("retention and one product operation fit the fixture");
+    pool.register_file(retained_file);
+    pool.register_file(product_file);
+    let io_observation = pool.observe_io();
+    let reader = pool.register_reader().expect("reader slot is available");
+    let (frame, retained) = retain_held(&pool, &reader, retained_file_id);
+    pool.submit_fsync(product_file_id, SyncMode::Full)
+        .expect("product I/O is accepted before teardown");
+    assert_eq!(pool.retire_file(retained_file_id), RetireStatus::Retiring);
+    drop(retained);
+    assert_eq!(pool.frame_state(frame), FrameState::Evicting);
+    drop(reader);
+
+    drop(pool);
+
+    let events = io_observation.io_events_in_order();
+    let release_completed = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                MockIoEvent::Close { file } if *file == retained_file_id
+            )
+        })
+        .expect("retained-frame release allows its retiring file to close");
+    let product_shutdown_progress = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                MockIoEvent::FsyncCompletion { file, .. } if *file == product_file_id
+            )
+        })
+        .expect("teardown completes the accepted product I/O");
+    assert!(
+        release_completed < product_shutdown_progress,
+        "pending retained-frame release must drain before product-I/O shutdown progress: {events:?}"
     );
 }
 

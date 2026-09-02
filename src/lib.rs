@@ -34,6 +34,7 @@
 )]
 
 mod alignment;
+mod allocation;
 mod backend;
 mod completion;
 pub mod driver;
@@ -156,12 +157,11 @@ pub mod testing {
         ///
         /// # Errors
         ///
-        /// Returns the pool configuration error when the fixed capacities do
-        /// not satisfy the residency invariants.
+        /// Returns configuration or fixed-allocation failure.
         fn build_on(
             self,
             driver: MockDriver,
-        ) -> Result<crate::pool::Pool<MockDriver>, crate::pool::PoolConfigError>;
+        ) -> Result<crate::pool::Pool<MockDriver>, crate::pool::PoolBuildError>;
     }
 
     #[cfg(feature = "mock")]
@@ -169,8 +169,32 @@ pub mod testing {
         fn build_on(
             self,
             driver: MockDriver,
-        ) -> Result<crate::pool::Pool<MockDriver>, crate::pool::PoolConfigError> {
+        ) -> Result<crate::pool::Pool<MockDriver>, crate::pool::PoolBuildError> {
             self.build_on_internal(driver)
+        }
+    }
+
+    /// Mock-ring construction for Pool-level retry-CQE progress tests.
+    #[cfg(feature = "mock")]
+    pub trait MockRingPoolBuilderTestingExt {
+        /// Builds a Pool over the mock ring's real retry/reap path.
+        ///
+        /// # Errors
+        ///
+        /// Returns configuration or fixed-allocation failure.
+        fn build_on_ring(
+            self,
+            driver: MockRingDriver,
+        ) -> Result<crate::pool::Pool<MockRingDriver>, crate::pool::PoolBuildError>;
+    }
+
+    #[cfg(feature = "mock")]
+    impl MockRingPoolBuilderTestingExt for crate::pool::PoolBuilder {
+        fn build_on_ring(
+            self,
+            driver: MockRingDriver,
+        ) -> Result<crate::pool::Pool<MockRingDriver>, crate::pool::PoolBuildError> {
+            self.build_on_ring_internal(driver)
         }
     }
 
@@ -260,6 +284,8 @@ pub mod testing {
     impl_pool_testing_ext!(crate::driver::Driver);
     #[cfg(feature = "mock")]
     impl_pool_testing_ext!(MockDriver);
+    #[cfg(feature = "mock")]
+    impl_pool_testing_ext!(MockRingDriver);
 
     /// Mock-only access to deterministic fault injection and observations.
     #[cfg(feature = "mock")]
@@ -272,6 +298,8 @@ pub mod testing {
             &self,
             file: crate::driver::FileId,
         ) -> MockResidentLeaseCountObservation;
+        #[cfg(not(loom))]
+        fn pause_next_cold_get(&self) -> ColdGetPauseObservation;
     }
 
     #[cfg(feature = "mock")]
@@ -285,7 +313,6 @@ pub mod testing {
                 lifecycle: self.lifecycle_internal(),
             })
         }
-
         fn set_resident_lease_count(&self, file: crate::driver::FileId, count: u32) {
             self.set_resident_lease_count_internal(file, count);
         }
@@ -302,6 +329,13 @@ pub mod testing {
                 state: self.observe_resident_lease_count_internal(file),
             }
         }
+
+        #[cfg(not(loom))]
+        fn pause_next_cold_get(&self) -> ColdGetPauseObservation {
+            ColdGetPauseObservation {
+                state: self.pause_next_cold_get_internal(),
+            }
+        }
     }
 
     /// Arc-backed observation of one exact preallocated file-slot lease count.
@@ -316,6 +350,96 @@ pub mod testing {
         #[must_use]
         pub fn count(&self) -> u32 {
             self.state.count()
+        }
+    }
+
+    /// One-shot mock-only control for the cold-get/retirement race.
+    #[cfg(all(feature = "mock", not(loom)))]
+    #[derive(Debug, Clone)]
+    pub struct ColdGetPauseObservation {
+        state: Arc<crate::pool::ColdGetPauseState>,
+    }
+
+    #[cfg(all(feature = "mock", not(loom)))]
+    impl ColdGetPauseObservation {
+        /// Waits until the get has passed its optimistic liveness check and is
+        /// paused before taking the admission lock.
+        #[must_use]
+        pub fn wait_until_parked(&self, timeout: std::time::Duration) -> bool {
+            self.state.wait_until_parked(timeout)
+        }
+
+        /// Releases the paused get to continue into cold admission.
+        pub fn release(&self) {
+            self.state.release();
+        }
+    }
+
+    /// Arc-backed chronological I/O observation that remains readable after
+    /// its Pool and mock driver have dropped.
+    #[cfg(feature = "mock")]
+    pub trait MockPoolIoTestingExt {
+        fn observe_io(&self) -> MockIoObservation;
+    }
+
+    #[cfg(feature = "mock")]
+    impl MockPoolIoTestingExt for crate::pool::Pool<MockDriver> {
+        fn observe_io(&self) -> MockIoObservation {
+            MockIoObservation {
+                events: self.driver_internal().io_event_log_internal(),
+            }
+        }
+    }
+
+    #[cfg(feature = "mock")]
+    #[derive(Debug, Clone)]
+    pub struct MockIoObservation {
+        events: Arc<std::sync::Mutex<Vec<MockIoEvent>>>,
+    }
+
+    #[cfg(feature = "mock")]
+    impl MockIoObservation {
+        #[must_use]
+        pub fn io_events_in_order(&self) -> Vec<MockIoEvent> {
+            self.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    /// Access to the mock ring retained by a product Pool.
+    #[cfg(feature = "mock")]
+    pub trait MockRingPoolTestingExt {
+        fn ring_driver(&self) -> &MockRingDriver;
+        #[cfg(target_os = "linux")]
+        fn observe_ring_waits(&self) -> MockWaitObservation;
+        #[cfg(target_os = "linux")]
+        fn poll_wait_raw_progress(&self, timeout: std::time::Duration) -> u32;
+    }
+
+    #[cfg(feature = "mock")]
+    impl MockRingPoolTestingExt for crate::pool::Pool<MockRingDriver> {
+        fn ring_driver(&self) -> &MockRingDriver {
+            self.driver_internal()
+        }
+
+        #[cfg(target_os = "linux")]
+        fn observe_ring_waits(&self) -> MockWaitObservation {
+            MockWaitObservation::from_state(self.wait_internal())
+        }
+
+        #[cfg(target_os = "linux")]
+        fn poll_wait_raw_progress(&self, timeout: std::time::Duration) -> u32 {
+            let mut completions = crate::completion::CompletionBatch::with_capacity(1);
+            let progress = self
+                .driver_internal()
+                .poll_wait_for_pool_internal(&mut completions, timeout);
+            assert_eq!(
+                progress.caller_completions, 0,
+                "the raw-progress test seam is only for retry or idle waits"
+            );
+            progress.backend_completions
         }
     }
 
@@ -446,9 +570,8 @@ pub mod testing {
 #[cfg(feature = "bench")]
 pub mod bench;
 
-pub use driver::FileId;
-pub use driver::SyncMode;
-pub use error::IoError;
+pub use driver::{FileId, IoMode, SyncMode};
+pub use error::{FileRegistrationError, IoError};
 pub use open::DirectIo;
 pub use pool::{
     FrameGuard, GRANULE_DEFAULT, Get, GetError, PageId, PendingToken, Pool, PoolBuildError,

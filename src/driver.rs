@@ -34,14 +34,17 @@ use std::time::{Duration, Instant};
 pub use crate::alignment::{Alignment, Unaligned};
 use crate::backend;
 pub use crate::completion::{Completion, CompletionBatch};
+use crate::error::FileRegistrationError;
 pub use crate::error::{IoError, SubmitError};
 use crate::open::DirectIo;
-use crate::pool::write_arena::{ArenaState, shared as shared_write_arena};
+use crate::pool::write_arena::{ArenaState, try_shared as try_shared_write_arena};
 pub use crate::pool::write_arena::{WriteArena, WriteSlot};
 use crate::pool::{Frames, ReadFrameIdx};
+#[cfg(target_os = "linux")]
+use crate::product::PlatformWaitOutcome;
 use crate::product::WaitState;
 
-pub(crate) const MAX_FILES: u32 = 64;
+pub(crate) const DEFAULT_REGISTERED_FILE_CAPACITY: u32 = 64;
 const EINTR: i32 = 4;
 const EIO: i32 = 5;
 const EBADF: i32 = 9;
@@ -60,6 +63,13 @@ static NEXT_DRIVER_ID: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn next_driver_id() -> u64 {
     NEXT_DRIVER_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+pub(crate) fn file_registration_error_into_io(error: FileRegistrationError) -> IoError {
+    match error {
+        FileRegistrationError::AtCapacity => IoError::from_raw(EMFILE),
+        FileRegistrationError::Io(error) => error,
+    }
 }
 
 /// A diagnostic probe of the compiled backend. Op routing binds to the
@@ -85,6 +95,14 @@ pub struct DriverBuilder {
     frame_bytes: u32,
     write_slots: u32,
     retry_bound: u32,
+    registered_file_capacity: u32,
+}
+
+#[derive(Debug)]
+pub(crate) enum DriverBuildError {
+    Allocation,
+    #[cfg(target_os = "linux")]
+    Driver(IoError),
 }
 
 impl Default for DriverBuilder {
@@ -95,6 +113,7 @@ impl Default for DriverBuilder {
             frame_bytes: 4096,
             write_slots: 1,
             retry_bound: 0,
+            registered_file_capacity: DEFAULT_REGISTERED_FILE_CAPACITY,
         }
     }
 }
@@ -135,10 +154,16 @@ impl DriverBuilder {
         self
     }
 
+    pub(crate) fn registered_file_capacity(mut self, registered_file_capacity: u32) -> Self {
+        self.registered_file_capacity = registered_file_capacity;
+        self
+    }
+
     /// # Errors
     ///
-    /// Returns the operating failure if the selected backend cannot initialize
-    /// or register its fixed resources.
+    /// Returns [`std::io::ErrorKind::OutOfMemory`] if fixed storage cannot be
+    /// allocated, or the operating failure if the selected backend cannot
+    /// initialize or register its fixed resources.
     ///
     /// # Panics
     ///
@@ -148,18 +173,21 @@ impl DriverBuilder {
         assert!(self.frames > 0, "frame count must be positive");
         assert!(self.frame_bytes > 0, "frame size must be positive");
         assert!(self.write_slots > 0, "write slot count must be positive");
-        let frames = Arc::new(Frames::preallocated(self.frames, self.frame_bytes));
-        self.build_with_frames(frames)
+        let result = match Frames::try_preallocated(self.frames, self.frame_bytes) {
+            Some(frames) => self.build_with_frames(Arc::new(frames)),
+            None => Err(DriverBuildError::Allocation),
+        };
+        match result {
+            Ok(driver) => Ok(driver),
+            Err(DriverBuildError::Allocation) => Err(IoError::from(std::io::Error::from(
+                std::io::ErrorKind::OutOfMemory,
+            ))),
+            #[cfg(target_os = "linux")]
+            Err(DriverBuildError::Driver(error)) => Err(error),
+        }
     }
 
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            clippy::unnecessary_wraps,
-            reason = "the public builder has one fallible signature across cfg-selected backends; io_uring initialization is fallible"
-        )
-    )]
-    pub(crate) fn build_with_frames(self, frames: Arc<Frames>) -> Result<Driver, IoError> {
+    pub(crate) fn build_with_frames(self, frames: Arc<Frames>) -> Result<Driver, DriverBuildError> {
         assert_eq!(
             frames.count(),
             self.frames,
@@ -171,16 +199,17 @@ impl DriverBuilder {
             "driver and arena frame sizes match"
         );
         let id = next_driver_id();
-        let write_arena = shared_write_arena(self.write_slots, self.frame_bytes, id);
-        #[cfg(target_os = "linux")]
-        let executor = backend::Impl::new(frames, Arc::clone(&write_arena), self.queue_capacity)?;
-        #[cfg(not(target_os = "linux"))]
-        let executor = backend::Impl::new(frames, Arc::clone(&write_arena), self.queue_capacity);
-        let shared = Shared::new(
-            CompletionSlab::with_capacity(self.queue_capacity),
+        let write_arena = try_shared_write_arena(self.write_slots, self.frame_bytes, id)
+            .ok_or(DriverBuildError::Allocation)?;
+        let shared = Shared::try_new(self.queue_capacity, self.registered_file_capacity)
+            .ok_or(DriverBuildError::Allocation)?;
+        let executor = backend::Impl::new(
+            frames,
+            Arc::clone(&write_arena),
             self.queue_capacity,
-        );
-        Ok(Driver(DriverCore::new(
+            self.registered_file_capacity,
+        )?;
+        let core = DriverCore::try_new(
             shared,
             executor,
             write_arena,
@@ -188,7 +217,9 @@ impl DriverBuilder {
             self.retry_bound,
             self.queue_capacity,
             id,
-        )))
+        )
+        .ok_or(DriverBuildError::Allocation)?;
+        Ok(Driver(core))
     }
 }
 
@@ -245,23 +276,76 @@ impl Driver {
     /// when the fixed fd table is exhausted.
     pub fn open(&self, path: &Path, direct_io: DirectIo) -> Result<FileHandle, IoError> {
         self.open_with_direct_io(path, direct_io)
+            .map_err(file_registration_error_into_io)
     }
 
     pub(crate) fn open_with_direct_io(
         &self,
         path: &Path,
         direct_io: DirectIo,
-    ) -> Result<FileHandle, IoError> {
-        let file = std::fs::OpenOptions::new()
+    ) -> Result<FileHandle, FileRegistrationError> {
+        let id = self
+            .0
+            .reserve_file()
+            .ok_or(FileRegistrationError::AtCapacity)?;
+        let file = match std::fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .open(path)?;
+            .open(path)
+        {
+            Ok(file) => file,
+            Err(error) => {
+                self.0.abort_file(id);
+                return Err(FileRegistrationError::Io(IoError::from(error)));
+            }
+        };
         let arena_granule = self.0.executor().clean_bytes(OpKind::Read);
-        let io_mode = crate::open::probe(&file, direct_io, arena_granule)?;
-        let id = self.0.reserve_file()?;
+        let io_mode = match crate::open::probe(&file, direct_io, arena_granule) {
+            Ok(mode) => mode,
+            Err(error) => {
+                self.0.abort_file(id);
+                return Err(FileRegistrationError::Io(error));
+            }
+        };
         if let Err(error) = self.0.executor().register_file(id.slot(), file) {
             self.0.abort_file(id);
-            return Err(error);
+            return Err(FileRegistrationError::Io(error));
+        }
+        Ok(FileHandle::from_parts(id, io_mode))
+    }
+
+    pub(crate) fn create_with_direct_io(
+        &self,
+        path: &Path,
+        direct_io: DirectIo,
+    ) -> Result<FileHandle, FileRegistrationError> {
+        let id = self
+            .0
+            .reserve_file()
+            .ok_or(FileRegistrationError::AtCapacity)?;
+        let file = match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(file) => file,
+            Err(error) => {
+                self.0.abort_file(id);
+                return Err(FileRegistrationError::Io(IoError::from(error)));
+            }
+        };
+        let arena_granule = self.0.executor().clean_bytes(OpKind::Read);
+        let io_mode = match crate::open::probe(&file, direct_io, arena_granule) {
+            Ok(mode) => mode,
+            Err(error) => {
+                self.0.abort_file(id);
+                return Err(FileRegistrationError::Io(error));
+            }
+        };
+        if let Err(error) = self.0.executor().register_file(id.slot(), file) {
+            self.0.abort_file(id);
+            return Err(FileRegistrationError::Io(error));
         }
         Ok(FileHandle::from_parts(id, io_mode))
     }
@@ -355,6 +439,17 @@ impl Driver {
         }
     }
 
+    pub(crate) fn poll_progress_for_pool(&self, out: &mut CompletionBatch) -> BackendProgress {
+        #[cfg(target_os = "linux")]
+        {
+            self.0.poll_ring_progress(out)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            BackendProgress::from_terminal(self.0.poll(out))
+        }
+    }
+
     /// Drains completions like [`Driver::poll`], parking in the kernel for up to
     /// `timeout` when none are ready. The wait runs outside the AD-4 submit mutex
     /// (INV-3), so a concurrent pool read admission never blocks on the poller.
@@ -373,14 +468,18 @@ impl Driver {
         }
     }
 
-    pub(crate) fn poll_wait_for_pool(&self, out: &mut CompletionBatch, timeout: Duration) -> usize {
+    pub(crate) fn poll_wait_for_pool(
+        &self,
+        out: &mut CompletionBatch,
+        timeout: Duration,
+    ) -> BackendProgress {
         #[cfg(target_os = "linux")]
         {
             self.0.poll_wait_ring_for_pool(out, timeout)
         }
         #[cfg(not(target_os = "linux"))]
         {
-            self.0.poll_wait_eager_for_pool(out, timeout)
+            BackendProgress::from_terminal(self.0.poll_wait_eager_for_pool(out, timeout))
         }
     }
 
@@ -612,22 +711,16 @@ struct SlabSlot<T> {
 }
 
 impl<T> CompletionSlab<T> {
-    pub(crate) fn with_capacity(capacity: u32) -> Self {
-        let mut slots = Vec::with_capacity(capacity as usize);
-        for _ in 0..capacity {
-            slots.push(SlabSlot {
-                generation: 0,
-                payload: None,
-            });
-        }
-        let mut free = Vec::with_capacity(capacity as usize);
+    pub(crate) fn try_with_capacity(capacity: u32) -> Option<Self> {
+        let slots = crate::allocation::try_boxed_slice_with(capacity, || SlabSlot {
+            generation: 0,
+            payload: None,
+        })?;
+        let mut free = crate::allocation::try_vec_with_exact_capacity(capacity)?;
         for slot in (0..capacity).rev() {
             free.push(slot);
         }
-        Self {
-            slots: slots.into_boxed_slice(),
-            free,
-        }
+        Some(Self { slots, free })
     }
 
     pub(crate) fn reserve(&mut self) -> Option<u32> {
@@ -702,6 +795,10 @@ pub(crate) trait Executor {
     /// A backend registration failure, surfaced rather than retaining an unusable
     /// descriptor. The eager and mock backends never fail.
     fn register_file(&self, slot: u32, file: File) -> Result<(), IoError>;
+
+    fn try_reconfigure_file_capacity(&mut self, _file_capacity: u32) -> Option<()> {
+        Some(())
+    }
 
     /// The position at which a freshly admitted op joins the ready order given
     /// the current queue length (seeded reordering in the mock; a real backend
@@ -781,9 +878,15 @@ pub(crate) trait RingExecutor: Executor {
     /// completions via the `EXT_ARG` kernel wait. Runs OUTSIDE the AD-4 mutex.
     fn submit_and_wait(&self, want: u32, timeout: Duration);
 
-    /// Drains at most `limit` ready CQEs, routing each `(user_data, raw_result)`
-    /// to `sink`, and returns the count. Called under the AD-4 mutex.
-    fn reap<F: FnMut(u64, i32)>(&self, limit: u32, sink: F) -> u32;
+    /// Drains at most `limit` ready operation CQEs, routing each
+    /// `(user_data, raw_result)` to `sink`. The private wake CQE is excluded
+    /// from `backend_completions` and reported only through `rearm_needed`.
+    /// Called under the AD-4 mutex and must not enter the kernel.
+    fn reap<F: FnMut(u64, i32) -> bool>(&self, limit: u32, sink: F) -> RingReap;
+
+    /// Enqueues a fresh private wake poll after reap consumed the prior one.
+    /// Called under the AD-4 mutex; the core submits it only after unlocking.
+    fn rearm_after_reap(&self) {}
 
     /// Fires once per op finalized in reap — never for a resubmitted
     /// `EAGAIN`/`EINTR` CQE, which keeps the op live. Defaults to a no-op.
@@ -797,6 +900,32 @@ pub(crate) trait RingExecutor: Executor {
     /// Metadata-plane blocking fsync barrier on the retained file (AD-3).
     #[cfg(target_os = "linux")]
     fn blocking_fsync(&self, fd_slot: u32) -> Result<(), i32>;
+}
+
+/// Raw progress from one ring reap. Retryable CQEs count even though they do
+/// not emit a terminal caller completion; the private wake CQE never counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RingReap {
+    pub(crate) backend_completions: u32,
+    pub(crate) rearm_needed: bool,
+}
+
+/// Private Pool-facing progress. The advanced Driver API continues to report
+/// only terminal caller completions, while Pool reports every backend CQE.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BackendProgress {
+    pub(crate) caller_completions: usize,
+    pub(crate) backend_completions: u32,
+}
+
+impl BackendProgress {
+    pub(crate) fn from_terminal(caller_completions: usize) -> Self {
+        Self {
+            caller_completions,
+            backend_completions: u32::try_from(caller_completions)
+                .expect("completion batch capacity fits u32"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -893,13 +1022,15 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
-    pub(crate) fn new(slab: CompletionSlab<OpEntry>, ready_capacity: u32) -> Self {
-        Self {
-            slab,
-            files: FileTable::new(),
-            ready: VecDeque::with_capacity(ready_capacity as usize),
-            completion_backlog: VecDeque::with_capacity(ready_capacity as usize),
-        }
+    pub(crate) fn try_new(ready_capacity: u32, file_capacity: u32) -> Option<Self> {
+        Some(Self {
+            slab: CompletionSlab::try_with_capacity(ready_capacity)?,
+            files: FileTable::try_with_capacity(file_capacity)?,
+            ready: crate::allocation::try_vec_deque_with_exact_capacity(ready_capacity)?,
+            completion_backlog: crate::allocation::try_vec_deque_with_exact_capacity(
+                ready_capacity,
+            )?,
+        })
     }
 }
 
@@ -913,6 +1044,8 @@ impl Shared {
 #[derive(Debug)]
 pub(crate) struct DriverCore<E> {
     inner: Mutex<Shared>,
+    retire: Mutex<Vec<FileId>>,
+    shutdown_batch: Mutex<CompletionBatch>,
     executor: E,
     write_arena: Arc<ArenaState>,
     frames: u32,
@@ -924,7 +1057,7 @@ pub(crate) struct DriverCore<E> {
 }
 
 impl<E> DriverCore<E> {
-    pub(crate) fn new(
+    pub(crate) fn try_new(
         shared: Shared,
         executor: E,
         write_arena: Arc<ArenaState>,
@@ -932,18 +1065,31 @@ impl<E> DriverCore<E> {
         retry_bound: u32,
         queue_capacity: u32,
         id: u64,
-    ) -> Self {
-        Self {
+    ) -> Option<Self> {
+        assert!(frames > 0, "driver core frame count must be positive");
+        assert!(
+            queue_capacity > 0,
+            "driver core queue capacity must be positive"
+        );
+        let file_capacity =
+            u32::try_from(shared.files.slots.len()).expect("the configured file capacity fits u32");
+        Some(Self {
             inner: Mutex::new(shared),
+            retire: Mutex::new(crate::allocation::try_vec_with_exact_capacity(
+                file_capacity,
+            )?),
+            shutdown_batch: Mutex::new(CompletionBatch::try_with_capacity(queue_capacity)?),
             executor,
             write_arena,
             frames,
             retry_bound,
             queue_capacity,
-            raw_read_inflight: (0..frames).map(|_| AtomicBool::new(false)).collect(),
+            raw_read_inflight: crate::allocation::try_boxed_slice_with(frames, || {
+                AtomicBool::new(false)
+            })?,
             pool_wait: OnceLock::new(),
             id,
-        }
+        })
     }
 
     fn inflight_total(&self) -> u32 {
@@ -999,21 +1145,8 @@ impl<E> DriverCore<E> {
         );
     }
 
-    pub(crate) fn open_mock(&self, path: &Path) -> Result<FileHandle, IoError> {
-        debug_assert!(!path.as_os_str().is_empty(), "open path must be non-empty");
-        let mut shared = self.lock();
-        match shared.files.open(self.id) {
-            Some(id) => Ok(FileHandle::from_id(id)),
-            None => Err(IoError::from_raw(EMFILE)),
-        }
-    }
-
-    pub(crate) fn reserve_file(&self) -> Result<FileId, IoError> {
-        let mut shared = self.lock();
-        shared
-            .files
-            .open(self.id)
-            .ok_or_else(|| IoError::from_raw(EMFILE))
+    pub(crate) fn reserve_file(&self) -> Option<FileId> {
+        self.lock().files.open(self.id)
     }
 
     pub(crate) fn is_closed(&self, id: FileId) -> bool {
@@ -1030,6 +1163,31 @@ impl<E> DriverCore<E> {
 }
 
 impl<E: Executor> DriverCore<E> {
+    pub(crate) fn try_reconfigure_file_capacity(&mut self, file_capacity: u32) -> Option<()> {
+        let files = self
+            .inner
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .files
+            .try_resized(file_capacity)?;
+        let retire = crate::allocation::try_vec_with_exact_capacity(file_capacity)?;
+        self.executor.try_reconfigure_file_capacity(file_capacity)?;
+        self.inner
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .files = files;
+        let prior_retire = self
+            .retire
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner);
+        assert!(
+            prior_retire.is_empty(),
+            "construction has no pending retirements"
+        );
+        *prior_retire = retire;
+        Some(())
+    }
+
     #[cfg(any(feature = "mock", feature = "bench"))]
     fn copy_frame_testing(&self, frame: ReadFrameIdx, out: &mut [u8]) -> usize {
         let shared = self.lock();
@@ -1292,8 +1450,10 @@ impl<E: EagerExecutor> DriverCore<E> {
         if self.inflight_total() == 0 {
             return;
         }
-        let capacity = self.queue_capacity.max(1) as usize;
-        let mut out = CompletionBatch::with_capacity(capacity);
+        let mut out = self
+            .shutdown_batch
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let mut idle = 0u32;
         while self.inflight_total() > 0 {
             if self.poll(&mut out) > 0 {
@@ -1510,6 +1670,10 @@ impl<E: EagerExecutor> DriverCore<E> {
 /// CQEs arrive unordered relative to submission.
 impl<E: RingExecutor> DriverCore<E> {
     pub(crate) fn poll_ring(&self, out: &mut CompletionBatch) -> usize {
+        self.poll_ring_progress(out).caller_completions
+    }
+
+    pub(crate) fn poll_ring_progress(&self, out: &mut CompletionBatch) -> BackendProgress {
         assert!(
             out.capacity() > 0,
             "poll requires a non-empty completion batch"
@@ -1517,17 +1681,33 @@ impl<E: RingExecutor> DriverCore<E> {
         out.reset();
         let backlog = self.drain_completion_backlog(out);
         if backlog == out.capacity() {
-            return backlog;
+            return BackendProgress {
+                caller_completions: backlog,
+                backend_completions: 0,
+            };
         }
         let cap = u32::try_from(out.capacity() - backlog).expect("batch capacity fits u32");
         let filled = self.fill_ring(cap);
         if filled > 0 {
             self.executor.submit();
         }
-        backlog + self.reap_ring(out, cap)
+        let reaped = self.reap_ring(out, cap);
+        BackendProgress {
+            caller_completions: backlog + reaped.caller_completions,
+            backend_completions: reaped.backend_completions,
+        }
     }
 
     pub(crate) fn poll_wait_ring(&self, out: &mut CompletionBatch, timeout: Duration) -> usize {
+        self.poll_wait_ring_progress(out, timeout)
+            .caller_completions
+    }
+
+    pub(crate) fn poll_wait_ring_progress(
+        &self,
+        out: &mut CompletionBatch,
+        timeout: Duration,
+    ) -> BackendProgress {
         assert!(
             out.capacity() > 0,
             "poll requires a non-empty completion batch"
@@ -1535,7 +1715,10 @@ impl<E: RingExecutor> DriverCore<E> {
         out.reset();
         let backlog = self.drain_completion_backlog(out);
         if backlog > 0 {
-            return backlog;
+            return BackendProgress {
+                caller_completions: backlog,
+                backend_completions: 0,
+            };
         }
         let cap = u32::try_from(out.capacity()).expect("batch capacity fits u32");
         let filled = self.fill_ring(cap);
@@ -1548,31 +1731,42 @@ impl<E: RingExecutor> DriverCore<E> {
         &self,
         out: &mut CompletionBatch,
         timeout: Duration,
-    ) -> usize {
+    ) -> BackendProgress {
         let wait = self
             .pool_wait
             .get()
             .expect("the shipping driver is attached before Pool wait");
         let Some(armed) = wait.begin_platform_wait() else {
-            return self.poll_ring(out);
+            return self.poll_ring_progress(out);
         };
         let deadline = Instant::now() + timeout;
         let drained = loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                break 0;
+                break BackendProgress {
+                    caller_completions: 0,
+                    backend_completions: 0,
+                };
             }
             let drained = self.poll_wait_ring_one(out, remaining);
-            if drained > 0 || wait.platform_woken(armed) {
+            if drained.backend_completions > 0
+                || drained.caller_completions > 0
+                || wait.platform_woken(armed)
+            {
                 break drained;
             }
         };
-        wait.finish_platform_wait(armed);
+        let outcome = if drained.backend_completions > 0 || drained.caller_completions > 0 {
+            PlatformWaitOutcome::Progress
+        } else {
+            PlatformWaitOutcome::Deadline
+        };
+        wait.finish_platform_wait(armed, outcome);
         drained
     }
 
     #[cfg(target_os = "linux")]
-    fn poll_wait_ring_one(&self, out: &mut CompletionBatch, timeout: Duration) -> usize {
+    fn poll_wait_ring_one(&self, out: &mut CompletionBatch, timeout: Duration) -> BackendProgress {
         assert!(
             out.capacity() > 0,
             "pool wait requires a non-empty private completion batch"
@@ -1580,7 +1774,10 @@ impl<E: RingExecutor> DriverCore<E> {
         out.reset();
         let backlog = self.drain_completion_backlog(out);
         if backlog > 0 {
-            return backlog;
+            return BackendProgress {
+                caller_completions: backlog,
+                backend_completions: 0,
+            };
         }
         let cap = u32::try_from(out.capacity()).expect("batch capacity fits u32");
         let _ = self.fill_ring(cap);
@@ -1651,6 +1848,46 @@ impl<E: RingExecutor> DriverCore<E> {
         filled
     }
 
+    fn reap_ring_locked<F>(
+        &self,
+        shared: &mut Shared,
+        out: &mut CompletionBatch,
+        limit: u32,
+        retry_bound: u32,
+        caller_completions: &mut usize,
+        mut retire_due: F,
+    ) -> RingReap
+    where
+        F: FnMut(FileId) -> bool,
+    {
+        self.executor.reap(limit, |user_data, raw| {
+            let slot = u32::try_from(user_data).expect("uring user_data is a slab slot");
+            let entry = shared.slab.peek_mut(slot);
+            let RingProgress::Terminal(result) = ring_progress(entry, raw, retry_bound) else {
+                shared.ready.push_back(slot);
+                return true;
+            };
+            let (token, entry) = shared.slab.reclaim(slot);
+            let file_retire_due = shared.files.on_complete(entry.fd);
+            self.release_raw_frame(&entry);
+            self.release_write_slot(&entry);
+            self.executor.on_op_completed(entry.fd, entry.kind, &result);
+            out.push(Completion::new(token, entry.kind, result));
+            let keep_reaping = !file_retire_due || retire_due(entry.fd);
+            self.executor.on_op_finalized();
+            *caller_completions += 1;
+            keep_reaping
+        })
+    }
+
+    fn reap_ring_record_retire(scratch: &mut Vec<FileId>, file: FileId) {
+        assert!(
+            scratch.len() < scratch.capacity(),
+            "one retire per file slot"
+        );
+        scratch.push(file);
+    }
+
     /// Reap/finalize (locked): drain CQEs, routing each by echoed slot id. A
     /// retryable `-EAGAIN`/`-EINTR` result under the init-time bound keeps the op
     /// live — its slot is re-queued for a fresh SQE, not reclaimed, and no
@@ -1658,44 +1895,75 @@ impl<E: RingExecutor> DriverCore<E> {
     /// drops the in-flight count (progressing a deferred close), releases the
     /// write lease, and emits the completion. Retires run after the lock is
     /// released.
-    fn reap_ring(&self, out: &mut CompletionBatch, limit: u32) -> usize {
+    fn reap_ring(&self, out: &mut CompletionBatch, limit: u32) -> BackendProgress {
         assert!(limit > 0, "ring reap limit is positive");
-        let retry_bound = self.retry_bound;
-        let mut retire = [FileId::new(0, 0, 0); MAX_FILES as usize];
-        let mut retire_len = 0usize;
-        let mut drained = 0usize;
+        let mut caller_completions = 0usize;
+        let mut first_retire = None;
+        let first_reap;
         {
             let mut shared = self.lock();
-            let shared = &mut *shared;
-            self.executor.reap(limit, |user_data, raw| {
-                let slot = u32::try_from(user_data).expect("uring user_data is a slab slot");
-                let entry = shared.slab.peek_mut(slot);
-                let RingProgress::Terminal(result) = ring_progress(entry, raw, retry_bound) else {
-                    shared.ready.push_back(slot);
-                    return;
-                };
-                let (token, entry) = shared.slab.reclaim(slot);
-                let retire_due = shared.files.on_complete(entry.fd);
-                self.release_raw_frame(&entry);
-                self.release_write_slot(&entry);
-                self.executor.on_op_completed(entry.fd, entry.kind, &result);
-                out.push(Completion::new(token, entry.kind, result));
-                if retire_due {
-                    assert!(retire_len < retire.len(), "at most one retire per open fd");
-                    retire[retire_len] = entry.fd;
-                    retire_len += 1;
-                }
-                self.executor.on_op_finalized();
-                drained += 1;
-            });
+            first_reap = self.reap_ring_locked(
+                &mut shared,
+                out,
+                limit,
+                self.retry_bound,
+                &mut caller_completions,
+                |file| {
+                    assert!(first_retire.replace(file).is_none());
+                    false
+                },
+            );
+            if first_reap.rearm_needed {
+                self.executor.rearm_after_reap();
+            }
         }
-        if drained > 0 {
+        let mut backend_completions = first_reap.backend_completions;
+        let mut rearm_needed = first_reap.rearm_needed;
+        let mut retire_scratch = first_retire.map(|file| {
+            let mut scratch = self.retire.lock().unwrap_or_else(PoisonError::into_inner);
+            scratch.clear();
+            Self::reap_ring_record_retire(&mut scratch, file);
+            scratch
+        });
+        if let Some(scratch) = retire_scratch.as_mut() {
+            let remaining = limit
+                .checked_sub(backend_completions)
+                .expect("the first reap respects its limit");
+            if remaining > 0 {
+                let mut shared = self.lock();
+                let additional = self.reap_ring_locked(
+                    &mut shared,
+                    out,
+                    remaining,
+                    self.retry_bound,
+                    &mut caller_completions,
+                    |file| {
+                        Self::reap_ring_record_retire(scratch, file);
+                        true
+                    },
+                );
+                if additional.rearm_needed {
+                    self.executor.rearm_after_reap();
+                }
+                backend_completions += additional.backend_completions;
+                rearm_needed |= additional.rearm_needed;
+            }
+        }
+        if rearm_needed {
+            self.executor.submit();
+        }
+        if caller_completions > 0 {
             self.signal_pool_wait();
         }
-        for fd in &retire[..retire_len] {
-            self.retire(*fd);
+        if let Some(mut scratch) = retire_scratch {
+            for fd in scratch.drain(..) {
+                self.retire(fd);
+            }
         }
-        drained
+        BackendProgress {
+            caller_completions,
+            backend_completions,
+        }
     }
 
     /// Drains every in-flight op before teardown so no kernel-visible op is
@@ -1705,11 +1973,14 @@ impl<E: RingExecutor> DriverCore<E> {
         if self.inflight_total() == 0 {
             return;
         }
-        let capacity = self.queue_capacity.max(1) as usize;
-        let mut out = CompletionBatch::with_capacity(capacity);
+        let mut out = self
+            .shutdown_batch
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let mut idle = 0u32;
         while self.inflight_total() > 0 {
-            if self.poll_ring(&mut out) > 0 {
+            let progress = self.poll_ring_progress(&mut out);
+            if progress.backend_completions > 0 || progress.caller_completions > 0 {
                 idle = 0;
             } else {
                 idle += 1;
@@ -1886,15 +2157,39 @@ struct FileTable {
 }
 
 impl FileTable {
+    #[cfg(test)]
     fn new() -> Self {
+        Self::try_with_capacity(DEFAULT_REGISTERED_FILE_CAPACITY)
+            .expect("the test file table capacity allocates")
+    }
+
+    fn try_with_capacity(capacity: u32) -> Option<Self> {
         let slot = FileSlot {
             generation: 0,
             state: FileState::Free,
             inflight: 0,
         };
-        Self {
-            slots: vec![slot; MAX_FILES as usize].into_boxed_slice(),
+        Some(Self {
+            slots: crate::allocation::try_boxed_slice_with(capacity, || slot)?,
+        })
+    }
+
+    fn try_resized(&self, capacity: u32) -> Option<Self> {
+        let empty = FileSlot {
+            generation: 0,
+            state: FileState::Free,
+            inflight: 0,
+        };
+        let mut slots = crate::allocation::try_boxed_slice_with(capacity, || empty)?;
+        let copied = slots.len().min(self.slots.len());
+        slots[..copied].copy_from_slice(&self.slots[..copied]);
+        if self.slots[copied..]
+            .iter()
+            .any(|slot| slot.generation != 0 || slot.state != FileState::Free)
+        {
+            return None;
         }
+        Some(Self { slots })
     }
 
     fn open(&mut self, driver: u64) -> Option<FileId> {
@@ -1923,7 +2218,8 @@ impl FileTable {
 
     fn is_closed(&self, id: FileId) -> bool {
         let slot = &self.slots[id.slot() as usize];
-        slot.generation == id.generation() && matches!(slot.state, FileState::Closed)
+        slot.generation > id.generation()
+            || slot.generation == id.generation() && matches!(slot.state, FileState::Closed)
     }
 
     fn on_submit(&mut self, id: FileId) {

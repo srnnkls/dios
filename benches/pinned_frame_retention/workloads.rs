@@ -46,6 +46,7 @@ pub(crate) fn measure(lane: Lane, arm: &str, input: &Path) -> Result<Measurement
     lane.validate_arm(arm)?;
     match lane {
         Lane::TransientGuard => transient_guard(input),
+        Lane::NestedTransientGuard => nested_transient_guard(input),
         Lane::NonzeroPoll => retention_measure(|| nonzero_poll(arm, input)),
         Lane::ZeroBudgetBypass => zero_budget_bypass(input),
         Lane::PromoteReleaseWake => retention_measure(|| promote_release_wake(arm, input)),
@@ -169,13 +170,25 @@ fn transient_guard(input: &Path) -> Result<Measurement, String> {
     let schedule = shuffled_pages(TRANSIENT_PAGES);
     crate::allocation_window_start();
     let warm_started = Instant::now();
-    std::hint::black_box(transient_operations(&pool, &reader, file, &schedule)?);
+    std::hint::black_box(transient_operations(
+        &pool,
+        &reader,
+        file,
+        &schedule,
+        Lane::TransientGuard.iterations(),
+    )?);
     std::hint::black_box(elapsed_ns(warm_started)?);
     std::hint::black_box(crate::allocation_window_stop());
     let before = platform::thread_faults()?;
     crate::allocation_window_start();
     let started = Instant::now();
-    let checksum = transient_operations(&pool, &reader, file, &schedule)?;
+    let checksum = transient_operations(
+        &pool,
+        &reader,
+        file,
+        &schedule,
+        Lane::TransientGuard.iterations(),
+    )?;
     let elapsed_ns = elapsed_ns(started)?;
     let allocations = crate::allocation_window_stop();
     let faults = platform::fault_delta(before, platform::thread_faults()?)?;
@@ -204,14 +217,72 @@ fn transient_guard(input: &Path) -> Result<Measurement, String> {
     Ok(measurement)
 }
 
+fn nested_transient_guard(input: &Path) -> Result<Measurement, String> {
+    let lane = Lane::NestedTransientGuard;
+    let pool = build_pool(lane.pool_capacity(), 1, 2, 1, 0)?;
+    let file = open_input(&pool, input)?;
+    let reader = pool.register_reader().map_err(display_error)?;
+    let arena_base = warm_pages(&pool, &reader, file, TRANSIENT_PAGES)?;
+    let schedule = shuffled_pages(TRANSIENT_PAGES);
+    let Get::Hit(outer_guard) = pool
+        .get(&reader, PageId::new(file, schedule[0]))
+        .map_err(display_error)?
+    else {
+        return Err("nested outer guard was not a warm hit".to_owned());
+    };
+    crate::allocation_window_start();
+    let warm_started = Instant::now();
+    std::hint::black_box(transient_operations(
+        &pool,
+        &reader,
+        file,
+        &schedule,
+        lane.iterations(),
+    )?);
+    std::hint::black_box(elapsed_ns(warm_started)?);
+    std::hint::black_box(crate::allocation_window_stop());
+    let before = platform::thread_faults()?;
+    crate::allocation_window_start();
+    let started = Instant::now();
+    let checksum = transient_operations(&pool, &reader, file, &schedule, lane.iterations())?;
+    let elapsed_ns = elapsed_ns(started)?;
+    let allocations = crate::allocation_window_stop();
+    let faults = platform::fault_delta(before, platform::thread_faults()?)?;
+    drop(outer_guard);
+    let measurement = Measurement {
+        iterations: lane.iterations(),
+        useful_operations: lane.iterations(),
+        useful_bytes: lane.iterations() * 64,
+        elapsed_ns,
+        checksum,
+        allocations,
+        threads: single_thread(faults, "0"),
+        arena: arena_for(arena_base, lane.pool_capacity())?,
+        pool_capacity: lane.pool_capacity(),
+        retained_pages: 0,
+        retention: retention_stats(&pool),
+        reclaimed_frames: 0,
+        backend_completions: 0,
+        evictions: 0,
+        wake_cycles: 0,
+        parked_wakes: 0,
+        wake_acks: 0,
+        ring_drains: 0,
+        held_transitions: 0,
+    };
+    validate_measurement(&measurement)?;
+    Ok(measurement)
+}
+
 fn transient_operations(
     pool: &Pool,
     reader: &ReaderCtx,
     file: dios::FileId,
     schedule: &[u32],
+    iterations: u64,
 ) -> Result<u64, String> {
     let mut checksum = 0_u64;
-    for ordinal in 0..Lane::TransientGuard.iterations() {
+    for ordinal in 0..iterations {
         let index = usize::try_from(ordinal % schedule.len() as u64).map_err(display_error)?;
         let page = PageId::new(file, schedule[index]);
         let Get::Hit(guard) = pool.get(reader, page).map_err(display_error)? else {

@@ -28,6 +28,7 @@
 //! also T009 — here we pin only the observable shape (nested guards share one epoch,
 //! release on the last drop; the epoch advances at poll boundaries, not per pin).
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use dios::driver::Driver;
@@ -54,7 +55,10 @@ fn a_file_id() -> FileId {
 
 /// A pool with `max_readers` slots, granule 4096, watermark-satisfying.
 fn epoch_pool(max_readers: u32) -> Pool {
-    let peak = 2u32;
+    epoch_pool_with_peak(max_readers, 2)
+}
+
+fn epoch_pool_with_peak(max_readers: u32, peak: u32) -> Pool {
     let inflight = 1u32;
     let headroom = 3u32;
     let watermark = max_readers * peak + headroom;
@@ -282,6 +286,38 @@ fn nested_guards_share_one_epoch_and_release_only_on_the_last_drop() {
     assert!(
         freed,
         "dropping the last of the nested guards releases the epoch and lets reclamation finish"
+    );
+}
+
+#[test]
+fn taking_guard_above_declared_reader_peak_panics_in_release() {
+    let pool = epoch_pool_with_peak(1, 2);
+    let reader = pool.register_reader().expect("a reader slot");
+    let page = PageId::new(a_file_id(), 41);
+
+    pool.insert_resident_frame(page, 0x6D);
+    let first = pool.pin(&reader, page).expect("first declared guard");
+    let second = pool.pin(&reader, page).expect("second declared guard");
+    assert_eq!((first[0], second[0]), (0x6D, 0x6D));
+
+    let above_peak = catch_unwind(AssertUnwindSafe(|| pool.pin(&reader, page)));
+    assert!(
+        above_peak.is_err(),
+        "taking guard N+1 must panic after N declared guards, including in release"
+    );
+}
+
+#[test]
+fn first_guard_panics_when_declared_reader_peak_is_zero_in_release() {
+    let pool = epoch_pool_with_peak(1, 0);
+    let reader = pool.register_reader().expect("a reader slot");
+    let page = PageId::new(a_file_id(), 42);
+
+    pool.insert_resident_frame(page, 0x7E);
+    let first = catch_unwind(AssertUnwindSafe(|| pool.pin(&reader, page)));
+    assert!(
+        first.is_err(),
+        "the first guard must panic when the declared peak is zero, including in release"
     );
 }
 

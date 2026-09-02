@@ -16,8 +16,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 
 use dios::testing::{
-    Injected, MockDriver, MockIoEvent, MockPoolTestingExt, PoolBuilderTestingExt, PoolTestingExt,
-    WriteAttempt,
+    Injected, MockDriver, MockIoEvent, MockPoolIoTestingExt, MockPoolTestingExt,
+    PoolBuilderTestingExt, PoolTestingExt, WriteAttempt,
 };
 use dios::{
     DirectIo, Pool, PoolCompletion, PoolCompletionBatch, PoolSubmitError, PoolToken, RetireStatus,
@@ -142,6 +142,49 @@ fn assert_fsync_failure(completion: &PoolCompletion, token: PoolToken, errno: i3
         }
         PoolCompletion::Write { .. } => panic!("the fsync token cannot complete as write"),
     }
+}
+
+#[test]
+fn dropping_pool_drains_a_write_and_its_held_fsync_before_close() {
+    let (pool, file) = pool_with_limits("pool-drop-held-fsync", 0xD20F, 2, 1);
+    let observation = pool.observe();
+    let io_observation = pool.observe_io();
+    let mut slot = pool.write_arena().alloc().expect("one staging slot");
+    slot.fill(0xD2);
+    let _write = pool
+        .submit_write(file, slot, 0)
+        .expect("write accepted before drop");
+    let _fsync = pool
+        .submit_fsync(file, SyncMode::Full)
+        .expect("fsync accepted and held behind the write");
+
+    drop(pool);
+
+    assert_eq!(observation.backend_ops_in_flight(), 0);
+    assert_eq!(observation.backend_completions(), 2);
+    assert_eq!(observation.quiesce_calls(), 1);
+    assert_eq!(
+        io_observation.io_events_in_order(),
+        vec![
+            MockIoEvent::WriteAttempt {
+                file,
+                file_offset: 0,
+                source_offset: 0,
+                requested_len: GRANULE,
+            },
+            MockIoEvent::WriteCompletion {
+                file,
+                result: Ok(GRANULE),
+            },
+            MockIoEvent::FsyncAttempt { file },
+            MockIoEvent::FsyncCompletion {
+                file,
+                result: Ok(()),
+            },
+            MockIoEvent::Close { file },
+        ],
+        "Pool drop drives every accepted product op terminal before closing the file"
+    );
 }
 
 #[test]

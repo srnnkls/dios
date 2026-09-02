@@ -30,6 +30,25 @@ provides:
     contract: >-
       retention protocol landed and green before arena implementation
       touches src/pool/mod.rs (arena AM1 plan authoring does not wait)
+  - scope: sira
+    task: DM003-close-coda
+    provided_by: T12
+    contract: >-
+      The accepted amendment revision contains T017 plus T10-T12; Sira adapts
+      FileRegistrationError and PoolBuildError::Allocation before advancing its
+      pin, then closes DM003 against that one revision.
+  - scope: sira
+    task: DM005
+    provided_by: T10
+    contract: peak_guards_per_reader is enforced at commit_pin.
+  - scope: sira
+    task: DM004-sink + DM005-capacity
+    provided_by: T11
+    contract: new-artifact creation and configurable registered-file capacity.
+  - scope: sira
+    task: DM005-mode-observability + DM007 + DM008
+    provided_by: T12
+    contract: negotiated IoMode readback after the T11 artifact plane lands.
 batches:
   - id: B1
     tasks: [T1]
@@ -53,6 +72,18 @@ batches:
     status: blocked_external_non_closure
   - id: B8
     tasks: [T9]
+    status: done
+  - id: B9
+    tasks: [T13]
+    status: done
+  - id: B10
+    tasks: [T10]
+    status: done
+  - id: B11
+    tasks: [T11]
+    status: done
+  - id: B12
+    tasks: [T12]
     status: done
 edges:
   - from: T1
@@ -81,3 +112,9 @@ edges:
     to: T8b
   - from: T8a
     to: T9
+  - from: T13
+    to: T10
+  - from: T10
+    to: T11
+  - from: T11
+    to: T12
