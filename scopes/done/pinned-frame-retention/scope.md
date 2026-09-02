@@ -1,6 +1,6 @@
 ---
 created: 2026-08-17
-status: active
+status: done
 issue_type: Feature
 revision: 14
 ---
