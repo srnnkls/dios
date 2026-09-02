@@ -77,9 +77,6 @@ phases:
       - id: T023
         files: [sira/benches/plans/remix-dios-native.md, sira/src/remix/dios_native.rs, sira/src/white_box/remix_dios_native.rs, scopes/active/dios-v1/resources/remix-dios-native-experiment.md]
         depends_on: [T020, T021, T022]
-      - id: T018
-        files: [sira/benches/plans/remix-dios-native.md, sira/benches/remix_dios_native.rs, sira/src/remix.rs, sira/src/remix/dios_native.rs, sira/src/white_box/remix_dios_native.rs, benches/plans/sira_native_hint.md, src/lib.rs, src/mock.rs, src/pool/frames.rs, src/pool/mod.rs, scopes/active/dios-v1/checkpoint.yaml, scopes/active/dios-v1/resources/remix-dios-native-experiment.md]
-        depends_on: [T023]
 
   - id: nmnm-readiness
     name: nmnm API fit
@@ -124,6 +121,18 @@ phases:
         files:
           - examples/gateway_contract.rs
           - tests/public_api.rs
+          - src/lib.rs
+          - src/mock.rs
+          - src/pool/frames.rs
+          - src/pool/mod.rs
+          - benches/plans/sira_native_hint.md
+          - sira/benches/plans/remix-dios-native.md
+          - sira/benches/remix_dios_native.rs
+          - sira/src/remix.rs
+          - sira/src/remix/dios_native.rs
+          - sira/src/white_box/remix_dios_native.rs
+          - scopes/active/dios-v1/checkpoint.yaml
+          - scopes/active/dios-v1/resources/remix-dios-native-experiment.md
         depends_on: [T017]
 
 batches:
