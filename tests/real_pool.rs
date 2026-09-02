@@ -312,7 +312,8 @@ fn shipping_pool_reserves_the_checked_sum_for_reads_and_product_writes() {
     }
     assert_eq!(
         backend_completions, 3,
-        "one read and two writes occupied the checked-sum shipping queue"
+        "one read and two writes occupied the checked-sum shipping queue \
+         (first write seen: {first_seen}, second write seen: {second_seen})"
     );
     assert!(first_seen);
     assert!(second_seen);
