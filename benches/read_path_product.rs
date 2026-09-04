@@ -683,15 +683,22 @@ fn build_pool(frame_count: u32) -> Result<Pool, String> {
         frame_count >= CYCLING_FRAME_COUNT,
         "benchmark pool has a fixed positive frame bound"
     );
-    Pool::builder()
+    let pool = Pool::builder()
         .frame_count(frame_count)
         .granule(GRANULE_BYTES)
         .max_concurrent_readers(8)
         .peak_guards_per_reader(1)
         .max_inflight_reads(1)
         .miss_headroom(3)
+        .registration_posture(dios::bench::registration_policy_from_env()?)
         .build()
-        .map_err(|error| format!("build product pool: {error}"))
+        .map_err(|error| format!("build product pool: {error}"))?;
+    eprintln!(
+        "read_path_product: registration posture {:?}, arena locked {}",
+        pool.registration_posture(),
+        pool.arena_locked()
+    );
+    Ok(pool)
 }
 
 fn warm_pool(pool: &Pool, file: dios::FileId, request: &RunRequest) -> Result<(), String> {

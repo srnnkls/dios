@@ -39,6 +39,7 @@ mod backend;
 mod completion;
 pub mod driver;
 mod error;
+mod memlock;
 mod open;
 mod pool;
 mod product;
@@ -570,7 +571,7 @@ pub mod testing {
 #[cfg(feature = "bench")]
 pub mod bench;
 
-pub use driver::{FileId, IoMode, SyncMode};
+pub use driver::{FileId, IoMode, RegistrationPolicy, RegistrationPosture, SyncMode};
 pub use error::{FileRegistrationError, IoError};
 pub use open::DirectIo;
 pub use pool::{

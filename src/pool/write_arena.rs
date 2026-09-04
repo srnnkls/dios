@@ -159,12 +159,10 @@ impl ArenaState {
         drop(gate);
     }
 
-    #[cfg(target_os = "linux")]
     pub(crate) fn base_ptr(&self) -> *mut u8 {
         self.base.as_ptr()
     }
 
-    #[cfg(target_os = "linux")]
     pub(crate) fn span_len(&self) -> usize {
         self.layout.size()
     }

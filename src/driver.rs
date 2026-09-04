@@ -39,7 +39,7 @@ pub use crate::error::{IoError, SubmitError};
 use crate::open::DirectIo;
 use crate::pool::write_arena::{ArenaState, try_shared as try_shared_write_arena};
 pub use crate::pool::write_arena::{WriteArena, WriteSlot};
-use crate::pool::{Frames, ReadFrameIdx};
+use crate::pool::{Frames, PoolConfigError, ReadFrameIdx};
 #[cfg(target_os = "linux")]
 use crate::product::PlatformWaitOutcome;
 use crate::product::WaitState;
@@ -82,6 +82,41 @@ pub enum Backend {
     Uring,
 }
 
+/// Which buffer-registration posture a build asks for. `Auto` probes and
+/// degrades; an explicit posture is honoured or refused typed, never
+/// silently downgraded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum RegistrationPolicy {
+    /// Register the arenas when `RLIMIT_MEMLOCK` admits them, else run
+    /// unregistered and print the remediation.
+    #[default]
+    Auto,
+    /// Register both arenas (`READ_FIXED`/`WRITE_FIXED`); refuse the build
+    /// when the limit refuses the charge.
+    Registered,
+    /// Register nothing: the same preallocated slab addressed by pointer with
+    /// plain `READ`/`WRITE`.
+    Unregistered,
+}
+
+/// The buffer-registration posture a build selected — the readback beside
+/// [`IoMode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RegistrationPosture {
+    /// The read arena is buffer index 0 and the write arena index 1.
+    Registered,
+    /// No buffer table; every op carries the arena pointer.
+    Unregistered,
+}
+
+/// Whether a refused arena lock fails the build or only prints its remediation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum ArenaLockPolicy {
+    #[default]
+    BestEffort,
+    Required,
+}
+
 /// The public driver over the cfg-selected backend, composing the same driver
 /// core the mock uses so the two cannot structurally drift.
 #[derive(Debug)]
@@ -96,6 +131,8 @@ pub struct DriverBuilder {
     write_slots: u32,
     retry_bound: u32,
     registered_file_capacity: u32,
+    registration_policy: RegistrationPolicy,
+    arena_lock: ArenaLockPolicy,
 }
 
 #[derive(Debug)]
@@ -103,6 +140,10 @@ pub(crate) enum DriverBuildError {
     Allocation,
     #[cfg(target_os = "linux")]
     Driver(IoError),
+    /// An explicit registration posture or a required arena lock the host
+    /// refuses; the driver reports the refusal in the pool's vocabulary
+    /// because the knobs are set only through the pool builder.
+    Configuration(PoolConfigError),
 }
 
 impl Default for DriverBuilder {
@@ -114,6 +155,8 @@ impl Default for DriverBuilder {
             write_slots: 1,
             retry_bound: 0,
             registered_file_capacity: DEFAULT_REGISTERED_FILE_CAPACITY,
+            registration_policy: RegistrationPolicy::Auto,
+            arena_lock: ArenaLockPolicy::BestEffort,
         }
     }
 }
@@ -159,6 +202,16 @@ impl DriverBuilder {
         self
     }
 
+    pub(crate) fn registration_policy(mut self, registration_policy: RegistrationPolicy) -> Self {
+        self.registration_policy = registration_policy;
+        self
+    }
+
+    pub(crate) fn arena_lock(mut self, arena_lock: ArenaLockPolicy) -> Self {
+        self.arena_lock = arena_lock;
+        self
+    }
+
     /// # Errors
     ///
     /// Returns [`std::io::ErrorKind::OutOfMemory`] if fixed storage cannot be
@@ -174,7 +227,7 @@ impl DriverBuilder {
         assert!(self.frame_bytes > 0, "frame size must be positive");
         assert!(self.write_slots > 0, "write slot count must be positive");
         let result = match Frames::try_preallocated(self.frames, self.frame_bytes) {
-            Some(frames) => self.build_with_frames(Arc::new(frames)),
+            Some(frames) => self.build_with_frames(&Arc::new(frames)),
             None => Err(DriverBuildError::Allocation),
         };
         match result {
@@ -184,10 +237,17 @@ impl DriverBuilder {
             ))),
             #[cfg(target_os = "linux")]
             Err(DriverBuildError::Driver(error)) => Err(error),
+            Err(DriverBuildError::Configuration(error)) => unreachable!(
+                "the public driver builder keeps the Auto posture and the best-effort lock, \
+                 neither of which refuses a build: {error}"
+            ),
         }
     }
 
-    pub(crate) fn build_with_frames(self, frames: Arc<Frames>) -> Result<Driver, DriverBuildError> {
+    pub(crate) fn build_with_frames(
+        self,
+        frames: &Arc<Frames>,
+    ) -> Result<Driver, DriverBuildError> {
         assert_eq!(
             frames.count(),
             self.frames,
@@ -204,12 +264,14 @@ impl DriverBuilder {
         let shared = Shared::try_new(self.queue_capacity, self.registered_file_capacity)
             .ok_or(DriverBuildError::Allocation)?;
         let executor = backend::Impl::new(
-            frames,
+            Arc::clone(frames),
             Arc::clone(&write_arena),
             self.queue_capacity,
             self.registered_file_capacity,
+            self.registration_policy,
         )?;
-        let core = DriverCore::try_new(
+        let arena_lock = lock_arenas(frames, &write_arena, self.arena_lock)?;
+        let mut core = DriverCore::try_new(
             shared,
             executor,
             write_arena,
@@ -219,7 +281,93 @@ impl DriverBuilder {
             id,
         )
         .ok_or(DriverBuildError::Allocation)?;
+        core.arena_lock = arena_lock;
         Ok(Driver(core))
+    }
+}
+
+/// Locks both arenas after posture selection (the swap hazard is separate from
+/// registration and has its own readback). A refused lock under `BestEffort`
+/// prints the remediation and continues unlocked; under `Required` it is the
+/// typed build refusal.
+fn lock_arenas(
+    frames: &Arc<Frames>,
+    write_arena: &Arc<ArenaState>,
+    policy: ArenaLockPolicy,
+) -> Result<Option<ArenaLockGuard>, DriverBuildError> {
+    let arena_bytes = arena_bytes(frames, write_arena);
+    match ArenaLockGuard::try_lock(frames, write_arena) {
+        Ok(guard) => Ok(Some(guard)),
+        Err(errno) => {
+            let memlock_limit_bytes = crate::memlock::memlock_limit_bytes();
+            if policy == ArenaLockPolicy::Required {
+                return Err(DriverBuildError::Configuration(
+                    PoolConfigError::ArenaLockRefused {
+                        arena_bytes,
+                        memlock_limit_bytes,
+                    },
+                ));
+            }
+            eprintln!(
+                "dios: arena lock refused (errno {errno}: {arena_bytes} bytes against \
+                 RLIMIT_MEMLOCK {memlock_limit_bytes}); continuing unlocked — grant CAP_IPC_LOCK, \
+                 raise the limit, or call require_locked() for a typed refusal"
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// The bytes both arenas charge against `RLIMIT_MEMLOCK`, whether registered
+/// or locked.
+pub(crate) fn arena_bytes(frames: &Frames, write_arena: &ArenaState) -> u64 {
+    let frame_bytes = u64::try_from(frames.span_len()).expect("the frame span fits u64");
+    let staging_bytes = u64::try_from(write_arena.span_len()).expect("the write span fits u64");
+    frame_bytes
+        .checked_add(staging_bytes)
+        .expect("both arenas together fit u64")
+}
+
+/// Holds both arenas locked in memory for the driver's life and unlocks them
+/// before either allocation can be freed.
+#[derive(Debug)]
+pub(crate) struct ArenaLockGuard {
+    frames: Arc<Frames>,
+    write_arena: Arc<ArenaState>,
+}
+
+impl ArenaLockGuard {
+    fn try_lock(frames: &Arc<Frames>, write_arena: &Arc<ArenaState>) -> Result<Self, i32> {
+        // SAFETY: the frame slab is one live allocation the `Arc` keeps mapped
+        // until this guard, which holds a clone, unlocks it on drop.
+        unsafe { crate::memlock::lock_range(frames.base_ptr(), frames.span_len()) }?;
+        // SAFETY: the write arena is one live allocation the `Arc` keeps mapped
+        // until this guard, which holds a clone, unlocks it on drop.
+        let staging =
+            unsafe { crate::memlock::lock_range(write_arena.base_ptr(), write_arena.span_len()) };
+        if let Err(errno) = staging {
+            // SAFETY: the frame range was locked just above and is still mapped.
+            unsafe { crate::memlock::unlock_range(frames.base_ptr(), frames.span_len()) };
+            return Err(errno);
+        }
+        Ok(Self {
+            frames: Arc::clone(frames),
+            write_arena: Arc::clone(write_arena),
+        })
+    }
+}
+
+impl Drop for ArenaLockGuard {
+    fn drop(&mut self) {
+        // SAFETY: both ranges were locked by `try_lock` and stay mapped while
+        // this guard holds their `Arc`s.
+        unsafe {
+            crate::memlock::unlock_range(self.frames.base_ptr(), self.frames.span_len());
+        }
+        // SAFETY: see above; the write arena is the second locked range.
+        unsafe {
+            crate::memlock::unlock_range(self.write_arena.base_ptr(), self.write_arena.span_len());
+        }
     }
 }
 
@@ -233,10 +381,23 @@ impl Driver {
         DriverBuilder::default()
     }
 
-    /// Borrows this driver's fixed, registered write-staging arena.
+    /// Borrows this driver's fixed write-staging arena.
     #[must_use]
     pub fn write_arena(&self) -> WriteArena<'_> {
         WriteArena::new(self)
+    }
+
+    /// The buffer-registration posture the build selected.
+    #[must_use]
+    pub fn registration_posture(&self) -> RegistrationPosture {
+        self.0.executor().registration_posture()
+    }
+
+    /// Whether both arenas are locked in memory (`mlock`), the readback a
+    /// consumer keys its page-out hazard decision on.
+    #[must_use]
+    pub fn arena_locked(&self) -> bool {
+        self.0.arena_locked()
     }
 
     pub(crate) fn alloc_write_slot(&self) -> Option<WriteSlot<'_>> {
@@ -815,6 +976,12 @@ pub(crate) trait Executor {
 
     fn on_op_completed(&self, _file: FileId, _kind: OpKind, _result: &Result<u32, IoError>) {}
 
+    /// The buffer-registration posture this executor runs; backends without a
+    /// buffer table have exactly one.
+    fn registration_posture(&self) -> RegistrationPosture {
+        RegistrationPosture::Unregistered
+    }
+
     fn on_file_closed(&self, _file: FileId) {}
 
     fn on_quiesce(&self) {}
@@ -1048,6 +1215,7 @@ pub(crate) struct DriverCore<E> {
     shutdown_batch: Mutex<CompletionBatch>,
     executor: E,
     write_arena: Arc<ArenaState>,
+    arena_lock: Option<ArenaLockGuard>,
     frames: u32,
     retry_bound: u32,
     queue_capacity: u32,
@@ -1081,6 +1249,7 @@ impl<E> DriverCore<E> {
             shutdown_batch: Mutex::new(CompletionBatch::try_with_capacity(queue_capacity)?),
             executor,
             write_arena,
+            arena_lock: None,
             frames,
             retry_bound,
             queue_capacity,
@@ -1098,6 +1267,10 @@ impl<E> DriverCore<E> {
 
     pub(crate) fn executor(&self) -> &E {
         &self.executor
+    }
+
+    pub(crate) fn arena_locked(&self) -> bool {
+        self.arena_lock.is_some()
     }
 
     pub(crate) fn identity(&self) -> u64 {
