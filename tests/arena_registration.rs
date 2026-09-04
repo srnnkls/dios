@@ -9,6 +9,7 @@ use std::ffi::c_int;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use dios::{
     DirectIo, FileId, FrameGuard, Get, GetError, PageId, PendingToken, Pool, PoolBuildError,
@@ -19,10 +20,18 @@ const GRANULE: u32 = 4096;
 const FRAME_COUNT: u32 = 16;
 const WRITE_SLOTS: u32 = 1;
 const ARENA_BYTES: u64 = (FRAME_COUNT as u64 + WRITE_SLOTS as u64) * GRANULE as u64;
+const ARENA_SCRATCH_BYTES: usize = (FRAME_COUNT as usize + WRITE_SLOTS as usize) * GRANULE as usize;
 #[cfg(target_os = "linux")]
 const MEMLOCK_FLOOR_BYTES: u64 = 64 * 1024;
-const POLLS_MAX: u32 = 100_000;
+const POLLS_MAX: u32 = 1_000_000;
+const READ_DEADLINE: Duration = Duration::from_secs(5);
 const EXTENTS: u32 = 8;
+#[cfg(target_os = "linux")]
+const DRAIN_TRIES_MAX: u32 = 400;
+#[cfg(target_os = "linux")]
+const DRAIN_BACKOFF: Duration = Duration::from_millis(5);
+#[cfg(target_os = "linux")]
+const FLOOR_SCRATCH_BYTES: usize = 32 * 1024;
 
 #[cfg(target_os = "linux")]
 const RLIMIT_MEMLOCK: c_int = 8;
@@ -102,6 +111,39 @@ impl Drop for MemlockLimitGuard {
     }
 }
 
+/// Kernels that charge ring memory against `RLIMIT_MEMLOCK` un-charge a
+/// dropped ring asynchronously, so a case can inherit the previous case's
+/// charge. Waits until a ring plus `scratch_bytes` registers again.
+#[cfg(target_os = "linux")]
+fn await_memlock_headroom(scratch_bytes: usize) {
+    #[repr(C)]
+    struct Iovec {
+        iov_base: *mut core::ffi::c_void,
+        iov_len: usize,
+    }
+    let scratch = vec![0u8; scratch_bytes];
+    for _ in 0..DRAIN_TRIES_MAX {
+        if let Ok(ring) = io_uring::IoUring::new(4) {
+            let iov = [Iovec {
+                iov_base: scratch.as_ptr().cast_mut().cast(),
+                iov_len: scratch.len(),
+            }];
+            // SAFETY: `Iovec` is layout-compatible with `libc::iovec`; the array
+            // and the scratch buffer outlive the registration and the ring.
+            let bufs = unsafe { std::slice::from_raw_parts(iov.as_ptr().cast(), iov.len()) };
+            // SAFETY: the scratch buffer stays allocated until the ring drops.
+            if unsafe { ring.submitter().register_buffers(bufs) }.is_ok() {
+                return;
+            }
+        }
+        std::thread::sleep(DRAIN_BACKOFF);
+    }
+    panic!("the RLIMIT_MEMLOCK charge of a prior ring never drained");
+}
+
+#[cfg(not(target_os = "linux"))]
+fn await_memlock_headroom(_scratch_bytes: usize) {}
+
 fn temp_path(tag: &str) -> PathBuf {
     let sequence = UNIQUE.fetch_add(1, Ordering::Relaxed);
     let mut path = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
@@ -156,17 +198,30 @@ fn ready<'pool>(
     reader: &'pool ReaderCtx,
     mut token: PendingToken,
 ) -> FrameGuard<'pool> {
-    for _ in 0..POLLS_MAX {
+    let started = Instant::now();
+    let mut completions = 0usize;
+    let mut polls = 0u32;
+    while polls < POLLS_MAX && started.elapsed() < READ_DEADLINE {
         match pool.ready(reader, token) {
             ReadyResult::Ready(guard) => return guard,
             ReadyResult::NotYet(handed_back) => {
                 token = handed_back;
-                pool.poll();
+                completions += pool.poll();
+                polls += 1;
             }
             ReadyResult::Err(error) => panic!("a complete file extent must read: {error}"),
         }
     }
-    panic!("the real backend did not complete within the bounded poll budget");
+    panic!(
+        "the real backend did not complete within the bounded poll budget: page {:?}, posture \
+         {:?}, arena locked {}, io mode {:?}, {polls} polls, {completions} completions, {:?} \
+         elapsed",
+        token.page(),
+        pool.registration_posture(),
+        pool.arena_locked(),
+        pool.io_mode(token.page().file()),
+        started.elapsed()
+    );
 }
 
 fn read_extent(pool: &Pool, reader: &ReaderCtx, file: FileId, extent: u32) {
@@ -210,6 +265,7 @@ fn ambient_limit_selects_registered_when_the_arena_fits() {
         eprintln!("skipped: the ambient RLIMIT_MEMLOCK admits no registered posture");
         return;
     }
+    await_memlock_headroom(ARENA_SCRATCH_BYTES);
     let pool = builder()
         .build()
         .expect("an Auto build never fails on the limit");
@@ -241,6 +297,7 @@ fn ambient_limit_selects_registered_when_the_arena_fits() {
 fn auto_degrades_to_unregistered_at_the_memlock_floor() {
     let guard = MemlockLimitGuard::acquire();
     guard.lower_soft_to(MEMLOCK_FLOOR_BYTES);
+    await_memlock_headroom(FLOOR_SCRATCH_BYTES);
     let pool = builder()
         .registration_posture(RegistrationPolicy::Auto)
         .build()
@@ -266,6 +323,7 @@ fn auto_degrades_to_unregistered_at_the_memlock_floor() {
 fn explicit_unregistered_builds_at_the_memlock_floor() {
     let guard = MemlockLimitGuard::acquire();
     guard.lower_soft_to(MEMLOCK_FLOOR_BYTES);
+    await_memlock_headroom(FLOOR_SCRATCH_BYTES);
     let pool = builder()
         .registration_posture(RegistrationPolicy::Unregistered)
         .build()
@@ -287,6 +345,7 @@ fn explicit_unregistered_builds_at_the_memlock_floor() {
 fn explicit_registered_is_refused_typed_at_the_memlock_floor() {
     let guard = MemlockLimitGuard::acquire();
     guard.lower_soft_to(MEMLOCK_FLOOR_BYTES);
+    await_memlock_headroom(FLOOR_SCRATCH_BYTES);
     let Err(error) = builder()
         .registration_posture(RegistrationPolicy::Registered)
         .build()
@@ -315,6 +374,7 @@ fn explicit_registered_is_refused_typed_at_the_memlock_floor() {
 fn require_locked_is_refused_typed_at_the_memlock_floor() {
     let guard = MemlockLimitGuard::acquire();
     guard.lower_soft_to(MEMLOCK_FLOOR_BYTES);
+    await_memlock_headroom(FLOOR_SCRATCH_BYTES);
     let Err(error) = builder()
         .registration_posture(RegistrationPolicy::Unregistered)
         .require_locked()
@@ -340,6 +400,7 @@ fn require_locked_succeeds_when_the_ambient_limit_admits_the_arena() {
         eprintln!("skipped: the ambient RLIMIT_MEMLOCK admits no locked arena");
         return;
     }
+    await_memlock_headroom(ARENA_SCRATCH_BYTES);
     let pool = builder()
         .registration_posture(RegistrationPolicy::Unregistered)
         .require_locked()
