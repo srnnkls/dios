@@ -137,9 +137,8 @@ mod posture {
         fn read_one(&self, reader: &ReaderCtx, granules: &[u32]) {
             let granule = next_granule(&self.cursor, granules);
             let page = PageId::new(self.file, granule);
-            let mut token = match self.admit(reader, page) {
-                Some(token) => token,
-                None => return,
+            let Some(mut token) = self.admit(reader, page) else {
+                return;
             };
             for _ in 0..POLLS_MAX {
                 match self.pool.ready(reader, token) {
