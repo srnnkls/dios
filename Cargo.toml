@@ -94,6 +94,11 @@ harness = false
 required-features = ["bench"]
 
 [[bench]]
+name = "arena_registration"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
 name = "prefetch_window"
 harness = false
 required-features = ["bench"]

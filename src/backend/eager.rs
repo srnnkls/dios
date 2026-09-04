@@ -10,10 +10,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::driver::{
     Attempt, Backend, DriverBuildError, EagerExecutor, Executor, OpContext, OpKind,
+    RegistrationPolicy,
 };
 use crate::error::IoError;
-use crate::pool::Frames;
 use crate::pool::write_arena::ArenaState;
+use crate::pool::{Frames, PoolConfigError};
 
 const EINTR: i32 = 4;
 const EAGAIN: i32 = 35;
@@ -41,10 +42,16 @@ impl Eager {
         write_arena: Arc<ArenaState>,
         _queue_capacity: u32,
         file_capacity: u32,
+        registration_policy: RegistrationPolicy,
     ) -> Result<Self, DriverBuildError> {
         assert!(frames.count() > 0, "frame count must be positive");
         let frame_bytes = frames.granule();
         assert!(frame_bytes > 0, "frame size must be positive");
+        if registration_policy == RegistrationPolicy::Registered {
+            return Err(DriverBuildError::Configuration(
+                PoolConfigError::RegistrationUnsupported,
+            ));
+        }
         let files = crate::allocation::try_boxed_slice_with(file_capacity, || None)
             .ok_or(DriverBuildError::Allocation)?;
         Ok(Self {

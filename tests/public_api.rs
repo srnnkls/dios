@@ -27,8 +27,8 @@ use dios::{
     DirectIo, FileId, FrameGuard, Get, GetError, IoError, PageId, PendingToken, PollReport, Pool,
     PoolBuildError, PoolBuilder, PoolCompletion, PoolCompletionBatch, PoolConfigError,
     PoolSubmitError, PoolToken, PoolWakeHandle, PoolWriteArena, PoolWriteSlot, ReaderCtx,
-    ReadyResult, RegisterError, RetainRefused, RetainRefusedReason, RetainedFrame, RetentionStats,
-    RetireStatus, SyncMode,
+    ReadyResult, RegisterError, RegistrationPolicy, RegistrationPosture, RetainRefused,
+    RetainRefusedReason, RetainedFrame, RetentionStats, RetireStatus, SyncMode,
 };
 
 const GRANULE: u32 = 4096;
@@ -512,6 +512,14 @@ fn public_signatures_preserve_the_existing_residency_adt() {
         open_driver_file;
     let build_driver_signature: fn() -> Result<Driver, IoError> = configured_driver;
     let construct_page_signature: fn(FileId, u32) -> PageId = PageId::new;
+    let registration_posture_knob_signature: fn(PoolBuilder, RegistrationPolicy) -> PoolBuilder =
+        PoolBuilder::registration_posture;
+    let require_locked_knob_signature: fn(PoolBuilder) -> PoolBuilder = PoolBuilder::require_locked;
+    let registration_posture_readback_signature: fn(&Pool) -> RegistrationPosture =
+        Pool::registration_posture;
+    let arena_locked_readback_signature: fn(&Pool) -> bool = Pool::arena_locked;
+    let registration_policy_default: RegistrationPolicy = RegistrationPolicy::default();
+    assert_eq!(registration_policy_default, RegistrationPolicy::Auto);
     let io_error_type: Option<IoError> = None;
     std::hint::black_box((
         inspect_signature,
@@ -538,6 +546,10 @@ fn public_signatures_preserve_the_existing_residency_adt() {
         open_driver_file_signature,
         build_driver_signature,
         construct_page_signature,
+        registration_posture_knob_signature,
+        require_locked_knob_signature,
+        registration_posture_readback_signature,
+        arena_locked_readback_signature,
         io_error_type,
     ));
 }

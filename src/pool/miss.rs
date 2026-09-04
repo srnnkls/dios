@@ -14,7 +14,7 @@
 //! the failure to every waiter and frees the frame.
 
 use crate::completion::CompletionBatch;
-use crate::driver::{BackendProgress, FileHandle, FileId, OpToken, SyncMode};
+use crate::driver::{BackendProgress, FileHandle, FileId, OpToken, RegistrationPosture, SyncMode};
 use crate::error::FileRegistrationError;
 use crate::error::SubmitError;
 use crate::open::DirectIo;
@@ -35,6 +35,16 @@ pub(super) mod sealed {
 /// driver types; carried `#[doc(hidden)]` so it is not documented public API.
 pub(crate) trait PoolBackend: sealed::Sealed {
     fn identity(&self) -> u64;
+
+    /// The buffer-registration posture the backend runs; mocks have none.
+    fn registration_posture(&self) -> RegistrationPosture {
+        RegistrationPosture::Unregistered
+    }
+
+    /// Whether the backend holds both arenas locked in memory.
+    fn arena_locked(&self) -> bool {
+        false
+    }
 
     fn attach_pool_state(&self, lifecycle: Arc<LifecycleCounters>, wake: Arc<WaitState>);
 

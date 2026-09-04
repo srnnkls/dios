@@ -9,11 +9,36 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use crate::driver::RegistrationPolicy;
+
+pub const REGISTRATION_POLICY_ENV: &str = "DIOS_REGISTRATION_POLICY";
+
 const REPS_MIN: usize = 30;
 const RESAMPLES_MIN: u32 = 1_000;
 const SAMPLE_ROWS_MAX: usize = 100_000;
 const BOOTSTRAP_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 const SAMPLES_HEADER: &str = "base_ns,candidate_ns";
+
+/// The registration posture a pinned regression bench builds its pool under,
+/// from `DIOS_REGISTRATION_POLICY` (`auto` | `registered` | `unregistered`);
+/// unset is `auto`, so no bench forks per posture.
+///
+/// # Errors
+///
+/// The unrecognised value, so a typo never silently benches the default.
+pub fn registration_policy_from_env() -> Result<RegistrationPolicy, String> {
+    match std::env::var(REGISTRATION_POLICY_ENV) {
+        Err(_) => Ok(RegistrationPolicy::Auto),
+        Ok(value) => match value.as_str() {
+            "auto" => Ok(RegistrationPolicy::Auto),
+            "registered" => Ok(RegistrationPolicy::Registered),
+            "unregistered" => Ok(RegistrationPolicy::Unregistered),
+            other => Err(format!(
+                "{REGISTRATION_POLICY_ENV}={other:?}: expected auto, registered, or unregistered"
+            )),
+        },
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct PairedSamples {

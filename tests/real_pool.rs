@@ -9,8 +9,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, mpsc};
 #[cfg(feature = "mock")]
 use std::thread;
+use std::time::Duration;
 #[cfg(feature = "mock")]
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[cfg(feature = "mock")]
 use dios::PoolWakeHandle;
@@ -23,6 +24,7 @@ use dios::{
 
 const GRANULE: u32 = 4096;
 const POLLS_MAX: u32 = 256;
+const QUEUE_SUM_WAIT: Duration = Duration::from_millis(20);
 
 static UNIQUE: AtomicU32 = AtomicU32::new(0);
 
@@ -273,7 +275,7 @@ fn shipping_pool_reserves_the_checked_sum_for_reads_and_product_writes() {
     let mut first_seen = false;
     let mut second_seen = false;
     for _ in 0..POLLS_MAX {
-        let report = pool.poll_report(&mut completions);
+        let report = pool.poll_wait(&mut completions, QUEUE_SUM_WAIT);
         backend_completions += report.backend_completions();
         assert_eq!(report.reclaimed_frames(), 0);
         for completion in completions.iter() {

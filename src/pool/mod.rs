@@ -21,7 +21,8 @@ use std::time::Instant;
 
 use crate::completion::CompletionBatch;
 use crate::driver::{
-    BackendProgress, Driver, DriverBuildError, FileHandle, FileId, IoMode, OpKind, OpToken,
+    ArenaLockPolicy, BackendProgress, Driver, DriverBuildError, FileHandle, FileId, IoMode, OpKind,
+    OpToken, RegistrationPolicy, RegistrationPosture,
 };
 use crate::error::{FileRegistrationError, IoError, SubmitError};
 use crate::open::DirectIo;
@@ -436,6 +437,24 @@ pub enum PoolConfigError {
         max_inflight_reads: u32,
         max_inflight_product_ops: u32,
     },
+    /// An explicit `Registered` posture the host's `RLIMIT_MEMLOCK` refused;
+    /// `Auto` would have degraded to `Unregistered` here.
+    RegistrationRefused {
+        /// Bytes both arenas charge against the limit.
+        arena_bytes: u64,
+        /// The soft limit that refused the charge (advisory reading).
+        memlock_limit_bytes: u64,
+    },
+    /// An explicit `Registered` posture on a backend with no buffer table.
+    RegistrationUnsupported,
+    /// A required arena lock the host refused (`ENOMEM` past `RLIMIT_MEMLOCK`
+    /// or `EPERM`); the default best-effort lock would have continued unlocked.
+    ArenaLockRefused {
+        /// Bytes both arenas charge against the limit.
+        arena_bytes: u64,
+        /// The soft limit in force when the lock was refused (advisory reading).
+        memlock_limit_bytes: u64,
+    },
 }
 
 impl std::fmt::Display for PoolConfigError {
@@ -471,6 +490,23 @@ impl std::fmt::Display for PoolConfigError {
             } => write!(
                 f,
                 "read capacity {max_inflight_reads} plus product capacity {max_inflight_product_ops} overflows"
+            ),
+            Self::RegistrationRefused {
+                arena_bytes,
+                memlock_limit_bytes,
+            } => write!(
+                f,
+                "buffer registration of {arena_bytes} bytes refused against RLIMIT_MEMLOCK {memlock_limit_bytes}; grant CAP_IPC_LOCK, raise the limit, or select Unregistered"
+            ),
+            Self::RegistrationUnsupported => {
+                f.write_str("the eager backend has no buffer table to register")
+            }
+            Self::ArenaLockRefused {
+                arena_bytes,
+                memlock_limit_bytes,
+            } => write!(
+                f,
+                "locking {arena_bytes} arena bytes refused against RLIMIT_MEMLOCK {memlock_limit_bytes}; grant CAP_IPC_LOCK or raise the limit"
             ),
         }
     }
@@ -584,6 +620,8 @@ pub struct PoolBuilder {
     write_slots: u32,
     max_inflight_product_ops: u32,
     registered_file_capacity: u32,
+    registration_policy: RegistrationPolicy,
+    arena_lock: ArenaLockPolicy,
 }
 
 impl Default for PoolBuilder {
@@ -599,6 +637,8 @@ impl Default for PoolBuilder {
             write_slots: 0,
             max_inflight_product_ops: 0,
             registered_file_capacity: crate::driver::DEFAULT_REGISTERED_FILE_CAPACITY,
+            registration_policy: RegistrationPolicy::Auto,
+            arena_lock: ArenaLockPolicy::BestEffort,
         }
     }
 }
@@ -670,6 +710,22 @@ impl PoolBuilder {
     #[must_use]
     pub fn registered_file_capacity(mut self, registered_file_capacity: u32) -> Self {
         self.registered_file_capacity = registered_file_capacity;
+        self
+    }
+
+    /// Sets the buffer-registration posture; the default `Auto` probes and
+    /// degrades, an explicit posture is honoured or refused typed.
+    #[must_use]
+    pub fn registration_posture(mut self, registration_policy: RegistrationPolicy) -> Self {
+        self.registration_policy = registration_policy;
+        self
+    }
+
+    /// Turns a refused arena lock from a printed remediation into the typed
+    /// [`PoolConfigError::ArenaLockRefused`] build failure.
+    #[must_use]
+    pub fn require_locked(mut self) -> Self {
+        self.arena_lock = ArenaLockPolicy::Required;
         self
     }
 
@@ -781,12 +837,17 @@ impl PoolBuilder {
             )
             .write_slots(self.write_slots.max(1))
             .registered_file_capacity(self.registered_file_capacity)
-            .build_with_frames(Arc::clone(&frames))
+            .registration_policy(self.registration_policy)
+            .arena_lock(self.arena_lock)
+            .build_with_frames(&frames)
         {
             Ok(driver) => driver,
             Err(DriverBuildError::Allocation) => return Err(PoolBuildError::Allocation),
             #[cfg(target_os = "linux")]
             Err(DriverBuildError::Driver(error)) => return Err(PoolBuildError::Driver(error)),
+            Err(DriverBuildError::Configuration(error)) => {
+                return Err(PoolBuildError::Configuration(error));
+            }
         };
         Pool::try_preallocated(self, driver, frames)
     }
@@ -1377,6 +1438,21 @@ impl<D: PoolBackend> Pool<D> {
         let file = handle.file_id();
         self.register_file_internal(handle);
         Ok(file)
+    }
+
+    /// The buffer-registration posture the build selected.
+    #[must_use]
+    pub fn registration_posture(&self) -> RegistrationPosture {
+        self.driver.registration_posture()
+    }
+
+    /// Whether both arenas are locked in memory. An unlocked arena costs
+    /// availability, never integrity: dios makes no integrity claim for
+    /// resident bytes across a page-out, and a consumer that verifies per
+    /// access re-fetches a frame that fails.
+    #[must_use]
+    pub fn arena_locked(&self) -> bool {
+        self.driver.arena_locked()
     }
 
     /// Returns the negotiated data-plane mode for an exact live or retiring file
@@ -2661,6 +2737,14 @@ fn live_file_handle(
 impl PoolBackend for Driver {
     fn identity(&self) -> u64 {
         self.identity()
+    }
+
+    fn registration_posture(&self) -> RegistrationPosture {
+        Driver::registration_posture(self)
+    }
+
+    fn arena_locked(&self) -> bool {
+        Driver::arena_locked(self)
     }
 
     fn attach_pool_state(&self, _lifecycle: Arc<LifecycleCounters>, wake: Arc<WaitState>) {

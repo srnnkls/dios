@@ -235,12 +235,10 @@ impl Frames {
         self.granule
     }
 
-    #[cfg(target_os = "linux")]
     pub(crate) fn span_len(&self) -> usize {
         self.layout.size()
     }
 
-    #[cfg(target_os = "linux")]
     pub(crate) fn base_ptr(&self) -> *mut u8 {
         self.base.as_ptr()
     }
