@@ -20,7 +20,11 @@ const GRANULE: u32 = 4096;
 const FRAME_COUNT: u32 = 16;
 const WRITE_SLOTS: u32 = 1;
 const ARENA_BYTES: u64 = (FRAME_COUNT as u64 + WRITE_SLOTS as u64) * GRANULE as u64;
-const ARENA_SCRATCH_BYTES: usize = (FRAME_COUNT as usize + WRITE_SLOTS as usize) * GRANULE as usize;
+#[cfg(target_os = "linux")]
+const RING_SCRATCH_BYTES: usize = 32 * 1024;
+#[cfg(target_os = "linux")]
+const ARENA_SCRATCH_BYTES: usize =
+    (FRAME_COUNT as usize + WRITE_SLOTS as usize) * GRANULE as usize + RING_SCRATCH_BYTES;
 #[cfg(target_os = "linux")]
 const MEMLOCK_FLOOR_BYTES: u64 = 64 * 1024;
 const POLLS_MAX: u32 = 1_000_000;
@@ -30,8 +34,6 @@ const EXTENTS: u32 = 8;
 const DRAIN_TRIES_MAX: u32 = 400;
 #[cfg(target_os = "linux")]
 const DRAIN_BACKOFF: Duration = Duration::from_millis(5);
-#[cfg(target_os = "linux")]
-const FLOOR_SCRATCH_BYTES: usize = 32 * 1024;
 
 #[cfg(target_os = "linux")]
 const RLIMIT_MEMLOCK: c_int = 8;
@@ -113,7 +115,9 @@ impl Drop for MemlockLimitGuard {
 
 /// Kernels that charge ring memory against `RLIMIT_MEMLOCK` un-charge a
 /// dropped ring asynchronously, so a case can inherit the previous case's
-/// charge. Waits until a ring plus `scratch_bytes` registers again.
+/// charge. Waits until a probe ring plus `scratch_bytes` registers, then
+/// releases the scratch synchronously so the next build has at least
+/// `scratch_bytes` of headroom even while the probe ring's charge drains.
 #[cfg(target_os = "linux")]
 fn await_memlock_headroom(scratch_bytes: usize) {
     #[repr(C)]
@@ -133,6 +137,9 @@ fn await_memlock_headroom(scratch_bytes: usize) {
             let bufs = unsafe { std::slice::from_raw_parts(iov.as_ptr().cast(), iov.len()) };
             // SAFETY: the scratch buffer stays allocated until the ring drops.
             if unsafe { ring.submitter().register_buffers(bufs) }.is_ok() {
+                ring.submitter()
+                    .unregister_buffers()
+                    .expect("a registered scratch unregisters");
                 return;
             }
         }
@@ -140,9 +147,6 @@ fn await_memlock_headroom(scratch_bytes: usize) {
     }
     panic!("the RLIMIT_MEMLOCK charge of a prior ring never drained");
 }
-
-#[cfg(not(target_os = "linux"))]
-fn await_memlock_headroom(_scratch_bytes: usize) {}
 
 fn temp_path(tag: &str) -> PathBuf {
     let sequence = UNIQUE.fetch_add(1, Ordering::Relaxed);
@@ -265,6 +269,7 @@ fn ambient_limit_selects_registered_when_the_arena_fits() {
         eprintln!("skipped: the ambient RLIMIT_MEMLOCK admits no registered posture");
         return;
     }
+    #[cfg(target_os = "linux")]
     await_memlock_headroom(ARENA_SCRATCH_BYTES);
     let pool = builder()
         .build()
@@ -297,7 +302,7 @@ fn ambient_limit_selects_registered_when_the_arena_fits() {
 fn auto_degrades_to_unregistered_at_the_memlock_floor() {
     let guard = MemlockLimitGuard::acquire();
     guard.lower_soft_to(MEMLOCK_FLOOR_BYTES);
-    await_memlock_headroom(FLOOR_SCRATCH_BYTES);
+    await_memlock_headroom(RING_SCRATCH_BYTES);
     let pool = builder()
         .registration_posture(RegistrationPolicy::Auto)
         .build()
@@ -323,7 +328,7 @@ fn auto_degrades_to_unregistered_at_the_memlock_floor() {
 fn explicit_unregistered_builds_at_the_memlock_floor() {
     let guard = MemlockLimitGuard::acquire();
     guard.lower_soft_to(MEMLOCK_FLOOR_BYTES);
-    await_memlock_headroom(FLOOR_SCRATCH_BYTES);
+    await_memlock_headroom(RING_SCRATCH_BYTES);
     let pool = builder()
         .registration_posture(RegistrationPolicy::Unregistered)
         .build()
@@ -345,7 +350,7 @@ fn explicit_unregistered_builds_at_the_memlock_floor() {
 fn explicit_registered_is_refused_typed_at_the_memlock_floor() {
     let guard = MemlockLimitGuard::acquire();
     guard.lower_soft_to(MEMLOCK_FLOOR_BYTES);
-    await_memlock_headroom(FLOOR_SCRATCH_BYTES);
+    await_memlock_headroom(RING_SCRATCH_BYTES);
     let Err(error) = builder()
         .registration_posture(RegistrationPolicy::Registered)
         .build()
@@ -374,7 +379,7 @@ fn explicit_registered_is_refused_typed_at_the_memlock_floor() {
 fn require_locked_is_refused_typed_at_the_memlock_floor() {
     let guard = MemlockLimitGuard::acquire();
     guard.lower_soft_to(MEMLOCK_FLOOR_BYTES);
-    await_memlock_headroom(FLOOR_SCRATCH_BYTES);
+    await_memlock_headroom(RING_SCRATCH_BYTES);
     let Err(error) = builder()
         .registration_posture(RegistrationPolicy::Unregistered)
         .require_locked()
@@ -400,6 +405,7 @@ fn require_locked_succeeds_when_the_ambient_limit_admits_the_arena() {
         eprintln!("skipped: the ambient RLIMIT_MEMLOCK admits no locked arena");
         return;
     }
+    #[cfg(target_os = "linux")]
     await_memlock_headroom(ARENA_SCRATCH_BYTES);
     let pool = builder()
         .registration_posture(RegistrationPolicy::Unregistered)
