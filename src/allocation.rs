@@ -216,16 +216,14 @@ pub(crate) struct Occupiable<T: Copy> {
 unsafe impl<T: Copy> ZeroVacant for Occupiable<T> {
     #[cfg(loom)]
     fn vacant() -> Self {
-        Self::VACANT
+        Self {
+            occupied: false,
+            value: MaybeUninit::uninit(),
+        }
     }
 }
 
 impl<T: Copy> Occupiable<T> {
-    pub(crate) const VACANT: Self = Self {
-        occupied: false,
-        value: MaybeUninit::uninit(),
-    };
-
     pub(crate) fn get(&self) -> Option<T> {
         // SAFETY: `set` initialises the payload before raising the flag, and
         // `clear` lowers the flag without reading the payload.
