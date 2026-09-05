@@ -23,7 +23,7 @@ fn main() {
         REPS,
         ITERS_PER_REP,
         || {
-            let frames = TestFrames::preallocated(FRAMES, GRANULE);
+            let mut frames = TestFrames::preallocated(FRAMES, GRANULE);
             frames.populate();
             black_box(&frames);
         },

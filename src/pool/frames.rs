@@ -244,12 +244,13 @@ impl Frames {
 
     /// Touches every frame so the whole span is resident before any read —
     /// the eager fill construction no longer performs, kept as the base arm of
-    /// the population bench and for tests that need a resident arena.
+    /// the population bench and for tests that need a resident arena. Exclusive
+    /// access rules out every outstanding byte borrow.
     ///
     /// # Panics
     ///
     /// If any frame has left `Free` — population precedes first use.
-    pub(crate) fn populate(&self) {
+    pub(crate) fn populate(&mut self) {
         for index in 0..self.count {
             let frame = ReadFrameIdx::new(index);
             assert_eq!(
@@ -257,8 +258,8 @@ impl Frames {
                 FrameState::Free,
                 "population precedes first use"
             );
-            // SAFETY: every frame is `Free`, so no guard borrows any granule and
-            // the zero fill aliases no live shared reference.
+            // SAFETY: `&mut self` excludes every live borrow of the arena, so
+            // the zero fill aliases no shared reference.
             unsafe { self.fill(frame, 0) };
         }
     }
@@ -553,7 +554,7 @@ mod tests {
     fn a_fresh_arena_is_not_resident_until_touched() {
         let span = 64 * HUGEPAGE_BYTES;
         let frame_count = u32::try_from(span / SECTOR).expect("frame count fits u32");
-        let frames = Frames::preallocated(frame_count, SECTOR_BYTES);
+        let mut frames = Frames::preallocated(frame_count, SECTOR_BYTES);
         let base = frames.frame_bytes(ReadFrameIdx::new(0)).as_ptr().addr();
         assert_eq!(
             vma_field_kib(base, "Rss:"),
@@ -582,7 +583,7 @@ mod tests {
         }
         let span = 4 * HUGEPAGE_BYTES;
         let frame_count = u32::try_from(span / SECTOR).expect("frame count fits u32");
-        let frames = Frames::preallocated(frame_count, SECTOR_BYTES);
+        let mut frames = Frames::preallocated(frame_count, SECTOR_BYTES);
         frames.populate();
         let base = frames.frame_bytes(ReadFrameIdx::new(0)).as_ptr().addr();
         let resident_kib = vma_anon_huge_kib(base);

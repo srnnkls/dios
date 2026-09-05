@@ -131,7 +131,8 @@ pub mod testing {
 
         /// Touches every frame so the whole span is resident, the eager fill a
         /// build no longer performs; the base arm of the population bench.
-        pub fn populate(&self) {
+        /// Exclusive access rules out every outstanding `frame_bytes` borrow.
+        pub fn populate(&mut self) {
             self.frames.populate();
         }
 

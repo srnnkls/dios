@@ -114,20 +114,30 @@ impl MappedArena {
         let aligned = raw_addr.next_multiple_of(align);
         let head = aligned - raw_addr;
         let tail = total - head - mapped_len;
+        let aligned_start = raw.cast::<u8>().with_addr(aligned).cast::<c_void>();
         if head > 0 {
             // SAFETY: `[raw, raw + head)` is the untouched prefix of the mapping
             // just created; unmapping it leaves the aligned span mapped.
             let rc = unsafe { munmap(raw, head) };
-            assert_eq!(rc, 0, "trimming the head of a fresh mapping cannot fail");
+            if rc != 0 {
+                // SAFETY: the whole fresh mapping is still owned here and untouched.
+                unsafe { abandon(raw, total) };
+                return None;
+            }
         }
         if tail > 0 {
             let tail_start = raw.cast::<u8>().with_addr(aligned + mapped_len).cast();
             // SAFETY: `[aligned + mapped_len, raw + total)` is the untouched suffix of
             // the mapping just created; unmapping it leaves the span mapped.
             let rc = unsafe { munmap(tail_start, tail) };
-            assert_eq!(rc, 0, "trimming the tail of a fresh mapping cannot fail");
+            if rc != 0 {
+                // SAFETY: `[aligned, raw + total)` is what the head trim left
+                // mapped, still owned here and untouched.
+                unsafe { abandon(aligned_start, mapped_len + tail) };
+                return None;
+            }
         }
-        let base = NonNull::new(raw.cast::<u8>().with_addr(aligned))?;
+        let base = NonNull::new(aligned_start.cast::<u8>())?;
         Some(Self {
             base,
             len,
@@ -154,6 +164,20 @@ impl Drop for MappedArena {
 }
 
 const MAP_FAILED: *mut c_void = usize::MAX as *mut c_void;
+
+/// Releases a mapping whose trim the kernel refused (a VMA split past
+/// `vm.max_map_count` fails with `ENOMEM`), so the refusal surfaces as a typed
+/// allocation failure instead of a panic that leaks the span.
+///
+/// # Safety
+///
+/// `addr..addr + len` is one live mapping owned solely by the caller.
+unsafe fn abandon(addr: *mut c_void, len: usize) {
+    // SAFETY: the caller guarantees `addr..addr + len` is one live mapping it
+    // owns; the result is ignored because the span is being given up and a
+    // second refusal leaves nothing further to release.
+    let _ = unsafe { munmap(addr, len) };
+}
 
 #[cfg(test)]
 mod mapped_arena_tests {
