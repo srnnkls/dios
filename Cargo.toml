@@ -113,6 +113,11 @@ name = "arena_population"
 harness = false
 required-features = ["bench"]
 
+[[bench]]
+name = "table_population"
+harness = false
+required-features = ["bench"]
+
 [[bin]]
 name = "drp_g1_probes"
 path = "src/bin/drp_g1_probes.rs"

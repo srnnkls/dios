@@ -29,7 +29,9 @@ struct Cell {
     frame: AtomicU32,
 }
 
-impl Cell {
+// SAFETY: every field is an atomic whose zero is the vacant value.
+unsafe impl crate::allocation::ZeroVacant for Cell {
+    #[cfg(loom)]
     fn vacant() -> Self {
         Self {
             seq: AtomicU64::new(0),
@@ -41,7 +43,9 @@ impl Cell {
             frame: AtomicU32::new(0),
         }
     }
+}
 
+impl Cell {
     fn write(&self, entry: Option<(PageId, ReadFrameIdx)>) {
         let version = self.seq.load(Ordering::Relaxed);
         debug_assert!(
@@ -95,7 +99,7 @@ impl Cell {
 
 #[derive(Debug)]
 pub struct PageTable {
-    slots: Box<[Cell]>,
+    slots: crate::allocation::MappedSlice<Cell>,
     capacity: u32,
     mask: u32,
     len: AtomicU32,
@@ -114,6 +118,15 @@ impl PageTable {
             .unwrap_or_else(|| panic!("page table allocation failed for capacity {frame_count}"))
     }
 
+    /// Writes every slot once, the fault per page the eager fill construction
+    /// used to pay, so a bench can measure a build against it.
+    #[cfg(feature = "bench")]
+    pub fn populate(&self) {
+        for cell in self.slots.iter() {
+            cell.seq.store(0, Ordering::Relaxed);
+        }
+    }
+
     pub(crate) fn try_with_frame_count(frame_count: u32) -> Option<Self> {
         assert!(frame_count > 0, "frame count must be positive");
         let capacity = frame_count
@@ -121,7 +134,7 @@ impl PageTable {
             .and_then(u32::checked_next_power_of_two)
             .expect("page-table capacity within u32");
         Some(Self {
-            slots: crate::allocation::try_boxed_slice_with(capacity, Cell::vacant)?,
+            slots: crate::allocation::MappedSlice::try_vacant(capacity)?,
             capacity,
             mask: capacity - 1,
             len: AtomicU32::new(0),

@@ -115,11 +115,22 @@ struct MissInterest {
     waiters: AtomicU32,
 }
 
+// SAFETY: both fields are atomics whose zero is the vacant value.
+unsafe impl crate::allocation::ZeroVacant for MissInterest {
+    #[cfg(loom)]
+    fn vacant() -> Self {
+        Self {
+            generation: AtomicU64::new(0),
+            waiters: AtomicU32::new(0),
+        }
+    }
+}
+
 /// Pool-owned waiter accounting. Its address is the structural pool identity
 /// carried by a [`PendingToken`](super::PendingToken).
 #[derive(Debug)]
 pub(crate) struct MissInterests {
-    slots: Box<[MissInterest]>,
+    slots: crate::allocation::MappedSlice<MissInterest>,
 }
 
 impl MissInterests {
@@ -131,10 +142,7 @@ impl MissInterests {
 
     pub(crate) fn try_with_capacity(capacity: u32) -> Option<Self> {
         Some(Self {
-            slots: crate::allocation::try_boxed_slice_with(capacity, || MissInterest {
-                generation: AtomicU64::new(0),
-                waiters: AtomicU32::new(0),
-            })?,
+            slots: crate::allocation::MappedSlice::try_vacant(capacity)?,
         })
     }
 

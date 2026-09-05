@@ -9,7 +9,7 @@ use crate::sync::{AtomicBool, AtomicU32, Ordering};
 
 #[derive(Debug)]
 pub struct Clock {
-    reference_bits: Box<[AtomicBool]>,
+    reference_bits: crate::allocation::MappedSlice<AtomicBool>,
     count: u32,
     hand: AtomicU32,
     // Diagnostics-only counter no loom proof reads: it deliberately bypasses
@@ -34,9 +34,7 @@ impl Clock {
     pub(crate) fn try_with_frame_count(frame_count: u32) -> Option<Self> {
         assert!(frame_count > 0, "frame count must be positive");
         Some(Self {
-            reference_bits: crate::allocation::try_boxed_slice_with(frame_count, || {
-                AtomicBool::new(false)
-            })?,
+            reference_bits: crate::allocation::MappedSlice::try_vacant(frame_count)?,
             count: frame_count,
             hand: AtomicU32::new(0),
             reference_stores: std::sync::atomic::AtomicU64::new(0),

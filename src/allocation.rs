@@ -1,6 +1,8 @@
 use std::alloc::{Layout, alloc_zeroed};
 use std::collections::VecDeque;
 use std::ffi::{c_int, c_void};
+use std::marker::PhantomData;
+use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 
 /// Allocates one non-empty fixed arena without invoking the process OOM handler.
@@ -148,6 +150,147 @@ impl Drop for MappedArena {
 }
 
 const MAP_FAILED: *mut c_void = usize::MAX as *mut c_void;
+
+/// Element types whose vacant value is the all-zero bit pattern, so a table of
+/// them can live in zero pages the kernel materialises on first touch.
+///
+/// # Safety
+///
+/// In the shipping build every all-zero `Self` must be a valid, initialised
+/// value. Under `cfg(loom)` the atomics carry model state, so that build
+/// writes `vacant()` into every element instead.
+pub(crate) unsafe trait ZeroVacant: Sized {
+    #[cfg(loom)]
+    fn vacant() -> Self;
+}
+
+macro_rules! zero_vacant_atomics {
+    ($($atomic:ty => $zero:expr),* $(,)?) => {
+        $(
+            // SAFETY: the shipping atomic is a transparent wrapper over its
+            // integer, whose zero is the vacant value named here.
+            unsafe impl ZeroVacant for $atomic {
+                #[cfg(loom)]
+                fn vacant() -> Self {
+                    <$atomic>::new($zero)
+                }
+            }
+        )*
+    };
+}
+
+zero_vacant_atomics! {
+    crate::sync::AtomicBool => false,
+    crate::sync::AtomicU32 => 0,
+    crate::sync::AtomicU64 => 0,
+}
+
+#[cfg(loom)]
+zero_vacant_atomics! {
+    std::sync::atomic::AtomicBool => false,
+    std::sync::atomic::AtomicU32 => 0,
+    std::sync::atomic::AtomicU64 => 0,
+}
+
+// SAFETY: a `MaybeUninit` admits every bit pattern.
+unsafe impl<T> ZeroVacant for std::cell::UnsafeCell<std::mem::MaybeUninit<T>> {
+    #[cfg(loom)]
+    fn vacant() -> Self {
+        Self::new(std::mem::MaybeUninit::uninit())
+    }
+}
+
+/// One fixed-length table of vacant elements backed by a private anonymous
+/// mapping, so constructing it charges page tables rather than one write fault
+/// per page, and its resident size tracks the slots a pool has touched.
+pub(crate) struct MappedSlice<T> {
+    mapping: Option<MappedArena>,
+    len: usize,
+    _elements: PhantomData<T>,
+}
+
+impl<T: ZeroVacant> MappedSlice<T> {
+    pub(crate) fn try_vacant(capacity: u32) -> Option<Self> {
+        let len = capacity as usize;
+        let layout = Layout::array::<T>(len).ok()?;
+        if layout.size() == 0 {
+            return Some(Self::empty());
+        }
+        let mapping = MappedArena::try_map(layout.size(), layout.align())?;
+        #[cfg(loom)]
+        {
+            let base = mapping.base().cast::<T>();
+            for index in 0..len {
+                // SAFETY: `base` is aligned for `T` and spans `len` elements.
+                unsafe { base.add(index).write(T::vacant()) };
+            }
+        }
+        Some(Self {
+            mapping: Some(mapping),
+            len,
+            _elements: PhantomData,
+        })
+    }
+
+    pub(crate) fn empty() -> Self {
+        Self {
+            mapping: None,
+            len: 0,
+            _elements: PhantomData,
+        }
+    }
+}
+
+impl<T> MappedSlice<T> {
+    fn base(&self) -> NonNull<T> {
+        self.mapping
+            .as_ref()
+            .map_or(NonNull::dangling(), |mapping| mapping.base().cast::<T>())
+    }
+}
+
+impl<T> Deref for MappedSlice<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &[T] {
+        // SAFETY: the mapping holds `len` initialised elements aligned for `T`
+        // (zero pages under `ZeroVacant`, or written by `try_vacant`), owned
+        // exclusively by this value for its lifetime.
+        unsafe { std::slice::from_raw_parts(self.base().as_ptr(), self.len) }
+    }
+}
+
+impl<T> DerefMut for MappedSlice<T> {
+    fn deref_mut(&mut self) -> &mut [T] {
+        // SAFETY: as for `deref`, with `&mut self` excluding other borrows.
+        unsafe { std::slice::from_raw_parts_mut(self.base().as_ptr(), self.len) }
+    }
+}
+
+impl<T> Drop for MappedSlice<T> {
+    fn drop(&mut self) {
+        // SAFETY: the elements are initialised and dropped exactly once here,
+        // before the field drop order returns the mapping.
+        unsafe {
+            std::ptr::drop_in_place(std::ptr::slice_from_raw_parts_mut(
+                self.base().as_ptr(),
+                self.len,
+            ));
+        };
+    }
+}
+
+// SAFETY: the table owns its elements like `Box<[T]>`, so it is `Send` and
+// `Sync` exactly when `[T]` is.
+unsafe impl<T: Send> Send for MappedSlice<T> {}
+// SAFETY: see the `Send` impl.
+unsafe impl<T: Sync> Sync for MappedSlice<T> {}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for MappedSlice<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
 
 #[cfg(test)]
 mod mapped_arena_tests {

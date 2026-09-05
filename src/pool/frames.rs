@@ -30,7 +30,7 @@ const _: () = assert!(FRAME_STATE_TAG_MAX <= FRAME_STATE_MASK);
 /// until every such reader is quiescent, so no read aliases a later write.
 #[derive(Debug)]
 struct ExactPageCells {
-    cells: Box<[UnsafeCell<MaybeUninit<PageId>>]>,
+    cells: crate::allocation::MappedSlice<UnsafeCell<MaybeUninit<PageId>>>,
 }
 
 // SAFETY: the residency word and EBR protocol documented above serialize every
@@ -40,9 +40,7 @@ unsafe impl Sync for ExactPageCells {}
 impl ExactPageCells {
     fn try_preallocated(count: u32) -> Option<Self> {
         Some(Self {
-            cells: crate::allocation::try_boxed_slice_with(count, || {
-                UnsafeCell::new(MaybeUninit::uninit())
-            })?,
+            cells: crate::allocation::MappedSlice::try_vacant(count)?,
         })
     }
 
@@ -104,6 +102,9 @@ pub enum FrameState {
 }
 
 impl FrameState {
+    // A zeroed state word is a free frame, which `MappedSlice::try_vacant` relies on.
+    const FREE_TAG_IS_ZERO: () = assert!(FrameState::Free.to_tag() == 0);
+
     /// Advances to `to`, returning it.
     ///
     /// # Panics
@@ -127,7 +128,7 @@ impl FrameState {
         to
     }
 
-    fn to_tag(self) -> u8 {
+    const fn to_tag(self) -> u8 {
         match self {
             FrameState::Free => 0,
             FrameState::InFlight => 1,
@@ -158,7 +159,7 @@ impl FrameState {
 pub(crate) struct Frames {
     base: NonNull<u8>,
     arena: crate::allocation::MappedArena,
-    states: Box<[AtomicU64]>,
+    states: crate::allocation::MappedSlice<AtomicU64>,
     pages: ExactPageCells,
     count: u32,
     granule: u32,
@@ -184,9 +185,8 @@ impl Frames {
             "granule must not fall below the sector floor"
         );
         let span = (count as usize).checked_mul(granule as usize)?;
-        let states = crate::allocation::try_boxed_slice_with(count, || {
-            AtomicU64::new(u64::from(FrameState::Free.to_tag()))
-        })?;
+        let () = FrameState::FREE_TAG_IS_ZERO;
+        let states = crate::allocation::MappedSlice::<AtomicU64>::try_vacant(count)?;
         let pages = ExactPageCells::try_preallocated(count)?;
         let arena = crate::allocation::MappedArena::try_map(span, arena_alignment(span, granule))?;
         advise_hugepage(arena.base(), span);

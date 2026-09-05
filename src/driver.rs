@@ -1268,7 +1268,7 @@ pub(crate) struct DriverCore<E> {
     frames: u32,
     retry_bound: u32,
     queue_capacity: u32,
-    raw_read_inflight: Box<[AtomicBool]>,
+    raw_read_inflight: crate::allocation::MappedSlice<AtomicBool>,
     pool_wait: OnceLock<Arc<WaitState>>,
     id: u64,
 }
@@ -1302,9 +1302,7 @@ impl<E> DriverCore<E> {
             frames,
             retry_bound,
             queue_capacity,
-            raw_read_inflight: crate::allocation::try_boxed_slice_with(frames, || {
-                AtomicBool::new(false)
-            })?,
+            raw_read_inflight: crate::allocation::MappedSlice::try_vacant(frames)?,
             pool_wait: OnceLock::new(),
             id,
         })

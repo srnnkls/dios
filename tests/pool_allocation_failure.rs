@@ -2,15 +2,15 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::ptr;
 
-use dios::{Pool, PoolBuildError};
+use dios::{PageId, Pool, PoolBuildError};
 
 const GRANULE: u32 = 4096;
 const FRAME_COUNT: u32 = 4096;
 const FRAME_STATE_BYTES: usize = 8;
 const FAILURE_BYTES_MIN: usize = FRAME_COUNT as usize * FRAME_STATE_BYTES;
 const METADATA_FRAME_COUNT: u32 = 127;
-const FRAME_STATE_METADATA_BYTES: usize = METADATA_FRAME_COUNT as usize * 8;
-const FRAME_STATE_METADATA_ALIGN: usize = 8;
+const FRAME_PAGE_INDEX_BYTES: usize = METADATA_FRAME_COUNT as usize * size_of::<Option<PageId>>();
+const FRAME_PAGE_INDEX_ALIGN: usize = align_of::<Option<PageId>>();
 
 thread_local! {
     static FAIL_BYTES_MIN: Cell<usize> = const { Cell::new(0) };
@@ -76,14 +76,14 @@ fn fail_explicit_capacity_allocation<T>(body: impl FnOnce() -> T) -> T {
 
 fn fail_exact_layout_once<T>(body: impl FnOnce() -> T) -> T {
     FAIL_LAYOUT_ONCE.with(|target| {
-        target.set((FRAME_STATE_METADATA_BYTES, FRAME_STATE_METADATA_ALIGN));
+        target.set((FRAME_PAGE_INDEX_BYTES, FRAME_PAGE_INDEX_ALIGN));
     });
     let result = body();
     let remaining = FAIL_LAYOUT_ONCE.with(|target| target.replace((0, 0)));
     assert_eq!(
         remaining,
         (0, 0),
-        "frame-state metadata layout must be observed"
+        "frame page index layout must be observed"
     );
     result
 }
