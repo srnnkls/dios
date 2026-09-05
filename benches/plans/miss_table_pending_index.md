@@ -21,9 +21,15 @@ walked every slot on every cold `get` and every completion. Pending
 misses are bounded by `max_inflight_reads` (each holds one read credit),
 so the fix keeps a pending index of that capacity beside the slots.
 
-Result on the advisory macOS host (Apple silicon, 2026-09-05): dios p50
-635 ms, p95 673 ms (baseline 7,108 ms / 7,313 ms), an 11.2× reduction,
-under the 711 ms bound. mmap p50 293 ms in the same run. The sira
-Linux `overlap-fragmented-drain` arm (216,400 misses through the same
-table, dios p50 213 ms vs 28.6 ms at the 5,262-frame watermark) is the
-binding re-measurement on the pinned host once sira pins this revision.
+Result on the advisory macOS host (Apple silicon, 2026-09-05), pending
+index alone: dios p50 635 ms, p95 673 ms (baseline 7,108 ms / 7,313 ms),
+under the 711 ms bound; mmap p50 293 ms in the same run. The residual
+profile put 28% of the remaining dios scan in `first_free_frame`, which
+walked frame states from 0 on every claim, quadratic in claims per pool
+lifetime. With the `FreeFrames` stack as well: dios p50 200 ms, p95
+293 ms; mmap p50 247 ms, p95 265 ms in the same run.
+
+The sira Linux `overlap-fragmented-drain` arm (216,400 misses through the
+same table, dios p50 213 ms vs 28.6 ms at the 5,262-frame watermark) is
+the binding re-measurement on the pinned host once sira pins this
+revision.

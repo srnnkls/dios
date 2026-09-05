@@ -53,6 +53,7 @@ use retention::Retention;
 pub use clock::Clock;
 pub use epoch::{FrameGuard, ReaderCtx};
 pub(crate) use frames::Frames;
+use frames::FreeFrames;
 pub use frames::{FrameState, ReadFrameIdx};
 pub(crate) use miss::PoolBackend;
 pub(crate) use miss::sealed::Sealed as PoolBackendSealed;
@@ -903,6 +904,7 @@ type PreallocatedFileState = (Box<[AtomicU64]>, Box<[Arc<ResidentLeaseState>]>, 
 struct Control {
     evict_queue: EvictQueue,
     miss: MissTable,
+    free_frames: FreeFrames,
     frame_pages: Box<[Option<PageId>]>,
     files: Box<[Option<PoolFile>]>,
     batch: CompletionBatch,
@@ -1074,6 +1076,8 @@ impl<D: PoolBackend> Pool<D> {
             evict_queue: EvictQueue::try_with_capacity(config.frame_count)
                 .ok_or(PoolBuildError::Allocation)?,
             miss: MissTable::try_with_capacity(config.frame_count, config.max_inflight_reads)
+                .ok_or(PoolBuildError::Allocation)?,
+            free_frames: FreeFrames::try_with_all(config.frame_count)
                 .ok_or(PoolBuildError::Allocation)?,
             frame_pages: crate::allocation::try_boxed_slice_with(config.frame_count, || None)
                 .ok_or(PoolBuildError::Allocation)?,
@@ -1559,6 +1563,7 @@ impl<D: PoolBackend> Pool<D> {
         self.frames.advance(frame, FrameState::InFlight);
         let Ok(token) = self.submit_page_read(control, page, frame, 0) else {
             self.frames.abort_inflight(frame);
+            control.free_frames.push(frame);
             return Get::Busy;
         };
         control.reads_in_flight = control
@@ -2178,7 +2183,7 @@ impl<D: PoolBackend> Pool<D> {
     pub(crate) fn insert_resident_frame_internal(&self, page: PageId, fill: u8) -> ReadFrameIdx {
         let mut control = self.control();
         let frame = self
-            .first_free_frame()
+            .claim_free_frame(&mut control)
             .expect("frame pool exhausted: no Free frame to make resident");
         self.frames.advance(frame, FrameState::InFlight);
         self.frames.fill_inflight(frame, fill);
@@ -2219,10 +2224,14 @@ impl<D: PoolBackend> Pool<D> {
         frame
     }
 
-    fn first_free_frame(&self) -> Option<ReadFrameIdx> {
-        (0..self.frame_count)
-            .map(ReadFrameIdx::new)
-            .find(|&frame| self.frames.state(frame) == FrameState::Free)
+    fn claim_free_frame(&self, control: &mut Control) -> Option<ReadFrameIdx> {
+        let frame = control.free_frames.pop()?;
+        assert_eq!(
+            self.frames.state(frame),
+            FrameState::Free,
+            "the free stack holds only Free frames"
+        );
+        Some(frame)
     }
 
     fn submit_page_read(
@@ -2249,17 +2258,17 @@ impl<D: PoolBackend> Pool<D> {
     }
 
     fn claim_frame_bounded(&self, control: &mut Control) -> Option<ReadFrameIdx> {
-        if let Some(frame) = self.first_free_frame() {
+        if let Some(frame) = self.claim_free_frame(control) {
             return Some(frame);
         }
         let _ = self.drain_completions(control);
         self.advance_and_reclaim(control);
-        if let Some(frame) = self.first_free_frame() {
+        if let Some(frame) = self.claim_free_frame(control) {
             return Some(frame);
         }
         self.evict_one_victim(control);
         self.advance_and_reclaim(control);
-        self.first_free_frame()
+        self.claim_free_frame(control)
     }
 
     fn evict_one_victim(&self, control: &mut Control) {
@@ -2306,7 +2315,7 @@ impl<D: PoolBackend> Pool<D> {
                 Ok(0) => {
                     Self::release_read_credit(control);
                     self.drain_completions_finish_failure(
-                        &mut control.miss,
+                        control,
                         index,
                         entry,
                         SHORT_READ_EOF_ERRNO,
@@ -2342,7 +2351,7 @@ impl<D: PoolBackend> Pool<D> {
                         } else {
                             Self::release_read_credit(control);
                             self.drain_completions_finish_failure(
-                                &mut control.miss,
+                                control,
                                 index,
                                 entry,
                                 SHORT_READ_EOF_ERRNO,
@@ -2353,7 +2362,7 @@ impl<D: PoolBackend> Pool<D> {
                 Err(err) => {
                     Self::release_read_credit(control);
                     let errno = err.raw_os_error().unwrap_or(SHORT_READ_EOF_ERRNO);
-                    self.drain_completions_finish_failure(&mut control.miss, index, entry, errno);
+                    self.drain_completions_finish_failure(control, index, entry, errno);
                 }
             }
         }
@@ -2475,12 +2484,14 @@ impl<D: PoolBackend> Pool<D> {
 
     fn drain_completions_finish_failure(
         &self,
-        miss: &mut MissTable,
+        control: &mut Control,
         index: usize,
         entry: MissEntry,
         errno: i32,
     ) {
         self.frames.abort_inflight(entry.frame());
+        control.free_frames.push(entry.frame());
+        let miss = &mut control.miss;
         miss.fail(index, errno);
         miss.clean_terminal_zero(
             MissSlot::new(index),
@@ -2495,6 +2506,7 @@ impl<D: PoolBackend> Pool<D> {
         let Control {
             evict_queue,
             frame_pages,
+            free_frames,
             release_cursor,
             ..
         } = control;
@@ -2510,6 +2522,7 @@ impl<D: PoolBackend> Pool<D> {
                             "a release-ring frame remains Evicting until direct free"
                         );
                         frames.advance(frame, FrameState::Free);
+                        free_frames.push(frame);
                         frame_pages[frame.get() as usize] = None;
                         reclaimed += 1;
                     });
@@ -2526,6 +2539,7 @@ impl<D: PoolBackend> Pool<D> {
                 let outcome = retention.matured_outcome(frame, tag);
                 if outcome == FrameOutcome::Freed {
                     frames.advance(frame, FrameState::Free);
+                    free_frames.push(frame);
                     frame_pages[frame.get() as usize] = None;
                 }
                 outcome
@@ -2533,6 +2547,7 @@ impl<D: PoolBackend> Pool<D> {
         } else {
             evict_queue.drain_matured(global_epoch, |frame, _tag| {
                 frames.advance(frame, FrameState::Free);
+                free_frames.push(frame);
                 frame_pages[frame.get() as usize] = None;
                 FrameOutcome::Freed
             })

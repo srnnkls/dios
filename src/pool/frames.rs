@@ -573,3 +573,75 @@ mod alignment_tests {
         );
     }
 }
+
+/// The `Free` frames as a fixed stack, so a claim pops in constant time
+/// instead of walking the frame states. Every `→ Free` transition on the
+/// control path pushes; the stack never exceeds the frame count.
+#[derive(Debug)]
+pub(crate) struct FreeFrames {
+    frames: Box<[ReadFrameIdx]>,
+    len: u32,
+}
+
+impl FreeFrames {
+    /// Holds every frame, ordered so the first pop claims frame 0.
+    pub(crate) fn try_with_all(frame_count: u32) -> Option<Self> {
+        let mut next = frame_count;
+        let frames = crate::allocation::try_boxed_slice_with(frame_count, || {
+            next -= 1;
+            ReadFrameIdx::new(next)
+        })?;
+        assert_eq!(next, 0, "the stack holds every frame exactly once");
+        Some(Self {
+            frames,
+            len: frame_count,
+        })
+    }
+
+    pub(crate) fn push(&mut self, frame: ReadFrameIdx) {
+        let index = self.len as usize;
+        assert!(
+            index < self.frames.len(),
+            "a frame frees at most once between claims"
+        );
+        self.frames[index] = frame;
+        self.len += 1;
+    }
+
+    pub(crate) fn pop(&mut self) -> Option<ReadFrameIdx> {
+        let index = self.len.checked_sub(1)?;
+        self.len = index;
+        Some(self.frames[index as usize])
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> u32 {
+        self.len
+    }
+}
+
+#[cfg(all(test, not(loom)))]
+mod free_frames_tests {
+    use super::{FreeFrames, ReadFrameIdx};
+
+    #[test]
+    fn claims_start_at_frame_zero_and_freed_frames_return_last_in_first_out() {
+        let mut free = FreeFrames::try_with_all(4).expect("allocation");
+        assert_eq!(free.len(), 4);
+        assert_eq!(free.pop(), Some(ReadFrameIdx::new(0)));
+        assert_eq!(free.pop(), Some(ReadFrameIdx::new(1)));
+        free.push(ReadFrameIdx::new(0));
+        assert_eq!(free.pop(), Some(ReadFrameIdx::new(0)));
+        assert_eq!(free.pop(), Some(ReadFrameIdx::new(2)));
+        assert_eq!(free.pop(), Some(ReadFrameIdx::new(3)));
+        assert_eq!(free.pop(), None);
+        assert_eq!(free.len(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "a frame frees at most once between claims")]
+    fn pushing_past_the_frame_count_is_a_programmer_error() {
+        let mut free = FreeFrames::try_with_all(1).expect("allocation");
+        free.push(ReadFrameIdx::new(0));
+    }
+}
