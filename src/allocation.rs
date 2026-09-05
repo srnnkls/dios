@@ -76,18 +76,21 @@ compile_error!("MAP_ANONYMOUS is target-specific; add this target's value from s
 
 /// One anonymous private mapping whose pages the kernel materialises on first
 /// touch, so mapping a span costs no more than its page tables until a read
-/// lands in it. Freed by `munmap` on drop.
+/// lands in it. The mapping is never trimmed: an alignment above the page
+/// size leaves untouched slack around the aligned span, and the whole range
+/// goes back with one `munmap` on drop, so no cut ever asks the kernel to
+/// split a VMA.
 #[derive(Debug)]
 pub(crate) struct MappedArena {
     base: NonNull<u8>,
     len: usize,
-    mapped_len: usize,
+    raw: *mut c_void,
+    total: usize,
 }
 
 impl MappedArena {
-    /// Maps `len` bytes at an address that is a multiple of `align`, trimming
-    /// the over-mapped head and tail so only the aligned span (rounded up to
-    /// whole pages) stays mapped.
+    /// Maps `len` bytes (rounded up to whole pages) at an address that is a
+    /// multiple of `align`.
     pub(crate) fn try_map(len: usize, align: usize) -> Option<Self> {
         assert!(len > 0, "fixed arena mappings are non-empty");
         assert!(align.is_power_of_two(), "arena alignment is a power of two");
@@ -110,38 +113,14 @@ impl MappedArena {
         if raw == MAP_FAILED {
             return None;
         }
-        let raw_addr = raw.addr();
-        let aligned = raw_addr.next_multiple_of(align);
-        let head = aligned - raw_addr;
-        let tail = total - head - mapped_len;
-        let aligned_start = raw.cast::<u8>().with_addr(aligned).cast::<c_void>();
-        if head > 0 {
-            // SAFETY: `[raw, raw + head)` is the untouched prefix of the mapping
-            // just created; unmapping it leaves the aligned span mapped.
-            let rc = unsafe { munmap(raw, head) };
-            if rc != 0 {
-                // SAFETY: the whole fresh mapping is still owned here and untouched.
-                unsafe { abandon(raw, total) };
-                return None;
-            }
-        }
-        if tail > 0 {
-            let tail_start = raw.cast::<u8>().with_addr(aligned + mapped_len).cast();
-            // SAFETY: `[aligned + mapped_len, raw + total)` is the untouched suffix of
-            // the mapping just created; unmapping it leaves the span mapped.
-            let rc = unsafe { munmap(tail_start, tail) };
-            if rc != 0 {
-                // SAFETY: `[aligned, raw + total)` is what the head trim left
-                // mapped, still owned here and untouched.
-                unsafe { abandon(aligned_start, mapped_len + tail) };
-                return None;
-            }
-        }
-        let base = NonNull::new(aligned_start.cast::<u8>())?;
+        let aligned = raw.addr().next_multiple_of(align);
+        debug_assert!(aligned + mapped_len <= raw.addr() + total);
+        let base = NonNull::new(raw.cast::<u8>().with_addr(aligned))?;
         Some(Self {
             base,
             len,
-            mapped_len,
+            raw,
+            total,
         })
     }
 
@@ -152,32 +131,23 @@ impl MappedArena {
     pub(crate) fn len(&self) -> usize {
         self.len
     }
+
+    #[cfg(test)]
+    fn mapped_len(&self) -> usize {
+        self.total
+    }
 }
 
 impl Drop for MappedArena {
     fn drop(&mut self) {
-        // SAFETY: `base..base + mapped_len` is exactly the span `try_map` left
-        // mapped, unmapped once here at end of life.
-        let rc = unsafe { munmap(self.base.as_ptr().cast(), self.mapped_len) };
-        assert_eq!(rc, 0, "unmapping a span this arena mapped cannot fail");
+        // SAFETY: `raw..raw + total` is exactly the mapping `try_map` created,
+        // unmapped once here at end of life; the result is ignored because a
+        // refusal leaves nothing further this value could do with the span.
+        let _ = unsafe { munmap(self.raw, self.total) };
     }
 }
 
 const MAP_FAILED: *mut c_void = usize::MAX as *mut c_void;
-
-/// Releases a mapping whose trim the kernel refused (a VMA split past
-/// `vm.max_map_count` fails with `ENOMEM`), so the refusal surfaces as a typed
-/// allocation failure instead of a panic that leaks the span.
-///
-/// # Safety
-///
-/// `addr..addr + len` is one live mapping owned solely by the caller.
-unsafe fn abandon(addr: *mut c_void, len: usize) {
-    // SAFETY: the caller guarantees `addr..addr + len` is one live mapping it
-    // owns; the result is ignored because the span is being given up and a
-    // second refusal leaves nothing further to release.
-    let _ = unsafe { munmap(addr, len) };
-}
 
 #[cfg(test)]
 mod mapped_arena_tests {
@@ -189,13 +159,17 @@ mod mapped_arena_tests {
         let arena = MappedArena::try_map(3 * 4096, align).expect("a small mapping succeeds");
         assert_eq!(arena.base().as_ptr().addr() % align, 0);
         assert_eq!(arena.len(), 3 * 4096);
+        assert_eq!(
+            arena.mapped_len(),
+            (3usize * 4096).next_multiple_of(page_size()) + align
+        );
     }
 
     #[test]
     fn a_mapping_below_the_page_size_still_maps_whole_pages() {
         let arena = MappedArena::try_map(512, 512).expect("a small mapping succeeds");
         assert_eq!(arena.len(), 512);
-        assert_eq!(arena.mapped_len, page_size());
+        assert_eq!(arena.mapped_len(), page_size());
     }
 
     #[test]
