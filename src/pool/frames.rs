@@ -4,7 +4,7 @@
 
 #[cfg(target_os = "linux")]
 use core::ffi::{c_int, c_void};
-use std::alloc::{Layout, dealloc, handle_alloc_error};
+use std::alloc::{Layout, handle_alloc_error};
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::ptr::NonNull;
@@ -148,13 +148,16 @@ impl FrameState {
 }
 
 /// A fixed set of `count` granule-sized frames in one sector-aligned, non-moving
-/// allocation. Frame `i` owns the byte region `[i * granule, (i + 1) * granule)`;
-/// its base is sector-aligned because the allocation is and `granule` is a
-/// multiple of a sector.
+/// mapping. Frame `i` owns the byte region `[i * granule, (i + 1) * granule)`;
+/// its base is sector-aligned because the mapping is and `granule` is a
+/// multiple of a sector. Construction reserves the span without touching it:
+/// a frame's page materialises when its first read lands, so an open charges
+/// the pool's capacity, not its footprint. Locking or registering the arena
+/// populates it as the kernel's part of that posture.
 #[derive(Debug)]
 pub(crate) struct Frames {
     base: NonNull<u8>,
-    layout: Layout,
+    arena: crate::allocation::MappedArena,
     states: Box<[AtomicU64]>,
     pages: ExactPageCells,
     count: u32,
@@ -181,19 +184,15 @@ impl Frames {
             "granule must not fall below the sector floor"
         );
         let span = (count as usize).checked_mul(granule as usize)?;
-        let layout = Layout::from_size_align(span, arena_alignment(span, granule)).ok()?;
         let states = crate::allocation::try_boxed_slice_with(count, || {
             AtomicU64::new(u64::from(FrameState::Free.to_tag()))
         })?;
         let pages = ExactPageCells::try_preallocated(count)?;
-        let base = crate::allocation::allocate(layout)?;
-        advise_hugepage(base, span);
-        // SAFETY: `base` addresses `span` writable bytes owned solely here; no
-        // reference to them exists yet.
-        unsafe { std::ptr::write_bytes(base.as_ptr(), 0, span) };
+        let arena = crate::allocation::MappedArena::try_map(span, arena_alignment(span, granule))?;
+        advise_hugepage(arena.base(), span);
         Some(Self {
-            base,
-            layout,
+            base: arena.base(),
+            arena,
             states,
             pages,
             count,
@@ -236,11 +235,33 @@ impl Frames {
     }
 
     pub(crate) fn span_len(&self) -> usize {
-        self.layout.size()
+        self.arena.len()
     }
 
     pub(crate) fn base_ptr(&self) -> *mut u8 {
         self.base.as_ptr()
+    }
+
+    /// Touches every frame so the whole span is resident before any read —
+    /// the eager fill construction no longer performs, kept as the base arm of
+    /// the population bench and for tests that need a resident arena. Exclusive
+    /// access rules out every outstanding byte borrow.
+    ///
+    /// # Panics
+    ///
+    /// If any frame has left `Free` — population precedes first use.
+    pub(crate) fn populate(&mut self) {
+        for index in 0..self.count {
+            let frame = ReadFrameIdx::new(index);
+            assert_eq!(
+                self.state(frame),
+                FrameState::Free,
+                "population precedes first use"
+            );
+            // SAFETY: `&mut self` excludes every live borrow of the arena, so
+            // the zero fill aliases no shared reference.
+            unsafe { self.fill(frame, 0) };
+        }
     }
 
     pub(crate) fn frame_ptr(
@@ -450,14 +471,6 @@ impl Frames {
     }
 }
 
-impl Drop for Frames {
-    fn drop(&mut self) {
-        // SAFETY: `base`/`layout` are exactly the pair returned by `alloc` in
-        // `preallocated`, freed once here at end of life.
-        unsafe { dealloc(self.base.as_ptr(), self.layout) }
-    }
-}
-
 /// Transparent hugepages install only at a 2 MiB-aligned virtual address, so a
 /// Linux arena at least a hugepage large is 2 MiB-aligned (or granule-aligned if
 /// that is larger); a sector-aligned start would strand the head and tail.
@@ -470,14 +483,14 @@ fn arena_alignment(span: usize, granule: u32) -> usize {
 }
 
 /// Must run before the arena's pages are first touched: fault-time THP (defrag
-/// `madvise`) backs only untouched ranges, so the hint has to precede the warmup
-/// fill.
+/// `madvise`) backs only untouched ranges, so the hint has to precede the first
+/// read into any frame.
 fn advise_hugepage(base: NonNull<u8>, len: usize) {
     #[cfg(target_os = "linux")]
     {
         if len >= HUGEPAGE_BYTES {
-            // SAFETY: `base`/`len` name the live allocation just returned by
-            // `alloc` and owned solely here; `madvise` only sets a VMA hint
+            // SAFETY: `base`/`len` name the live mapping just created and
+            // owned solely here; `madvise` only sets a VMA hint
             // and reads or writes no user bytes. The result is ignored on purpose:
             // the hint is best-effort — a `THP=never` kernel returns `EINVAL` and
             // the arena runs correctly on 4 KiB pages, so a rejected hint must
@@ -509,6 +522,10 @@ mod tests {
     }
 
     fn vma_anon_huge_kib(addr: usize) -> u64 {
+        vma_field_kib(addr, "AnonHugePages:")
+    }
+
+    fn vma_field_kib(addr: usize, field: &str) -> u64 {
         let smaps = std::fs::read_to_string("/proc/self/smaps").expect("smaps is readable");
         let mut in_vma = false;
         for line in smaps.lines() {
@@ -522,15 +539,34 @@ mod tests {
                 in_vma = (start..end).contains(&addr);
                 continue;
             }
-            if in_vma && let Some(rest) = line.strip_prefix("AnonHugePages:") {
+            if in_vma && let Some(rest) = line.strip_prefix(field) {
                 return rest
                     .trim()
                     .trim_end_matches(" kB")
                     .parse()
-                    .expect("AnonHugePages field parses");
+                    .expect("smaps field parses");
             }
         }
         panic!("no smaps VMA contains the arena base");
+    }
+
+    #[test]
+    fn a_fresh_arena_is_not_resident_until_touched() {
+        let span = 64 * HUGEPAGE_BYTES;
+        let frame_count = u32::try_from(span / SECTOR).expect("frame count fits u32");
+        let mut frames = Frames::preallocated(frame_count, SECTOR_BYTES);
+        let base = frames.frame_bytes(ReadFrameIdx::new(0)).as_ptr().addr();
+        assert_eq!(
+            vma_field_kib(base, "Rss:"),
+            0,
+            "construction reserves the span without touching a page"
+        );
+        frames.populate();
+        assert_eq!(
+            vma_field_kib(base, "Rss:"),
+            (span / 1024) as u64,
+            "population makes the whole span resident"
+        );
     }
 
     fn thp_fault_backing_available() -> bool {
@@ -547,12 +583,13 @@ mod tests {
         }
         let span = 4 * HUGEPAGE_BYTES;
         let frame_count = u32::try_from(span / SECTOR).expect("frame count fits u32");
-        let frames = Frames::preallocated(frame_count, SECTOR_BYTES);
+        let mut frames = Frames::preallocated(frame_count, SECTOR_BYTES);
+        frames.populate();
         let base = frames.frame_bytes(ReadFrameIdx::new(0)).as_ptr().addr();
         let resident_kib = vma_anon_huge_kib(base);
         assert!(
             resident_kib >= (HUGEPAGE_BYTES / 1024) as u64,
-            "construction's first touch happens after the MADV_HUGEPAGE hint, so at \
+            "the first touch happens after the MADV_HUGEPAGE hint, so at \
              least one of the arena's {} possible hugepages is resident (got {} KiB)",
             span / HUGEPAGE_BYTES,
             resident_kib,

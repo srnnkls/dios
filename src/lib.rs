@@ -129,6 +129,13 @@ pub mod testing {
             self.frames.count()
         }
 
+        /// Touches every frame so the whole span is resident, the eager fill a
+        /// build no longer performs; the base arm of the population bench.
+        /// Exclusive access rules out every outstanding `frame_bytes` borrow.
+        pub fn populate(&mut self) {
+            self.frames.populate();
+        }
+
         #[must_use]
         pub fn frame_bytes(&self, frame: ReadFrameIdx) -> &[u8] {
             self.frames.frame_bytes(frame)
