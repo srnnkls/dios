@@ -2,15 +2,16 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::ptr;
 
-use dios::{PageId, Pool, PoolBuildError};
+use dios::{Pool, PoolBuildError};
 
 const GRANULE: u32 = 4096;
 const FRAME_COUNT: u32 = 4096;
 const FRAME_STATE_BYTES: usize = 8;
 const FAILURE_BYTES_MIN: usize = FRAME_COUNT as usize * FRAME_STATE_BYTES;
 const METADATA_FRAME_COUNT: u32 = 127;
-const FRAME_PAGE_INDEX_BYTES: usize = METADATA_FRAME_COUNT as usize * size_of::<Option<PageId>>();
-const FRAME_PAGE_INDEX_ALIGN: usize = align_of::<Option<PageId>>();
+const REGISTERED_FILES: u32 = 61;
+const FILE_GENERATION_BYTES: usize = REGISTERED_FILES as usize * size_of::<u64>();
+const FILE_GENERATION_ALIGN: usize = align_of::<u64>();
 
 thread_local! {
     static FAIL_BYTES_MIN: Cell<usize> = const { Cell::new(0) };
@@ -76,14 +77,14 @@ fn fail_explicit_capacity_allocation<T>(body: impl FnOnce() -> T) -> T {
 
 fn fail_exact_layout_once<T>(body: impl FnOnce() -> T) -> T {
     FAIL_LAYOUT_ONCE.with(|target| {
-        target.set((FRAME_PAGE_INDEX_BYTES, FRAME_PAGE_INDEX_ALIGN));
+        target.set((FILE_GENERATION_BYTES, FILE_GENERATION_ALIGN));
     });
     let result = body();
     let remaining = FAIL_LAYOUT_ONCE.with(|target| target.replace((0, 0)));
     assert_eq!(
         remaining,
         (0, 0),
-        "frame page index layout must be observed"
+        "file generation table layout must be observed"
     );
     result
 }
@@ -105,7 +106,7 @@ fn explicitly_sized_pool_allocation_failure_is_typed() {
 }
 
 #[test]
-fn frame_metadata_allocation_failure_is_typed() {
+fn file_table_allocation_failure_is_typed() {
     let result = fail_exact_layout_once(|| {
         Pool::builder()
             .frame_count(METADATA_FRAME_COUNT)
@@ -114,6 +115,7 @@ fn frame_metadata_allocation_failure_is_typed() {
             .peak_guards_per_reader(1)
             .max_inflight_reads(1)
             .miss_headroom(3)
+            .registered_file_capacity(REGISTERED_FILES)
             .build()
     });
 

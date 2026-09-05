@@ -562,6 +562,8 @@ pub mod testing {
         DirectIoSupport, Injected, MockDriver, MockDriverBuilder, MockIoEvent, MockRingDriver,
         MockRingDriverBuilder, MockRingObservation, MockWriteArena, ReadAttempt, WriteAttempt,
     };
+    #[cfg(feature = "bench")]
+    pub use crate::pool::ControlTables;
     #[cfg(any(feature = "mock", feature = "bench"))]
     pub use crate::pool::{Clock, FrameState, PageTable, ReaderCounters};
 

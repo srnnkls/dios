@@ -2,6 +2,7 @@ use std::alloc::{Layout, alloc_zeroed};
 use std::collections::VecDeque;
 use std::ffi::{c_int, c_void};
 use std::marker::PhantomData;
+use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 
@@ -193,10 +194,67 @@ zero_vacant_atomics! {
 }
 
 // SAFETY: a `MaybeUninit` admits every bit pattern.
-unsafe impl<T> ZeroVacant for std::cell::UnsafeCell<std::mem::MaybeUninit<T>> {
+unsafe impl<T> ZeroVacant for std::cell::UnsafeCell<MaybeUninit<T>> {
     #[cfg(loom)]
     fn vacant() -> Self {
         Self::new(std::mem::MaybeUninit::uninit())
+    }
+}
+
+/// One optionally occupied `Copy` element whose all-zero bytes are the vacant
+/// state, so a table of them lives in an untouched mapping. `Option<T>` has no
+/// guaranteed vacant bit pattern for an arbitrary payload; this cell carries
+/// its own flag ahead of the payload.
+#[repr(C)]
+pub(crate) struct Occupiable<T: Copy> {
+    occupied: bool,
+    value: MaybeUninit<T>,
+}
+
+// SAFETY: `occupied == false` is the vacant state and leaves the payload
+// unread, so all-zero bytes are a valid vacant cell for every `Copy` payload.
+unsafe impl<T: Copy> ZeroVacant for Occupiable<T> {
+    #[cfg(loom)]
+    fn vacant() -> Self {
+        Self::VACANT
+    }
+}
+
+impl<T: Copy> Occupiable<T> {
+    pub(crate) const VACANT: Self = Self {
+        occupied: false,
+        value: MaybeUninit::uninit(),
+    };
+
+    pub(crate) fn get(&self) -> Option<T> {
+        // SAFETY: `set` initialises the payload before raising the flag, and
+        // `clear` lowers the flag without reading the payload.
+        self.occupied.then(|| unsafe { self.value.assume_init() })
+    }
+
+    pub(crate) fn get_mut(&mut self) -> Option<&mut T> {
+        // SAFETY: as for `get`.
+        self.occupied
+            .then(|| unsafe { self.value.assume_init_mut() })
+    }
+
+    pub(crate) fn is_none(&self) -> bool {
+        !self.occupied
+    }
+
+    pub(crate) fn set(&mut self, value: T) {
+        self.value = MaybeUninit::new(value);
+        self.occupied = true;
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.occupied = false;
+    }
+}
+
+impl<T: Copy + std::fmt::Debug> std::fmt::Debug for Occupiable<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.get().fmt(f)
     }
 }
 

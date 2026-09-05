@@ -13,6 +13,7 @@
 //! short read reslices the remainder, and an IO error or short-read-at-EOF fans
 //! the failure to every waiter and frees the frame.
 
+use crate::allocation::{MappedSlice, Occupiable};
 use crate::completion::CompletionBatch;
 use crate::driver::{BackendProgress, FileHandle, FileId, OpToken, RegistrationPosture, SyncMode};
 use crate::error::FileRegistrationError;
@@ -130,7 +131,7 @@ unsafe impl crate::allocation::ZeroVacant for MissInterest {
 /// carried by a [`PendingToken`](super::PendingToken).
 #[derive(Debug)]
 pub(crate) struct MissInterests {
-    slots: crate::allocation::MappedSlice<MissInterest>,
+    slots: MappedSlice<MissInterest>,
 }
 
 impl MissInterests {
@@ -142,7 +143,7 @@ impl MissInterests {
 
     pub(crate) fn try_with_capacity(capacity: u32) -> Option<Self> {
         Some(Self {
-            slots: crate::allocation::MappedSlice::try_vacant(capacity)?,
+            slots: MappedSlice::try_vacant(capacity)?,
         })
     }
 
@@ -267,8 +268,8 @@ struct PendingMiss {
 /// sized to the read in-flight bound: every pending miss holds one read credit.
 #[derive(Debug)]
 pub(crate) struct MissTable {
-    slots: Box<[Option<MissEntry>]>,
-    success_frames: Box<[Option<(MissSlot, NonZeroU64)>]>,
+    slots: MappedSlice<Occupiable<MissEntry>>,
+    success_frames: MappedSlice<Occupiable<(MissSlot, NonZeroU64)>>,
     pending: Box<[Option<PendingMiss>]>,
     pending_len: u32,
 }
@@ -286,11 +287,23 @@ impl MissTable {
             "pending misses occupy miss slots, so their bound fits the slot count"
         );
         Some(Self {
-            slots: crate::allocation::try_boxed_slice_with(capacity, || None)?,
-            success_frames: crate::allocation::try_boxed_slice_with(capacity, || None)?,
+            slots: MappedSlice::try_vacant(capacity)?,
+            success_frames: MappedSlice::try_vacant(capacity)?,
             pending: crate::allocation::try_boxed_slice_with(pending_capacity, || None)?,
             pending_len: 0,
         })
+    }
+
+    /// Writes every frame-scaled slot once, the fault per page the eager
+    /// constructor loop used to pay, so a bench can measure a build against it.
+    #[cfg(feature = "bench")]
+    pub(crate) fn populate(&mut self) {
+        for slot in self.slots.iter_mut() {
+            slot.clear();
+        }
+        for frame in self.success_frames.iter_mut() {
+            frame.clear();
+        }
     }
 
     fn pending_live(&self) -> &[Option<PendingMiss>] {
@@ -306,7 +319,7 @@ impl MissTable {
         debug_assert_eq!(
             found,
             self.slots.iter().position(|slot| {
-                slot.is_some_and(|entry| {
+                slot.get().is_some_and(|entry| {
                     entry.page == page && entry.outcome == MissOutcome::Pending
                 })
             }),
@@ -355,14 +368,14 @@ impl MissTable {
     }
 
     pub(crate) fn entry(&self, index: usize) -> MissEntry {
-        self.slots[index].expect("an occupied miss slot")
+        self.slots[index].get().expect("an occupied miss slot")
     }
 
     /// Finds an empty or zero-interest terminal slot without mutating it. The
     /// caller holds the pool control lock through submit and installation.
     pub(crate) fn admission_slot(&self, interests: &MissInterests) -> Option<MissSlot> {
         self.slots.iter().enumerate().find_map(|(index, entry)| {
-            let reusable = entry.is_none_or(|entry| {
+            let reusable = entry.get().is_none_or(|entry| {
                 entry.outcome != MissOutcome::Pending
                     && interests.waiters(MissSlot::new(index), entry.generation) == Some(0)
             });
@@ -386,7 +399,7 @@ impl MissTable {
             self.find_pending(page).is_none(),
             "admit installs a fresh miss — a pending duplicate would break singleflight"
         );
-        if let Some(previous) = self.slots[slot.index()] {
+        if let Some(previous) = self.slots[slot.index()].get() {
             self.clean_terminal_zero(slot, previous.generation, interests);
         }
         assert!(
@@ -402,7 +415,7 @@ impl MissTable {
             filled: 0,
             outcome: MissOutcome::Pending,
         };
-        self.slots[slot.index()] = Some(entry);
+        self.slots[slot.index()].set(entry);
         self.pending_push(PendingMiss { page, token, slot });
         generation
     }
@@ -420,7 +433,7 @@ impl MissTable {
     }
 
     pub(crate) fn advance_remainder(&mut self, index: usize, filled: u32, token: OpToken) {
-        let entry = self.slots[index].as_mut().expect("an occupied miss slot");
+        let entry = self.slots[index].get_mut().expect("an occupied miss slot");
         assert_eq!(
             entry.outcome,
             MissOutcome::Pending,
@@ -436,7 +449,7 @@ impl MissTable {
     }
 
     pub(crate) fn fail(&mut self, index: usize, errno: i32) {
-        let entry = self.slots[index].as_mut().expect("an occupied miss slot");
+        let entry = self.slots[index].get_mut().expect("an occupied miss slot");
         assert_ne!(errno, 0, "a terminal miss failure carries a real errno");
         assert_eq!(entry.outcome, MissOutcome::Pending, "a miss fails once");
         entry.outcome = MissOutcome::Failed(errno);
@@ -444,7 +457,7 @@ impl MissTable {
     }
 
     pub(crate) fn succeed(&mut self, index: usize) {
-        let entry = self.slots[index].as_mut().expect("an occupied miss slot");
+        let entry = self.slots[index].get_mut().expect("an occupied miss slot");
         assert_eq!(entry.outcome, MissOutcome::Pending, "a miss succeeds once");
         entry.outcome = MissOutcome::Succeeded;
         let entry = *entry;
@@ -454,7 +467,7 @@ impl MissTable {
             self.success_frames[frame_index].is_none(),
             "one successful terminal generation protects a frame"
         );
-        self.success_frames[frame_index] = Some((MissSlot::new(index), entry.generation));
+        self.success_frames[frame_index].set((MissSlot::new(index), entry.generation));
     }
 
     pub(crate) fn validate(
@@ -463,7 +476,9 @@ impl MissTable {
         generation: NonZeroU64,
         page: PageId,
     ) -> MissEntry {
-        let entry = self.slots[slot.index()].expect("pending token names a live miss record");
+        let entry = self.slots[slot.index()]
+            .get()
+            .expect("pending token names a live miss record");
         assert_eq!(
             entry.generation, generation,
             "pending token generation is exact"
@@ -478,7 +493,7 @@ impl MissTable {
         generation: NonZeroU64,
         interests: &MissInterests,
     ) {
-        let entry = self.slots[slot.index()];
+        let entry = self.slots[slot.index()].get();
         if entry.is_some_and(|entry| {
             entry.generation == generation
                 && entry.outcome != MissOutcome::Pending
@@ -488,13 +503,13 @@ impl MissTable {
             if entry.outcome == MissOutcome::Succeeded {
                 let frame_index = entry.frame.get() as usize;
                 assert_eq!(
-                    self.success_frames[frame_index],
+                    self.success_frames[frame_index].get(),
                     Some((slot, generation)),
                     "successful protection names its exact terminal generation"
                 );
-                self.success_frames[frame_index] = None;
+                self.success_frames[frame_index].clear();
             }
-            self.slots[slot.index()] = None;
+            self.slots[slot.index()].clear();
         }
     }
 
@@ -503,7 +518,7 @@ impl MissTable {
         frame: ReadFrameIdx,
         interests: &MissInterests,
     ) -> bool {
-        let Some((slot, generation)) = self.success_frames[frame.get() as usize] else {
+        let Some((slot, generation)) = self.success_frames[frame.get() as usize].get() else {
             return true;
         };
         if interests.waiters(slot, generation) != Some(0) {
@@ -519,7 +534,7 @@ impl MissTable {
 
     pub(crate) fn has_live_for_file(&self, file: FileId, interests: &MissInterests) -> bool {
         self.slots.iter().enumerate().any(|(index, entry)| {
-            entry.is_some_and(|entry| {
+            entry.get().is_some_and(|entry| {
                 entry.page.file() == file
                     && (entry.outcome == MissOutcome::Pending
                         || interests.waiters(MissSlot::new(index), entry.generation) != Some(0))

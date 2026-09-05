@@ -1,16 +1,16 @@
-//! `table_population`: constructing the page table of a 240,241-frame pool
-//! (524,288 slots, the DM009 pool) and touching every slot (base, the fault
-//! per page the eager fill construction used to pay) against constructing it
-//! alone (candidate, the zero-page mapping). The ratio is the share of the
-//! old table cost a build still pays. The gate (ci95 upper <= 0.10) is
-//! asserted by the shared compare harness, never in-bench; run on the pinned
-//! host, not here.
+//! `table_population`: constructing the frame-scaled control tables of a
+//! 240,241-frame pool (the DM009 pool: page table, miss table, frame page
+//! index) and touching every slot (base, the fault per page the eager
+//! constructor loops used to pay) against constructing them alone (candidate,
+//! the zero-page mappings). The ratio is the share of the old table cost a
+//! build still pays. The gate (ci95 upper <= 0.10) is asserted by the shared
+//! compare harness, never in-bench; run on the pinned host, not here.
 
 use std::hint::black_box;
 use std::path::Path;
 
 use dios::bench::{ratio_gate, run_paired, write_samples};
-use dios::testing::PageTable;
+use dios::testing::ControlTables;
 
 const FRAMES: u32 = 240_241;
 const REPS: u32 = 40;
@@ -23,13 +23,13 @@ fn main() {
         REPS,
         ITERS_PER_REP,
         || {
-            let table = PageTable::with_frame_count(FRAMES);
-            table.populate();
-            black_box(&table);
+            let mut tables = ControlTables::with_frame_count(FRAMES);
+            tables.populate();
+            black_box(&tables);
         },
         || {
-            let table = PageTable::with_frame_count(FRAMES);
-            black_box(&table);
+            let tables = ControlTables::with_frame_count(FRAMES);
+            black_box(&tables);
         },
     );
 
