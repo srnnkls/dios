@@ -74,6 +74,11 @@ harness = false
 required-features = ["bench", "mock"]
 
 [[bench]]
+name = "miss_table_pending_index"
+harness = false
+required-features = ["bench", "mock"]
+
+[[bench]]
 name = "mmap_warm_path"
 harness = false
 required-features = ["bench", "mock"]

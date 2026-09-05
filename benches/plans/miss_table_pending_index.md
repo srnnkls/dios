@@ -2,34 +2,42 @@
 
 | Field | Value |
 |-------|-------|
-| Metric & direction | cold sequential scan wall time under the dios backend (candidate/base), lower is better; the lookup cost of a cold `get` and of a read completion must be independent of the pool frame count |
-| Workload | sira DM009 `darwin-scan`: one-shard sequential drain of a 5,000,000-pair store (623,638 rows, ~3,300 cold granule misses) against a 984 MB pool (240,241 frames, eager backend, `F_NOCACHE` copy before every trial); 5 interleaved trials mmap/dios |
-| Baseline | dios b1db67d, same harness, same store, same host: dios p50 7,108 ms, mmap p50 265 ms |
-| Reps | 5 trials (the sira harness's frozen arm shape; advisory host) |
-| Threshold | candidate dios p50 ≤ 0.10 × baseline dios p50 (≤ 711 ms); the pinned dios regression benches stay green |
-| Compare command | `SIRA_BENCH_DIR=<store parent> SIRA_DM009=darwin-scan <sira redb_workload bench binary> --bench`, read the `darwin-scan: backend=dios` line |
-| Escalation lever | if the scan stays above the bound, flamegraph the arm again (samply, folded stacks) and attribute the residual to its frame before touching the pool |
+| Metric & direction | wall-time ratio of one cold `get` on a 32,768-frame pool to one cold `get` on a 256-frame pool (candidate/base), lower is better; the per-miss cost must not grow with the frame count |
+| Workload | two mock-backed pools, 4 KiB granule, one reader each, `max_inflight_reads` 64, `miss_headroom` 192; each pool is warmed to full occupancy before sampling so every measured miss claims through the CLOCK; both arms drive a never-read page (`get` → `poll` → `ready`) on a monotonic page counter; 40 reps × 64 iters, interleaved A/B |
+| Baseline | the 256-frame arm itself (interleaved A/B): at a frame-count-independent miss path the ratio sits near 1.0; a per-miss walk over a frame-sized table scales it with 32,768 / 256 = 128 |
+| Reps | 40 (protocol minimum 30) |
+| Threshold | one-sided 95% CI upper bound of the ratio ≤ 1.25 |
+| Compare command | `mise run gate target/bench-samples/miss_table_pending_index.csv 1.25` |
+| Escalation lever | a failing gate means a cold-miss step walks a frame-sized structure again; profile the candidate arm with the flamegraph skill and attribute the walk to its frame before touching the pool |
 
 ## Notes
 
-The flamegraph of the baseline arm (153,820 samples, 41,737 under
-`drain_rows`) put 86% of the scan's self time in
-`MissTable::find_pending` and 1.1% in `pread`. The table is sized to the
-frame count so terminal `Succeeded` generations can protect their frame
-until the last waiter drops, but `find_pending` and `find_by_token`
-walked every slot on every cold `get` and every completion. Pending
-misses are bounded by `max_inflight_reads` (each holds one read credit),
-so the fix keeps a pending index of that capacity beside the slots.
+Bench: `cargo bench --features bench,mock --bench miss_table_pending_index`
+writes `target/bench-samples/miss_table_pending_index.csv`; the gate is
+asserted only by `mise run gate`, never in-bench. The mock backend
+executes each read inline at `poll`, so the ratio isolates pool-side CPU
+work: no kernel, no device. The mock's event recorder is bounded by
+16 × `queue_capacity`, so the bench builds the mock with a queue of
+8,192 to hold the warm-up and the sampled misses.
 
-Result on the advisory macOS host (Apple silicon, 2026-09-05), pending
-index alone: dios p50 635 ms, p95 673 ms (baseline 7,108 ms / 7,313 ms),
-under the 711 ms bound; mmap p50 293 ms in the same run. The residual
-profile put 28% of the remaining dios scan in `first_free_frame`, which
-walked frame states from 0 on every claim, quadratic in claims per pool
-lifetime. With the `FreeFrames` stack as well: dios p50 200 ms, p95
-293 ms; mmap p50 247 ms, p95 265 ms in the same run.
+`MissTable` is sized to the frame count so terminal `Succeeded`
+generations can protect their frame until the last waiter drops, but
+`find_pending` and `find_by_token` walked every slot on every cold `get`
+and every completion, and `first_free_frame` walked frame states from 0
+on every claim. Pending misses are bounded by `max_inflight_reads` (each
+holds one read credit), so the fix keeps a pending index of that
+capacity beside the slots and a free-frame stack beside the frame states.
 
-The sira Linux `overlap-fragmented-drain` arm (216,400 misses through the
-same table, dios p50 213 ms vs 28.6 ms at the 5,262-frame watermark) is
-the binding re-measurement on the pinned host once sira pins this
-revision.
+Measured on the advisory macOS host (Apple silicon, 2026-09-05):
+
+| Revision | ratio geomean | ci95 upper | gate at 1.25 |
+|----------|---------------|------------|--------------|
+| b1db67d (main) | 74.88 | 76.42 | FAIL |
+| this branch | 1.10 | 1.15 | PASS |
+
+Origin: the flamegraph of sira's DM009 `darwin-scan` arm (984 MB pool,
+240,241 frames, ~3,300 cold misses) put 86% of the scan's self time in
+`MissTable::find_pending`; dios p50 fell from 7,108 ms to 200 ms on that
+arm with mmap at 247 ms in the same run. The sira Linux
+`overlap-fragmented-drain` arm (216,400 misses through the same table) is
+the binding re-measurement on the pinned host once sira pins this revision.
