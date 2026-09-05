@@ -24,6 +24,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 
 use dios::driver::{CompletionBatch, Driver, FileHandle};
 use dios::testing::{DriverReadTestingExt, PoolTestingExt, ReadFrameIdx};
@@ -34,6 +35,8 @@ use dios::{
 
 const FRAME_BYTES: u32 = 4096;
 const DRAIN_POLLS_MAX: u32 = 1_000_000;
+const DRAIN_WAITS_MAX: u32 = 1_000;
+const DRAIN_WAIT_SLICE: Duration = Duration::from_millis(10);
 const RETIRE_POLLS_MAX: u32 = 32;
 
 thread_local! {
@@ -180,10 +183,12 @@ fn resolve_product_page<'pool>(
     panic!("product warmup remained Busy beyond the fixed poll bound");
 }
 
-/// Polls until at least one completion drains, bounded by an iteration cap.
+/// Waits on the completion boundary until at least one completion drains,
+/// bounded by an iteration cap so a slow host disk (a CI runner's fsync)
+/// cannot exhaust a busy-poll budget.
 fn drain_one(drv: &Driver, out: &mut CompletionBatch) {
-    for _ in 0..DRAIN_POLLS_MAX {
-        if drv.poll(out) > 0 {
+    for _ in 0..DRAIN_WAITS_MAX {
+        if drv.poll_wait(out, DRAIN_WAIT_SLICE) > 0 {
             return;
         }
     }
