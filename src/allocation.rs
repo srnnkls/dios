@@ -270,7 +270,11 @@ impl<T: ZeroVacant> MappedSlice<T> {
         let len = capacity as usize;
         let layout = Layout::array::<T>(len).ok()?;
         if layout.size() == 0 {
-            return Some(Self::empty());
+            return Some(Self {
+                mapping: None,
+                len,
+                _elements: PhantomData,
+            });
         }
         let mapping = MappedArena::try_map(layout.size(), layout.align())?;
         #[cfg(loom)]
@@ -311,7 +315,8 @@ impl<T> Deref for MappedSlice<T> {
     fn deref(&self) -> &[T] {
         // SAFETY: the mapping holds `len` initialised elements aligned for `T`
         // (zero pages under `ZeroVacant`, or written by `try_vacant`), owned
-        // exclusively by this value for its lifetime.
+        // exclusively by this value for its lifetime; a zero-sized `T` needs
+        // no mapping and reads through the dangling base.
         unsafe { std::slice::from_raw_parts(self.base().as_ptr(), self.len) }
     }
 }
@@ -374,6 +379,21 @@ mod mapped_arena_tests {
     #[test]
     fn a_span_beyond_the_address_space_is_refused_not_fatal() {
         assert!(MappedArena::try_map(usize::MAX / 2, 4096).is_none());
+    }
+
+    #[test]
+    fn a_zero_sized_element_table_keeps_its_length() {
+        struct Marker;
+        // SAFETY: a zero-sized value has exactly one bit pattern.
+        unsafe impl ZeroVacant for Marker {
+            #[cfg(loom)]
+            fn vacant() -> Self {
+                Marker
+            }
+        }
+        let table = MappedSlice::<Marker>::try_vacant(7).expect("a zero-sized table succeeds");
+        assert_eq!(table.len(), 7);
+        assert_eq!(table.iter().count(), 7);
     }
 
     #[test]
