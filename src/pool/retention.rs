@@ -222,8 +222,8 @@ impl ReleaseRing {
 
 #[derive(Debug)]
 pub(crate) struct Retention {
-    words: Box<[AtomicU32]>,
-    tags: Box<[crate::sync::AtomicU64]>,
+    words: crate::allocation::MappedSlice<AtomicU32>,
+    tags: crate::allocation::MappedSlice<crate::sync::AtomicU64>,
     retiring: Box<[AtomicBool]>,
     pub(super) occupied_budget: AtomicU32,
     refused_budget: std::sync::atomic::AtomicU64, // refused_budget
@@ -300,10 +300,8 @@ impl Retention {
         if max_retained_frames == 0 {
             return Some(Self::disabled(frame_count, max_concurrent_readers, wait));
         }
-        let words = crate::allocation::try_boxed_slice_with(frame_count, || AtomicU32::new(0))?;
-        let tags = crate::allocation::try_boxed_slice_with(frame_count, || {
-            crate::sync::AtomicU64::new(0)
-        })?;
+        let words = crate::allocation::MappedSlice::try_vacant(frame_count)?;
+        let tags = crate::allocation::MappedSlice::try_vacant(frame_count)?;
         let retiring = crate::allocation::try_boxed_slice_with(registered_file_capacity, || {
             AtomicBool::new(false)
         })?;
@@ -333,8 +331,8 @@ impl Retention {
 
     fn disabled(frame_count: u32, max_concurrent_readers: u32, wait: Arc<WaitState>) -> Self {
         Self {
-            words: Box::new([]),
-            tags: Box::new([]),
+            words: crate::allocation::MappedSlice::empty(),
+            tags: crate::allocation::MappedSlice::empty(),
             retiring: Box::new([]),
             occupied_budget: AtomicU32::new(0),
             refused_budget: std::sync::atomic::AtomicU64::new(0), // refused_budget
