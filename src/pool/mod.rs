@@ -1073,7 +1073,7 @@ impl<D: PoolBackend> Pool<D> {
         Ok(Control {
             evict_queue: EvictQueue::try_with_capacity(config.frame_count)
                 .ok_or(PoolBuildError::Allocation)?,
-            miss: MissTable::try_with_capacity(config.frame_count)
+            miss: MissTable::try_with_capacity(config.frame_count, config.max_inflight_reads)
                 .ok_or(PoolBuildError::Allocation)?,
             frame_pages: crate::allocation::try_boxed_slice_with(config.frame_count, || None)
                 .ok_or(PoolBuildError::Allocation)?,
