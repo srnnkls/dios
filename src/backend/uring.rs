@@ -411,9 +411,10 @@ impl RingExecutor for Uring {
 /// Selects the posture: `Unregistered` registers nothing; `Registered` and
 /// `Auto` attempt the registration because the kernel's charge is
 /// authoritative (`CAP_IPC_LOCK` exempts a ring outright, so the advisory
-/// `getrlimit` reading alone decides nothing). `ENOMEM` degrades `Auto` with
-/// the remediation and refuses an explicit `Registered` typed; any other
-/// failure is the operating error it is.
+/// `getrlimit` reading alone decides nothing; the driver already downgraded
+/// an `Auto` whose arena lock the same limit refused). `ENOMEM` degrades
+/// `Auto` with the remediation and refuses an explicit `Registered` typed;
+/// any other failure is the operating error it is.
 fn select_posture(
     ring: &IoUring,
     frames: &Frames,

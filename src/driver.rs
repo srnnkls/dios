@@ -263,14 +263,26 @@ impl DriverBuilder {
             .ok_or(DriverBuildError::Allocation)?;
         let shared = Shared::try_new(self.queue_capacity, self.registered_file_capacity)
             .ok_or(DriverBuildError::Allocation)?;
+        let arena_lock = lock_arenas(frames, &write_arena, self.arena_lock)?;
+        let registration_policy =
+            registration_policy_after_lock(&arena_lock, self.registration_policy, || {
+                let arena_bytes = arena_bytes(frames, &write_arena);
+                let memlock_limit_bytes = crate::memlock::memlock_limit_bytes();
+                eprintln!(
+                    "dios: buffer registration skipped ({arena_bytes} bytes refused by the \
+                     arena lock against RLIMIT_MEMLOCK {memlock_limit_bytes}); running \
+                     unregistered — grant CAP_IPC_LOCK, raise the limit, or select the \
+                     posture explicitly"
+                );
+            });
         let executor = backend::Impl::new(
             Arc::clone(frames),
             Arc::clone(&write_arena),
             self.queue_capacity,
             self.registered_file_capacity,
-            self.registration_policy,
+            registration_policy,
         )?;
-        let arena_lock = lock_arenas(frames, &write_arena, self.arena_lock)?;
+        let arena_lock = arena_lock.into_guard();
         let mut core = DriverCore::try_new(
             shared,
             executor,
@@ -286,7 +298,44 @@ impl DriverBuilder {
     }
 }
 
-/// Locks both arenas after posture selection (the swap hazard is separate from
+/// The outcome of the arena lock attempt, which precedes posture selection:
+/// `mlock` checks `RLIMIT_MEMLOCK` before it populates a page, so its `ENOMEM`
+/// is the cheap reading of the same limit buffer registration would only
+/// report after pinning every page of both arenas.
+#[derive(Debug)]
+enum ArenaLock {
+    Locked(ArenaLockGuard),
+    Refused(i32),
+}
+
+impl ArenaLock {
+    fn into_guard(self) -> Option<ArenaLockGuard> {
+        match self {
+            ArenaLock::Locked(guard) => Some(guard),
+            ArenaLock::Refused(_) => None,
+        }
+    }
+}
+
+/// `Auto` skips the registration attempt when the lock already reported
+/// `ENOMEM` against the shared limit, telling `degraded` once; the explicit
+/// postures reach the kernel unchanged (`CAP_IPC_LOCK` exempts a ring outright,
+/// so an explicit `Registered` keeps the kernel's charge authoritative).
+fn registration_policy_after_lock(
+    arena_lock: &ArenaLock,
+    policy: RegistrationPolicy,
+    degraded: impl FnOnce(),
+) -> RegistrationPolicy {
+    match (arena_lock, policy) {
+        (ArenaLock::Refused(crate::memlock::ENOMEM), RegistrationPolicy::Auto) => {
+            degraded();
+            RegistrationPolicy::Unregistered
+        }
+        (_, policy) => policy,
+    }
+}
+
+/// Locks both arenas before posture selection (the swap hazard is separate from
 /// registration and has its own readback). A refused lock under `BestEffort`
 /// prints the remediation and continues unlocked; under `Required` it is the
 /// typed build refusal.
@@ -294,10 +343,10 @@ fn lock_arenas(
     frames: &Arc<Frames>,
     write_arena: &Arc<ArenaState>,
     policy: ArenaLockPolicy,
-) -> Result<Option<ArenaLockGuard>, DriverBuildError> {
+) -> Result<ArenaLock, DriverBuildError> {
     let arena_bytes = arena_bytes(frames, write_arena);
     match ArenaLockGuard::try_lock(frames, write_arena) {
-        Ok(guard) => Ok(Some(guard)),
+        Ok(guard) => Ok(ArenaLock::Locked(guard)),
         Err(errno) => {
             let memlock_limit_bytes = crate::memlock::memlock_limit_bytes();
             if policy == ArenaLockPolicy::Required {
@@ -313,7 +362,7 @@ fn lock_arenas(
                  RLIMIT_MEMLOCK {memlock_limit_bytes}); continuing unlocked — grant CAP_IPC_LOCK, \
                  raise the limit, or call require_locked() for a typed refusal"
             );
-            Ok(None)
+            Ok(ArenaLock::Refused(errno))
         }
     }
 }
@@ -2474,6 +2523,39 @@ impl FileTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_auto_posture_skips_registration_when_the_lock_hit_the_memlock_limit() {
+        let mut degraded = 0;
+        let policy = registration_policy_after_lock(
+            &ArenaLock::Refused(crate::memlock::ENOMEM),
+            RegistrationPolicy::Auto,
+            || degraded += 1,
+        );
+        assert_eq!(policy, RegistrationPolicy::Unregistered);
+        assert_eq!(degraded, 1, "the downgrade is reported once");
+    }
+
+    #[test]
+    fn an_explicit_registered_posture_still_reaches_the_kernel_after_a_refused_lock() {
+        let policy = registration_policy_after_lock(
+            &ArenaLock::Refused(crate::memlock::ENOMEM),
+            RegistrationPolicy::Registered,
+            || panic!("an explicit posture is never downgraded"),
+        );
+        assert_eq!(policy, RegistrationPolicy::Registered);
+    }
+
+    #[test]
+    fn a_lock_refused_for_another_reason_leaves_auto_to_the_kernel() {
+        const EPERM: i32 = 1;
+        let policy = registration_policy_after_lock(
+            &ArenaLock::Refused(EPERM),
+            RegistrationPolicy::Auto,
+            || panic!("only the shared-limit refusal downgrades"),
+        );
+        assert_eq!(policy, RegistrationPolicy::Auto);
+    }
 
     #[test]
     fn a_retiring_slot_is_not_reused_until_its_file_is_retired() {

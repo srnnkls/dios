@@ -5,8 +5,9 @@ use std::ptr;
 use dios::{Pool, PoolBuildError};
 
 const GRANULE: u32 = 4096;
-const FRAME_COUNT: u32 = 8;
-const FAILURE_BYTES_MIN: usize = GRANULE as usize * FRAME_COUNT as usize;
+const FRAME_COUNT: u32 = 4096;
+const FRAME_STATE_BYTES: usize = 8;
+const FAILURE_BYTES_MIN: usize = FRAME_COUNT as usize * FRAME_STATE_BYTES;
 const METADATA_FRAME_COUNT: u32 = 127;
 const FRAME_STATE_METADATA_BYTES: usize = METADATA_FRAME_COUNT as usize * 8;
 const FRAME_STATE_METADATA_ALIGN: usize = 8;
