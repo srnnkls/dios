@@ -68,6 +68,7 @@ pub enum MockIoEvent {
     },
     FsyncAttempt {
         file: FileId,
+        mode: SyncMode,
     },
     ReadCompletion {
         file: FileId,
@@ -913,7 +914,10 @@ impl EagerExecutor for MockExecutor {
                     requested_len: context.requested_len,
                 }),
                 OpKind::Fsync => {
-                    self.push_event(MockIoEvent::FsyncAttempt { file: context.fd });
+                    self.push_event(MockIoEvent::FsyncAttempt {
+                        file: context.fd,
+                        mode: context.sync_mode,
+                    });
                 }
             }
             state.injected.pop_front()
@@ -1351,6 +1355,8 @@ struct MockRingState {
     faults: HashMap<u64, VecDeque<Injected>>,
     cqes: VecDeque<(u64, i32)>,
     write_attempts: Vec<WriteAttempt>,
+    #[cfg(test)]
+    fsync_attempts: [u64; 2],
 }
 
 impl MockRingExecutor {
@@ -1363,6 +1369,8 @@ impl MockRingExecutor {
                 faults: HashMap::with_capacity(capacity),
                 cqes: VecDeque::with_capacity(capacity),
                 write_attempts: Vec::with_capacity(capacity),
+                #[cfg(test)]
+                fsync_attempts: [0; 2],
             }),
             frame_bytes,
             file_capacity: DEFAULT_REGISTERED_FILE_CAPACITY,
@@ -1485,9 +1493,19 @@ impl RingExecutor for MockRingExecutor {
         state.cqes.push_back((user_data, raw));
     }
 
-    fn push_fsync(&self, user_data: u64, fd_slot: u32) {
+    fn push_fsync(&self, user_data: u64, fd_slot: u32, mode: SyncMode) {
         assert!(fd_slot < self.file_capacity, "fsync targets a table slot");
         let mut state = self.lock();
+        #[cfg(test)]
+        {
+            let index = match mode {
+                SyncMode::Data => 0,
+                SyncMode::Full => 1,
+            };
+            state.fsync_attempts[index] += 1;
+        }
+        #[cfg(not(test))]
+        let _ = mode;
         let raw = Self::next_raw(&mut state, user_data, 0);
         state.cqes.push_back((user_data, raw));
     }
@@ -1526,7 +1544,7 @@ impl RingExecutor for MockRingExecutor {
     }
 
     #[cfg(target_os = "linux")]
-    fn blocking_fsync(&self, _fd_slot: u32) -> Result<(), i32> {
+    fn blocking_fsync(&self, _fd_slot: u32, _mode: SyncMode) -> Result<(), i32> {
         unreachable!("the mock ring exposes no metadata plane")
     }
 }
@@ -1543,4 +1561,43 @@ fn splitmix64(state: &mut u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^ (z >> 31)
+}
+
+#[cfg(test)]
+mod sync_mode_tests {
+    use super::*;
+
+    #[test]
+    fn ring_sync_retries_preserve_data_and_full_modes() {
+        for mode in [SyncMode::Data, SyncMode::Full] {
+            let driver = MockRingDriver::builder().retry_bound(2).build();
+            let file = driver
+                .open(Path::new("sync-mode"), DirectIo::Disabled)
+                .unwrap();
+            driver
+                .0
+                .executor()
+                .inject_for_next_submit(&[Injected::Eintr]);
+            let token = driver.submit_fsync(&file, mode).unwrap();
+            let mut batch = CompletionBatch::with_capacity(1);
+            let mut finished = false;
+            for _ in 0..8 {
+                driver.poll(&mut batch);
+                for completion in &batch {
+                    assert_eq!(completion.token(), token);
+                    assert_eq!(completion.result().unwrap(), 0);
+                    finished = true;
+                }
+                if finished {
+                    break;
+                }
+            }
+            assert!(finished);
+            let expected = match mode {
+                SyncMode::Data => [2, 0],
+                SyncMode::Full => [0, 2],
+            };
+            assert_eq!(driver.0.executor().lock().fsync_attempts, expected);
+        }
+    }
 }

@@ -988,6 +988,7 @@ enum ProductOp {
         token: PoolToken,
         file: FileId,
         order: u64,
+        mode: crate::driver::SyncMode,
     },
     Fsync {
         token: PoolToken,
@@ -1887,7 +1888,6 @@ impl<D: PoolBackend> Pool<D> {
         file: FileId,
         mode: crate::driver::SyncMode,
     ) -> Result<PoolToken, PoolSubmitError> {
-        let crate::driver::SyncMode::Full = mode;
         let mut control = self.control();
         let _ = live_file_handle(&control.files, file, self.identity)?;
         let Some(index) = control
@@ -1911,7 +1911,12 @@ impl<D: PoolBackend> Pool<D> {
             u32::try_from(index).expect("product op table indexes by u32"),
             product_slot.generation,
         );
-        product_slot.operation = Some(ProductOp::FsyncHeld { token, file, order });
+        product_slot.operation = Some(ProductOp::FsyncHeld {
+            token,
+            file,
+            order,
+            mode,
+        });
         self.submit_held_fsyncs(&mut control);
         self.wake.wake();
         Ok(token)
@@ -2463,14 +2468,19 @@ impl<D: PoolBackend> Pool<D> {
 
     fn submit_held_fsyncs(&self, control: &mut Control) {
         for index in 0..control.product_ops.len() {
-            let Some(ProductOp::FsyncHeld { token, file, order }) =
-                control.product_ops[index].operation.as_ref()
+            let Some(ProductOp::FsyncHeld {
+                token,
+                file,
+                order,
+                mode,
+            }) = control.product_ops[index].operation.as_ref()
             else {
                 continue;
             };
             let token = *token;
             let file = *file;
             let barrier_order = *order;
+            let mode = *mode;
             let prior_write = control.product_ops.iter().any(|slot| {
                 matches!(
                     slot.operation,
@@ -2485,10 +2495,7 @@ impl<D: PoolBackend> Pool<D> {
                 continue;
             }
             let handle = registered_file(&control.files, PageId::new(file, 0));
-            match self
-                .driver
-                .submit_fsync(handle, crate::driver::SyncMode::Full)
-            {
+            match self.driver.submit_fsync(handle, mode) {
                 Ok(driver_token) => {
                     control.product_ops[index].operation = Some(ProductOp::Fsync {
                         token,

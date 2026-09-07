@@ -330,9 +330,14 @@ impl RingExecutor for Uring {
         self.push_sqe(&entry);
     }
 
-    fn push_fsync(&self, user_data: u64, fd_slot: u32) {
+    fn push_fsync(&self, user_data: u64, fd_slot: u32, mode: crate::driver::SyncMode) {
         assert!(fd_slot < self.file_capacity, "fsync targets a table slot");
+        let flags = match mode {
+            crate::driver::SyncMode::Data => types::FsyncFlags::DATASYNC,
+            crate::driver::SyncMode::Full => types::FsyncFlags::empty(),
+        };
         let entry = opcode::Fsync::new(types::Fixed(fd_slot))
+            .flags(flags)
             .build()
             .user_data(user_data);
         self.push_sqe(&entry);
@@ -398,13 +403,12 @@ impl RingExecutor for Uring {
         }
     }
 
-    fn blocking_fsync(&self, fd_slot: u32) -> Result<(), i32> {
+    fn blocking_fsync(&self, fd_slot: u32, mode: crate::driver::SyncMode) -> Result<(), i32> {
         let files = self.lock_files();
         let Some(file) = files.get(fd_slot as usize).and_then(Option::as_ref) else {
             return Err(EBADF);
         };
-        file.sync_all()
-            .map_err(|error| error.raw_os_error().unwrap_or(EIO))
+        crate::open::sync_file(file, mode).map_err(|error| error.raw_os_error().unwrap_or(EIO))
     }
 }
 

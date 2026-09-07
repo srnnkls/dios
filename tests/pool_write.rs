@@ -176,7 +176,10 @@ fn dropping_pool_drains_a_write_and_its_held_fsync_before_close() {
                 file,
                 result: Ok(GRANULE),
             },
-            MockIoEvent::FsyncAttempt { file },
+            MockIoEvent::FsyncAttempt {
+                file,
+                mode: SyncMode::Full
+            },
             MockIoEvent::FsyncCompletion {
                 file,
                 result: Ok(()),
@@ -283,6 +286,7 @@ fn writes_precede_their_fsync_barrier_under_adversarial_mock_schedules() {
                     event,
                     MockIoEvent::FsyncAttempt {
                         file: attempted_file,
+                        ..
                     } if *attempted_file == file
                 )
             })
@@ -695,4 +699,57 @@ fn full_returns_the_unchanged_write_slot_and_retry_persists_its_payload() {
         stored.iter().all(|&byte| byte == 0x7C),
         "retry persists every byte returned from the Full rejection"
     );
+}
+
+#[test]
+fn held_data_sync_preserves_its_mode_after_prior_write_completion() {
+    for mode in [SyncMode::Data, SyncMode::Full] {
+        let (pool, file) = pool_with_limits("explicit-sync-mode", 0xDA7A, 2, 1);
+        let mut slot = pool.write_arena().alloc().expect("reserved staging");
+        slot.fill(0x5a);
+        let write = pool.submit_write(file, slot, 0).expect("write admitted");
+        let sync = pool.submit_fsync(file, mode).expect("barrier admitted");
+        let mut completions = PoolCompletionBatch::with_capacity(2);
+        let mut written = false;
+        let mut synced = false;
+        for _ in 0..POLL_BOUND {
+            pool.poll_report(&mut completions);
+            for completed in completions.iter() {
+                match completed {
+                    PoolCompletion::Write { token, result } => {
+                        assert_eq!(*token, write);
+                        assert_eq!(result.as_ref().expect("successful write"), &GRANULE);
+                        written = true;
+                    }
+                    PoolCompletion::Fsync { token, result } => {
+                        assert_eq!(*token, sync);
+                        assert!(written, "the covering barrier follows its write");
+                        result.as_ref().expect("successful sync");
+                        synced = true;
+                    }
+                }
+            }
+            if synced {
+                break;
+            }
+        }
+        assert!(synced, "the held barrier completes within the bound");
+        let observed: Vec<_> = pool
+            .driver()
+            .io_events_in_order()
+            .into_iter()
+            .filter_map(|event| {
+                if let MockIoEvent::FsyncAttempt { mode, .. } = event {
+                    Some(mode)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            observed,
+            [mode],
+            "pool admission must not strengthen or weaken the requested syscall"
+        );
+    }
 }

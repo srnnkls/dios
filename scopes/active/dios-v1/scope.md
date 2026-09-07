@@ -999,7 +999,7 @@ pub enum PoolSubmitError {
     StaleFile { file: FileId },
     ForeignPool,
 }
-pub enum SyncMode { Full }
+pub enum SyncMode { Data, Full }
 pub enum PoolCompletion {
     Write { token: PoolToken, result: Result<u32, IoError> },
     Fsync { token: PoolToken, result: Result<(), IoError> },
@@ -1321,3 +1321,16 @@ unblock or silently start T010–T014 in the sira repository.
   logical group absorbs sequential-layout concerns. Dios's generic per-store
   override remains a construction parameter, but Sira rejects a pool granule
   that does not match its format frame size (marker M001).
+
+### Explicit data synchronization (2026-09-07)
+
+The latency fix adds `SyncMode::Data` without changing `Full`. Linux ring operations use
+`IORING_FSYNC_DATASYNC` for Data and the existing fsync operation for Full. The blocking
+path uses `File::sync_data` and `File::sync_all`, respectively. On macOS both modes
+retain the permanent-media `F_FULLFSYNC` barrier. Data covers file data and metadata
+needed to retrieve it; callers that need all metadata continue to request Full.
+
+The requested mode travels with the operation through pool admission, a held barrier,
+driver retries, and the selected executor. Neither held writes nor retries substitute
+Full for Data. The numeric qualification is in `benches/plans/data_sync.md`; this API
+change does not relax any existing Full guarantee.

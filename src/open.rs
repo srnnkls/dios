@@ -290,9 +290,26 @@ fn enable_direct(_file: &File) -> Result<(), IoError> {
     Err(IoError::from(error))
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn full_fsync(file: &File) -> std::io::Result<()> {
     file.sync_all()
+}
+
+/// The data barrier excludes metadata irrelevant to retrieving the persisted bytes.
+pub(crate) fn sync_file(file: &File, mode: crate::driver::SyncMode) -> std::io::Result<()> {
+    match mode {
+        crate::driver::SyncMode::Full => full_fsync(file),
+        crate::driver::SyncMode::Data => {
+            #[cfg(target_os = "macos")]
+            {
+                full_fsync(file)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                file.sync_data()
+            }
+        }
+    }
 }
 
 #[cfg(test)]
