@@ -1671,6 +1671,46 @@ impl<D: PoolBackend> Pool<D> {
         })
     }
 
+    /// Observes the exact physical residency protected by `guard`.
+    ///
+    /// Equal observations under the same pool and file lease identify the same
+    /// immutable bytes. Unlike [`Pool::resident_hint`], this observation is tied
+    /// to the supplied guard, even if the page table changes concurrently.
+    /// Returns `None` after logical eviction; the guard still protects its bytes.
+    ///
+    /// # Panics
+    ///
+    /// If the lease or guard belongs to another pool, or either names a different
+    /// exact page or file. The guard must be from this pool before frame indexing.
+    #[must_use]
+    pub fn resident_hint_for_guard(
+        &self,
+        lease: &ResidentFileLease,
+        page: PageId,
+        guard: &FrameGuard<'_>,
+    ) -> Option<ResidentHint> {
+        self.assert_lease_owner(lease, page);
+        assert!(
+            std::ptr::eq(guard.retention, &raw const self.retention),
+            "guard belongs to a foreign pool"
+        );
+        // The live guard's epoch prevents reclamation and exact-page mutation.
+        assert_eq!(
+            self.frames.exact_page(guard.frame),
+            page,
+            "guard must protect the requested exact page"
+        );
+        let stamp = self.frames.state_word(guard.frame);
+        if !Frames::word_is_resident(stamp) {
+            return None;
+        }
+        Some(ResidentHint {
+            granule: page.granule_idx(),
+            frame: guard.frame.get(),
+            stamp: NonZeroU64::new(stamp).expect("a Resident packed state word is nonzero"),
+        })
+    }
+
     /// Attempts one exact hinted residency lookup before falling back to
     /// [`Pool::get`] for a missing, mismatched, or stale observation.
     ///

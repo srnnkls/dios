@@ -469,7 +469,13 @@ fn real_pool_warm_hinted_hit_allocates_nothing() {
     let (allocations, outcome) =
         armed_allocations_result(|| pool.get_with_hint(&reader, &lease, page, Some(hint)));
     match outcome.expect("the product lease remains live") {
-        Get::Hit(guard) => assert_eq!(guard[0], 0xA5),
+        Get::Hit(guard) => {
+            assert_eq!(guard[0], 0xA5);
+            let (observations_allocated, observation) =
+                armed_allocations_result(|| pool.resident_hint_for_guard(&lease, page, &guard));
+            assert_eq!(observations_allocated, 0);
+            assert_eq!(observation, Some(hint));
+        }
         Get::Pending(_) => panic!("a warmed hinted product page must hit"),
         Get::Busy => panic!("a warmed hinted product page is never Busy"),
     }
@@ -784,7 +790,13 @@ mod pool_gates {
         let (allocations, outcome) =
             armed_allocations_result(|| pool.get_with_hint(&reader, &lease, page, Some(hint)));
         match outcome.expect("the lease remains live") {
-            Get::Hit(guard) => assert_eq!(guard[0], 0xA5),
+            Get::Hit(guard) => {
+                assert_eq!(guard[0], 0xA5);
+                let (observations_allocated, observation) =
+                    armed_allocations_result(|| pool.resident_hint_for_guard(&lease, page, &guard));
+                assert_eq!(observations_allocated, 0);
+                assert_eq!(observation, Some(hint));
+            }
             Get::Pending(_) => panic!("a resident hinted page must hit"),
             Get::Busy => panic!("a resident hinted page is never Busy"),
         }
