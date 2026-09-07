@@ -530,14 +530,11 @@ fn guard_observation_tracks_the_guard_and_changes_after_reload() {
         panic!("inserted page must hit");
     };
     let first = pool
-        .resident_hint_for_guard(&lease, page, &guard)
+        .resident_hint_for_guard(page, &guard)
         .expect("resident");
-    assert_eq!(
-        pool.resident_hint_for_guard(&lease, page, &guard),
-        Some(first)
-    );
+    assert_eq!(pool.resident_hint_for_guard(page, &guard), Some(first));
     pool.evict_frame(page);
-    assert_eq!(pool.resident_hint_for_guard(&lease, page, &guard), None);
+    assert_eq!(pool.resident_hint_for_guard(page, &guard), None);
     assert!(guard.iter().all(|&byte| byte == 0x12));
     drop(guard);
     pool.poll();
@@ -550,7 +547,7 @@ fn guard_observation_tracks_the_guard_and_changes_after_reload() {
         panic!("reloaded page must hit");
     };
     let second = pool
-        .resident_hint_for_guard(&lease, page, &guard)
+        .resident_hint_for_guard(page, &guard)
         .expect("reloaded resident");
     assert_ne!(first, second);
     assert!(guard.iter().all(|&byte| byte == 0x34));
@@ -562,13 +559,12 @@ fn guard_observation_rejects_a_foreign_guard_before_indexing() {
     let (pool, file) = pool_with_file("guard-residency-owner");
     let (other, other_file) = pool_with_file("guard-residency-foreign");
     let reader = other.register_reader().expect("reader");
-    let lease = pool.lease_file(file).expect("lease");
     let other_page = PageId::new(other_file, 0);
     other.insert_resident_frame(other_page, 0x56);
     let Get::Hit(guard) = other.get(&reader, other_page).expect("live file") else {
         panic!("inserted page must hit");
     };
-    let _ = pool.resident_hint_for_guard(&lease, PageId::new(file, 0), &guard);
+    let _ = pool.resident_hint_for_guard(PageId::new(file, 0), &guard);
 }
 
 #[test]
@@ -576,11 +572,10 @@ fn guard_observation_rejects_a_foreign_guard_before_indexing() {
 fn guard_observation_rejects_a_different_page_in_the_same_pool() {
     let (pool, file) = pool_with_file("guard-residency-wrong-page");
     let reader = pool.register_reader().expect("reader");
-    let lease = pool.lease_file(file).expect("lease");
     let page = PageId::new(file, 0);
     pool.insert_resident_frame(page, 0x78);
     let Get::Hit(guard) = pool.get(&reader, page).expect("live file") else {
         panic!("inserted page must hit");
     };
-    let _ = pool.resident_hint_for_guard(&lease, PageId::new(file, 1), &guard);
+    let _ = pool.resident_hint_for_guard(PageId::new(file, 1), &guard);
 }

@@ -1673,23 +1673,26 @@ impl<D: PoolBackend> Pool<D> {
 
     /// Observes the exact physical residency protected by `guard`.
     ///
-    /// Equal observations under the same pool and file lease identify the same
+    /// Equal observations under the same pool and exact page identify the same
     /// immutable bytes. Unlike [`Pool::resident_hint`], this observation is tied
     /// to the supplied guard, even if the page table changes concurrently.
     /// Returns `None` after logical eviction; the guard still protects its bytes.
     ///
     /// # Panics
     ///
-    /// If the lease or guard belongs to another pool, or either names a different
-    /// exact page or file. The guard must be from this pool before frame indexing.
+    /// If the page or guard belongs to another pool, or the guard protects a
+    /// different exact page. The guard must be from this pool before frame indexing.
     #[must_use]
     pub fn resident_hint_for_guard(
         &self,
-        lease: &ResidentFileLease,
         page: PageId,
         guard: &FrameGuard<'_>,
     ) -> Option<ResidentHint> {
-        self.assert_lease_owner(lease, page);
+        assert_eq!(
+            page.file().driver(),
+            self.identity,
+            "page belongs to a foreign pool"
+        );
         assert!(
             std::ptr::eq(guard.retention, &raw const self.retention),
             "guard belongs to a foreign pool"

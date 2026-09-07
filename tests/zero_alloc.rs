@@ -472,7 +472,7 @@ fn real_pool_warm_hinted_hit_allocates_nothing() {
         Get::Hit(guard) => {
             assert_eq!(guard[0], 0xA5);
             let (observations_allocated, observation) =
-                armed_allocations_result(|| pool.resident_hint_for_guard(&lease, page, &guard));
+                armed_allocations_result(|| pool.resident_hint_for_guard(page, &guard));
             assert_eq!(observations_allocated, 0);
             assert_eq!(observation, Some(hint));
         }
@@ -793,7 +793,7 @@ mod pool_gates {
             Get::Hit(guard) => {
                 assert_eq!(guard[0], 0xA5);
                 let (observations_allocated, observation) =
-                    armed_allocations_result(|| pool.resident_hint_for_guard(&lease, page, &guard));
+                    armed_allocations_result(|| pool.resident_hint_for_guard(page, &guard));
                 assert_eq!(observations_allocated, 0);
                 assert_eq!(observation, Some(hint));
             }

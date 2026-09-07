@@ -3,7 +3,7 @@
 Add an optional observation of the physical residency protected by a live
 FrameGuard. Ordinary get and guard construction remain unchanged. Consumers
 may memoize verification only for equal observations under the same pool and
-file lease; an Evicting guard returns no observation. No allocation or unsafe
+exact PageId; an Evicting guard returns no observation. No allocation or unsafe
 code is added, and existing EBR, file retirement and retention protocols remain.
 
 ## Protocol and gates (recorded before implementation)
@@ -39,3 +39,9 @@ Linux gates remain pending. This is a draft dependency change and must not be
 adopted on the strength of the Mac diagnostics. Source transfer to the Linux
 host was stopped by automatic approval review, and an explicit destination/
 payload confirmation is pending. No gate has been relaxed or claimed passed.
+
+The Sira integration tests rejected a persistent file lease: it delayed
+explicit registration retirement beyond the last value guard. The observation
+therefore uses only the existing live guard and exact PageId, with no file
+lease argument or lifetime extension. This changes no get/retirement protocol.
+The same performance gates remain pending.
