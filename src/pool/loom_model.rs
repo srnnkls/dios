@@ -12,8 +12,6 @@
 //! the seqlock write and read back after, so the seqlock's Release/Acquire pairing
 //! is what excludes the torn coupling.
 
-use std::sync::atomic as held_frame_atomic;
-
 use crate::driver::FileId;
 use crate::pool::ReadFrameIdx;
 use crate::product::WaitState;
@@ -66,10 +64,9 @@ pub struct PoolModel {
     clock: Clock,
     global_epoch: AtomicU64,
     slots: [ReaderSlot; 2],
-    // Model scaffolding no loom proof reads: it bypasses `crate::sync` (aliasing it
-    // would add loom state the proofs never use) through the diagnostics-only
-    // `held_frame_atomic` allowlist entry (ARCH-3).
-    held_frames: [held_frame_atomic::AtomicU32; 2],
+    // Model scaffolding no loom proof reads; modelling it would add
+    // interleavings the proofs never use.
+    held_frames: [crate::pool::diagnostics::DiagnosticSlot; 2],
     locked_get_checks: AtomicU32,
     file_live_generations: Box<[AtomicU64]>,
     resident_lease_states: Box<[std::sync::Arc<ResidentLeaseState>]>,
@@ -101,8 +98,8 @@ impl PoolModel {
             global_epoch: AtomicU64::new(0),
             slots: [ReaderSlot::vacant(2), ReaderSlot::vacant(2)],
             held_frames: [
-                held_frame_atomic::AtomicU32::new(0),
-                held_frame_atomic::AtomicU32::new(0),
+                crate::pool::diagnostics::DiagnosticSlot::new(),
+                crate::pool::diagnostics::DiagnosticSlot::new(),
             ],
             locked_get_checks: AtomicU32::new(0),
             file_live_generations: crate::allocation::try_boxed_slice_with(
@@ -209,10 +206,10 @@ impl PoolModel {
                 slot.abort_pin(begun);
                 return None;
             };
-            self.held_frames[reader].store(frame.get(), Ordering::Relaxed);
+            self.held_frames[reader].set(frame.get());
             frame
         } else {
-            ReadFrameIdx::new(self.held_frames[reader].load(Ordering::Relaxed))
+            ReadFrameIdx::new(self.held_frames[reader].get())
         };
         debug_assert!(
             frame.get() < self.frames.count(),

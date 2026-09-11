@@ -3,7 +3,7 @@
 //! frame base never moves for the arena's lifetime. Writer uniqueness is the
 //! [`InFlightFrame`] token, visibility is the residency word, reuse is EBR.
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(miri)))]
 use core::ffi::{c_int, c_void};
 use std::alloc::{Layout, handle_alloc_error};
 use std::cell::UnsafeCell;
@@ -15,7 +15,7 @@ use crate::pool::epoch::{FrameGuard, PinBegun, PinCommit};
 use crate::pool::{Control, PageId, SECTOR_BYTES};
 use crate::sync::{AtomicU64, Ordering};
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, target_os = "linux", not(miri)))]
 const SECTOR: usize = SECTOR_BYTES as usize;
 
 const HUGEPAGE_BYTES: usize = 2 * 1024 * 1024;
@@ -132,12 +132,12 @@ impl InFlightFrame {
 // madvise(2) declared to match glibc's C ABI on the linux build targets; the
 // signature follows the man page. MADV_HUGEPAGE is arch-uniform in the linux uapi
 // (asm-generic/mman-common.h): 14.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(miri)))]
 unsafe extern "C" {
     fn madvise(addr: *mut c_void, len: usize, advice: c_int) -> c_int;
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(miri)))]
 const MADV_HUGEPAGE: c_int = 14;
 
 /// Residency of one frame. [`FrameState::advance`] admits the residency cycle
@@ -677,7 +677,7 @@ fn arena_alignment(span: usize, granule: u32) -> usize {
 /// `madvise`) backs only untouched ranges, so the hint has to precede the first
 /// read into any frame.
 fn advise_hugepage(base: NonNull<u8>, len: usize) {
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", not(miri)))]
     {
         if len >= HUGEPAGE_BYTES {
             // SAFETY: `base`/`len` name the live mapping just created and
@@ -689,13 +689,14 @@ fn advise_hugepage(base: NonNull<u8>, len: usize) {
             let _ = unsafe { madvise(base.as_ptr().cast(), len, MADV_HUGEPAGE) };
         }
     }
-    #[cfg(not(target_os = "linux"))]
+    // Miri models no `madvise`, and the hint carries no semantics to model.
+    #[cfg(not(all(target_os = "linux", not(miri))))]
     {
         let _ = (base, len);
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, target_os = "linux", not(miri)))]
 mod tests {
     use super::*;
 

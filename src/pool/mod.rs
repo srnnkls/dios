@@ -13,8 +13,6 @@ use std::mem::size_of;
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::Arc;
-#[cfg(feature = "mock")]
-use std::sync::atomic::{AtomicU64 as ObservationAtomicU64, Ordering as ObservationOrdering}; // control_acquisitions
 use std::time::Duration;
 #[cfg(all(feature = "mock", not(loom)))]
 use std::time::Instant;
@@ -34,9 +32,8 @@ use crate::product::{
 use crate::sync::Condvar;
 use crate::sync::{AtomicU32, AtomicU64, Mutex, MutexGuard, Ordering};
 
-#[cfg(test)]
-mod alias_guard;
 mod clock;
+mod diagnostics;
 mod epoch;
 mod file_slots;
 mod frame_pages;
@@ -1092,7 +1089,7 @@ pub struct Pool<D = Driver> {
     resident_lease_states: Box<[Arc<ResidentLeaseState>]>,
     retention: Retention,
     #[cfg(feature = "mock")]
-    control_acquisitions: ObservationAtomicU64,
+    control_acquisitions: diagnostics::DiagnosticCounter,
     driver: D,
     granule: u32,
     frame_count: u32,
@@ -1280,7 +1277,7 @@ impl<D: PoolBackend> Pool<D> {
             resident_lease_states,
             retention,
             #[cfg(feature = "mock")]
-            control_acquisitions: ObservationAtomicU64::new(0),
+            control_acquisitions: diagnostics::DiagnosticCounter::new(),
             driver,
             granule: config.granule,
             frame_count: config.frame_count,
@@ -1425,8 +1422,7 @@ impl<D: PoolBackend> Pool<D> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         #[cfg(feature = "mock")]
-        self.control_acquisitions
-            .fetch_add(1, ObservationOrdering::Relaxed);
+        self.control_acquisitions.increment();
         control
     }
 
@@ -1434,8 +1430,7 @@ impl<D: PoolBackend> Pool<D> {
     fn control(&self) -> MutexGuard<'_, Control> {
         let control = self.control.lock().expect("loom mutex is never poisoned");
         #[cfg(feature = "mock")]
-        self.control_acquisitions
-            .fetch_add(1, ObservationOrdering::Relaxed);
+        self.control_acquisitions.increment();
         control
     }
 
@@ -2792,7 +2787,7 @@ impl<D: PoolBackend> Pool<D> {
     #[cfg(feature = "mock")]
     #[must_use]
     pub(crate) fn control_acquisitions_internal(&self) -> u64 {
-        self.control_acquisitions.load(ObservationOrdering::Relaxed)
+        self.control_acquisitions.get()
     }
 
     #[must_use]
