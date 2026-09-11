@@ -12,10 +12,7 @@ pub struct Clock {
     reference_bits: crate::allocation::MappedSlice<AtomicBool>,
     count: u32,
     hand: AtomicU32,
-    // Diagnostics-only counter no loom proof reads: it deliberately bypasses
-    // `crate::sync` (aliasing it would cost loom state for nothing) and is fully
-    // qualified so the sync-alias regression guard allowlists it by name (ARCH-3).
-    reference_stores: std::sync::atomic::AtomicU64,
+    reference_stores: super::diagnostics::DiagnosticCounter,
 }
 
 impl Clock {
@@ -37,7 +34,7 @@ impl Clock {
             reference_bits: crate::allocation::MappedSlice::try_vacant(frame_count)?,
             count: frame_count,
             hand: AtomicU32::new(0),
-            reference_stores: std::sync::atomic::AtomicU64::new(0),
+            reference_stores: super::diagnostics::DiagnosticCounter::new(),
         })
     }
 
@@ -54,7 +51,7 @@ impl Clock {
             false
         } else {
             bit.store(true, Ordering::Relaxed);
-            self.reference_stores.fetch_add(1, Ordering::Relaxed);
+            self.reference_stores.increment();
             true
         }
     }
@@ -64,7 +61,7 @@ impl Clock {
     #[doc(hidden)]
     #[must_use]
     pub fn reference_stores(&self) -> u64 {
-        self.reference_stores.load(Ordering::Relaxed)
+        self.reference_stores.get()
     }
 
     /// Whether `frame`'s reference bit is set.

@@ -26,6 +26,43 @@ description = "rustdoc with warnings as errors"
 env = { RUSTDOCFLAGS = "-D warnings" }
 run = "cargo doc --no-deps --features bench,mock"
 
+[tasks.miri]
+description = "Miri over the pure-memory unit tests: UB, aliasing, uninit reads"
+run = '''
+set -eu
+toolchain=${DIOS_NIGHTLY:-nightly}
+rustup component add --toolchain "$toolchain" miri >/dev/null 2>&1 || {
+  echo "install the miri component: rustup component add --toolchain $toolchain miri" >&2
+  exit 1
+}
+exec cargo "+$toolchain" miri test --lib --features mock
+'''
+
+[tasks.asan]
+description = "AddressSanitizer over the syscall-touching integration tests"
+run = '''
+set -eu
+toolchain=${DIOS_NIGHTLY:-nightly}
+target=$(rustc "+$toolchain" -vV | sed -n 's/^host: //p')
+[ -n "$target" ] || { echo "could not resolve the host target triple" >&2; exit 1; }
+# Suites that shell out to a nested cargo or mise: the child re-resolves the
+# pinned stable toolchain, which rejects -Z, and they prove process orchestration
+# rather than memory behaviour. Everything else is in by default.
+orchestration="drp001_plan drp005_probe_gate drp009_gate_contract guard_compile_fail
+  pinned_frame_retention_plan public_api r7_source_manifest"
+selected=""
+for source in tests/*.rs; do
+  name=$(basename "$source" .rs)
+  case " $(echo $orchestration) " in *" $name "*) continue ;; esac
+  selected="$selected --test $name"
+done
+[ -n "$selected" ] || { echo "no integration suites selected for asan" >&2; exit 1; }
+# An explicit target keeps the instrumentation off build scripts and proc macros.
+export CARGO_BUILD_TARGET="$target"
+export RUSTFLAGS="-Zsanitizer=address"
+exec cargo "+$toolchain" test --features mock $selected
+'''
+
 [tasks.check]
 depends = ["lint", "test", "doc"]
 

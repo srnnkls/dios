@@ -226,11 +226,11 @@ pub(crate) struct Retention {
     tags: crate::allocation::MappedSlice<crate::sync::AtomicU64>,
     retiring: Box<[AtomicBool]>,
     pub(super) occupied_budget: AtomicU32,
-    refused_budget: std::sync::atomic::AtomicU64, // refused_budget
-    refused_ceiling: std::sync::atomic::AtomicU64, // refused_ceiling
-    refused_contention: std::sync::atomic::AtomicU64, // refused_contention
-    refused_retiring: std::sync::atomic::AtomicU64, // refused_retiring
-    retained_evictions_held: std::sync::atomic::AtomicU64, // retained_evictions_held
+    refused_budget: super::diagnostics::DiagnosticCounter,
+    refused_ceiling: super::diagnostics::DiagnosticCounter,
+    refused_contention: super::diagnostics::DiagnosticCounter,
+    refused_retiring: super::diagnostics::DiagnosticCounter,
+    retained_evictions_held: super::diagnostics::DiagnosticCounter,
     release_ring: Option<ReleaseRing>,
     wait: Arc<WaitState>,
     max_retained_frames: u32,
@@ -310,11 +310,11 @@ impl Retention {
             tags,
             retiring,
             occupied_budget: AtomicU32::new(0),
-            refused_budget: std::sync::atomic::AtomicU64::new(0), // refused_budget
-            refused_ceiling: std::sync::atomic::AtomicU64::new(0), // refused_ceiling
-            refused_contention: std::sync::atomic::AtomicU64::new(0), // refused_contention
-            refused_retiring: std::sync::atomic::AtomicU64::new(0), // refused_retiring
-            retained_evictions_held: std::sync::atomic::AtomicU64::new(0), // retained_evictions_held
+            refused_budget: super::diagnostics::DiagnosticCounter::new(),
+            refused_ceiling: super::diagnostics::DiagnosticCounter::new(),
+            refused_contention: super::diagnostics::DiagnosticCounter::new(),
+            refused_retiring: super::diagnostics::DiagnosticCounter::new(),
+            retained_evictions_held: super::diagnostics::DiagnosticCounter::new(),
             release_ring: Some(ReleaseRing::try_preallocated(max_retained_frames)?),
             wait,
             max_retained_frames,
@@ -335,11 +335,11 @@ impl Retention {
             tags: crate::allocation::MappedSlice::empty(),
             retiring: Box::new([]),
             occupied_budget: AtomicU32::new(0),
-            refused_budget: std::sync::atomic::AtomicU64::new(0), // refused_budget
-            refused_ceiling: std::sync::atomic::AtomicU64::new(0), // refused_ceiling
-            refused_contention: std::sync::atomic::AtomicU64::new(0), // refused_contention
-            refused_retiring: std::sync::atomic::AtomicU64::new(0), // refused_retiring
-            retained_evictions_held: std::sync::atomic::AtomicU64::new(0), // retained_evictions_held
+            refused_budget: super::diagnostics::DiagnosticCounter::new(),
+            refused_ceiling: super::diagnostics::DiagnosticCounter::new(),
+            refused_contention: super::diagnostics::DiagnosticCounter::new(),
+            refused_retiring: super::diagnostics::DiagnosticCounter::new(),
+            retained_evictions_held: super::diagnostics::DiagnosticCounter::new(),
             release_ring: None,
             wait,
             max_retained_frames: 0,
@@ -357,11 +357,11 @@ impl Retention {
     pub(super) fn retention_stats(&self) -> RetentionStats {
         RetentionStats {
             occupied_budget: self.occupied_budget.load(Ordering::Acquire),
-            refused_budget: self.refused_budget.load(Ordering::Relaxed),
-            refused_ceiling: self.refused_ceiling.load(Ordering::Relaxed),
-            refused_contention: self.refused_contention.load(Ordering::Relaxed),
-            refused_retiring: self.refused_retiring.load(Ordering::Relaxed),
-            retained_evictions_held: self.retained_evictions_held.load(Ordering::Relaxed),
+            refused_budget: self.refused_budget.get(),
+            refused_ceiling: self.refused_ceiling.get(),
+            refused_contention: self.refused_contention.get(),
+            refused_retiring: self.refused_retiring.get(),
+            retained_evictions_held: self.retained_evictions_held.get(),
         }
     }
 
@@ -461,7 +461,7 @@ impl Retention {
                 Ordering::Acquire,
             ) {
                 Ok(_) => {
-                    self.retained_evictions_held.fetch_add(1, Ordering::Relaxed);
+                    self.retained_evictions_held.increment();
                     return FrameOutcome::Held;
                 }
                 Err(observed) => {
@@ -496,7 +496,7 @@ impl Retention {
         max_concurrent_readers: u32,
     ) -> Result<(), RetainRefusedReason> {
         if self.is_disabled() {
-            self.refused_budget.fetch_add(1, Ordering::Relaxed);
+            self.refused_budget.increment();
             return Err(RetainRefusedReason::Exhausted);
         }
         let attempts = max_concurrent_readers
@@ -509,7 +509,7 @@ impl Retention {
                 Promotion::Refused(reason) => return Err(reason),
             }
         }
-        self.refused_contention.fetch_add(1, Ordering::Relaxed);
+        self.refused_contention.increment();
         Err(RetainRefusedReason::Exhausted)
     }
 
@@ -519,7 +519,7 @@ impl Retention {
         assert_eq!(previous & HELD, 0, "a guard never promotes a held frame");
         let count = previous & COUNT_MASK;
         if count == COUNT_MASK {
-            self.refused_ceiling.fetch_add(1, Ordering::Relaxed);
+            self.refused_ceiling.increment();
             return Promotion::Refused(RetainRefusedReason::Exhausted);
         }
         #[cfg(all(test, not(loom)))]
@@ -544,7 +544,7 @@ impl Retention {
             if word.load(Ordering::Acquire) & COUNT_MASK > 0 {
                 return Promotion::Retry;
             }
-            self.refused_budget.fetch_add(1, Ordering::Relaxed);
+            self.refused_budget.increment();
             return Promotion::Refused(RetainRefusedReason::Exhausted);
         }
         if word
@@ -572,7 +572,7 @@ impl Retention {
             return Ok(());
         }
         self.release(frame);
-        self.refused_retiring.fetch_add(1, Ordering::Relaxed);
+        self.refused_retiring.increment();
         Err(RetainRefusedReason::FileRetiring)
     }
 

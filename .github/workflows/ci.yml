@@ -25,3 +25,25 @@ jobs:
       - run: mise run lint
       - run: mise run test-ci
       - run: mise run doc
+
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+      - run: rustup toolchain install nightly --component miri
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: miri
+      - run: mise run miri
+
+  asan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+      - run: rustup toolchain install nightly --component rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: asan
+      - run: mise run asan

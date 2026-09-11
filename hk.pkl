@@ -19,6 +19,15 @@ local heavy = new Mapping<String, Step> {
     glob = rustGlob
     check = "cargo test --features bench"
   }
+  // Nightly lanes: UB on the pure-memory unit tests, ASan on the syscall paths.
+  ["miri"] {
+    glob = List("src/**/*.rs", "Cargo.toml", "Cargo.lock")
+    check = "mise run miri"
+  }
+  ["asan"] {
+    glob = rustGlob
+    check = "mise run asan"
+  }
 }
 
 hooks {

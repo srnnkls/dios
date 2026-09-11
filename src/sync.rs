@@ -3,17 +3,12 @@
 //! concurrency primitive must resolve to `loom` types under `cfg(loom)` or the T009
 //! proofs pass vacuously over `std` atomics loom cannot see.
 //!
-//! Invariant (ARCH-3, enforced by the `alias_guard` regression test): every
-//! proof-bearing pool concurrency primitive routes through this alias.
-//! Diagnostics-only counters no proof depends on are exempt — routing them through
-//! loom would cost state space for zero proof value — and are the only `std` sync
-//! atomics allowed under `src/pool`:
-//!   - `Clock::reference_stores` (Relaxed CLOCK store-elision observation counter)
-//!   - `loom_model::PoolModel::held_frame` (`cfg(loom)` model scaffolding, not shipping)
-//!   - `Pool::control_acquisitions` (mock-only control-lock observation counter)
-//!   - `Retention::refused_budget`, `Retention::refused_ceiling`,
-//!     `Retention::refused_contention`, `Retention::refused_retiring`, and
-//!     `Retention::retained_evictions_held` (diagnostics-only retention counters)
+//! Invariant (ARCH-3, enforced by the `arch3_sync_alias` regression test): every
+//! proof-bearing pool concurrency primitive routes through this alias. The sole
+//! exception is `pool::diagnostics`, which owns the observation counters no proof
+//! depends on — modelling them in loom would cost state space for zero proof
+//! value. A new counter of that kind becomes a `DiagnosticCounter` there rather
+//! than a fresh carve-out.
 
 pub(crate) use std::sync::atomic::Ordering;
 
