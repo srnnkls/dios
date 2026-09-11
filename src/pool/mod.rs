@@ -1612,6 +1612,8 @@ impl<D: PoolBackend> Pool<D> {
         Ok(self.get_cold(page, &mut control))
     }
 
+    #[cold]
+    #[inline(never)]
     fn get_cold<'pool>(&'pool self, page: PageId, control: &mut Control) -> Get<'pool> {
         if let Some(index) = control.miss.find_pending(page) {
             let (slot, generation) = control.miss.join(index, &self.miss_interests);
