@@ -244,12 +244,13 @@ fn packed_frame_word_changes_generation_only_when_residency_is_published() {
     let frames = TestFrames::preallocated(2, GRANULE);
     let refill = ReadFrameIdx::new(0);
     let cancelled = ReadFrameIdx::new(1);
+    let page = PageId::new(pool_with_file("packed-frame-word").1, 0);
     let free_word = frames.state_word(refill);
     let initial_generation = free_word >> GENERATION_SHIFT;
-    frames.advance(refill, FrameState::InFlight);
+    let token = frames.claim(refill, page).expect("a Free frame claims");
     let first_inflight_word = frames.state_word(refill);
     assert_eq!(first_inflight_word >> GENERATION_SHIFT, initial_generation);
-    frames.advance(refill, FrameState::Resident);
+    frames.publish(token);
     let first_resident_word = frames.state_word(refill);
     assert_eq!(
         first_resident_word >> GENERATION_SHIFT,
@@ -264,13 +265,15 @@ fn packed_frame_word_changes_generation_only_when_residency_is_published() {
     frames.advance(refill, FrameState::Free);
     let reclaimed_word = frames.state_word(refill);
     assert_eq!(reclaimed_word >> GENERATION_SHIFT, initial_generation + 1);
-    frames.advance(refill, FrameState::InFlight);
+    let token = frames
+        .claim(refill, page)
+        .expect("a reclaimed frame claims");
     let second_inflight_word = frames.state_word(refill);
     assert_eq!(
         second_inflight_word >> GENERATION_SHIFT,
         initial_generation + 1
     );
-    frames.advance(refill, FrameState::Resident);
+    frames.publish(token);
     let second_resident_word = frames.state_word(refill);
     assert_eq!(
         second_resident_word >> GENERATION_SHIFT,
@@ -278,8 +281,8 @@ fn packed_frame_word_changes_generation_only_when_residency_is_published() {
     );
 
     let cancelled_generation = frames.state_word(cancelled) >> GENERATION_SHIFT;
-    frames.advance(cancelled, FrameState::InFlight);
-    frames.advance(cancelled, FrameState::Free);
+    let token = frames.claim(cancelled, page).expect("a Free frame claims");
+    frames.abort(token);
     assert_eq!(
         frames.state_word(cancelled) >> GENERATION_SHIFT,
         cancelled_generation,

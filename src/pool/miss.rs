@@ -24,12 +24,14 @@ impl FileOwned for MissEntry {
 
 const _: () = assert!(size_of::<FileSlot<MissEntry>>() == size_of::<Occupiable<MissEntry>>());
 use crate::completion::CompletionBatch;
-use crate::driver::{BackendProgress, FileHandle, FileId, OpToken, RegistrationPosture, SyncMode};
+use crate::driver::{
+    BackendProgress, FileHandle, FileId, OpToken, ReadRefusal, RegistrationPosture, SyncMode,
+};
 use crate::error::FileRegistrationError;
 use crate::error::SubmitError;
 use crate::open::DirectIo;
 use crate::pool::write_arena::{ArenaState, WriteSlot};
-use crate::pool::{PageId, ReadFrameIdx};
+use crate::pool::{InFlightFrame, PageId, ReadFrameIdx};
 use crate::product::{LifecycleCounters, WaitState};
 use crate::sync::{AtomicU32, AtomicU64, Ordering};
 use std::num::NonZeroU64;
@@ -75,11 +77,11 @@ pub(crate) trait PoolBackend: sealed::Sealed {
     fn submit_read(
         &self,
         fd: &FileHandle,
-        frame: ReadFrameIdx,
+        token: InFlightFrame,
         file_offset: u64,
         destination_offset: u32,
         len: u32,
-    ) -> Result<OpToken, SubmitError>;
+    ) -> Result<OpToken, ReadRefusal>;
 
     /// Drains ready completions and separately reports raw backend progress.
     fn poll_progress(&self, out: &mut CompletionBatch) -> BackendProgress;

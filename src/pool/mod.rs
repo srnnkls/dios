@@ -22,7 +22,7 @@ use std::time::Instant;
 use crate::completion::CompletionBatch;
 use crate::driver::{
     ArenaLockPolicy, BackendProgress, Driver, DriverBuildError, FileHandle, FileId, IoMode, OpKind,
-    OpToken, RegistrationPolicy, RegistrationPosture,
+    OpToken, ReadRefusal, RegistrationPolicy, RegistrationPosture,
 };
 use crate::error::{FileRegistrationError, IoError, SubmitError};
 use crate::open::DirectIo;
@@ -49,15 +49,15 @@ mod retention;
 mod table;
 pub(crate) mod write_arena;
 
-use epoch::{EvictQueue, FrameOutcome, ReaderRegistry, advance_epoch};
+use epoch::{EvictQueue, FrameOutcome, PinCommit, ReaderRegistry, advance_epoch};
 use miss::{MissEntry, MissInterests, MissOutcome, MissSlot, MissTable};
 use retention::Retention;
 
 pub use clock::Clock;
 pub use epoch::{FrameGuard, ReaderCtx};
-pub(crate) use frames::Frames;
 use frames::FreeFrames;
 pub use frames::{FrameState, ReadFrameIdx};
+pub(crate) use frames::{Frames, InFlightFrame};
 pub(crate) use miss::PoolBackend;
 pub(crate) use miss::sealed::Sealed as PoolBackendSealed;
 pub use retention::{RetainRefused, RetainRefusedReason, RetainedFrame, RetentionStats};
@@ -915,14 +915,20 @@ impl PoolBuilder {
         mut driver: crate::mock::MockDriver,
     ) -> Result<Pool<crate::mock::MockDriver>, PoolBuildError> {
         self.validate().map_err(PoolBuildError::Configuration)?;
-        let frames = Arc::new(
-            Frames::try_preallocated(self.frame_count, self.granule)
-                .ok_or(PoolBuildError::Allocation)?,
+        let frames = Arc::clone(driver.frames());
+        assert_eq!(
+            frames.count(),
+            self.frame_count,
+            "pool and mock driver frame counts match"
+        );
+        assert_eq!(
+            frames.granule(),
+            self.granule,
+            "pool and mock driver frame sizes match"
         );
         driver
             .try_reconfigure_file_capacity(self.registered_file_capacity)
             .ok_or(PoolBuildError::Allocation)?;
-        driver.share_frames_for_pool(Arc::clone(&frames));
         Pool::try_preallocated(self, driver, frames)
     }
 
@@ -933,9 +939,16 @@ impl PoolBuilder {
         mut driver: crate::mock::MockRingDriver,
     ) -> Result<Pool<crate::mock::MockRingDriver>, PoolBuildError> {
         self.validate().map_err(PoolBuildError::Configuration)?;
-        let frames = Arc::new(
-            Frames::try_preallocated(self.frame_count, self.granule)
-                .ok_or(PoolBuildError::Allocation)?,
+        let frames = Arc::clone(driver.frames());
+        assert_eq!(
+            frames.count(),
+            self.frame_count,
+            "pool and mock ring frame counts match"
+        );
+        assert_eq!(
+            frames.granule(),
+            self.granule,
+            "pool and mock ring frame sizes match"
         );
         driver
             .try_reconfigure_file_capacity(self.registered_file_capacity)
@@ -1619,11 +1632,16 @@ impl<D: PoolBackend> Pool<D> {
         let Some(frame) = self.claim_frame(control) else {
             return Get::Busy;
         };
-        self.frames.advance(frame, FrameState::InFlight);
-        let Ok(token) = self.submit_page_read(control, page, frame, 0) else {
-            self.frames.abort_inflight(frame);
-            control.free_frames.push(frame);
-            return Get::Busy;
+        let write = self
+            .frames
+            .claim(frame, page)
+            .expect("the free stack holds only Free frames");
+        let token = match self.submit_page_read(control, page, write, 0) {
+            Ok(token) => token,
+            Err(refusal) => {
+                control.free_frames.push(self.frames.abort(refusal.token));
+                return Get::Busy;
+            }
         };
         control.reads_in_flight = control
             .reads_in_flight
@@ -1715,7 +1733,7 @@ impl<D: PoolBackend> Pool<D> {
         );
         // The live guard's epoch prevents reclamation and exact-page mutation.
         assert_eq!(
-            self.frames.exact_page(guard.frame),
+            self.frames.exact_page_guarded(guard),
             page,
             "guard must protect the requested exact page"
         );
@@ -1759,7 +1777,7 @@ impl<D: PoolBackend> Pool<D> {
         let Some(hint) = hint else {
             return self.get(reader, page);
         };
-        let Some(frame) = pin_with_resident_hint(
+        let Some((frame, pin)) = pin_with_resident_hint(
             &self.frames,
             &self.clock,
             &self.global_epoch,
@@ -1770,7 +1788,7 @@ impl<D: PoolBackend> Pool<D> {
             return self.get(reader, page);
         };
         Ok(Get::Hit(FrameGuard::new(
-            self.frames.frame_bytes(frame),
+            self.frames.frame_bytes(frame, &pin),
             reader.slot(),
             frame,
             page.file().slot(),
@@ -2129,7 +2147,7 @@ impl<D: PoolBackend> Pool<D> {
                     ),
                     "mapped membership remains until reclamation frees the frame"
                 );
-                self.frames.exact_page(frame).file() == file
+                self.frames.exact_page_locked(frame, control).file() == file
             });
             let product_live = control.product_ops.iter().any(|slot| {
                 slot.operation
@@ -2161,7 +2179,7 @@ impl<D: PoolBackend> Pool<D> {
             if self.frames.state(frame) != FrameState::Resident {
                 continue;
             }
-            let page = self.frames.exact_page(frame);
+            let page = self.frames.exact_page_locked(frame, control);
             if page.file() != file {
                 continue;
             }
@@ -2243,17 +2261,15 @@ impl<D: PoolBackend> Pool<D> {
         page: &PageId,
         slot: &epoch::ReaderSlot,
     ) -> Option<(&'pool [u8], ReadFrameIdx)> {
-        let first_guard = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
+        let begun = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
         let mapped = self.table.lookup(*page);
         let Some(frame) = mapped else {
-            if first_guard {
-                slot.abort_pin();
-            }
+            slot.abort_pin(begun);
             return None;
         };
         let _ = self.clock.reference(frame);
-        slot.commit_pin();
-        Some((self.frames.frame_bytes(frame), frame))
+        let pin = slot.commit_pin(begun);
+        Some((self.frames.frame_bytes(frame, &pin), frame))
     }
 
     fn assert_reader_owner(&self, reader: &ReaderCtx) {
@@ -2302,10 +2318,12 @@ impl<D: PoolBackend> Pool<D> {
         let frame = self
             .claim_free_frame(&mut control)
             .expect("frame pool exhausted: no Free frame to make resident");
-        self.frames.advance(frame, FrameState::InFlight);
-        self.frames.fill_inflight(frame, fill);
-        self.frames.write_exact_page(frame, page);
-        self.frames.advance(frame, FrameState::Resident);
+        let mut write = self
+            .frames
+            .claim(frame, page)
+            .expect("the free stack holds only Free frames");
+        self.frames.fill(&mut write, fill);
+        self.frames.publish(write);
         self.table.insert_shared(page, frame);
         control
             .frame_pages
@@ -2357,12 +2375,12 @@ impl<D: PoolBackend> Pool<D> {
         &self,
         control: &Control,
         page: PageId,
-        frame: ReadFrameIdx,
+        write: InFlightFrame,
         filled: u32,
-    ) -> Result<OpToken, SubmitError> {
+    ) -> Result<OpToken, ReadRefusal> {
         let (offset, len) = read_span(page, self.granule, filled);
         let fd = registered_file(&control.files, page);
-        self.driver.submit_read(fd, frame, offset, filled, len)
+        self.driver.submit_read(fd, write, offset, filled, len)
     }
 
     /// Finds a `Free` frame, or runs one bounded reclaim attempt (drain, advance,
@@ -2404,7 +2422,7 @@ impl<D: PoolBackend> Pool<D> {
                 control.frame_pages[victim.get() as usize].get().is_some(),
                 "a resident CLOCK victim remains indexed"
             );
-            let page = self.frames.exact_page(victim);
+            let page = self.frames.exact_page_locked(victim, control);
             let removed = self
                 .table
                 .remove_shared(page)
@@ -2424,15 +2442,26 @@ impl<D: PoolBackend> Pool<D> {
 
     fn route_completion_batch(&self, control: &mut Control) {
         while let Some(completion) = control.batch.pop() {
-            let (driver_token, kind, result) = completion.into_parts();
+            let (driver_token, kind, result, write) = completion.into_parts();
             if kind != OpKind::Read {
+                assert!(
+                    write.is_none(),
+                    "only a read completion carries a frame token"
+                );
                 Self::finish_product_completion(control, driver_token, kind, result);
                 continue;
             }
+            let write = write.expect("a read completion returns its frame token");
             let Some(index) = control.miss.find_by_token(driver_token) else {
+                control.free_frames.push(self.frames.abort(write));
                 continue;
             };
             let entry = control.miss.entry(index);
+            assert_eq!(
+                write.frame(),
+                entry.frame(),
+                "the completed token names the miss entry's frame"
+            );
             match result {
                 Ok(0) => {
                     Self::release_read_credit(control);
@@ -2440,6 +2469,7 @@ impl<D: PoolBackend> Pool<D> {
                         control,
                         index,
                         entry,
+                        write,
                         SHORT_READ_EOF_ERRNO,
                     );
                 }
@@ -2452,39 +2482,42 @@ impl<D: PoolBackend> Pool<D> {
                             &mut control.frame_pages,
                             index,
                             entry,
+                            write,
                         );
                     } else {
                         let (offset, len) = read_span(entry.page(), self.granule, filled);
                         let fd = registered_file(&control.files, entry.page());
-                        let token = if route_completion_batch_remainder_satisfies_io_mode(
+                        let resubmitted = if route_completion_batch_remainder_satisfies_io_mode(
                             fd.io_mode(),
                             offset,
                             filled,
                             len,
                         ) {
                             self.driver
-                                .submit_read(fd, entry.frame(), offset, filled, len)
-                                .ok()
+                                .submit_read(fd, write, offset, filled, len)
+                                .map_err(|refusal| refusal.token)
                         } else {
-                            None
+                            Err(write)
                         };
-                        if let Some(token) = token {
-                            control.miss.advance_remainder(index, filled, token);
-                        } else {
-                            Self::release_read_credit(control);
-                            self.drain_completions_finish_failure(
-                                control,
-                                index,
-                                entry,
-                                SHORT_READ_EOF_ERRNO,
-                            );
+                        match resubmitted {
+                            Ok(token) => control.miss.advance_remainder(index, filled, token),
+                            Err(write) => {
+                                Self::release_read_credit(control);
+                                self.drain_completions_finish_failure(
+                                    control,
+                                    index,
+                                    entry,
+                                    write,
+                                    SHORT_READ_EOF_ERRNO,
+                                );
+                            }
                         }
                     }
                 }
                 Err(err) => {
                     Self::release_read_credit(control);
                     let errno = err.raw_os_error().unwrap_or(SHORT_READ_EOF_ERRNO);
-                    self.drain_completions_finish_failure(control, index, entry, errno);
+                    self.drain_completions_finish_failure(control, index, entry, write, errno);
                 }
             }
         }
@@ -2592,9 +2625,9 @@ impl<D: PoolBackend> Pool<D> {
         frame_pages: &mut FramePages,
         index: usize,
         entry: MissEntry,
+        write: InFlightFrame,
     ) {
-        self.frames.write_exact_page(entry.frame(), entry.page());
-        self.frames.advance(entry.frame(), FrameState::Resident);
+        self.frames.publish(write);
         self.table.insert_shared(entry.page(), entry.frame());
         frame_pages.insert(
             entry.frame().get() as usize,
@@ -2614,10 +2647,10 @@ impl<D: PoolBackend> Pool<D> {
         control: &mut Control,
         index: usize,
         entry: MissEntry,
+        write: InFlightFrame,
         errno: i32,
     ) {
-        self.frames.abort_inflight(entry.frame());
-        control.free_frames.push(entry.frame());
+        control.free_frames.push(self.frames.abort(write));
         let miss = &mut control.miss;
         miss.fail(index, errno);
         miss.clean_terminal_zero(
@@ -2735,28 +2768,18 @@ pub(crate) fn pin_with_resident_hint(
     slot: &epoch::ReaderSlot,
     page: PageId,
     hint: ResidentHint,
-) -> Option<ReadFrameIdx> {
+) -> Option<(ReadFrameIdx, PinCommit)> {
     if hint.granule != page.granule_idx() || hint.frame >= frames.count() {
         return None;
     }
     let frame = ReadFrameIdx::new(hint.frame);
-    let first_guard = slot.begin_pin(global_epoch.load(Ordering::Acquire));
-    let word = frames.state_word(frame);
-    if word != hint.stamp.get() || !Frames::word_is_resident(word) {
-        if first_guard {
-            slot.abort_pin();
-        }
-        return None;
-    }
-    if frames.exact_page(frame) != page {
-        if first_guard {
-            slot.abort_pin();
-        }
+    let begun = slot.begin_pin(global_epoch.load(Ordering::Acquire));
+    if frames.validate_resident(frame, hint.stamp.get(), &begun) != Some(page) {
+        slot.abort_pin(begun);
         return None;
     }
     let _ = clock.reference(frame);
-    slot.commit_pin();
-    Some(frame)
+    Some((frame, slot.commit_pin(begun)))
 }
 
 /// The file offset and length of the read that fills a page's granule from
@@ -2908,12 +2931,12 @@ impl PoolBackend for Driver {
     fn submit_read(
         &self,
         fd: &FileHandle,
-        frame: ReadFrameIdx,
+        token: InFlightFrame,
         file_offset: u64,
         destination_offset: u32,
         len: u32,
-    ) -> Result<OpToken, SubmitError> {
-        self.submit_read_range(fd, frame, file_offset, destination_offset, len)
+    ) -> Result<OpToken, ReadRefusal> {
+        self.submit_read_range(fd, token, file_offset, destination_offset, len)
     }
 
     fn poll_progress(&self, out: &mut CompletionBatch) -> BackendProgress {
