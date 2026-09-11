@@ -21,6 +21,33 @@ use crate::sync::{AtomicBool, AtomicU64, Ordering, fence};
 /// the advance check reads it as "no constraint on the global epoch".
 pub(crate) const QUIESCENT: u64 = u64::MAX;
 
+/// A pin this reader has begun but not yet committed or aborted: the epoch is
+/// published (on a first pin), so the frame the pin goes on to validate cannot
+/// be reclaimed. Thread-bound like the reader that minted it.
+#[must_use]
+#[derive(Debug)]
+pub(crate) struct PinBegun {
+    first: bool,
+    _thread_bound: PhantomData<*const ()>,
+}
+
+impl PinBegun {
+    /// Whether this pin published the reader's epoch, as opposed to nesting
+    /// under a guard that already had.
+    #[cfg(loom)]
+    pub(crate) fn is_first(&self) -> bool {
+        self.first
+    }
+}
+
+/// A committed pin: one live guard is counted on its reader, so the reader stays
+/// published until `release_guard`. Consumed by the byte borrow it justifies.
+#[must_use]
+#[derive(Debug)]
+pub(crate) struct PinCommit {
+    _thread_bound: PhantomData<*const ()>,
+}
+
 /// One registered reader's epoch state. A `ReaderCtx` is thread-bound (`!Send`),
 /// so only its owning thread writes `local_epoch`/`guard_count`; the atomics
 /// carry those values across the shared slot table without a warm-path RMW (a
@@ -128,8 +155,9 @@ impl ReaderSlot {
 
     /// Publishes the reader's epoch before the pin validates the frame, but only
     /// on its FIRST live guard — a nested pin finds a non-zero count and keeps the
-    /// epoch already published by the outer guard. Returns whether it published.
-    pub(crate) fn begin_pin(&self, global_epoch: u64) -> bool {
+    /// epoch already published by the outer guard. The returned witness must be
+    /// committed or aborted on this slot.
+    pub(crate) fn begin_pin(&self, global_epoch: u64) -> PinBegun {
         assert!(
             global_epoch != QUIESCENT,
             "a published epoch is never the quiescent sentinel"
@@ -145,11 +173,18 @@ impl ReaderSlot {
             // the same way). The interleaving proof is the T009 loom model.
             fence(Ordering::SeqCst);
         }
-        first
+        PinBegun {
+            first,
+            _thread_bound: PhantomData,
+        }
     }
 
     /// Commits a validated pin, counting one more live guard for this reader.
-    pub(crate) fn commit_pin(&self) {
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the begun witness is linear: committing consumes it so it cannot also be aborted"
+    )]
+    pub(crate) fn commit_pin(&self, begun: PinBegun) -> PinCommit {
         let taken = self
             .guard_count()
             .checked_add(1)
@@ -159,14 +194,26 @@ impl ReaderSlot {
             "reader live-guard count does not exceed its declared peak"
         );
         self.guard_count.store(taken, Ordering::Relaxed);
+        let PinBegun { first, .. } = begun;
+        debug_assert_eq!(first, taken == 1, "the first pin commits the first guard");
+        PinCommit {
+            _thread_bound: PhantomData,
+        }
     }
 
-    /// Abandons a first pin whose validation failed: no guard was minted, so the
+    /// Abandons a pin whose validation failed: no guard was minted, so a
     /// just-published epoch must go back to quiescent or it would stall the
-    /// advance forever.
-    pub(crate) fn abort_pin(&self) {
-        debug_assert_eq!(self.guard_count(), 0, "abort only before the first commit");
-        self.local_epoch.store(QUIESCENT, Ordering::Release);
+    /// advance forever. A nested pin published nothing and releases nothing.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the begun witness is linear: aborting consumes it so it cannot also be committed"
+    )]
+    pub(crate) fn abort_pin(&self, begun: PinBegun) {
+        let PinBegun { first, .. } = begun;
+        if first {
+            debug_assert_eq!(self.guard_count(), 0, "abort only before the first commit");
+            self.local_epoch.store(QUIESCENT, Ordering::Release);
+        }
     }
 
     /// Drops one live guard; the reader goes quiescent on its last guard so a

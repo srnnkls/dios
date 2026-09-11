@@ -28,17 +28,16 @@ mod tests {
 
     fn publish(frames: &Frames, index: &mut FramePages, frame: u32, page: PageId) {
         let frame = ReadFrameIdx::new(frame);
-        frames.advance(frame, FrameState::InFlight);
-        frames.write_exact_page(frame, page);
-        frames.advance(frame, FrameState::Resident);
+        let token = frames.claim(frame, page).expect("a Free frame claims");
+        frames.publish(token);
         index.insert(frame.get() as usize, FrameFileSlot::for_page(page));
     }
 
-    fn pages_for_file(frames: &Frames, index: &FramePages, file: FileId) -> Vec<PageId> {
+    fn pages_for_file(frames: &mut Frames, index: &FramePages, file: FileId) -> Vec<PageId> {
         index
             .for_file(file)
             .map(|(frame, _)| {
-                frames.exact_page(ReadFrameIdx::new(
+                frames.exact_page_exclusive(ReadFrameIdx::new(
                     u32::try_from(frame).expect("frame index"),
                 ))
             })
@@ -57,28 +56,28 @@ mod tests {
 
     #[test]
     fn canonical_identity_survives_eviction_until_unlink_and_reuse() {
-        let frames = Frames::preallocated(4, 4096);
+        let mut frames = Frames::preallocated(4, 4096);
         let mut index = FramePages::try_new(4, 2).expect("membership");
         let old_file = FileId::new(u64::MAX, 1, u32::MAX);
         let old = PageId::new(old_file, u32::MAX);
-        assert!(pages_for_file(&frames, &index, old_file).is_empty());
+        assert!(pages_for_file(&mut frames, &index, old_file).is_empty());
         publish(&frames, &mut index, 3, old);
         let frame = ReadFrameIdx::new(3);
         frames.advance(frame, FrameState::Evicting);
-        assert_eq!(pages_for_file(&frames, &index, old_file), [old]);
+        assert_eq!(pages_for_file(&mut frames, &index, old_file), [old]);
         frames.advance(frame, FrameState::Free);
         index.remove(3);
-        assert!(pages_for_file(&frames, &index, old_file).is_empty());
+        assert!(pages_for_file(&mut frames, &index, old_file).is_empty());
         let new_file = FileId::new(0, 1, 0);
         let new = PageId::new(new_file, 0);
         publish(&frames, &mut index, 3, new);
-        assert_eq!(pages_for_file(&frames, &index, new_file), [new]);
-        assert!(pages_for_file(&frames, &index, old_file).is_empty());
+        assert_eq!(pages_for_file(&mut frames, &index, new_file), [new]);
+        assert!(pages_for_file(&mut frames, &index, old_file).is_empty());
     }
 
     #[test]
     fn canonical_identity_distinguishes_drivers_and_generations_sharing_a_slot() {
-        let frames = Frames::preallocated(4, 4096);
+        let mut frames = Frames::preallocated(4, 4096);
         let mut index = FramePages::try_new(4, 1).expect("membership");
         let files = [
             FileId::new(0, 0, 1),
@@ -95,7 +94,7 @@ mod tests {
         }
         for file in files {
             assert_eq!(
-                pages_for_file(&frames, &index, file),
+                pages_for_file(&mut frames, &index, file),
                 [PageId::new(file, 7)]
             );
         }

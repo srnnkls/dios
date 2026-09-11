@@ -27,7 +27,7 @@ use crate::driver::{
 };
 use crate::error::IoError;
 use crate::pool::write_arena::ArenaState;
-use crate::pool::{Frames, PoolConfigError, ReadFrameIdx};
+use crate::pool::{Frames, InFlightFrame, PoolConfigError, ReadFrameIdx};
 use crate::product::{PlatformWake, WaitState};
 
 const EINTR: i32 = 4;
@@ -280,7 +280,7 @@ impl RingExecutor for Uring {
         &self,
         user_data: u64,
         fd_slot: u32,
-        frame: ReadFrameIdx,
+        token: &InFlightFrame,
         file_offset: u64,
         destination_offset: u32,
         requested_len: u32,
@@ -292,7 +292,7 @@ impl RingExecutor for Uring {
         );
         let destination = self
             .frames
-            .frame_ptr(frame, destination_offset, requested_len);
+            .transfer_ptr(token, destination_offset, requested_len);
         let entry = self
             .posture
             .read_entry(fd_slot, destination, requested_len, file_offset)

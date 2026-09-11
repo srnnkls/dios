@@ -27,7 +27,7 @@
 use std::collections::VecDeque;
 use std::fs::File;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -39,7 +39,7 @@ pub use crate::error::{IoError, SubmitError};
 use crate::open::DirectIo;
 use crate::pool::write_arena::{ArenaState, try_shared as try_shared_write_arena};
 pub use crate::pool::write_arena::{WriteArena, WriteSlot};
-use crate::pool::{Frames, PoolConfigError, ReadFrameIdx};
+use crate::pool::{Frames, InFlightFrame, PageId, PoolConfigError, ReadFrameIdx};
 #[cfg(target_os = "linux")]
 use crate::product::PlatformWaitOutcome;
 use crate::product::WaitState;
@@ -287,7 +287,7 @@ impl DriverBuilder {
             shared,
             executor,
             write_arena,
-            self.frames,
+            Arc::clone(frames),
             self.retry_bound,
             self.queue_capacity,
             id,
@@ -579,21 +579,20 @@ impl Driver {
         frame: ReadFrameIdx,
         offset: u64,
     ) -> Result<OpToken, SubmitError> {
-        let len = self.0.executor().clean_bytes(OpKind::Read);
-        self.0.submit_read(fd, frame, offset, 0, len, true)
+        self.0.submit_raw_read(fd, frame, offset)
     }
 
     pub(crate) fn submit_read_range(
         &self,
         fd: &FileHandle,
-        frame: ReadFrameIdx,
+        token: InFlightFrame,
         file_offset: u64,
         destination_offset: u32,
         requested_len: u32,
-    ) -> Result<OpToken, SubmitError> {
+    ) -> Result<OpToken, ReadRefusal> {
         self.0.submit_read(
             fd,
-            frame,
+            token,
             file_offset,
             destination_offset,
             requested_len,
@@ -1053,7 +1052,7 @@ pub(crate) trait EagerExecutor: Executor {
     /// One attempt at the op named by `kind`; `clean_bytes` is the transfer a
     /// fault-free op reports and `context` carries the file, offset, and target
     /// resource. Runs in the execute phase, no submit lock held.
-    fn attempt(&self, kind: OpKind, clean_bytes: u32, context: OpContext<'_>) -> Attempt;
+    fn attempt(&self, kind: OpKind, clean_bytes: u32, context: &mut OpContext<'_>) -> Attempt;
 }
 
 /// The batched ring seam the `io_uring` backend composes over: SQE fill and CQE
@@ -1062,13 +1061,14 @@ pub(crate) trait EagerExecutor: Executor {
 /// the seeded mock ring composes the same `DriverCore` reap path off-linux; only
 /// the `io_uring` implementation is Linux-gated.
 pub(crate) trait RingExecutor: Executor {
-    /// Fills one read SQE addressing the registered buffer for `frame` at
-    /// `file_offset`, tagged with `user_data`. Called under the AD-4 mutex.
+    /// Fills one read SQE addressing the registered buffer of the frame `token`
+    /// owns at `file_offset`, tagged with `user_data`. Called under the AD-4 mutex;
+    /// the token stays in the slab until the CQE reaps it.
     fn push_read(
         &self,
         user_data: u64,
         fd_slot: u32,
-        frame: ReadFrameIdx,
+        token: &InFlightFrame,
         file_offset: u64,
         destination_offset: u32,
         requested_len: u32,
@@ -1147,13 +1147,20 @@ impl BackendProgress {
     }
 }
 
+/// A refused read admission returns the frame token so the caller aborts it.
+#[derive(Debug)]
+pub(crate) struct ReadRefusal {
+    pub(crate) error: SubmitError,
+    pub(crate) token: InFlightFrame,
+}
+
 #[derive(Debug)]
 pub(crate) struct OpEntry {
     kind: OpKind,
     sync_mode: SyncMode,
     fd: FileId,
     file_offset: u64,
-    frame: ReadFrameIdx,
+    frame: Option<InFlightFrame>,
     destination_offset: u32,
     requested_len: u32,
     raw_frame_lease: bool,
@@ -1165,11 +1172,11 @@ pub(crate) struct OpEntry {
 /// offset, into (reads) or out of (writes) which resource. `destination_offset`
 /// is the read destination or write source offset within the fixed buffer. The
 /// eager backend performs the real syscall; mocks replay injected outcomes.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub(crate) struct OpContext<'buf> {
     pub(crate) fd: FileId,
     pub(crate) file_offset: u64,
-    pub(crate) frame: ReadFrameIdx,
+    pub(crate) frame: Option<InFlightFrame>,
     pub(crate) destination_offset: u32,
     pub(crate) requested_len: u32,
     pub(crate) write_buf: &'buf [u8],
@@ -1180,14 +1187,14 @@ impl<'buf> OpContext<'buf> {
     fn read(
         fd: FileId,
         file_offset: u64,
-        frame: ReadFrameIdx,
+        frame: InFlightFrame,
         destination_offset: u32,
         requested_len: u32,
     ) -> Self {
         Self {
             fd,
             file_offset,
-            frame,
+            frame: Some(frame),
             destination_offset,
             requested_len,
             write_buf: &[],
@@ -1201,7 +1208,7 @@ impl<'buf> OpContext<'buf> {
         Self {
             fd,
             file_offset,
-            frame: ReadFrameIdx::new(0),
+            frame: None,
             destination_offset: source_offset,
             requested_len,
             write_buf,
@@ -1213,7 +1220,7 @@ impl<'buf> OpContext<'buf> {
         Self {
             fd,
             file_offset: 0,
-            frame: ReadFrameIdx::new(0),
+            frame: None,
             destination_offset: 0,
             requested_len: 0,
             write_buf: &[],
@@ -1273,10 +1280,9 @@ pub(crate) struct DriverCore<E> {
     executor: E,
     write_arena: Arc<ArenaState>,
     arena_lock: Option<ArenaLockGuard>,
-    frames: u32,
+    arena: Arc<Frames>,
     retry_bound: u32,
     queue_capacity: u32,
-    raw_read_inflight: crate::allocation::MappedSlice<AtomicBool>,
     pool_wait: OnceLock<Arc<WaitState>>,
     id: u64,
 }
@@ -1286,12 +1292,15 @@ impl<E> DriverCore<E> {
         shared: Shared,
         executor: E,
         write_arena: Arc<ArenaState>,
-        frames: u32,
+        arena: Arc<Frames>,
         retry_bound: u32,
         queue_capacity: u32,
         id: u64,
     ) -> Option<Self> {
-        assert!(frames > 0, "driver core frame count must be positive");
+        assert!(
+            arena.count() > 0,
+            "driver core frame count must be positive"
+        );
         assert!(
             queue_capacity > 0,
             "driver core queue capacity must be positive"
@@ -1307,10 +1316,9 @@ impl<E> DriverCore<E> {
             executor,
             write_arena,
             arena_lock: None,
-            frames,
+            arena,
             retry_bound,
             queue_capacity,
-            raw_read_inflight: crate::allocation::MappedSlice::try_vacant(frames)?,
             pool_wait: OnceLock::new(),
             id,
         })
@@ -1322,6 +1330,10 @@ impl<E> DriverCore<E> {
 
     pub(crate) fn executor(&self) -> &E {
         &self.executor
+    }
+
+    pub(crate) fn arena(&self) -> &Arc<Frames> {
+        &self.arena
     }
 
     pub(crate) fn arena_locked(&self) -> bool {
@@ -1419,15 +1431,6 @@ impl<E: Executor> DriverCore<E> {
     #[cfg(any(feature = "mock", feature = "bench"))]
     fn copy_frame_testing(&self, frame: ReadFrameIdx, out: &mut [u8]) -> usize {
         let shared = self.lock();
-        let mutating = shared.slab.slots.iter().any(|slot| {
-            slot.payload
-                .as_ref()
-                .is_some_and(|entry| entry.kind == OpKind::Read && entry.frame == frame)
-        });
-        assert!(
-            !mutating,
-            "a test observation never aliases an in-flight frame mutation"
-        );
         let copied = self.executor.copy_frame(frame, out);
         drop(shared);
         copied
@@ -1455,16 +1458,42 @@ impl<E: Executor> DriverCore<E> {
         self.executor.on_file_closed(fd);
     }
 
-    pub(crate) fn submit_read(
+    /// A whole-frame read under the driver's own frame lease: the frame is
+    /// claimed here and aborted at completion, never published.
+    pub(crate) fn submit_raw_read(
         &self,
         fd: &FileHandle,
         frame: ReadFrameIdx,
+        offset: u64,
+    ) -> Result<OpToken, SubmitError> {
+        let len = self.executor.clean_bytes(OpKind::Read);
+        assert!(len > 0, "a raw read transfers a whole frame");
+        let granule_idx =
+            u32::try_from(offset / u64::from(len)).expect("raw read granule fits u32");
+        let token = self
+            .arena
+            .claim(frame, PageId::new(fd.file_id(), granule_idx))
+            .expect("a raw read frame has at most one op in flight");
+        self.submit_read(fd, token, offset, 0, len, true)
+            .map_err(|refusal| {
+                self.arena.abort(refusal.token);
+                refusal.error
+            })
+    }
+
+    pub(crate) fn submit_read(
+        &self,
+        fd: &FileHandle,
+        token: InFlightFrame,
         file_offset: u64,
         destination_offset: u32,
         requested_len: u32,
         raw_frame_lease: bool,
-    ) -> Result<OpToken, SubmitError> {
-        assert!(frame.get() < self.frames, "read frame index out of range");
+    ) -> Result<OpToken, ReadRefusal> {
+        assert!(
+            token.frame().get() < self.arena.count(),
+            "read frame index out of range"
+        );
         let frame_bytes = self.executor.clean_bytes(OpKind::Read);
         assert!(requested_len > 0, "read length must be positive");
         assert!(
@@ -1482,30 +1511,17 @@ impl<E: Executor> DriverCore<E> {
                 alignment.get()
             );
         }
-        if raw_frame_lease {
-            let was_inflight =
-                self.raw_read_inflight[frame.get() as usize].swap(true, Ordering::AcqRel);
-            assert!(
-                !was_inflight,
-                "a raw read frame has at most one op in flight"
-            );
-        }
         let mut shared = self.lock();
         let slot = match self.admit(&mut shared, fd.file_id()) {
             Ok(slot) => slot,
-            Err(error) => {
-                if raw_frame_lease {
-                    self.raw_read_inflight[frame.get() as usize].store(false, Ordering::Release);
-                }
-                return Err(error);
-            }
+            Err(error) => return Err(ReadRefusal { error, token }),
         };
         let entry = OpEntry {
             kind: OpKind::Read,
             sync_mode: SyncMode::Full,
             fd: fd.file_id(),
             file_offset,
-            frame,
+            frame: Some(token),
             destination_offset,
             requested_len,
             raw_frame_lease,
@@ -1539,7 +1555,7 @@ impl<E: Executor> DriverCore<E> {
                     sync_mode: SyncMode::Full,
                     fd: fd.file_id(),
                     file_offset: offset,
-                    frame: ReadFrameIdx::new(0),
+                    frame: None,
                     destination_offset: 0,
                     requested_len,
                     raw_frame_lease: false,
@@ -1564,7 +1580,7 @@ impl<E: Executor> DriverCore<E> {
             sync_mode: mode,
             fd: fd.file_id(),
             file_offset: 0,
-            frame: ReadFrameIdx::new(0),
+            frame: None,
             destination_offset: 0,
             requested_len: 0,
             raw_frame_lease: false,
@@ -1621,8 +1637,8 @@ impl<E: EagerExecutor> DriverCore<E> {
             let Some((slot, kind, context)) = self.prepare_next() else {
                 break;
             };
-            let outcome = self.execute(kind, context);
-            self.publish(slot, outcome, out);
+            let (outcome, frame) = self.execute(kind, context);
+            self.publish(slot, outcome, frame, out);
             drained += 1;
         }
         drained
@@ -1700,12 +1716,15 @@ impl<E: EagerExecutor> DriverCore<E> {
     fn prepare_next(&self) -> Option<(u32, OpKind, OpContext<'static>)> {
         let mut shared = self.lock();
         let slot = shared.ready.pop_front()?;
-        let entry = shared.slab.peek(slot);
+        let entry = shared.slab.peek_mut(slot);
         let context = match entry.kind {
             OpKind::Read => OpContext::read(
                 entry.fd,
                 entry.file_offset,
-                entry.frame,
+                entry
+                    .frame
+                    .take()
+                    .expect("a queued read owns its frame token"),
                 entry.destination_offset,
                 entry.requested_len,
             ),
@@ -1737,65 +1756,76 @@ impl<E: EagerExecutor> DriverCore<E> {
     /// Execute (submit mutex *not* held): the retry policy and its fixed bound
     /// over the backend's simulated or real syscall. `EINTR` resubmits on every
     /// op, `EAGAIN` resubmits on reads but surfaces on writes and fsync.
-    fn execute(&self, kind: OpKind, context: OpContext<'_>) -> Result<u32, i32> {
+    fn execute(
+        &self,
+        kind: OpKind,
+        context: OpContext<'_>,
+    ) -> (Result<u32, i32>, Option<InFlightFrame>) {
         let retry_would_block = matches!(kind, OpKind::Read);
         let mut retries = 0u32;
         let logical_len = context.requested_len;
         let mut next = context;
-        loop {
-            match self.executor.attempt(kind, next.requested_len, next) {
+        let outcome = loop {
+            match self.executor.attempt(kind, next.requested_len, &mut next) {
                 Attempt::Done(bytes) => {
                     assert!(
                         bytes <= next.requested_len,
                         "executor reported more bytes than requested"
                     );
                     if !matches!(kind, OpKind::Write) {
-                        return Ok(bytes);
+                        break Ok(bytes);
                     }
                     if bytes == next.requested_len {
-                        return Ok(logical_len);
+                        break Ok(logical_len);
                     }
                     if bytes > 0 {
                         next = next.advance_write(bytes);
                     } else if retries >= self.retry_bound {
-                        return Err(EIO);
+                        break Err(EIO);
                     } else {
                         retries += 1;
                     }
                 }
-                Attempt::Failed(errno) => return Err(errno),
+                Attempt::Failed(errno) => break Err(errno),
                 Attempt::Interrupted => {
                     if retries >= self.retry_bound {
-                        return Err(EINTR);
+                        break Err(EINTR);
                     }
                     retries += 1;
                 }
                 Attempt::WouldBlock => {
                     if !retry_would_block {
-                        return Err(EAGAIN);
+                        break Err(EAGAIN);
                     }
                     if retries >= self.retry_bound {
-                        return Err(EAGAIN);
+                        break Err(EAGAIN);
                     }
                     retries += 1;
                 }
             }
-        }
+        };
+        (outcome, next.frame)
     }
 
     /// Publish/finalize (locked): reclaim the slot now that its final attempt is
     /// done, drop the in-flight count (progressing a deferred close), release the
     /// write lease, and emit the completion.
-    fn publish(&self, slot: u32, outcome: Result<u32, i32>, out: &mut CompletionBatch) {
+    fn publish(
+        &self,
+        slot: u32,
+        outcome: Result<u32, i32>,
+        frame: Option<InFlightFrame>,
+        out: &mut CompletionBatch,
+    ) {
         let retiring = {
             let mut shared = self.lock();
-            let (token, entry) = shared.slab.reclaim(slot);
+            let (token, mut entry) = shared.slab.reclaim(slot);
             let retire_due = shared.files.on_complete(entry.fd);
-            self.release_raw_frame(&entry);
+            let frame = self.release_frame(entry.raw_frame_lease, frame.or(entry.frame.take()));
             self.release_write_slot(&entry);
             let result = outcome.map_err(IoError::from_raw);
             self.executor.on_op_completed(entry.fd, entry.kind, &result);
-            out.push(Completion::new(token, entry.kind, result));
+            out.push(Completion::new(token, entry.kind, result, frame));
             retire_due.then_some(entry.fd)
         };
         self.signal_pool_wait();
@@ -1809,18 +1839,23 @@ impl<E: EagerExecutor> DriverCore<E> {
         let Some((slot, kind, context)) = self.prepare_next() else {
             return false;
         };
-        let outcome = self.execute(kind, context);
-        self.publish_to_backlog(slot, outcome);
+        let (outcome, frame) = self.execute(kind, context);
+        self.publish_to_backlog(slot, outcome, frame);
         true
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn publish_to_backlog(&self, slot: u32, outcome: Result<u32, i32>) {
+    fn publish_to_backlog(
+        &self,
+        slot: u32,
+        outcome: Result<u32, i32>,
+        frame: Option<InFlightFrame>,
+    ) {
         let retiring = {
             let mut shared = self.lock();
-            let (token, entry) = shared.slab.reclaim(slot);
+            let (token, mut entry) = shared.slab.reclaim(slot);
             let retire_due = shared.files.on_complete(entry.fd);
-            self.release_raw_frame(&entry);
+            let frame = self.release_frame(entry.raw_frame_lease, frame.or(entry.frame.take()));
             self.release_write_slot(&entry);
             assert!(
                 shared.completion_backlog.len() < self.queue_capacity as usize,
@@ -1830,7 +1865,7 @@ impl<E: EagerExecutor> DriverCore<E> {
             self.executor.on_op_completed(entry.fd, entry.kind, &result);
             shared
                 .completion_backlog
-                .push_back(Completion::new(token, entry.kind, result));
+                .push_back(Completion::new(token, entry.kind, result, frame));
             retire_due.then_some(entry.fd)
         };
         self.signal_pool_wait();
@@ -1862,7 +1897,7 @@ impl<E: EagerExecutor> DriverCore<E> {
                 written,
                 &buf[written as usize..],
             );
-            match self.execute(OpKind::Write, context) {
+            match self.execute(OpKind::Write, context).0 {
                 Ok(bytes) => {
                     assert!(
                         bytes <= remaining,
@@ -1886,7 +1921,7 @@ impl<E: EagerExecutor> DriverCore<E> {
             }
         }
         let context = OpContext::fsync(fd.file_id(), mode);
-        match self.execute(OpKind::Fsync, context) {
+        match self.execute(OpKind::Fsync, context).0 {
             Ok(_) => Ok(()),
             Err(errno) => Err(IoError::from_raw(errno)),
         }
@@ -2046,7 +2081,10 @@ impl<E: RingExecutor> DriverCore<E> {
                     self.executor.push_read(
                         user_data,
                         fd_slot,
-                        entry.frame,
+                        entry
+                            .frame
+                            .as_ref()
+                            .expect("a queued read owns its frame token"),
                         entry.file_offset,
                         entry.destination_offset,
                         entry.requested_len,
@@ -2098,12 +2136,12 @@ impl<E: RingExecutor> DriverCore<E> {
                 shared.ready.push_back(slot);
                 return true;
             };
-            let (token, entry) = shared.slab.reclaim(slot);
+            let (token, mut entry) = shared.slab.reclaim(slot);
             let file_retire_due = shared.files.on_complete(entry.fd);
-            self.release_raw_frame(&entry);
+            let frame = self.release_frame(entry.raw_frame_lease, entry.frame.take());
             self.release_write_slot(&entry);
             self.executor.on_op_completed(entry.fd, entry.kind, &result);
-            out.push(Completion::new(token, entry.kind, result));
+            out.push(Completion::new(token, entry.kind, result, frame));
             let keep_reaping = !file_retire_due || retire_due(entry.fd);
             self.executor.on_op_finalized();
             *caller_completions += 1;
@@ -2241,14 +2279,20 @@ impl<E> DriverCore<E> {
         }
     }
 
-    fn release_raw_frame(&self, entry: &OpEntry) {
-        if entry.raw_frame_lease {
-            let was_inflight =
-                self.raw_read_inflight[entry.frame.get() as usize].swap(false, Ordering::AcqRel);
-            assert!(
-                was_inflight,
-                "a completed raw read releases its frame lease"
-            );
+    /// A raw-lease read never publishes: its token aborts here, once the backend
+    /// has finished with the frame. A pool read hands its token to the completion
+    /// for the pool to publish or abort.
+    fn release_frame(
+        &self,
+        raw_frame_lease: bool,
+        frame: Option<InFlightFrame>,
+    ) -> Option<InFlightFrame> {
+        if raw_frame_lease {
+            let token = frame.expect("a raw read op owns its frame token until completion");
+            self.arena.abort(token);
+            None
+        } else {
+            frame
         }
     }
 }

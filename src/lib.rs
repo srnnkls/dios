@@ -63,6 +63,7 @@ pub mod testing {
     #[cfg(feature = "mock")]
     use std::sync::atomic::Ordering;
 
+    use crate::PageId;
     pub use crate::pool::ReadFrameIdx;
 
     /// Feature-gated raw-read admission for backend tests and driver benches.
@@ -106,9 +107,22 @@ pub mod testing {
         }
     }
 
+    /// The unique write authority over one `TestFrames` frame between `claim`
+    /// and `publish`/`abort`.
+    #[must_use]
+    #[derive(Debug)]
+    pub struct TestInFlightFrame(crate::pool::InFlightFrame);
+
+    impl TestInFlightFrame {
+        #[must_use]
+        pub fn frame(&self) -> ReadFrameIdx {
+            self.0.frame()
+        }
+    }
+
     /// Single-threaded owner of a standalone frame arena for structural tests.
-    /// Mutation is unavailable through shared references, and the wrapper is
-    /// `!Sync`, so a safe byte view cannot race a test fill or backend DMA.
+    /// Bytes are readable only through `&mut self`, and every write goes through
+    /// a [`TestInFlightFrame`], so a byte view cannot race a fill.
     #[derive(Debug)]
     pub struct TestFrames {
         frames: crate::pool::Frames,
@@ -137,8 +151,8 @@ pub mod testing {
         }
 
         #[must_use]
-        pub fn frame_bytes(&self, frame: ReadFrameIdx) -> &[u8] {
-            self.frames.frame_bytes(frame)
+        pub fn frame_bytes(&mut self, frame: ReadFrameIdx) -> &[u8] {
+            self.frames.frame_bytes_exclusive(frame)
         }
 
         #[must_use]
@@ -146,6 +160,25 @@ pub mod testing {
             self.frames.state(frame)
         }
 
+        /// Takes a `Free` frame `InFlight` under `page`; `None` if it is not `Free`.
+        #[must_use]
+        pub fn claim(&self, frame: ReadFrameIdx, page: PageId) -> Option<TestInFlightFrame> {
+            self.frames.claim(frame, page).map(TestInFlightFrame)
+        }
+
+        pub fn fill(&self, token: &mut TestInFlightFrame, byte: u8) {
+            self.frames.fill(&mut token.0, byte);
+        }
+
+        pub fn publish(&self, token: TestInFlightFrame) {
+            let _ = self.frames.publish(token.0);
+        }
+
+        pub fn abort(&self, token: TestInFlightFrame) {
+            let _ = self.frames.abort(token.0);
+        }
+
+        /// Drives a reclamation edge, `Resident → Evicting` or `Evicting → Free`.
         pub fn advance(&self, frame: ReadFrameIdx, to: FrameState) {
             self.frames.advance(frame, to);
         }
@@ -213,10 +246,10 @@ pub mod testing {
         fn pin<'ctx>(
             &'ctx self,
             reader: &'ctx crate::pool::ReaderCtx,
-            page: crate::pool::PageId,
+            page: PageId,
         ) -> Option<crate::pool::FrameGuard<'ctx>>;
-        fn insert_resident_frame(&self, page: crate::pool::PageId, fill: u8) -> ReadFrameIdx;
-        fn evict_frame(&self, page: crate::pool::PageId) -> ReadFrameIdx;
+        fn insert_resident_frame(&self, page: PageId, fill: u8) -> ReadFrameIdx;
+        fn evict_frame(&self, page: PageId) -> ReadFrameIdx;
         fn clock_reference_stores(&self) -> u64;
         #[cfg(feature = "bench")]
         fn global_epoch_observed(&self) -> u64;
@@ -242,20 +275,16 @@ pub mod testing {
                 fn pin<'ctx>(
                     &'ctx self,
                     reader: &'ctx crate::pool::ReaderCtx,
-                    page: crate::pool::PageId,
+                    page: PageId,
                 ) -> Option<crate::pool::FrameGuard<'ctx>> {
                     self.pin_internal(reader, page)
                 }
 
-                fn insert_resident_frame(
-                    &self,
-                    page: crate::pool::PageId,
-                    fill: u8,
-                ) -> ReadFrameIdx {
+                fn insert_resident_frame(&self, page: PageId, fill: u8) -> ReadFrameIdx {
                     self.insert_resident_frame_internal(page, fill)
                 }
 
-                fn evict_frame(&self, page: crate::pool::PageId) -> ReadFrameIdx {
+                fn evict_frame(&self, page: PageId) -> ReadFrameIdx {
                     self.evict_frame_internal(page)
                 }
 
@@ -572,7 +601,7 @@ pub mod testing {
     #[must_use]
     pub fn current_page_hash(driver: u64, slot: u32, generation: u32, granule: u32) -> u64 {
         let file = crate::FileId::new(driver, slot, generation);
-        let page = crate::PageId::new(file, granule);
+        let page = PageId::new(file, granule);
         crate::pool::page_hash(page)
     }
 }
