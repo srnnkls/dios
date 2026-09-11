@@ -95,8 +95,9 @@ future hits run fails.
 
 ## Validation status
 
-Mac: 344 tests in the mock-enabled suite, 15 loom schedules, strict Clippy and
-rustfmt. Linux nix: `tests/zero_alloc.rs` 23 passed;
+Mac: 344 tests in the mock-enabled suite, 15 loom schedules, the seven token
+unit tests under Miri, strict Clippy and rustfmt. Linux nix:
+`tests/zero_alloc.rs` 23 passed;
 `miss_table_pending_index` 1.0189 (CI95 upper 1.0277) against 1.0354 (CI95
 upper 1.0495) on the baseline arm.
 
