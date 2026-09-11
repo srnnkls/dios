@@ -1,5 +1,6 @@
 //! Fresh-process retirement timing; compare interleaved binaries with `compare`.
 use std::path::Path;
+use std::process::ExitCode;
 use std::time::Instant;
 
 use dios::testing::{MockDriver, MockPoolTestingExt, PoolBuilderTestingExt, PoolTestingExt};
@@ -45,10 +46,19 @@ fn fixture(frames: u32, file_count: u32) -> (Pool<MockDriver>, Vec<FileId>) {
     (pool, files)
 }
 
-fn main() {
-    let mut arguments = std::env::args().skip(1);
-    let frames: u32 = arguments.next().expect("frame count").parse().expect("u32");
-    let file_count: u32 = arguments.next().expect("file count").parse().expect("u32");
+fn main() -> ExitCode {
+    let mut arguments = std::env::args()
+        .skip(1)
+        .filter(|argument| !argument.starts_with('-'));
+    let (Some(frames), Some(file_count)) = (
+        arguments
+            .next()
+            .and_then(|frames| frames.parse::<u32>().ok()),
+        arguments.next().and_then(|files| files.parse::<u32>().ok()),
+    ) else {
+        println!("usage: file_retirement <frames> <files>");
+        return ExitCode::SUCCESS;
+    };
     let (pool, files) = fixture(frames, file_count);
     let started = Instant::now();
     for file in &files {
@@ -66,4 +76,5 @@ fn main() {
         assert!(pool.driver().is_closed(file));
     }
     println!("{retirement_ns}");
+    ExitCode::SUCCESS
 }

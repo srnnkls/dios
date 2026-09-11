@@ -48,7 +48,7 @@ observation, including failures/outliers. macOS measurements are advisory.
 | Baseline | Unchanged 69d46c2, same harness and fixture |
 | Reps | 30 alternating fresh-process pairs per case; fixture sufficiently large for timer resolution |
 | Threshold | Shared bootstrap one-sided 95% upper candidate/base <= 0.25 for 262,144 frames and 136 files; <= 1.03 for remaining cases |
-| Compare command | cargo bench --features bench --bench compare -- target/retirement-pairs/<case>.csv <threshold> |
+| Compare command | `mise run pair-bench file_retirement <base_dir> <candidate_dir> 30 target/retirement-pairs/<case>.csv -- <frames> <files>` on the host, then `mise run gate target/retirement-pairs/<case>.csv <threshold>` |
 | Escalation lever | Profile the exact failed arm; adjust indexing/traversal, or prototype batched progress with explicit SIRA batching; retain failed evidence and never relax threshold silently |
 
 SIRA integration gates use the existing 1,000,000-row seed-3 corpus, 24-byte
