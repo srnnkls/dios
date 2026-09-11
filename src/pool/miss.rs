@@ -13,7 +13,16 @@
 //! short read reslices the remainder, and an IO error or short-read-at-EOF fans
 //! the failure to every waiter and frees the frame.
 
+use super::file_slots::{FileOwned, FileSlot, FileSlots};
 use crate::allocation::{MappedSlice, Occupiable};
+
+impl FileOwned for MissEntry {
+    fn file_slot(self) -> u32 {
+        self.page.file().slot()
+    }
+}
+
+const _: () = assert!(size_of::<FileSlot<MissEntry>>() == size_of::<Occupiable<MissEntry>>());
 use crate::completion::CompletionBatch;
 use crate::driver::{BackendProgress, FileHandle, FileId, OpToken, RegistrationPosture, SyncMode};
 use crate::error::FileRegistrationError;
@@ -268,7 +277,9 @@ struct PendingMiss {
 /// sized to the read in-flight bound: every pending miss holds one read credit.
 #[derive(Debug)]
 pub(crate) struct MissTable {
-    slots: MappedSlice<Occupiable<MissEntry>>,
+    #[cfg(test)]
+    retirement_visits: std::cell::Cell<u64>,
+    slots: FileSlots<MissEntry>,
     success_frames: MappedSlice<Occupiable<(MissSlot, NonZeroU64)>>,
     pending: Box<[Option<PendingMiss>]>,
     pending_len: u32,
@@ -277,20 +288,30 @@ pub(crate) struct MissTable {
 impl MissTable {
     #[cfg(test)]
     pub(crate) fn with_capacity(capacity: u32) -> Self {
-        Self::try_with_capacity(capacity, capacity)
-            .unwrap_or_else(|| panic!("miss-table allocation failed for {capacity} slots"))
+        Self::try_with_capacity(
+            capacity,
+            capacity,
+            crate::driver::DEFAULT_REGISTERED_FILE_CAPACITY,
+        )
+        .unwrap_or_else(|| panic!("miss-table allocation failed for {capacity} slots"))
     }
 
-    pub(crate) fn try_with_capacity(capacity: u32, pending_capacity: u32) -> Option<Self> {
+    pub(crate) fn try_with_capacity(
+        capacity: u32,
+        pending_capacity: u32,
+        file_capacity: u32,
+    ) -> Option<Self> {
         assert!(
             pending_capacity <= capacity,
             "pending misses occupy miss slots, so their bound fits the slot count"
         );
         Some(Self {
-            slots: MappedSlice::try_vacant(capacity)?,
+            slots: FileSlots::try_new(capacity, file_capacity)?,
             success_frames: MappedSlice::try_vacant(capacity)?,
             pending: crate::allocation::try_boxed_slice_with(pending_capacity, || None)?,
             pending_len: 0,
+            #[cfg(test)]
+            retirement_visits: std::cell::Cell::new(0),
         })
     }
 
@@ -298,9 +319,7 @@ impl MissTable {
     /// constructor loop used to pay, so a bench can measure a build against it.
     #[cfg(feature = "bench")]
     pub(crate) fn populate(&mut self) {
-        for slot in self.slots.iter_mut() {
-            slot.clear();
-        }
+        self.slots.populate();
         for frame in self.success_frames.iter_mut() {
             frame.clear();
         }
@@ -415,7 +434,7 @@ impl MissTable {
             filled: 0,
             outcome: MissOutcome::Pending,
         };
-        self.slots[slot.index()].set(entry);
+        self.slots.insert(slot.index(), entry);
         self.pending_push(PendingMiss { page, token, slot });
         generation
     }
@@ -509,7 +528,7 @@ impl MissTable {
                 );
                 self.success_frames[frame_index].clear();
             }
-            self.slots[slot.index()].clear();
+            self.slots.remove(slot.index());
         }
     }
 
@@ -533,12 +552,12 @@ impl MissTable {
     }
 
     pub(crate) fn has_live_for_file(&self, file: FileId, interests: &MissInterests) -> bool {
-        self.slots.iter().enumerate().any(|(index, entry)| {
-            entry.get().is_some_and(|entry| {
-                entry.page.file() == file
-                    && (entry.outcome == MissOutcome::Pending
-                        || interests.waiters(MissSlot::new(index), entry.generation) != Some(0))
-            })
+        self.slots.for_file(file).any(|(index, entry)| {
+            #[cfg(test)]
+            self.retirement_visits.set(self.retirement_visits.get() + 1);
+            entry.page.file() == file
+                && (entry.outcome == MissOutcome::Pending
+                    || interests.waiters(MissSlot::new(index), entry.generation) != Some(0))
         })
     }
 }
@@ -550,9 +569,32 @@ mod tests {
     use crate::pool::{PageId, ReadFrameIdx};
 
     #[test]
+    fn retirement_visits_only_the_files_miss_entries() {
+        let interests = MissInterests::with_capacity(4096);
+        let mut miss = MissTable::with_capacity(4096);
+        let file = FileId::new(1, 0, 1);
+        let slot = MissSlot::new(3000);
+        let generation = miss.admit(
+            slot,
+            PageId::new(file, 0),
+            ReadFrameIdx::new(0),
+            OpToken::new(0, 1),
+            &interests,
+        );
+        miss.fail(slot.index(), 5);
+        interests.release(slot, generation);
+        assert!(!miss.has_live_for_file(file, &interests));
+        let visits = miss.retirement_visits.get();
+        assert!(
+            visits <= 1,
+            "retirement examined {visits} miss slots for one entry"
+        );
+    }
+
+    #[test]
     fn pending_lookups_follow_admit_reslice_and_terminal_transitions() {
         let interests = MissInterests::with_capacity(100_000);
-        let mut miss = MissTable::try_with_capacity(100_000, 2).expect("allocation");
+        let mut miss = MissTable::try_with_capacity(100_000, 2, 1).expect("allocation");
         let file = FileId::new(1, 0, 1);
         let first_page = PageId::new(file, 7);
         let second_page = PageId::new(file, 9);
@@ -603,7 +645,7 @@ mod tests {
     #[should_panic(expected = "pending misses stay within the read in-flight bound")]
     fn admitting_past_the_in_flight_bound_is_a_programmer_error() {
         let interests = MissInterests::with_capacity(4);
-        let mut miss = MissTable::try_with_capacity(4, 1).expect("allocation");
+        let mut miss = MissTable::try_with_capacity(4, 1, 1).expect("allocation");
         let file = FileId::new(1, 0, 1);
         miss.admit(
             MissSlot::new(0),

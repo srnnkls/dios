@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+#MISE description="Alternate a baseline and a candidate build of a fresh-process bench into a paired samples CSV"
+#USAGE arg "<bench>"
+#USAGE arg "<base_dir>"
+#USAGE arg "<candidate_dir>"
+#USAGE arg "<reps>"
+#USAGE arg "<csv>"
+#USAGE arg "[bench_args]..." var=#true
+set -euo pipefail
+
+bench_binary() {
+  local built
+  built=$(cd "$1" && cargo bench --features bench,mock --bench "$usage_bench" --no-run 2>&1 \
+    | sed -n 's/.*Executable .*(\(.*\)).*/\1/p' | tail -1)
+  [ -n "$built" ] || { echo "no $usage_bench binary under $1" >&2; exit 1; }
+  echo "$1/$built"
+}
+
+base=$(bench_binary "$usage_base_dir")
+candidate=$(bench_binary "$usage_candidate_dir")
+read -r -a bench_args <<< "${usage_bench_args:-}"
+mkdir -p "$(dirname "$usage_csv")"
+echo "base_ns,candidate_ns" > "$usage_csv"
+for ((rep = 0; rep < usage_reps; rep++)); do
+  if ((rep % 2 == 0)); then
+    base_ns=$(taskset -c 2 "$base" "${bench_args[@]}")
+    candidate_ns=$(taskset -c 2 "$candidate" "${bench_args[@]}")
+  else
+    candidate_ns=$(taskset -c 2 "$candidate" "${bench_args[@]}")
+    base_ns=$(taskset -c 2 "$base" "${bench_args[@]}")
+  fi
+  echo "$base_ns,$candidate_ns" >> "$usage_csv"
+done
+sha256sum "$base" "$candidate" "$usage_csv"

@@ -19,7 +19,6 @@ use std::time::Duration;
 #[cfg(all(feature = "mock", not(loom)))]
 use std::time::Instant;
 
-use crate::allocation::{MappedSlice, Occupiable};
 use crate::completion::CompletionBatch;
 use crate::driver::{
     ArenaLockPolicy, BackendProgress, Driver, DriverBuildError, FileHandle, FileId, IoMode, OpKind,
@@ -39,6 +38,9 @@ use crate::sync::{AtomicU32, AtomicU64, Mutex, MutexGuard, Ordering};
 mod alias_guard;
 mod clock;
 mod epoch;
+mod file_slots;
+mod frame_pages;
+use frame_pages::{FrameFileSlot, FramePages};
 mod frames;
 #[cfg(loom)]
 pub mod loom_model;
@@ -71,7 +73,7 @@ pub(crate) use table::page_hash;
 pub struct ControlTables {
     table: PageTable,
     miss: MissTable,
-    frame_pages: MappedSlice<Occupiable<PageId>>,
+    frame_pages: FramePages,
 }
 
 #[cfg(feature = "bench")]
@@ -85,9 +87,17 @@ impl ControlTables {
     pub fn with_frame_count(frame_count: u32) -> Self {
         Self {
             table: PageTable::with_frame_count(frame_count),
-            miss: MissTable::try_with_capacity(frame_count, 1)
-                .unwrap_or_else(|| panic!("miss table allocation failed for {frame_count} frames")),
-            frame_pages: MappedSlice::try_vacant(frame_count).unwrap_or_else(|| {
+            miss: MissTable::try_with_capacity(
+                frame_count,
+                1,
+                crate::driver::DEFAULT_REGISTERED_FILE_CAPACITY,
+            )
+            .unwrap_or_else(|| panic!("miss table allocation failed for {frame_count} frames")),
+            frame_pages: FramePages::try_new(
+                frame_count,
+                crate::driver::DEFAULT_REGISTERED_FILE_CAPACITY,
+            )
+            .unwrap_or_else(|| {
                 panic!("frame page index allocation failed for {frame_count} frames")
             }),
         }
@@ -98,9 +108,7 @@ impl ControlTables {
     pub fn populate(&mut self) {
         self.table.populate();
         self.miss.populate();
-        for page in self.frame_pages.iter_mut() {
-            page.clear();
-        }
+        self.frame_pages.populate();
     }
 }
 
@@ -944,10 +952,12 @@ type PreallocatedFileState = (Box<[AtomicU64]>, Box<[Arc<ResidentLeaseState>]>, 
 /// page reverse map, the file registry, and the reused completion batch.
 #[derive(Debug)]
 struct Control {
+    #[cfg(test)]
+    retirement_frame_visits: Cell<u64>,
     evict_queue: EvictQueue,
     miss: MissTable,
     free_frames: FreeFrames,
-    frame_pages: MappedSlice<Occupiable<PageId>>,
+    frame_pages: FramePages,
     files: Box<[Option<PoolFile>]>,
     batch: CompletionBatch,
     product_ops: Box<[ProductOpSlot]>,
@@ -988,6 +998,7 @@ enum ProductOp {
         token: PoolToken,
         file: FileId,
         order: u64,
+        mode: crate::driver::SyncMode,
     },
     Fsync {
         token: PoolToken,
@@ -1083,7 +1094,7 @@ impl<D> Drop for Pool<D> {
                         "a release-ring frame remains Evicting until direct free"
                     );
                     frames.advance(frame, FrameState::Free);
-                    frame_pages[frame.get() as usize].clear();
+                    frame_pages.remove(frame.get() as usize);
                 });
         }
         assert_eq!(
@@ -1115,13 +1126,19 @@ impl<D: PoolBackend> Pool<D> {
     ) -> Result<Control, PoolBuildError> {
         assert!(backend_capacity > 0, "backend batch capacity is positive");
         Ok(Control {
+            #[cfg(test)]
+            retirement_frame_visits: Cell::new(0),
             evict_queue: EvictQueue::try_with_capacity(config.frame_count)
                 .ok_or(PoolBuildError::Allocation)?,
-            miss: MissTable::try_with_capacity(config.frame_count, config.max_inflight_reads)
-                .ok_or(PoolBuildError::Allocation)?,
+            miss: MissTable::try_with_capacity(
+                config.frame_count,
+                config.max_inflight_reads,
+                config.registered_file_capacity,
+            )
+            .ok_or(PoolBuildError::Allocation)?,
             free_frames: FreeFrames::try_with_all(config.frame_count)
                 .ok_or(PoolBuildError::Allocation)?,
-            frame_pages: MappedSlice::try_vacant(config.frame_count)
+            frame_pages: FramePages::try_new(config.frame_count, config.registered_file_capacity)
                 .ok_or(PoolBuildError::Allocation)?,
             files: crate::allocation::try_boxed_slice_with(config.registered_file_capacity, || {
                 None
@@ -1670,6 +1687,49 @@ impl<D: PoolBackend> Pool<D> {
         })
     }
 
+    /// Observes the exact physical residency protected by `guard`.
+    ///
+    /// Equal observations under the same pool and exact page identify the same
+    /// immutable bytes. Unlike [`Pool::resident_hint`], this observation is tied
+    /// to the supplied guard, even if the page table changes concurrently.
+    /// Returns `None` after logical eviction; the guard still protects its bytes.
+    ///
+    /// # Panics
+    ///
+    /// If the page or guard belongs to another pool, or the guard protects a
+    /// different exact page. The guard must be from this pool before frame indexing.
+    #[must_use]
+    pub fn resident_hint_for_guard(
+        &self,
+        page: PageId,
+        guard: &FrameGuard<'_>,
+    ) -> Option<ResidentHint> {
+        assert_eq!(
+            page.file().driver(),
+            self.identity,
+            "page belongs to a foreign pool"
+        );
+        assert!(
+            std::ptr::eq(guard.retention, &raw const self.retention),
+            "guard belongs to a foreign pool"
+        );
+        // The live guard's epoch prevents reclamation and exact-page mutation.
+        assert_eq!(
+            self.frames.exact_page(guard.frame),
+            page,
+            "guard must protect the requested exact page"
+        );
+        let stamp = self.frames.state_word(guard.frame);
+        if !Frames::word_is_resident(stamp) {
+            return None;
+        }
+        Some(ResidentHint {
+            granule: page.granule_idx(),
+            frame: guard.frame.get(),
+            stamp: NonZeroU64::new(stamp).expect("a Resident packed state word is nonzero"),
+        })
+    }
+
     /// Attempts one exact hinted residency lookup before falling back to
     /// [`Pool::get`] for a missing, mismatched, or stale observation.
     ///
@@ -1887,7 +1947,6 @@ impl<D: PoolBackend> Pool<D> {
         file: FileId,
         mode: crate::driver::SyncMode,
     ) -> Result<PoolToken, PoolSubmitError> {
-        let crate::driver::SyncMode::Full = mode;
         let mut control = self.control();
         let _ = live_file_handle(&control.files, file, self.identity)?;
         let Some(index) = control
@@ -1911,7 +1970,12 @@ impl<D: PoolBackend> Pool<D> {
             u32::try_from(index).expect("product op table indexes by u32"),
             product_slot.generation,
         );
-        product_slot.operation = Some(ProductOp::FsyncHeld { token, file, order });
+        product_slot.operation = Some(ProductOp::FsyncHeld {
+            token,
+            file,
+            order,
+            mode,
+        });
         self.submit_held_fsyncs(&mut control);
         self.wake.wake();
         Ok(token)
@@ -2052,11 +2116,20 @@ impl<D: PoolBackend> Pool<D> {
             }
             self.retire_file_frames(control, file);
             let miss_live = control.miss.has_live_for_file(file, &self.miss_interests);
-            let frames_live = control.frame_pages.iter().enumerate().any(|(frame, page)| {
-                page.get().is_some_and(|page| page.file() == file)
-                    && self.frames.state(ReadFrameIdx::new(
-                        u32::try_from(frame).expect("frame index fits u32"),
-                    )) != FrameState::Free
+            let frames_live = control.frame_pages.for_file(file).any(|(frame, _)| {
+                #[cfg(test)]
+                control
+                    .retirement_frame_visits
+                    .set(control.retirement_frame_visits.get() + 1);
+                let frame = ReadFrameIdx::new(u32::try_from(frame).expect("frame index fits u32"));
+                assert!(
+                    matches!(
+                        self.frames.state(frame),
+                        FrameState::Resident | FrameState::Evicting
+                    ),
+                    "mapped membership remains until reclamation frees the frame"
+                );
+                self.frames.exact_page(frame).file() == file
             });
             let product_live = control.product_ops.iter().any(|slot| {
                 slot.operation
@@ -2079,15 +2152,17 @@ impl<D: PoolBackend> Pool<D> {
 
     fn retire_file_frames(&self, control: &mut Control, file: FileId) {
         let epoch = self.global_epoch.load(Ordering::Acquire);
-        for index in 0..control.frame_pages.len() {
-            let Some(page) = control.frame_pages[index].get() else {
-                continue;
-            };
-            if page.file() != file {
-                continue;
-            }
+        for (index, _) in control.frame_pages.for_file(file) {
+            #[cfg(test)]
+            control
+                .retirement_frame_visits
+                .set(control.retirement_frame_visits.get() + 1);
             let frame = ReadFrameIdx::new(u32::try_from(index).expect("frame index fits u32"));
             if self.frames.state(frame) != FrameState::Resident {
+                continue;
+            }
+            let page = self.frames.exact_page(frame);
+            if page.file() != file {
                 continue;
             }
             if !control.miss.prepare_eviction(frame, &self.miss_interests) {
@@ -2232,7 +2307,9 @@ impl<D: PoolBackend> Pool<D> {
         self.frames.write_exact_page(frame, page);
         self.frames.advance(frame, FrameState::Resident);
         self.table.insert_shared(page, frame);
-        control.frame_pages[frame.get() as usize].set(page);
+        control
+            .frame_pages
+            .insert(frame.get() as usize, FrameFileSlot::for_page(page));
         let _ = self.clock.reference(frame);
         frame
     }
@@ -2323,9 +2400,11 @@ impl<D: PoolBackend> Pool<D> {
             if !control.miss.prepare_eviction(victim, &self.miss_interests) {
                 continue;
             }
-            let page = control.frame_pages[victim.get() as usize]
-                .get()
-                .expect("a resident eviction victim has a reverse page mapping");
+            assert!(
+                control.frame_pages[victim.get() as usize].get().is_some(),
+                "a resident CLOCK victim remains indexed"
+            );
+            let page = self.frames.exact_page(victim);
             let removed = self
                 .table
                 .remove_shared(page)
@@ -2463,14 +2542,19 @@ impl<D: PoolBackend> Pool<D> {
 
     fn submit_held_fsyncs(&self, control: &mut Control) {
         for index in 0..control.product_ops.len() {
-            let Some(ProductOp::FsyncHeld { token, file, order }) =
-                control.product_ops[index].operation.as_ref()
+            let Some(ProductOp::FsyncHeld {
+                token,
+                file,
+                order,
+                mode,
+            }) = control.product_ops[index].operation.as_ref()
             else {
                 continue;
             };
             let token = *token;
             let file = *file;
             let barrier_order = *order;
+            let mode = *mode;
             let prior_write = control.product_ops.iter().any(|slot| {
                 matches!(
                     slot.operation,
@@ -2485,10 +2569,7 @@ impl<D: PoolBackend> Pool<D> {
                 continue;
             }
             let handle = registered_file(&control.files, PageId::new(file, 0));
-            match self
-                .driver
-                .submit_fsync(handle, crate::driver::SyncMode::Full)
-            {
+            match self.driver.submit_fsync(handle, mode) {
                 Ok(driver_token) => {
                     control.product_ops[index].operation = Some(ProductOp::Fsync {
                         token,
@@ -2508,14 +2589,17 @@ impl<D: PoolBackend> Pool<D> {
     fn drain_completions_finish_success(
         &self,
         miss: &mut MissTable,
-        frame_pages: &mut [Occupiable<PageId>],
+        frame_pages: &mut FramePages,
         index: usize,
         entry: MissEntry,
     ) {
         self.frames.write_exact_page(entry.frame(), entry.page());
         self.frames.advance(entry.frame(), FrameState::Resident);
         self.table.insert_shared(entry.page(), entry.frame());
-        frame_pages[entry.frame().get() as usize].set(entry.page());
+        frame_pages.insert(
+            entry.frame().get() as usize,
+            FrameFileSlot::for_page(entry.page()),
+        );
         let _ = self.clock.reference(entry.frame());
         miss.succeed(index);
         miss.clean_terminal_zero(
@@ -2566,7 +2650,7 @@ impl<D: PoolBackend> Pool<D> {
                         );
                         frames.advance(frame, FrameState::Free);
                         free_frames.push(frame);
-                        frame_pages[frame.get() as usize].clear();
+                        frame_pages.remove(frame.get() as usize);
                         reclaimed += 1;
                     });
                     (true, reclaimed)
@@ -2583,7 +2667,7 @@ impl<D: PoolBackend> Pool<D> {
                 if outcome == FrameOutcome::Freed {
                     frames.advance(frame, FrameState::Free);
                     free_frames.push(frame);
-                    frame_pages[frame.get() as usize].clear();
+                    frame_pages.remove(frame.get() as usize);
                 }
                 outcome
             })
@@ -2591,7 +2675,7 @@ impl<D: PoolBackend> Pool<D> {
             evict_queue.drain_matured(global_epoch, |frame, _tag| {
                 frames.advance(frame, FrameState::Free);
                 free_frames.push(frame);
-                frame_pages[frame.get() as usize].clear();
+                frame_pages.remove(frame.get() as usize);
                 FrameOutcome::Freed
             })
         };
@@ -2871,3 +2955,51 @@ impl PoolBackend for Driver {
 }
 
 impl PoolBackendSealed for Driver {}
+
+#[cfg(all(test, feature = "mock", not(loom)))]
+mod retirement_work_tests {
+    use super::*;
+    use crate::testing::{MockDriver, PoolBuilderTestingExt, PoolTestingExt};
+
+    #[test]
+    fn retirement_visits_only_the_files_mapped_frames() {
+        let driver = MockDriver::builder()
+            .queue_capacity(4)
+            .frames(4096)
+            .frame_bytes(4096)
+            .write_slots(2)
+            .build();
+        let pool = Pool::builder()
+            .frame_count(4096)
+            .granule(4096)
+            .max_concurrent_readers(1)
+            .peak_guards_per_reader(1)
+            .max_inflight_reads(1)
+            .miss_headroom(3)
+            .write_slots(2)
+            .max_inflight_product_ops(2)
+            .build_on(driver)
+            .expect("pool");
+        let file = pool
+            .open(Path::new("indexed-retirement"), DirectIo::Disabled)
+            .expect("file");
+        let unrelated = pool
+            .open(Path::new("unrelated-retirement"), DirectIo::Disabled)
+            .expect("file");
+        for granule in 0..8 {
+            pool.insert_resident_frame(PageId::new(unrelated, granule), 0xA1);
+            pool.insert_resident_frame(PageId::new(file, granule), 0xB2);
+        }
+        assert_eq!(pool.retire_file(file), RetireStatus::Retiring);
+        for _ in 0..8 {
+            pool.poll();
+        }
+        assert_eq!(pool.retire_file(file), RetireStatus::Retired);
+        assert!(!pool.driver.is_closed(unrelated));
+        let visits = pool.control().retirement_frame_visits.get();
+        assert!(
+            visits <= 8 * 10,
+            "retirement examined {visits} frame slots for eight pages"
+        );
+    }
+}

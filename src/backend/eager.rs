@@ -105,7 +105,7 @@ impl EagerExecutor for Eager {
                     requested,
                 )
             }
-            OpKind::Fsync => match crate::open::full_fsync(file) {
+            OpKind::Fsync => match crate::open::sync_file(file, context.sync_mode) {
                 Ok(()) => Attempt::Done(0),
                 Err(error) => classify(&error),
             },

@@ -807,6 +807,9 @@ impl OpToken {
 /// Durability barrier requested by an fsync op.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SyncMode {
+    /// Flush data and the metadata required to retrieve it through the device barrier.
+    /// On macOS this is strengthened to the same permanent-media barrier as Full.
+    Data,
     /// Flush file data and metadata through the device barrier.
     Full,
 }
@@ -1084,7 +1087,7 @@ pub(crate) trait RingExecutor: Executor {
     );
 
     /// Fills one fsync SQE, tagged with `user_data`. Called under the AD-4 mutex.
-    fn push_fsync(&self, user_data: u64, fd_slot: u32);
+    fn push_fsync(&self, user_data: u64, fd_slot: u32, mode: SyncMode);
 
     /// Submits filled SQEs without blocking on completions (`min_complete = 0`),
     /// so poll never sleeps awaiting events. Runs OUTSIDE the AD-4 mutex.
@@ -1115,7 +1118,7 @@ pub(crate) trait RingExecutor: Executor {
 
     /// Metadata-plane blocking fsync barrier on the retained file (AD-3).
     #[cfg(target_os = "linux")]
-    fn blocking_fsync(&self, fd_slot: u32) -> Result<(), i32>;
+    fn blocking_fsync(&self, fd_slot: u32, mode: SyncMode) -> Result<(), i32>;
 }
 
 /// Raw progress from one ring reap. Retryable CQEs count even though they do
@@ -1147,6 +1150,7 @@ impl BackendProgress {
 #[derive(Debug)]
 pub(crate) struct OpEntry {
     kind: OpKind,
+    sync_mode: SyncMode,
     fd: FileId,
     file_offset: u64,
     frame: ReadFrameIdx,
@@ -1169,6 +1173,7 @@ pub(crate) struct OpContext<'buf> {
     pub(crate) destination_offset: u32,
     pub(crate) requested_len: u32,
     pub(crate) write_buf: &'buf [u8],
+    pub(crate) sync_mode: SyncMode,
 }
 
 impl<'buf> OpContext<'buf> {
@@ -1186,6 +1191,7 @@ impl<'buf> OpContext<'buf> {
             destination_offset,
             requested_len,
             write_buf: &[],
+            sync_mode: SyncMode::Full,
         }
     }
 
@@ -1199,10 +1205,11 @@ impl<'buf> OpContext<'buf> {
             destination_offset: source_offset,
             requested_len,
             write_buf,
+            sync_mode: SyncMode::Full,
         }
     }
 
-    fn fsync(fd: FileId) -> Self {
+    fn fsync(fd: FileId, mode: SyncMode) -> Self {
         Self {
             fd,
             file_offset: 0,
@@ -1210,6 +1217,7 @@ impl<'buf> OpContext<'buf> {
             destination_offset: 0,
             requested_len: 0,
             write_buf: &[],
+            sync_mode: mode,
         }
     }
 
@@ -1494,6 +1502,7 @@ impl<E: Executor> DriverCore<E> {
         };
         let entry = OpEntry {
             kind: OpKind::Read,
+            sync_mode: SyncMode::Full,
             fd: fd.file_id(),
             file_offset,
             frame,
@@ -1527,6 +1536,7 @@ impl<E: Executor> DriverCore<E> {
                     u32::try_from(buf.len()).expect("write slot length fits the driver bound");
                 let entry = OpEntry {
                     kind: OpKind::Write,
+                    sync_mode: SyncMode::Full,
                     fd: fd.file_id(),
                     file_offset: offset,
                     frame: ReadFrameIdx::new(0),
@@ -1547,11 +1557,11 @@ impl<E: Executor> DriverCore<E> {
         fd: &FileHandle,
         mode: SyncMode,
     ) -> Result<OpToken, SubmitError> {
-        let SyncMode::Full = mode;
         let mut shared = self.lock();
         let slot = self.admit(&mut shared, fd.file_id())?;
         let entry = OpEntry {
             kind: OpKind::Fsync,
+            sync_mode: mode,
             fd: fd.file_id(),
             file_offset: 0,
             frame: ReadFrameIdx::new(0),
@@ -1699,7 +1709,7 @@ impl<E: EagerExecutor> DriverCore<E> {
                 entry.destination_offset,
                 entry.requested_len,
             ),
-            OpKind::Fsync => OpContext::fsync(entry.fd),
+            OpKind::Fsync => OpContext::fsync(entry.fd, entry.sync_mode),
             OpKind::Write => {
                 let write_slot = entry
                     .write_slot
@@ -1868,7 +1878,6 @@ impl<E: EagerExecutor> DriverCore<E> {
     }
 
     pub(crate) fn fsync_blocking(&self, fd: &FileHandle, mode: SyncMode) -> Result<(), IoError> {
-        let SyncMode::Full = mode;
         self.assert_own(fd.file_id());
         {
             let shared = self.lock();
@@ -1876,7 +1885,7 @@ impl<E: EagerExecutor> DriverCore<E> {
                 return Err(IoError::from_raw(EBADF));
             }
         }
-        let context = OpContext::fsync(fd.file_id());
+        let context = OpContext::fsync(fd.file_id(), mode);
         match self.execute(OpKind::Fsync, context) {
             Ok(_) => Ok(()),
             Err(errno) => Err(IoError::from_raw(errno)),
@@ -2043,7 +2052,9 @@ impl<E: RingExecutor> DriverCore<E> {
                         entry.requested_len,
                     );
                 }
-                OpKind::Fsync => self.executor.push_fsync(user_data, fd_slot),
+                OpKind::Fsync => self
+                    .executor
+                    .push_fsync(user_data, fd_slot, entry.sync_mode),
                 OpKind::Write => {
                     let write_slot = entry
                         .write_slot
@@ -2280,10 +2291,9 @@ impl<E: RingExecutor> DriverCore<E> {
         fd: &FileHandle,
         mode: SyncMode,
     ) -> Result<(), IoError> {
-        let SyncMode::Full = mode;
         self.check_live(fd.file_id())?;
         self.executor
-            .blocking_fsync(fd.file_id().slot())
+            .blocking_fsync(fd.file_id().slot(), mode)
             .map_err(IoError::from_raw)
     }
 

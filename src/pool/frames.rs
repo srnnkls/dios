@@ -28,6 +28,8 @@ const _: () = assert!(FRAME_STATE_TAG_MAX <= FRAME_STATE_MASK);
 /// Resident word Release-publishes it. Readers load it only after publishing an
 /// epoch and Acquire-validating that exact Resident word. EBR prevents reuse
 /// until every such reader is quiescent, so no read aliases a later write.
+/// Control-plane readers also use initialized Resident/Evicting identities while
+/// holding the pool control lock, which excludes frame reuse and identity writes.
 #[derive(Debug)]
 struct ExactPageCells {
     cells: crate::allocation::MappedSlice<UnsafeCell<MaybeUninit<PageId>>>,
@@ -51,8 +53,9 @@ impl ExactPageCells {
     }
 
     fn read(&self, index: usize) -> PageId {
-        // SAFETY: the caller published its reader epoch and Acquire-validated
-        // the matching Resident word, whose Release publication followed write.
+        // SAFETY: the caller either holds a validated reader epoch, or holds the
+        // control lock over a mapped Resident/Evicting frame. Publication follows
+        // initialization; EBR or the lock excludes every subsequent identity write.
         let page = unsafe { &*self.cells[index].get() };
         // SAFETY: `page` is initialized by the Release-published write above.
         unsafe { page.assume_init_read() }
