@@ -123,7 +123,7 @@ const MADV_HUGEPAGE: c_int = 14;
 /// Residency of one frame. [`FrameState::advance`] admits the residency cycle
 /// `Free → InFlight → Resident → Evicting → Free` (INV-1) plus the miss-abort edge
 /// `InFlight → Free`, and panics on any other edge. The edges into and out of
-/// `InFlight` are taken only through an [`InFlightFrame`] token
+/// `InFlight` are taken only through an `InFlightFrame` token
 /// (`Frames::claim`, `Frames::publish`, `Frames::abort`); `Frames::advance`
 /// drives the two reclamation edges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
