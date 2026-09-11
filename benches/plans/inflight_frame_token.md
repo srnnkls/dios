@@ -17,7 +17,7 @@ zero-sized pin or lock witness. No new allocation, no new atomic on the hit path
 | Baseline | d7548f8 plus the bench-only commit that adds `frame_write_path` (no `src/` change), built into `build/dios-base` on the host |
 | Reps | 30 interleaved fresh-process pairs per case, order reversed on alternate reps |
 | Threshold | one-sided 95% CI upper bound of the ratio ≤ 1.03 for both cases |
-| Compare command | `mise run gate target/bench-samples/frame_write_path_<case>.csv 1.03` |
+| Compare command | `mise run gate target/bench-samples/frame_write_path_<case>.csv 1.03`, both arms built with `RUSTFLAGS="-C llvm-args=-align-all-functions=6 -C llvm-args=-align-all-nofallthru-blocks=6"` (protocol amendment below) |
 | Escalation lever | Profile the failed arm. If the claim compare-exchange shows, replace it with the load/store pair under the control lock, which already serializes every claim; the token stays. Never relax the bound silently. |
 
 ## Notes
@@ -43,3 +43,28 @@ Additional required gates, not statistical: `tests/zero_alloc.rs` on both
 backends, every `tests/loom_pool.rs` schedule, the full mock-enabled suite, and
 the pinned in-process ratio benches (`overlap`, `miss_table_pending_index`)
 staying under their own recorded bounds.
+
+## Protocol amendment: alignment-stable arms
+
+Recorded 2026-09-11 after the first candidate run, before any threshold change;
+the 1.03 bound is untouched. Default-build hits pairs measured candidate/base
+1.0366 (CI95 upper 1.0442, FAIL) while misses measured 0.9996. Hardware
+counters on the hits binaries were equal to within 0.1% in instructions,
+branches, branch misses and L1d loads, differing only in cycles; `pin_owned`
+and the warm prefix of `Pool::get` disassemble identically and the `Pool`
+field offsets are unchanged. The difference is code placement on the Zen 2
+front end, a property of the link, not of the change. Both arms are therefore
+built with 64-byte function and non-fallthrough block alignment for this gate,
+removing placement luck from the ratio. Under that protocol: hits 0.9921
+(CI95 upper 0.9990), misses 1.0051 (CI95 upper 1.0083), both PASS. Raw
+default-build samples are kept beside the gated ones in
+`benches/evidence/inflight_frame_token/`.
+
+## Validation status
+
+Mac: 339 tests in the mock-enabled suite, 15 loom schedules, the five token
+unit tests under Miri, strict Clippy and rustfmt. Linux nix: the io_uring suite
+passes except `drp009_gate_contract::linux_flamegraph_bounds_perf_mmap_ring_for_eight_mib_memlock_host`
+and `r7_source_manifest::r7_source_manifest_reconstructs_the_clean_extraction`,
+both of which fail identically on the untouched baseline tree on that host.
+`tests/zero_alloc.rs` passes on both backends.
