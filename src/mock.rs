@@ -17,8 +17,8 @@ use std::time::Duration;
 use crate::completion::CompletionBatch;
 use crate::driver::{
     Attempt, BackendProgress, DEFAULT_REGISTERED_FILE_CAPACITY, DriverCore, EagerExecutor,
-    Executor, FileHandle, FileId, OpContext, OpKind, OpToken, ReadRefusal, RingExecutor, RingReap,
-    Shared, SyncMode, file_registration_error_into_io, next_driver_id,
+    Executor, FileHandle, FileId, OpContext, OpKind, OpToken, ReadLease, ReadRefusal, RingExecutor,
+    RingReap, Shared, SyncMode, file_registration_error_into_io, next_driver_id,
 };
 use crate::error::{FileRegistrationError, IoError, SubmitError};
 use crate::open::DirectIo;
@@ -531,8 +531,13 @@ impl PoolBackend for MockDriver {
                 requested_len: len,
             },
         );
-        self.0
-            .submit_read(fd, token, file_offset, destination_offset, len, false)
+        self.0.submit_read(
+            fd,
+            ReadLease::Pool(token),
+            file_offset,
+            destination_offset,
+            len,
+        )
     }
 
     fn poll_progress(&self, out: &mut CompletionBatch) -> BackendProgress {
@@ -600,9 +605,13 @@ impl PoolBackend for MockRingDriver {
         destination_offset: u32,
         len: u32,
     ) -> Result<OpToken, ReadRefusal> {
-        let token = self
-            .0
-            .submit_read(fd, token, file_offset, destination_offset, len, false)?;
+        let token = self.0.submit_read(
+            fd,
+            ReadLease::Pool(token),
+            file_offset,
+            destination_offset,
+            len,
+        )?;
         self.0.executor().bind_pending(u64::from(token.slot()));
         Ok(token)
     }
@@ -846,8 +855,10 @@ impl MockExecutor {
     /// Fills the destination pool frame with the seeded byte for a clean read,
     /// modelling the disk transferring the granule's contents into the buffer.
     fn fill_read(&self, context: &mut OpContext<'_>) {
-        let granule_idx = u32::try_from(context.file_offset / u64::from(self.frame_bytes))
-            .expect("granule index fits u32");
+        let Ok(granule_idx) = u32::try_from(context.file_offset / u64::from(self.frame_bytes))
+        else {
+            return;
+        };
         let Some(fill) = self.lock().seeds.get(&(context.fd, granule_idx)).copied() else {
             return;
         };

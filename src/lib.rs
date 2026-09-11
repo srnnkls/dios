@@ -194,11 +194,13 @@ pub mod testing {
     /// entering this post-construction test seam.
     #[cfg(feature = "mock")]
     pub trait PoolBuilderTestingExt {
-        /// Builds a pool over the supplied deterministic driver.
+        /// Builds a pool over the supplied deterministic driver, whose frame
+        /// geometry must match the builder's.
         ///
         /// # Errors
         ///
-        /// Returns configuration or fixed-allocation failure.
+        /// Returns configuration (including a backend geometry mismatch) or
+        /// fixed-allocation failure.
         fn build_on(
             self,
             driver: MockDriver,
@@ -218,11 +220,13 @@ pub mod testing {
     /// Mock-ring construction for Pool-level retry-CQE progress tests.
     #[cfg(feature = "mock")]
     pub trait MockRingPoolBuilderTestingExt {
-        /// Builds a Pool over the mock ring's real retry/reap path.
+        /// Builds a Pool over the mock ring's real retry/reap path, whose frame
+        /// geometry must match the builder's.
         ///
         /// # Errors
         ///
-        /// Returns configuration or fixed-allocation failure.
+        /// Returns configuration (including a backend geometry mismatch) or
+        /// fixed-allocation failure.
         fn build_on_ring(
             self,
             driver: MockRingDriver,

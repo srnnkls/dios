@@ -506,6 +506,18 @@ pub enum PoolConfigError {
         /// The soft limit in force when the lock was refused (advisory reading).
         memlock_limit_bytes: u64,
     },
+    /// A composed backend's frame geometry differs from the builder's; the pool
+    /// and its driver read through one arena and cannot disagree on its shape.
+    BackendGeometryMismatch {
+        /// Frame count the builder configured.
+        frame_count: u32,
+        /// Frame count the backend's arena carries.
+        backend_frame_count: u32,
+        /// Granule the builder configured.
+        granule: u32,
+        /// Granule the backend's arena carries.
+        backend_granule: u32,
+    },
 }
 
 impl std::fmt::Display for PoolConfigError {
@@ -558,6 +570,15 @@ impl std::fmt::Display for PoolConfigError {
             } => write!(
                 f,
                 "locking {arena_bytes} arena bytes refused against RLIMIT_MEMLOCK {memlock_limit_bytes}; grant CAP_IPC_LOCK or raise the limit"
+            ),
+            Self::BackendGeometryMismatch {
+                frame_count,
+                backend_frame_count,
+                granule,
+                backend_granule,
+            } => write!(
+                f,
+                "backend arena of {backend_frame_count} × {backend_granule} bytes does not match the configured {frame_count} × {granule} bytes"
             ),
         }
     }
@@ -908,7 +929,9 @@ impl PoolBuilder {
     ///
     /// # Errors
     ///
-    /// [`PoolConfigError`] on the same open-time checks as [`PoolBuilder::build`].
+    /// [`PoolConfigError`] on the same open-time checks as [`PoolBuilder::build`],
+    /// plus [`PoolConfigError::BackendGeometryMismatch`] when `driver`'s arena is
+    /// shaped differently from this builder.
     #[cfg(feature = "mock")]
     pub(crate) fn build_on_internal(
         self,
@@ -916,20 +939,27 @@ impl PoolBuilder {
     ) -> Result<Pool<crate::mock::MockDriver>, PoolBuildError> {
         self.validate().map_err(PoolBuildError::Configuration)?;
         let frames = Arc::clone(driver.frames());
-        assert_eq!(
-            frames.count(),
-            self.frame_count,
-            "pool and mock driver frame counts match"
-        );
-        assert_eq!(
-            frames.granule(),
-            self.granule,
-            "pool and mock driver frame sizes match"
-        );
+        self.check_backend_geometry(&frames)
+            .map_err(PoolBuildError::Configuration)?;
         driver
             .try_reconfigure_file_capacity(self.registered_file_capacity)
             .ok_or(PoolBuildError::Allocation)?;
         Pool::try_preallocated(self, driver, frames)
+    }
+
+    /// Rejects a composed backend whose arena geometry differs from this
+    /// builder's, before the two share one set of frames.
+    #[cfg(feature = "mock")]
+    fn check_backend_geometry(&self, frames: &Frames) -> Result<(), PoolConfigError> {
+        if frames.count() == self.frame_count && frames.granule() == self.granule {
+            return Ok(());
+        }
+        Err(PoolConfigError::BackendGeometryMismatch {
+            frame_count: self.frame_count,
+            backend_frame_count: frames.count(),
+            granule: self.granule,
+            backend_granule: frames.granule(),
+        })
     }
 
     /// Preallocates a product pool over the mock ring's real reap/retry path.
@@ -940,16 +970,8 @@ impl PoolBuilder {
     ) -> Result<Pool<crate::mock::MockRingDriver>, PoolBuildError> {
         self.validate().map_err(PoolBuildError::Configuration)?;
         let frames = Arc::clone(driver.frames());
-        assert_eq!(
-            frames.count(),
-            self.frame_count,
-            "pool and mock ring frame counts match"
-        );
-        assert_eq!(
-            frames.granule(),
-            self.granule,
-            "pool and mock ring frame sizes match"
-        );
+        self.check_backend_geometry(&frames)
+            .map_err(PoolBuildError::Configuration)?;
         driver
             .try_reconfigure_file_capacity(self.registered_file_capacity)
             .ok_or(PoolBuildError::Allocation)?;
@@ -2453,77 +2475,102 @@ impl<D: PoolBackend> Pool<D> {
                 Self::finish_product_completion(control, driver_token, kind, result);
                 continue;
             }
-            let write = write.expect("a read completion returns its frame token");
             let Some(index) = control.miss.find_by_token(driver_token) else {
-                control.free_frames.push(self.frames.abort(write));
+                // A raw driver lease aborts its own token and leaves none here.
+                if let Some(write) = write {
+                    control.free_frames.push(self.frames.abort(write));
+                }
                 continue;
             };
+            let write = write.expect("a pool read completion returns its frame token");
             let entry = control.miss.entry(index);
             assert_eq!(
                 write.frame(),
                 entry.frame(),
                 "the completed token names the miss entry's frame"
             );
-            match result {
-                Ok(0) => {
+            self.route_read_completion(control, index, entry, write, result);
+        }
+        self.submit_held_fsyncs(control);
+    }
+
+    fn route_read_completion(
+        &self,
+        control: &mut Control,
+        index: usize,
+        entry: MissEntry,
+        write: InFlightFrame,
+        result: Result<u32, IoError>,
+    ) {
+        match result {
+            Ok(0) => {
+                Self::release_read_credit(control);
+                self.drain_completions_finish_failure(
+                    control,
+                    index,
+                    entry,
+                    write,
+                    SHORT_READ_EOF_ERRNO,
+                );
+            }
+            Ok(bytes) => {
+                let filled = entry.filled() + bytes;
+                if filled >= self.granule {
                     Self::release_read_credit(control);
-                    self.drain_completions_finish_failure(
-                        control,
+                    self.drain_completions_finish_success(
+                        &mut control.miss,
+                        &mut control.frame_pages,
                         index,
                         entry,
                         write,
-                        SHORT_READ_EOF_ERRNO,
                     );
-                }
-                Ok(bytes) => {
-                    let filled = entry.filled() + bytes;
-                    if filled >= self.granule {
-                        Self::release_read_credit(control);
-                        self.drain_completions_finish_success(
-                            &mut control.miss,
-                            &mut control.frame_pages,
-                            index,
-                            entry,
-                            write,
-                        );
-                    } else {
-                        let (offset, len) = read_span(entry.page(), self.granule, filled);
-                        let fd = registered_file(&control.files, entry.page());
-                        let resubmitted = if route_completion_batch_remainder_satisfies_io_mode(
-                            fd.io_mode(),
-                            offset,
-                            filled,
-                            len,
-                        ) {
-                            self.driver
-                                .submit_read(fd, write, offset, filled, len)
-                                .map_err(|refusal| refusal.token)
-                        } else {
-                            Err(write)
-                        };
-                        match resubmitted {
-                            Ok(token) => control.miss.advance_remainder(index, filled, token),
-                            Err(write) => {
-                                Self::release_read_credit(control);
-                                self.drain_completions_finish_failure(
-                                    control,
-                                    index,
-                                    entry,
-                                    write,
-                                    SHORT_READ_EOF_ERRNO,
-                                );
-                            }
-                        }
-                    }
-                }
-                Err(err) => {
-                    Self::release_read_credit(control);
-                    let errno = err.raw_os_error().unwrap_or(SHORT_READ_EOF_ERRNO);
-                    self.drain_completions_finish_failure(control, index, entry, write, errno);
+                } else {
+                    self.route_read_completion_remainder(control, index, entry, write, filled);
                 }
             }
+            Err(err) => {
+                Self::release_read_credit(control);
+                let errno = err.raw_os_error().unwrap_or(SHORT_READ_EOF_ERRNO);
+                self.drain_completions_finish_failure(control, index, entry, write, errno);
+            }
         }
-        self.submit_held_fsyncs(control);
+    }
+
+    fn route_read_completion_remainder(
+        &self,
+        control: &mut Control,
+        index: usize,
+        entry: MissEntry,
+        write: InFlightFrame,
+        filled: u32,
+    ) {
+        let (offset, len) = read_span(entry.page(), self.granule, filled);
+        let fd = registered_file(&control.files, entry.page());
+        let resubmitted = if route_completion_batch_remainder_satisfies_io_mode(
+            fd.io_mode(),
+            offset,
+            filled,
+            len,
+        ) {
+            self.driver
+                .submit_read(fd, write, offset, filled, len)
+                .map_err(|refusal| refusal.token)
+        } else {
+            Err(write)
+        };
+        match resubmitted {
+            Ok(token) => control.miss.advance_remainder(index, filled, token),
+            Err(write) => {
+                Self::release_read_credit(control);
+                self.drain_completions_finish_failure(
+                    control,
+                    index,
+                    entry,
+                    write,
+                    SHORT_READ_EOF_ERRNO,
+                );
+            }
+        }
     }
 
     fn release_read_credit(control: &mut Control) {

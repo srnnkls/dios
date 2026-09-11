@@ -39,7 +39,7 @@ pub use crate::error::{IoError, SubmitError};
 use crate::open::DirectIo;
 use crate::pool::write_arena::{ArenaState, try_shared as try_shared_write_arena};
 pub use crate::pool::write_arena::{WriteArena, WriteSlot};
-use crate::pool::{Frames, InFlightFrame, PageId, PoolConfigError, ReadFrameIdx};
+use crate::pool::{Frames, InFlightFrame, PoolConfigError, ReadFrameIdx};
 #[cfg(target_os = "linux")]
 use crate::product::PlatformWaitOutcome;
 use crate::product::WaitState;
@@ -592,11 +592,10 @@ impl Driver {
     ) -> Result<OpToken, ReadRefusal> {
         self.0.submit_read(
             fd,
-            token,
+            ReadLease::Pool(token),
             file_offset,
             destination_offset,
             requested_len,
-            false,
         )
     }
 
@@ -1154,6 +1153,36 @@ pub(crate) struct ReadRefusal {
     pub(crate) token: InFlightFrame,
 }
 
+/// A read's frame token together with the owner it returns to, so no caller can
+/// name one disposition while holding the other's token.
+#[derive(Debug)]
+pub(crate) enum ReadLease {
+    /// The pool minted the token; the completion carries it back for the pool to
+    /// publish or abort.
+    Pool(InFlightFrame),
+    /// The driver leased the whole frame itself; the token aborts at completion
+    /// and the frame is never published.
+    Raw(InFlightFrame),
+}
+
+impl ReadLease {
+    fn split(self) -> (InFlightFrame, FrameLease) {
+        match self {
+            ReadLease::Pool(token) => (token, FrameLease::Pool),
+            ReadLease::Raw(token) => (token, FrameLease::Raw),
+        }
+    }
+}
+
+/// Which owner a completed op's frame token returns to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameLease {
+    /// Writes and fsyncs address no frame.
+    Absent,
+    Pool,
+    Raw,
+}
+
 #[derive(Debug)]
 pub(crate) struct OpEntry {
     kind: OpKind,
@@ -1163,7 +1192,7 @@ pub(crate) struct OpEntry {
     frame: Option<InFlightFrame>,
     destination_offset: u32,
     requested_len: u32,
-    raw_frame_lease: bool,
+    frame_lease: FrameLease,
     write_slot: Option<u32>,
     retries: u32,
 }
@@ -1468,13 +1497,11 @@ impl<E: Executor> DriverCore<E> {
     ) -> Result<OpToken, SubmitError> {
         let len = self.executor.clean_bytes(OpKind::Read);
         assert!(len > 0, "a raw read transfers a whole frame");
-        let granule_idx =
-            u32::try_from(offset / u64::from(len)).expect("raw read granule fits u32");
         let token = self
             .arena
-            .claim(frame, PageId::new(fd.file_id(), granule_idx))
+            .claim_unidentified(frame)
             .expect("a raw read frame has at most one op in flight");
-        self.submit_read(fd, token, offset, 0, len, true)
+        self.submit_read(fd, ReadLease::Raw(token), offset, 0, len)
             .map_err(|refusal| {
                 self.arena.abort(refusal.token);
                 refusal.error
@@ -1484,12 +1511,12 @@ impl<E: Executor> DriverCore<E> {
     pub(crate) fn submit_read(
         &self,
         fd: &FileHandle,
-        token: InFlightFrame,
+        lease: ReadLease,
         file_offset: u64,
         destination_offset: u32,
         requested_len: u32,
-        raw_frame_lease: bool,
     ) -> Result<OpToken, ReadRefusal> {
+        let (token, frame_lease) = lease.split();
         assert!(
             token.frame().get() < self.arena.count(),
             "read frame index out of range"
@@ -1524,7 +1551,7 @@ impl<E: Executor> DriverCore<E> {
             frame: Some(token),
             destination_offset,
             requested_len,
-            raw_frame_lease,
+            frame_lease,
             write_slot: None,
             retries: 0,
         };
@@ -1558,7 +1585,7 @@ impl<E: Executor> DriverCore<E> {
                     frame: None,
                     destination_offset: 0,
                     requested_len,
-                    raw_frame_lease: false,
+                    frame_lease: FrameLease::Absent,
                     write_slot: Some(buf.into_index()),
                     retries: 0,
                 };
@@ -1583,7 +1610,7 @@ impl<E: Executor> DriverCore<E> {
             frame: None,
             destination_offset: 0,
             requested_len: 0,
-            raw_frame_lease: false,
+            frame_lease: FrameLease::Absent,
             write_slot: None,
             retries: 0,
         };
@@ -1821,7 +1848,7 @@ impl<E: EagerExecutor> DriverCore<E> {
             let mut shared = self.lock();
             let (token, mut entry) = shared.slab.reclaim(slot);
             let retire_due = shared.files.on_complete(entry.fd);
-            let frame = self.release_frame(entry.raw_frame_lease, frame.or(entry.frame.take()));
+            let frame = self.release_frame(entry.frame_lease, frame.or(entry.frame.take()));
             self.release_write_slot(&entry);
             let result = outcome.map_err(IoError::from_raw);
             self.executor.on_op_completed(entry.fd, entry.kind, &result);
@@ -1855,7 +1882,7 @@ impl<E: EagerExecutor> DriverCore<E> {
             let mut shared = self.lock();
             let (token, mut entry) = shared.slab.reclaim(slot);
             let retire_due = shared.files.on_complete(entry.fd);
-            let frame = self.release_frame(entry.raw_frame_lease, frame.or(entry.frame.take()));
+            let frame = self.release_frame(entry.frame_lease, frame.or(entry.frame.take()));
             self.release_write_slot(&entry);
             assert!(
                 shared.completion_backlog.len() < self.queue_capacity as usize,
@@ -2138,7 +2165,7 @@ impl<E: RingExecutor> DriverCore<E> {
             };
             let (token, mut entry) = shared.slab.reclaim(slot);
             let file_retire_due = shared.files.on_complete(entry.fd);
-            let frame = self.release_frame(entry.raw_frame_lease, entry.frame.take());
+            let frame = self.release_frame(entry.frame_lease, entry.frame.take());
             self.release_write_slot(&entry);
             self.executor.on_op_completed(entry.fd, entry.kind, &result);
             out.push(Completion::new(token, entry.kind, result, frame));
@@ -2284,15 +2311,16 @@ impl<E> DriverCore<E> {
     /// for the pool to publish or abort.
     fn release_frame(
         &self,
-        raw_frame_lease: bool,
+        lease: FrameLease,
         frame: Option<InFlightFrame>,
     ) -> Option<InFlightFrame> {
-        if raw_frame_lease {
-            let token = frame.expect("a raw read op owns its frame token until completion");
-            self.arena.abort(token);
-            None
-        } else {
-            frame
+        match lease {
+            FrameLease::Raw => {
+                let token = frame.expect("a raw read op owns its frame token until completion");
+                self.arena.abort(token);
+                None
+            }
+            FrameLease::Absent | FrameLease::Pool => frame,
         }
     }
 }

@@ -78,34 +78,54 @@ impl ReadFrameIdx {
     }
 }
 
+/// Distinguishes frame arenas within the process so a token minted by one is
+/// rejected by another whose frame indexes coincide. Handed out once per arena
+/// construction — never on the hot path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ArenaId(u32);
+
+impl ArenaId {
+    fn next() -> Self {
+        let id = crate::allocation::next_arena_id();
+        assert!(id > 0, "frame arena ids do not wrap within one process");
+        Self(id)
+    }
+}
+
 /// The unique authority to write one frame's bytes and identity, held from
 /// `claim` until `publish` or `abort`. Not `Clone`, not `Copy`, no `Drop`: a
 /// token outlives whatever async operation writes the frame and dies only in
-/// the consuming call, never when a Rust value goes out of scope.
+/// the consuming call, never when a Rust value goes out of scope. The token
+/// names the arena that minted it as well as the frame, so a token cannot
+/// address another arena's same-index frame (INV-1).
 #[must_use]
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct InFlightFrame(NonZeroU32);
+pub(crate) struct InFlightFrame {
+    arena: ArenaId,
+    frame: NonZeroU32,
+}
 
 impl InFlightFrame {
-    fn new(frame: ReadFrameIdx) -> Self {
-        Self(
-            NonZeroU32::new(
+    fn new(arena: ArenaId, frame: ReadFrameIdx) -> Self {
+        Self {
+            arena,
+            frame: NonZeroU32::new(
                 frame
                     .get()
                     .checked_add(1)
                     .expect("frame index is below the u32 capacity"),
             )
             .expect("index plus one is nonzero"),
-        )
+        }
     }
 
     #[must_use]
     pub(crate) fn frame(&self) -> ReadFrameIdx {
-        ReadFrameIdx::new(self.0.get() - 1)
+        ReadFrameIdx::new(self.frame.get() - 1)
     }
 
     fn index(&self) -> usize {
-        (self.0.get() - 1) as usize
+        (self.frame.get() - 1) as usize
     }
 }
 
@@ -200,6 +220,7 @@ pub(crate) struct Frames {
     pages: ExactPageCells,
     count: u32,
     granule: u32,
+    id: ArenaId,
 }
 
 // SAFETY: `base` addresses a heap allocation owned solely by this `Frames`. A
@@ -233,6 +254,7 @@ impl Frames {
             pages,
             count,
             granule,
+            id: ArenaId::next(),
         })
     }
 
@@ -306,6 +328,20 @@ impl Frames {
     ///
     /// If `frame` is out of range.
     pub(crate) fn claim(&self, frame: ReadFrameIdx, page: PageId) -> Option<InFlightFrame> {
+        let mut token = self.claim_unidentified(frame)?;
+        self.pages.write(&mut token, page);
+        Some(token)
+    }
+
+    /// Takes `frame` from `Free` to `InFlight` without writing an exact identity,
+    /// minting the unique write token for a lease that aborts at completion and
+    /// never publishes. `None` on the same contended and non-`Free` cases as
+    /// [`Frames::claim`].
+    ///
+    /// # Panics
+    ///
+    /// If `frame` is out of range.
+    pub(crate) fn claim_unidentified(&self, frame: ReadFrameIdx) -> Option<InFlightFrame> {
         let index = self.checked_index(frame);
         let current_word = self.states[index].load(Ordering::Acquire);
         let current = FrameState::from_word(current_word);
@@ -317,9 +353,7 @@ impl Frames {
         self.states[index]
             .compare_exchange(current_word, next_word, Ordering::AcqRel, Ordering::Acquire)
             .ok()?;
-        let mut token = InFlightFrame::new(frame);
-        self.pages.write(&mut token, page);
-        Some(token)
+        Some(InFlightFrame::new(self.id, frame))
     }
 
     /// Fills the token's whole granule with `byte`, standing in for a read
@@ -362,8 +396,7 @@ impl Frames {
         destination_offset: u32,
         requested_len: u32,
     ) -> *mut u8 {
-        let index = token.index();
-        assert!(index < self.count as usize, "token frame index in range");
+        let index = self.owned_index(token);
         debug_assert_eq!(
             FrameState::from_word(self.states[index].load(Ordering::Acquire)),
             FrameState::InFlight,
@@ -400,8 +433,7 @@ impl Frames {
         reason = "the token is linear: publish and abort consume it so no writer survives them"
     )]
     fn consume(&self, token: InFlightFrame, to: FrameState) -> ReadFrameIdx {
-        let index = token.index();
-        assert!(index < self.count as usize, "token frame index in range");
+        let index = self.owned_index(&token);
         let current_word = self.states[index].load(Ordering::Acquire);
         let current = FrameState::from_word(current_word);
         assert_eq!(
@@ -616,6 +648,16 @@ impl Frames {
     fn checked_index(&self, frame: ReadFrameIdx) -> usize {
         let index = frame.get() as usize;
         assert!(index < self.states.len(), "frame index out of range");
+        index
+    }
+
+    fn owned_index(&self, token: &InFlightFrame) -> usize {
+        assert_eq!(
+            token.arena, self.id,
+            "a token addresses only the arena that minted it"
+        );
+        let index = token.index();
+        assert!(index < self.count as usize, "token frame index in range");
         index
     }
 }
@@ -860,7 +902,7 @@ mod token_tests {
     #[test]
     fn a_write_token_is_affine() {
         let _ = <InFlightFrame as AmbiguousIfClone<_>>::resolve;
-        assert_eq!(size_of::<Option<InFlightFrame>>(), 4);
+        assert_eq!(size_of::<Option<InFlightFrame>>(), 8);
     }
 
     #[test]
@@ -918,5 +960,33 @@ mod token_tests {
     fn advance_refuses_the_token_owned_edges() {
         let frames = Frames::preallocated(1, SECTOR_BYTES);
         frames.advance(ReadFrameIdx::new(0), FrameState::InFlight);
+    }
+
+    #[test]
+    #[should_panic(expected = "a token addresses only the arena that minted it")]
+    fn one_arena_refuses_another_arenas_same_index_token() {
+        let first = Frames::preallocated(1, SECTOR_BYTES);
+        let second = Frames::preallocated(1, SECTOR_BYTES);
+        let frame = ReadFrameIdx::new(0);
+        let _held = first
+            .claim(frame, page(0))
+            .expect("claim in the first arena");
+        let borrowed = second
+            .claim(frame, page(0))
+            .expect("claim in the second arena");
+        first.publish(borrowed);
+    }
+
+    #[test]
+    fn an_unidentified_claim_takes_the_frame_in_flight_without_a_page() {
+        let frames = Frames::preallocated(1, SECTOR_BYTES);
+        let frame = ReadFrameIdx::new(0);
+        let token = frames
+            .claim_unidentified(frame)
+            .expect("a Free frame claims");
+        assert_eq!(frames.state(frame), FrameState::InFlight);
+        assert!(frames.claim_unidentified(frame).is_none());
+        assert_eq!(frames.abort(token), frame);
+        assert_eq!(frames.state(frame), FrameState::Free);
     }
 }

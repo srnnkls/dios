@@ -6,6 +6,15 @@ use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 
+/// Hands out the process-wide identity a fixed arena carries, so a handle
+/// minted against one arena is rejected by another. Bumped once per arena
+/// construction — never on the hot path.
+static NEXT_ARENA_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+pub(crate) fn next_arena_id() -> u32 {
+    NEXT_ARENA_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Allocates one non-empty fixed arena without invoking the process OOM handler.
 pub(crate) fn allocate_zeroed(layout: Layout) -> Option<NonNull<u8>> {
     assert!(layout.size() > 0, "fixed arena layouts are non-empty");

@@ -14,8 +14,9 @@ const MISS_FRAMES: u32 = 256;
 const MISS_ITERS: u32 = 64 * 2048;
 const HIT_INFLIGHT: u32 = 1;
 const MISS_INFLIGHT: u32 = 64;
-const MOCK_QUEUE: u32 = 16_384;
+const MOCK_QUEUE: u32 = 65_536;
 const READY_POLLS_MAX: u32 = 4096;
+const BUSY_POLLS_MAX: u32 = 4096;
 
 struct Arm {
     pool: Pool<MockDriver>,
@@ -86,19 +87,24 @@ impl Arm {
     }
 
     fn cold_miss(&self) {
-        match self
-            .pool
-            .get(&self.reader, self.next_page())
-            .expect("the registered file is live")
-        {
-            Get::Pending(token) => {
-                self.drive_ready(token).expect("a cold miss completes");
-            }
-            Get::Hit(_) => panic!("a never-read page cannot hit"),
-            Get::Busy => {
-                self.pool.poll();
+        let page = self.next_page();
+        for _ in 0..BUSY_POLLS_MAX {
+            match self
+                .pool
+                .get(&self.reader, page)
+                .expect("the registered file is live")
+            {
+                Get::Pending(token) => {
+                    self.drive_ready(token).expect("a cold miss completes");
+                    return;
+                }
+                Get::Hit(_) => panic!("a never-read page cannot hit"),
+                Get::Busy => {
+                    self.pool.poll();
+                }
             }
         }
+        panic!("a cold miss admits within the bounded busy retries");
     }
 
     fn warm_hit(&self, page: u32) {
