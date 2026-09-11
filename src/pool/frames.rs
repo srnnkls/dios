@@ -3,7 +3,7 @@
 //! frame base never moves for the arena's lifetime. Writer uniqueness is the
 //! [`InFlightFrame`] token, visibility is the residency word, reuse is EBR.
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(miri)))]
 use core::ffi::{c_int, c_void};
 use std::alloc::{Layout, handle_alloc_error};
 use std::cell::UnsafeCell;
@@ -15,7 +15,7 @@ use crate::pool::epoch::{FrameGuard, PinBegun, PinCommit};
 use crate::pool::{Control, PageId, SECTOR_BYTES};
 use crate::sync::{AtomicU64, Ordering};
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, target_os = "linux", not(miri)))]
 const SECTOR: usize = SECTOR_BYTES as usize;
 
 const HUGEPAGE_BYTES: usize = 2 * 1024 * 1024;
@@ -696,7 +696,7 @@ fn advise_hugepage(base: NonNull<u8>, len: usize) {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, target_os = "linux", not(miri)))]
 mod tests {
     use super::*;
 
