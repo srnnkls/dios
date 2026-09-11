@@ -230,12 +230,6 @@ impl<T: Copy> Occupiable<T> {
         self.occupied.then(|| unsafe { self.value.assume_init() })
     }
 
-    pub(crate) fn get_mut(&mut self) -> Option<&mut T> {
-        // SAFETY: as for `get`.
-        self.occupied
-            .then(|| unsafe { self.value.assume_init_mut() })
-    }
-
     pub(crate) fn is_none(&self) -> bool {
         !self.occupied
     }

@@ -172,3 +172,8 @@ loom = "0.7"
 
 [target.'cfg(loom)'.dev-dependencies]
 loom = "0.7"
+
+[[bench]]
+name = "file_retirement"
+harness = false
+required-features = ["bench", "mock"]
