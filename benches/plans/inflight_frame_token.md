@@ -26,7 +26,7 @@ Threadripper 3970X, ssh nix, kernel 6.6.64, performance governor, THP never,
 CPU 2. No concurrent builds, tests or profilers during timing. Record source,
 compiler features, binary and evidence hashes; keep every observation.
 
-Pair driver: `mise run pair-frame-write-path <base_dir> <candidate_dir> <case> <reps> <csv>`
+Pair driver: `mise run pair-bench frame_write_path <base_dir> <candidate_dir> <reps> <csv> -- <case>`
 on the host alternates `base candidate` / `candidate base` per rep and appends
 one `base_ns,candidate_ns` row per rep.
 
