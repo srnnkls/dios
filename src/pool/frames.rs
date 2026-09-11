@@ -661,8 +661,11 @@ mod tests {
     fn a_hugepage_sized_arena_starts_2mib_aligned() {
         let frame_count =
             u32::try_from(HUGEPAGE_BYTES / SECTOR).expect("hugepage frame count fits u32");
-        let frames = Frames::preallocated(frame_count, SECTOR_BYTES);
-        let base = frames.frame_bytes(ReadFrameIdx::new(0)).as_ptr().addr();
+        let mut frames = Frames::preallocated(frame_count, SECTOR_BYTES);
+        let base = frames
+            .frame_bytes_exclusive(ReadFrameIdx::new(0))
+            .as_ptr()
+            .addr();
         assert_eq!(
             base % HUGEPAGE_BYTES,
             0,
@@ -704,7 +707,10 @@ mod tests {
         let span = 64 * HUGEPAGE_BYTES;
         let frame_count = u32::try_from(span / SECTOR).expect("frame count fits u32");
         let mut frames = Frames::preallocated(frame_count, SECTOR_BYTES);
-        let base = frames.frame_bytes(ReadFrameIdx::new(0)).as_ptr().addr();
+        let base = frames
+            .frame_bytes_exclusive(ReadFrameIdx::new(0))
+            .as_ptr()
+            .addr();
         assert_eq!(
             vma_field_kib(base, "Rss:"),
             0,
@@ -734,7 +740,10 @@ mod tests {
         let frame_count = u32::try_from(span / SECTOR).expect("frame count fits u32");
         let mut frames = Frames::preallocated(frame_count, SECTOR_BYTES);
         frames.populate();
-        let base = frames.frame_bytes(ReadFrameIdx::new(0)).as_ptr().addr();
+        let base = frames
+            .frame_bytes_exclusive(ReadFrameIdx::new(0))
+            .as_ptr()
+            .addr();
         let resident_kib = vma_anon_huge_kib(base);
         assert!(
             resident_kib >= (HUGEPAGE_BYTES / 1024) as u64,
