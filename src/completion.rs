@@ -2,22 +2,31 @@
 
 use crate::driver::{OpKind, OpToken};
 use crate::error::IoError;
+use crate::pool::InFlightFrame;
 
 /// One drained op result. `result` carries the byte count on success or the
-/// operating failure surfaced from the backend.
+/// operating failure surfaced from the backend. A pool read also returns the
+/// frame's write token for the pool to publish or abort.
 #[derive(Debug)]
 pub struct Completion {
     token: OpToken,
     kind: OpKind,
     result: Result<u32, IoError>,
+    frame: Option<InFlightFrame>,
 }
 
 impl Completion {
-    pub(crate) fn new(token: OpToken, kind: OpKind, result: Result<u32, IoError>) -> Self {
+    pub(crate) fn new(
+        token: OpToken,
+        kind: OpKind,
+        result: Result<u32, IoError>,
+        frame: Option<InFlightFrame>,
+    ) -> Self {
         Self {
             token,
             kind,
             result,
+            frame,
         }
     }
 
@@ -42,8 +51,10 @@ impl Completion {
         self.result.as_ref().map(|&bytes| bytes)
     }
 
-    pub(crate) fn into_parts(self) -> (OpToken, OpKind, Result<u32, IoError>) {
-        (self.token, self.kind, self.result)
+    pub(crate) fn into_parts(
+        self,
+    ) -> (OpToken, OpKind, Result<u32, IoError>, Option<InFlightFrame>) {
+        (self.token, self.kind, self.result, self.frame)
     }
 }
 

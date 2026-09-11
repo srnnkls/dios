@@ -20,10 +20,11 @@ use std::time::{Duration, Instant};
 use dios::testing::{
     FrameState, MockDriver, MockPoolTestingExt, MockRingDriver, MockRingPoolBuilderTestingExt,
     MockRingPoolTestingExt, MockWaitObservation, PoolBuilderTestingExt, PoolTestingExt,
+    ReadFrameIdx,
 };
 use dios::{
-    DirectIo, Get, PageId, PollReport, Pool, PoolCompletion, PoolCompletionBatch, PoolToken,
-    PoolWakeHandle, ReadyResult, SyncMode,
+    DirectIo, Get, PageId, PollReport, Pool, PoolBuildError, PoolCompletion, PoolCompletionBatch,
+    PoolConfigError, PoolToken, PoolWakeHandle, ReadyResult, SyncMode,
 };
 
 const GRANULE: u32 = 4096;
@@ -877,5 +878,106 @@ fn retained_caller_completions_do_not_block_eviction_reclamation() {
         completions.iter().count(),
         1,
         "a caller completion was still retained when reclamation completed"
+    );
+}
+
+#[test]
+fn a_raw_driver_read_completes_without_being_routed_as_a_pool_miss() {
+    let (pool, file_id) = pool_with_file("pool-progress-raw-lease");
+    let handle = pool
+        .driver()
+        .open(Path::new("pool-progress-raw-lease"), DirectIo::Disabled)
+        .expect("mock open");
+    pool.driver().seed_page(&handle, 0, 0x7E);
+    pool.driver()
+        .submit_read(&handle, ReadFrameIdx::new(3), 0)
+        .expect("the raw lease admits");
+    let mut completions = PoolCompletionBatch::with_capacity(4);
+
+    let report = pool.poll_report(&mut completions);
+
+    assert_eq!(
+        report.backend_completions(),
+        1,
+        "the raw read's CQE still counts as backend progress"
+    );
+    assert_eq!(
+        completions.iter().count(),
+        0,
+        "a raw driver lease never reaches the product batch"
+    );
+    assert_eq!(
+        pool.frame_state(ReadFrameIdx::new(3)),
+        FrameState::Free,
+        "the raw lease aborts its own token at completion"
+    );
+    assert!(
+        matches!(
+            pool.get(
+                &pool.register_reader().expect("one reader slot"),
+                PageId::new(file_id, 0)
+            ),
+            Ok(Get::Pending(_))
+        ),
+        "the pool keeps admitting misses after a raw completion"
+    );
+}
+
+#[test]
+fn a_raw_read_past_the_u32_granule_range_submits_instead_of_panicking() {
+    let (pool, _file_id) = pool_with_file("pool-progress-raw-far-offset");
+    let handle = pool
+        .driver()
+        .open(
+            Path::new("pool-progress-raw-far-offset"),
+            DirectIo::Disabled,
+        )
+        .expect("mock open");
+    let beyond_u32_granules = (u64::from(u32::MAX) + 1) * u64::from(GRANULE);
+
+    pool.driver()
+        .submit_read(&handle, ReadFrameIdx::new(2), beyond_u32_granules)
+        .expect("a raw lease accepts the API's whole u64 offset");
+
+    let mut completions = PoolCompletionBatch::with_capacity(4);
+    let report = pool.poll_report(&mut completions);
+    assert_eq!(report.backend_completions(), 1, "the far read completes");
+    assert_eq!(
+        pool.frame_state(ReadFrameIdx::new(2)),
+        FrameState::Free,
+        "the far raw lease aborts its token too"
+    );
+}
+
+#[test]
+fn composing_a_pool_over_a_differently_shaped_backend_is_a_configuration_error() {
+    let mock = MockDriver::builder()
+        .queue_capacity(1)
+        .frames(2)
+        .frame_bytes(GRANULE)
+        .build();
+
+    let refused = Pool::builder()
+        .frame_count(4)
+        .granule(GRANULE)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .write_slots(0)
+        .build_on(mock);
+
+    assert!(
+        matches!(
+            refused,
+            Err(PoolBuildError::Configuration(
+                PoolConfigError::BackendGeometryMismatch {
+                    frame_count: 4,
+                    backend_frame_count: 2,
+                    ..
+                }
+            ))
+        ),
+        "a geometry mismatch is a typed build error, not a panic"
     );
 }

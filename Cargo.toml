@@ -177,3 +177,8 @@ loom = "0.7"
 name = "file_retirement"
 harness = false
 required-features = ["bench", "mock"]
+
+[[bench]]
+name = "frame_write_path"
+harness = false
+required-features = ["bench", "mock"]

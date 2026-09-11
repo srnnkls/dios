@@ -148,10 +148,12 @@ impl PoolModel {
     /// Makes `page` resident in `frame` filled with content-generation
     /// `generation`, mapped through the seqlock — the shared install path.
     fn install(&self, frame: ReadFrameIdx, page: PageId, generation: u8) {
-        self.frames.advance(frame, FrameState::InFlight);
-        self.frames.fill_inflight(frame, generation);
-        self.frames.write_exact_page(frame, page);
-        self.frames.advance(frame, FrameState::Resident);
+        let mut token = self
+            .frames
+            .claim(frame, page)
+            .expect("the model installs into a Free frame");
+        self.frames.fill(&mut token, generation);
+        self.frames.publish(token);
         self.table.insert_shared(page, frame);
         let _ = self.clock.reference(frame);
         debug_assert!(
@@ -200,11 +202,11 @@ impl PoolModel {
         let reader = reader as usize;
         assert!(reader < self.slots.len(), "reader index is in range");
         let slot = &self.slots[reader];
-        let first = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
-        let frame = if first {
+        let begun = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
+        let frame = if begun.is_first() {
             let mapped = self.table.lookup(page);
             let Some(frame) = mapped else {
-                slot.abort_pin();
+                slot.abort_pin(begun);
                 return None;
             };
             self.held_frames[reader].store(frame.get(), Ordering::Relaxed);
@@ -217,10 +219,10 @@ impl PoolModel {
             "a pinned frame — resolved or the held frame a nested pin reuses — is in range"
         );
         let _ = self.clock.reference(frame);
-        slot.commit_pin();
+        let pin = slot.commit_pin(begun);
         Some(Guard {
             inner: PoolFrameGuard::new(
-                self.frames.frame_bytes(frame),
+                self.frames.frame_bytes(frame, &pin),
                 slot,
                 frame,
                 0,
@@ -296,7 +298,7 @@ impl PoolModel {
         let Some(hint) = hint else {
             return self.get_file(file_generation, page.granule_idx());
         };
-        let Some(frame) = pin_with_resident_hint(
+        let Some((frame, pin)) = pin_with_resident_hint(
             &self.frames,
             &self.clock,
             &self.global_epoch,
@@ -308,7 +310,7 @@ impl PoolModel {
         };
         Some(Guard {
             inner: PoolFrameGuard::new(
-                self.frames.frame_bytes(frame),
+                self.frames.frame_bytes(frame, &pin),
                 &self.slots[0],
                 frame,
                 0,
@@ -727,10 +729,17 @@ impl PoolModel {
     }
 
     /// Reader: a lock-free seqlock read of `page`'s cell coupled with the frame's
-    /// content generation. `None` = unmapped.
+    /// content generation, read under a pin on reader 0. `None` = unmapped.
     pub fn probe(&self, page: u32) -> Option<Snapshot> {
-        let frame = self.table.lookup(Self::page_id(page))?;
-        let generation = self.frames.frame_bytes(frame)[0];
+        let slot = &self.slots[0];
+        let begun = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
+        let Some(frame) = self.table.lookup(Self::page_id(page)) else {
+            slot.abort_pin(begun);
+            return None;
+        };
+        let pin = slot.commit_pin(begun);
+        let generation = self.frames.frame_bytes(frame, &pin)[0];
+        slot.release_guard();
         Some(Snapshot {
             frame: frame.get(),
             generation,

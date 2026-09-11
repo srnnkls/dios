@@ -68,7 +68,7 @@ impl Eager {
 }
 
 impl EagerExecutor for Eager {
-    fn attempt(&self, kind: OpKind, clean_bytes: u32, context: OpContext<'_>) -> Attempt {
+    fn attempt(&self, kind: OpKind, clean_bytes: u32, context: &mut OpContext<'_>) -> Attempt {
         let mut guard = self.lock();
         let EagerState { files } = &mut *guard;
         let slot = context.fd.slot() as usize;
@@ -85,13 +85,17 @@ impl EagerExecutor for Eager {
                     clean_bytes, context.requested_len,
                     "the eager attempt receives the admitted transfer length"
                 );
-                let result = self.frames.with_transfer_range_mut(
-                    context.frame,
-                    context.destination_offset,
-                    context.requested_len,
-                    |destination| file.read_at(destination, context.file_offset),
-                );
-                attempt_map_transfer(result, context.requested_len)
+                let file_offset = context.file_offset;
+                let destination_offset = context.destination_offset;
+                let requested_len = context.requested_len;
+                let token = context
+                    .frame
+                    .as_mut()
+                    .expect("a read attempt owns its frame token");
+                let destination =
+                    self.frames
+                        .transfer_mut(token, destination_offset, requested_len);
+                attempt_map_transfer(file.read_at(destination, file_offset), requested_len)
             }
             OpKind::Write => {
                 debug_assert!(

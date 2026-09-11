@@ -139,7 +139,7 @@ fn frame_state_transition_matrix_permits_exactly_the_legal_edges() {
 #[test]
 fn frames_are_preallocated_sector_aligned_and_non_moving() {
     let granule = 8192u32;
-    let frames = Frames::preallocated(4, granule);
+    let mut frames = Frames::preallocated(4, granule);
     assert_eq!(frames.count(), 4);
 
     let mut bases = HashSet::new();

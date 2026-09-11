@@ -17,13 +17,13 @@ use std::time::Duration;
 use crate::completion::CompletionBatch;
 use crate::driver::{
     Attempt, BackendProgress, DEFAULT_REGISTERED_FILE_CAPACITY, DriverCore, EagerExecutor,
-    Executor, FileHandle, FileId, OpContext, OpKind, OpToken, RingExecutor, RingReap, Shared,
-    SyncMode, file_registration_error_into_io, next_driver_id,
+    Executor, FileHandle, FileId, OpContext, OpKind, OpToken, ReadLease, ReadRefusal, RingExecutor,
+    RingReap, Shared, SyncMode, file_registration_error_into_io, next_driver_id,
 };
 use crate::error::{FileRegistrationError, IoError, SubmitError};
 use crate::open::DirectIo;
 use crate::pool::write_arena::{ArenaState, WriteSlot, shared as shared_write_arena};
-use crate::pool::{Frames, PoolBackend, ReadFrameIdx};
+use crate::pool::{Frames, InFlightFrame, PoolBackend, ReadFrameIdx};
 use crate::product::{LifecycleCounters, WaitState};
 
 const EINTR: i32 = 4;
@@ -191,12 +191,17 @@ impl MockDriverBuilder {
         assert!(self.write_slots > 0, "write slot count must be positive");
         let id = next_driver_id();
         let write_arena = shared_write_arena(self.write_slots, self.frame_bytes, id);
+        let arena = Arc::new(
+            Frames::try_preallocated(self.frames, self.frame_bytes)
+                .expect("the mock frame arena allocates"),
+        );
         let executor = MockExecutor::new(
             self.seed,
             self.frames,
             self.frame_bytes,
             self.queue_capacity,
             self.direct_io_support,
+            Arc::clone(&arena),
         );
         let shared = Shared::try_new(self.queue_capacity, DEFAULT_REGISTERED_FILE_CAPACITY)
             .expect("the mock driver configured storage allocates");
@@ -204,7 +209,7 @@ impl MockDriverBuilder {
             shared,
             executor,
             write_arena,
-            self.frames,
+            arena,
             self.retry_bound,
             self.queue_capacity,
             id,
@@ -242,8 +247,8 @@ impl MockDriver {
         self.0.try_reconfigure_file_capacity(file_capacity)
     }
 
-    pub(crate) fn share_frames_for_pool(&self, frames: Arc<Frames>) {
-        self.0.executor().set_arena(frames);
+    pub(crate) fn frames(&self) -> &Arc<Frames> {
+        self.0.arena()
     }
 
     pub(crate) fn identity(&self) -> u64 {
@@ -321,8 +326,7 @@ impl MockDriver {
         frame: ReadFrameIdx,
         offset: u64,
     ) -> Result<OpToken, SubmitError> {
-        self.0
-            .submit_read(fd, frame, offset, 0, self.0.executor().frame_bytes, true)
+        self.0.submit_raw_read(fd, frame, offset)
     }
 
     /// # Errors
@@ -514,11 +518,11 @@ impl PoolBackend for MockDriver {
     fn submit_read(
         &self,
         fd: &FileHandle,
-        frame: ReadFrameIdx,
+        token: InFlightFrame,
         file_offset: u64,
         destination_offset: u32,
         len: u32,
-    ) -> Result<OpToken, SubmitError> {
+    ) -> Result<OpToken, ReadRefusal> {
         self.0.executor().record_read_attempt(
             fd.file_id(),
             ReadAttempt {
@@ -527,8 +531,13 @@ impl PoolBackend for MockDriver {
                 requested_len: len,
             },
         );
-        self.0
-            .submit_read(fd, frame, file_offset, destination_offset, len, false)
+        self.0.submit_read(
+            fd,
+            ReadLease::Pool(token),
+            file_offset,
+            destination_offset,
+            len,
+        )
     }
 
     fn poll_progress(&self, out: &mut CompletionBatch) -> BackendProgress {
@@ -591,14 +600,18 @@ impl PoolBackend for MockRingDriver {
     fn submit_read(
         &self,
         fd: &FileHandle,
-        frame: ReadFrameIdx,
+        token: InFlightFrame,
         file_offset: u64,
         destination_offset: u32,
         len: u32,
-    ) -> Result<OpToken, SubmitError> {
-        let token = self
-            .0
-            .submit_read(fd, frame, file_offset, destination_offset, len, false)?;
+    ) -> Result<OpToken, ReadRefusal> {
+        let token = self.0.submit_read(
+            fd,
+            ReadLease::Pool(token),
+            file_offset,
+            destination_offset,
+            len,
+        )?;
         self.0.executor().bind_pending(u64::from(token.slot()));
         Ok(token)
     }
@@ -656,7 +669,7 @@ struct MockExecutor {
     io_events: Arc<Mutex<Vec<MockIoEvent>>>,
     operation_event_capacity: usize,
     io_event_capacity: usize,
-    arena: OnceLock<Arc<Frames>>,
+    arena: Arc<Frames>,
     frames: u32,
     frame_bytes: u32,
     file_capacity: u32,
@@ -682,6 +695,7 @@ impl MockExecutor {
         frame_bytes: u32,
         injected_capacity: u32,
         direct_io_support: DirectIoSupport,
+        arena: Arc<Frames>,
     ) -> Self {
         let event_capacity = injected_capacity.saturating_mul(16) as usize;
         Self {
@@ -696,7 +710,7 @@ impl MockExecutor {
             io_events: Arc::new(Mutex::new(Vec::with_capacity(event_capacity))),
             operation_event_capacity: event_capacity,
             io_event_capacity: event_capacity,
-            arena: OnceLock::new(),
+            arena,
             frames,
             frame_bytes,
             file_capacity: DEFAULT_REGISTERED_FILE_CAPACITY,
@@ -838,24 +852,25 @@ impl MockExecutor {
         copied
     }
 
-    fn set_arena(&self, arena: Arc<Frames>) {
-        let _ = self.arena.set(arena);
-    }
-
     /// Fills the destination pool frame with the seeded byte for a clean read,
     /// modelling the disk transferring the granule's contents into the buffer.
-    fn fill_read(&self, context: &OpContext<'_>) {
-        let granule_idx = u32::try_from(context.file_offset / u64::from(self.frame_bytes))
-            .expect("granule index fits u32");
-        let fill = self.lock().seeds.get(&(context.fd, granule_idx)).copied();
-        if let (Some(arena), Some(fill)) = (self.arena.get(), fill) {
-            arena.with_transfer_range_mut(
-                context.frame,
-                context.destination_offset,
-                context.requested_len,
-                |destination| destination.fill(fill),
-            );
-        }
+    fn fill_read(&self, context: &mut OpContext<'_>) {
+        let Ok(granule_idx) = u32::try_from(context.file_offset / u64::from(self.frame_bytes))
+        else {
+            return;
+        };
+        let Some(fill) = self.lock().seeds.get(&(context.fd, granule_idx)).copied() else {
+            return;
+        };
+        let destination_offset = context.destination_offset;
+        let requested_len = context.requested_len;
+        let token = context
+            .frame
+            .as_mut()
+            .expect("a read attempt owns its frame token");
+        self.arena
+            .transfer_mut(token, destination_offset, requested_len)
+            .fill(fill);
     }
 
     fn persist_successful_write(&self, context: &OpContext<'_>, bytes: u32) {
@@ -877,13 +892,16 @@ impl MockExecutor {
 }
 
 impl EagerExecutor for MockExecutor {
-    fn attempt(&self, kind: OpKind, clean_bytes: u32, context: OpContext<'_>) -> Attempt {
+    fn attempt(&self, kind: OpKind, clean_bytes: u32, context: &mut OpContext<'_>) -> Attempt {
         debug_assert!(
             context.fd.slot() < self.file_capacity,
             "the driver admits ops only on live fd-table slots"
         );
         debug_assert!(
-            context.frame.get() < self.frames,
+            context
+                .frame
+                .as_ref()
+                .is_none_or(|token| token.frame().get() < self.frames),
             "an op's frame indexes within the configured pool"
         );
         match kind {
@@ -925,7 +943,7 @@ impl EagerExecutor for MockExecutor {
         let attempt = match injected {
             None => {
                 if matches!(kind, OpKind::Read) {
-                    self.fill_read(&context);
+                    self.fill_read(context);
                 }
                 Attempt::Done(clean_bytes)
             }
@@ -935,7 +953,7 @@ impl EagerExecutor for MockExecutor {
             Some(Injected::Eagain) => Attempt::WouldBlock,
         };
         if let (OpKind::Write, Attempt::Done(bytes)) = (kind, attempt) {
-            self.persist_successful_write(&context, bytes);
+            self.persist_successful_write(context, bytes);
         }
         attempt
     }
@@ -1031,10 +1049,7 @@ impl Executor for MockExecutor {
 
     #[cfg(any(feature = "mock", feature = "bench"))]
     fn copy_frame(&self, frame: ReadFrameIdx, out: &mut [u8]) -> usize {
-        self.arena
-            .get()
-            .expect("the mock is composed with a frame arena before reads")
-            .copy_frame(frame, out)
+        self.arena.copy_frame(frame, out)
     }
 }
 
@@ -1111,13 +1126,17 @@ impl MockRingDriverBuilder {
         let id = next_driver_id();
         let write_arena = shared_write_arena(self.write_slots, self.frame_bytes, id);
         let executor = MockRingExecutor::new(self.seed, self.frame_bytes, self.queue_capacity);
+        let arena = Arc::new(
+            Frames::try_preallocated(self.frames, self.frame_bytes)
+                .expect("the mock ring frame arena allocates"),
+        );
         let shared = Shared::try_new(self.queue_capacity, DEFAULT_REGISTERED_FILE_CAPACITY)
             .expect("the mock ring configured storage allocates");
         let core = DriverCore::try_new(
             shared,
             executor,
             write_arena,
-            self.frames,
+            arena,
             self.retry_bound,
             self.queue_capacity,
             id,
@@ -1149,6 +1168,10 @@ impl MockRingDriver {
 
     pub(crate) fn try_reconfigure_file_capacity(&mut self, file_capacity: u32) -> Option<()> {
         self.0.try_reconfigure_file_capacity(file_capacity)
+    }
+
+    pub(crate) fn frames(&self) -> &Arc<Frames> {
+        self.0.arena()
     }
 
     /// Opens a fresh generational handle. Never touches disk.
@@ -1224,9 +1247,7 @@ impl MockRingDriver {
         frame: ReadFrameIdx,
         offset: u64,
     ) -> Result<OpToken, SubmitError> {
-        let token =
-            self.0
-                .submit_read(fd, frame, offset, 0, self.0.executor().frame_bytes, true)?;
+        let token = self.0.submit_raw_read(fd, frame, offset)?;
         self.0.executor().bind_pending(u64::from(token.slot()));
         Ok(token)
     }
@@ -1458,7 +1479,7 @@ impl RingExecutor for MockRingExecutor {
         &self,
         user_data: u64,
         fd_slot: u32,
-        _frame: ReadFrameIdx,
+        _token: &InFlightFrame,
         _file_offset: u64,
         _destination_offset: u32,
         len: u32,
