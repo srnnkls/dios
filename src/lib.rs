@@ -56,9 +56,24 @@ mod mock;
 /// Deterministic backends and structural observation seams for tests.
 #[cfg(any(feature = "mock", feature = "bench"))]
 pub mod testing {
+    #[cfg(feature = "bench")]
+    pub use crate::driver::observation::{ReadObservation, ReadObservationConfig};
+
+    /// Construction-only capture settings for benchmarks and fault witnesses.
+    #[cfg(feature = "bench")]
+    pub trait PoolBuilderObservationExt {
+        #[must_use]
+        fn read_observation(self, config: ReadObservationConfig) -> Self;
+    }
+
+    #[cfg(feature = "bench")]
+    impl PoolBuilderObservationExt for crate::pool::PoolBuilder {
+        fn read_observation(self, config: ReadObservationConfig) -> Self {
+            self.read_observation_internal(config)
+        }
+    }
     use std::cell::Cell;
     use std::marker::PhantomData;
-    #[cfg(feature = "mock")]
     use std::sync::Arc;
     #[cfg(feature = "mock")]
     use std::sync::atomic::Ordering;
@@ -245,6 +260,10 @@ pub mod testing {
 
     /// Narrow control-plane seams for deterministic residency tests.
     pub trait PoolTestingExt {
+        #[cfg(feature = "bench")]
+        fn read_observation(&self) -> Option<Arc<ReadObservation>>;
+        /// Admits one already classified absent contiguous run through pool routing.
+        fn prefetch_span(&self, pages: &[PageId]) -> crate::pool::PrefetchReport;
         fn register_file(&self, file: crate::driver::FileHandle);
         fn frame_state(&self, frame: ReadFrameIdx) -> FrameState;
         fn pin<'ctx>(
@@ -268,6 +287,13 @@ pub mod testing {
     macro_rules! impl_pool_testing_ext {
         ($backend:ty) => {
             impl PoolTestingExt for crate::pool::Pool<$backend> {
+                #[cfg(feature = "bench")]
+                fn read_observation(&self) -> Option<Arc<ReadObservation>> {
+                    self.read_observation_internal()
+                }
+                fn prefetch_span(&self, pages: &[PageId]) -> crate::pool::PrefetchReport {
+                    self.prefetch_span_internal(pages)
+                }
                 fn register_file(&self, file: crate::driver::FileHandle) {
                     self.register_file_internal(file);
                 }

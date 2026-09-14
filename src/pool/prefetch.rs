@@ -51,13 +51,13 @@ pub struct PrefetchStats {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum Source {
+pub(super) enum Source {
     Explicit,
     Automatic { reader: u32, incarnation: u64 },
 }
 
 #[derive(Debug, Clone, Copy)]
-enum Admission {
+pub(super) enum Admission {
     Resident,
     Pending,
     Admitted,
@@ -191,6 +191,20 @@ impl<D: PoolBackend> Pool<D> {
         if control.miss.find_pending(page).is_some() {
             return Admission::Pending;
         }
+        self.prefetch_admit_run(control, &[page], source)
+    }
+
+    pub(super) fn prefetch_admit_run(
+        &self,
+        control: &mut Control,
+        pages: &[PageId],
+        source: Source,
+    ) -> Admission {
+        assert!(!pages.is_empty());
+        if pages.len() > 1 {
+            return self.prefetch_admit_vector(control, pages, source);
+        }
+        let page = pages[0];
         if control.prefetch.available() == 0 || control.reads_in_flight >= self.max_inflight_reads {
             return Admission::Deferred;
         }
@@ -205,7 +219,12 @@ impl<D: PoolBackend> Pool<D> {
             .frames
             .claim(frame, page)
             .expect("reserve entries are exclusively Free");
-        let token = match self.submit_page_read(control, page, write, 0) {
+        let token = match self.submit_page_read(
+            control,
+            page,
+            write,
+            crate::driver::ReadPurpose::Speculative,
+        ) {
             Ok(token) => token,
             Err(refusal) => {
                 control
@@ -222,6 +241,124 @@ impl<D: PoolBackend> Pool<D> {
             .admit_speculative(slot, page, frame, token, &self.miss_interests);
         control.prefetch.admit(&self.clock, page, frame, source);
         Admission::Admitted
+    }
+
+    fn prefetch_admit_vector(
+        &self,
+        control: &mut Control,
+        pages: &[PageId],
+        source: Source,
+    ) -> Admission {
+        use super::read_spans::ReadSpan;
+        use crate::driver::read_vector::{VECTOR_BYTES_MAX, VECTOR_FRAMES_MAX};
+        let count = u32::try_from(pages.len()).expect("bounded classified run");
+        assert!((2..=VECTOR_FRAMES_MAX).contains(&count));
+        assert!(count <= VECTOR_BYTES_MAX / self.granule);
+        assert!(pages.windows(2).all(|pair| pair[0].file() == pair[1].file()
+            && pair[0].granule_idx().checked_add(1) == Some(pair[1].granule_idx())));
+        if control.prefetch.available() < count
+            || self.max_inflight_reads - control.reads_in_flight < count
+        {
+            return Admission::Deferred;
+        }
+        let Some(route) = control.read_spans.reserve() else {
+            return Admission::Deferred;
+        };
+        let mut slots = [None; VECTOR_FRAMES_MAX as usize];
+        if !control
+            .miss
+            .admission_slots(&self.miss_interests, &mut slots[..pages.len()])
+        {
+            control.read_spans.cancel(route);
+            return Admission::Deferred;
+        }
+        control.prefetch.fill_reserve(&mut control.free_frames);
+        if control.prefetch.reserve.len() < count {
+            control.read_spans.cancel(route);
+            return Admission::Deferred;
+        }
+        let (vector, frames) = self.prefetch_admit_vector_claim(control, pages);
+        let offset = u64::from(pages[0].granule_idx()) * u64::from(self.granule);
+        let fd = super::registered_file(&control.files, pages[0]);
+        let token = match self.driver.submit_read_vector(fd, vector, offset) {
+            Ok(token) => token,
+            Err((_error, mut vector)) => {
+                vector.take_remaining(|_, frame| {
+                    control.prefetch.reserve.push(self.frames.abort(frame));
+                });
+                control.read_spans.cancel(route);
+                control.prefetch.stats.submission_refused += 1;
+                return Admission::Deferred;
+            }
+        };
+        let mut span = ReadSpan::new(pages[0], token, count, self.granule);
+        for (ordinal, &page) in pages.iter().enumerate() {
+            let frame = frames[ordinal].expect("claimed destination");
+            let slot = slots[ordinal].expect("reserved miss slot");
+            let generation =
+                control
+                    .miss
+                    .admit_speculative(slot, page, frame, token, &self.miss_interests);
+            span.install(ordinal, slot, generation);
+            control.prefetch.admit(&self.clock, page, frame, source);
+        }
+        control.reads_in_flight += count;
+        control.read_spans.commit(route, span);
+        Admission::Admitted
+    }
+
+    fn prefetch_admit_vector_claim(
+        &self,
+        control: &mut Control,
+        pages: &[PageId],
+    ) -> (
+        crate::driver::read_vector::ReadVector,
+        [Option<ReadFrameIdx>; 32],
+    ) {
+        let mut vector = crate::driver::read_vector::ReadVector::new(&self.frames);
+        let mut frames = [None; 32];
+        for (ordinal, &page) in pages.iter().enumerate() {
+            assert!(self.table.lookup(page).is_none());
+            assert!(control.miss.find_pending(page).is_none());
+            let frame = control.prefetch.reserve.pop().expect("reserved inventory");
+            vector.push(
+                self.frames
+                    .claim(frame, page)
+                    .expect("reserved frames are exclusively free"),
+            );
+            frames[ordinal] = Some(frame);
+        }
+        (vector, frames)
+    }
+
+    #[cfg(any(feature = "mock", feature = "bench"))]
+    pub(crate) fn prefetch_span_internal(&self, pages: &[PageId]) -> PrefetchReport {
+        let count = u64::try_from(pages.len()).expect("slice length fits u64");
+        let mut report = PrefetchReport {
+            requested: count,
+            ..PrefetchReport::default()
+        };
+        let Some(&first) = pages.first() else {
+            return report;
+        };
+        let mut control = self.control();
+        assert_eq!(first.file().driver(), self.identity);
+        control.prefetch.reconcile(&self.clock);
+        control.prefetch.active = control.prefetch.capacity > 0;
+        if !file_is_live(&control.files, first.file(), self.identity) {
+            report.rejected = count;
+            return report;
+        }
+        match self.prefetch_admit_run(&mut control, pages, Source::Explicit) {
+            Admission::Admitted => report.admitted = count,
+            Admission::Deferred => {
+                report.deferred = count;
+                control.prefetch.stats.deferred += count;
+            }
+            _ => unreachable!("the seam receives an already classified absent run"),
+        }
+        self.wake.wake();
+        report
     }
 
     fn prefetch_replace_unused(&self, control: &mut Control, protected: &[PageId]) {

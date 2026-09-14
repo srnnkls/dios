@@ -15,11 +15,11 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
 use crate::completion::CompletionBatch;
-use crate::driver::read_vector::{ReadDestination, VectorIo};
+use crate::driver::read_vector::{ReadContinuation, ReadDestination, ReadVector, VectorIo};
 use crate::driver::{
     Attempt, BackendProgress, DEFAULT_REGISTERED_FILE_CAPACITY, DriverCore, EagerExecutor,
-    Executor, FileHandle, FileId, OpContext, OpKind, OpToken, ReadLease, ReadRefusal, RingExecutor,
-    RingReap, Shared, SyncMode, file_registration_error_into_io, next_driver_id,
+    Executor, FileHandle, FileId, OpContext, OpKind, OpToken, ReadLease, ReadPurpose, ReadRefusal,
+    RingExecutor, RingReap, Shared, SyncMode, file_registration_error_into_io, next_driver_id,
 };
 use crate::error::{FileRegistrationError, IoError, SubmitError};
 use crate::open::DirectIo;
@@ -539,8 +539,47 @@ impl MockWriteArena<'_> {
 }
 
 impl PoolBackend for MockDriver {
+    #[cfg(feature = "bench")]
+    fn attach_read_observation(
+        &self,
+        observation: Arc<crate::driver::observation::ReadObservation>,
+    ) {
+        self.0.attach_read_observation(observation);
+    }
+
+    #[cfg(feature = "bench")]
+    fn read_observation(&self) -> Option<&Arc<crate::driver::observation::ReadObservation>> {
+        self.0.read_observation()
+    }
+
+    #[cfg(feature = "bench")]
+    fn read_metadata_bytes(&self) -> u64 {
+        self.0.read_metadata_bytes()
+    }
     fn identity(&self) -> u64 {
         self.identity()
+    }
+
+    fn operation_capacity(&self) -> u32 {
+        self.0.operation_capacity()
+    }
+
+    fn submit_read_vector(
+        &self,
+        fd: &FileHandle,
+        vector: ReadVector,
+        file_offset: u64,
+    ) -> Result<OpToken, (SubmitError, ReadVector)> {
+        self.0
+            .submit_read_vector(fd, vector, file_offset, crate::driver::FrameLease::Pool)
+    }
+
+    fn continue_read_vector(
+        &self,
+        continuation: ReadContinuation,
+        vector: ReadVector,
+    ) -> Result<OpToken, (IoError, ReadVector)> {
+        self.0.continue_read_vector(continuation, vector)
     }
 
     fn attach_pool_state(&self, lifecycle: Arc<LifecycleCounters>, wake: Arc<WaitState>) {
@@ -569,6 +608,7 @@ impl PoolBackend for MockDriver {
         file_offset: u64,
         destination_offset: u32,
         len: u32,
+        purpose: ReadPurpose,
     ) -> Result<OpToken, ReadRefusal> {
         self.0.executor().record_read_attempt(
             fd.file_id(),
@@ -580,7 +620,7 @@ impl PoolBackend for MockDriver {
         );
         self.0.submit_read(
             fd,
-            ReadLease::Pool(token),
+            ReadLease::Pool(token, purpose),
             file_offset,
             destination_offset,
             len,
@@ -630,8 +670,50 @@ impl crate::testing::DriverObservation for MockDriver {
 impl crate::pool::PoolBackendSealed for MockDriver {}
 
 impl PoolBackend for MockRingDriver {
+    #[cfg(feature = "bench")]
+    fn attach_read_observation(
+        &self,
+        observation: Arc<crate::driver::observation::ReadObservation>,
+    ) {
+        self.0.attach_read_observation(observation);
+    }
+
+    #[cfg(feature = "bench")]
+    fn read_observation(&self) -> Option<&Arc<crate::driver::observation::ReadObservation>> {
+        self.0.read_observation()
+    }
+
+    #[cfg(feature = "bench")]
+    fn read_metadata_bytes(&self) -> u64 {
+        self.0.read_metadata_bytes()
+    }
     fn identity(&self) -> u64 {
         self.0.identity()
+    }
+
+    fn operation_capacity(&self) -> u32 {
+        self.0.operation_capacity()
+    }
+
+    fn submit_read_vector(
+        &self,
+        fd: &FileHandle,
+        vector: ReadVector,
+        file_offset: u64,
+    ) -> Result<OpToken, (SubmitError, ReadVector)> {
+        let token =
+            self.0
+                .submit_read_vector(fd, vector, file_offset, crate::driver::FrameLease::Pool)?;
+        self.0.executor().bind_pending(token.user_data());
+        Ok(token)
+    }
+
+    fn continue_read_vector(
+        &self,
+        continuation: ReadContinuation,
+        vector: ReadVector,
+    ) -> Result<OpToken, (IoError, ReadVector)> {
+        self.0.continue_read_vector(continuation, vector)
     }
 
     fn attach_pool_state(&self, _lifecycle: Arc<LifecycleCounters>, wake: Arc<WaitState>) {
@@ -657,10 +739,11 @@ impl PoolBackend for MockRingDriver {
         file_offset: u64,
         destination_offset: u32,
         len: u32,
+        purpose: ReadPurpose,
     ) -> Result<OpToken, ReadRefusal> {
         let token = self.0.submit_read(
             fd,
-            ReadLease::Pool(token),
+            ReadLease::Pool(token, purpose),
             file_offset,
             destination_offset,
             len,
@@ -1614,7 +1697,7 @@ impl RingExecutor for MockRingExecutor {
         &self,
         user_data: u64,
         file: FileId,
-        vector: &crate::driver::read_vector::ReadVector,
+        vector: &ReadVector,
         file_offset: u64,
     ) {
         assert!(

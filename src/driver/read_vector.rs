@@ -136,6 +136,34 @@ impl ReadVector {
         );
     }
 
+    pub(crate) fn take_remaining(&mut self, mut consume: impl FnMut(u32, InFlightFrame)) {
+        for index in 0..self.count {
+            let frame = self.frames[index as usize].take().expect("live suffix");
+            consume(self.ordinal + index, frame);
+        }
+        self.ordinal += self.count;
+        self.count = 0;
+        assert!(self.frames.iter().all(Option::is_none));
+    }
+
+    #[cfg(feature = "bench")]
+    pub(crate) fn visit_frames(&self, mut visit: impl FnMut(u32, ReadFrameIdx)) {
+        for index in 0..self.count {
+            visit(
+                self.ordinal + index,
+                self.frames[index as usize]
+                    .as_ref()
+                    .expect("live prefix")
+                    .frame(),
+            );
+        }
+    }
+
+    #[cfg(feature = "bench")]
+    pub(crate) fn frame_count(&self) -> u32 {
+        self.count
+    }
+
     pub(crate) fn io(&self) -> VectorIo {
         self.descriptors
             .expect("admission prepared stable descriptors")
@@ -239,6 +267,10 @@ unsafe impl Send for VectorStorage {}
 unsafe impl Sync for VectorStorage {}
 
 impl VectorStorage {
+    #[cfg(feature = "bench")]
+    pub(crate) fn metadata_bytes(&self) -> u64 {
+        u64::try_from(self.allocation.mapped_len()).expect("allocated descriptor bytes fit u64")
+    }
     pub(crate) fn try_new(slots: u32) -> Option<Self> {
         let count = (slots as usize).checked_mul(VECTOR_FRAMES_MAX as usize)?;
         let layout = Layout::array::<Iovec>(count).ok()?;
@@ -312,8 +344,11 @@ impl Drop for ReadContinuation {
         };
         let mut shared = shared.lock().unwrap_or_else(PoisonError::into_inner);
         if shared.slab.contains(token) {
-            assert_eq!(shared.slab.peek(token.slot()).state, OpState::Continuation);
-            shared.abandon_continuation(token.slot());
+            assert!(matches!(
+                shared.slab.peek(token.slot()).state,
+                OpState::Continuation | OpState::Terminal(_)
+            ));
+            shared.release_read_lease(token.slot());
         }
     }
 }
@@ -322,12 +357,17 @@ impl Drop for ReadContinuation {
 pub(super) struct DeferredCompletion {
     pub(super) fd: FileId,
     pub(super) retire: bool,
+    outcome: Result<u32, i32>,
 }
 
 impl Shared {
-    fn abandon_continuation(&mut self, slot: u32) {
+    fn release_read_lease(&mut self, slot: u32) {
         let (_, entry) = self.slab.reclaim(slot);
-        assert_eq!(entry.state, OpState::Continuation);
+        let outcome = match entry.state {
+            OpState::Continuation => Err(super::EIO),
+            OpState::Terminal(outcome) => outcome,
+            _ => panic!("only a held read lease releases its original slot"),
+        };
         assert!(
             entry.frame.is_none(),
             "the completion owns the destinations"
@@ -340,6 +380,7 @@ impl Shared {
         self.deferred.push_back(DeferredCompletion {
             fd: entry.fd,
             retire,
+            outcome,
         });
     }
 }
@@ -373,7 +414,7 @@ impl<E: Executor> DriverCore<E> {
         clippy::result_large_err,
         reason = "refusal returns the entire unique frame bundle without allocating"
     )]
-    pub(super) fn submit_read_vector(
+    pub(crate) fn submit_read_vector(
         &self,
         fd: &FileHandle,
         mut vector: ReadVector,
@@ -405,6 +446,8 @@ impl<E: Executor> DriverCore<E> {
         };
         self.vectors.prepare(slot, &mut vector);
         let entry = OpEntry {
+            #[cfg(feature = "bench")]
+            read_purpose: super::ReadPurpose::Speculative,
             kind: OpKind::Read,
             sync_mode: SyncMode::Full,
             fd: fd.file_id(),
@@ -480,7 +523,7 @@ impl<E: Executor> DriverCore<E> {
             self.executor.on_op_completed(
                 completion.fd,
                 OpKind::Read,
-                &Err(IoError::from_raw(super::EIO)),
+                &completion.outcome.map_err(IoError::from_raw),
             );
             self.executor.on_op_finalized();
             if completion.retire {
@@ -492,18 +535,23 @@ impl<E: Executor> DriverCore<E> {
     pub(super) fn quiesce_continue_vectors(&self, batch: &mut super::CompletionBatch) {
         for _ in 0..batch.capacity() {
             let Some(completion) = batch.pop() else { break };
-            let (_, _, _, destination, continuation) = completion.into_parts();
+            let (_, _, result, destination, continuation) = completion.into_parts();
             match destination {
                 Some(ReadDestination::Vector(mut vector)) => {
-                    if let Some(continuation) = continuation {
-                        vector.take_completed(|_, frame| {
-                            self.arena.abort(frame);
-                        });
-                        if let Err((_error, vector)) =
-                            self.continue_read_vector(continuation, vector)
-                        {
-                            drop(vector);
-                        }
+                    vector.take_completed(|_, frame| {
+                        self.arena.abort(frame);
+                    });
+                    if vector.remaining() == 0 {
+                        continue;
+                    }
+                    if !result.is_ok_and(|bytes| bytes > 0) {
+                        continue;
+                    }
+                    let Some(continuation) = continuation else {
+                        continue;
+                    };
+                    if let Err((_error, vector)) = self.continue_read_vector(continuation, vector) {
+                        drop(vector);
                     }
                 }
                 Some(ReadDestination::Point(frame)) => {
@@ -520,9 +568,11 @@ impl<E: Executor> DriverCore<E> {
             if shared.slab.slots[slot as usize]
                 .payload
                 .as_ref()
-                .is_some_and(|entry| entry.state == OpState::Continuation)
+                .is_some_and(|entry| {
+                    matches!(entry.state, OpState::Continuation | OpState::Terminal(_))
+                })
             {
-                shared.abandon_continuation(slot);
+                shared.release_read_lease(slot);
             }
         }
         drop(shared);

@@ -287,3 +287,107 @@ implementation_batches:
     fix_rounds: 1
   native_validation: checkpoint.yaml green_gate and fix_validation
   performance_gates: Not yet run; RC3/RC4 producers and RC5 safety remain prerequisites.
+- batch: 2
+  tasks:
+  - RC3
+  reviewed_at: '2026-09-14T11:05:05Z'
+  status: passed
+  synthesized_report:
+    reviewers:
+    - general-peer-gpt6-astra
+    - general-peer-opus
+    - architecture-peer-gpt6-astra
+    - architecture-peer-opus
+    - compliance-peer-gpt6-astra
+    - compliance-peer-opus
+    gates:
+      correctness:
+        status: pass
+        failed_by: []
+      security:
+        status: pass
+        failed_by: []
+      performance:
+        status: pass
+        failed_by: []
+      architecture:
+        status: pass
+        failed_by: []
+      style:
+        status: pass
+        failed_by: []
+    issues: []
+    residual:
+    - gate: style
+      location: src/pool/prefetch.rs:316
+      trigger: VECTOR_FRAMES_MAX is raised above 32 in src/driver/read_vector.rs:15
+        — the single place the width is declared — and a run of 33+ classified pages
+        reaches prefetch_admit_vector.
+      wrong_outcome: The guarding asserts in prefetch_admit_vector (2..=VECTOR_FRAMES_MAX)
+        and ReadSpan::new all pass, then `frames[ordinal] = Some(frame)` panics out
+        of bounds at ordinal 32 in prefetch_admit_vector_claim, after reserve frames
+        have already been claimed; src/driver/observation.rs:245 `assert!((1..=32).contains(&pages))`
+        aborts the bench capture on the same width.
+      found_by:
+      - compliance-peer-opus
+      reason: unreachable_input
+      evidence: The reviewed VECTOR_FRAMES_MAX is fixed at 32, as required by the settled
+        design. prefetch_admit_vector asserts the bound before claiming frames; a 33-page
+        input cannot reach the helper. The reported trigger requires changing the
+        implementation constant and the scope contract. No current bound mismatch
+        is reachable.
+    - gate: style
+      location: src/driver/observation.rs:230
+      trigger: A read-submission site passes a units literal that does not match its
+        backend — a single process only ever observes one backend, so `assert_eq!(prior,
+        units)` at observation.rs:240 compares the literal against itself and cannot
+        fire.
+      wrong_outcome: "`io_units` in the snapshot labels the capture with the wrong
+        mechanism (eager per-frame `read_at` attempts reported as `ring_read_sqes`
+        or the reverse), and the collector interprets `read_sqes` under the wrong
+        unit with no in-process check available to contradict it."
+      found_by:
+      - compliance-peer-opus
+      reason: deferred_hardening
+      evidence: The only two production callers supply the correct fixed eager_driver_attempts
+        and ring_read_sqes tags. The retained real Linux capture verifies ring_read_sqes.
+        No public input supplies this parameter. A future wrong literal is a future
+        source edit, and a two-variant enum would still permit a caller to choose
+        the wrong variant; no current incorrectly labelled artifact exists.
+    strengths:
+    - Original-slot continuation and final outcome ownership remain held through route
+      removal.
+    - Span destinations use the existing per-page publication/failure model with indexed
+      pending removal.
+    - Actual I/O observations retain source/executable identities, fixed capture storage
+      and terminal ownership.
+    summary:
+      critical: 0
+      high: 0
+      medium: 0
+    recommendation: ready_to_merge
+    next_action: Commit batch 2 and dispatch dependency-ready RC4.
+    coverage:
+      execution_classes_required:
+      - peer
+      execution_classes_successful:
+      - peer
+      reports_successful: 6
+      missing: []
+      normalization: Opus compliance reported style fail on two future-edit scenarios;
+        both were verified against current callers/bounds and dispositioned as residual
+        under the finding bar.
+      limitations:
+      - Astra architecture could not open the Gestalt cache lock in the reviewer read-only
+        sandbox; it completed from the materialized diff/map and bounded source reads.
+        No required structural question remained unresolved.
+    fix_rounds: 0
+  native_validation: 164 local and 179 Linux tests; 6 retained-pointer/ownership Miri
+    tests; strict all-target bench,mock Clippy and formatting on both hosts. Implementer
+    full native suite: 375 tests and doctests. See target/readahead-coalescing/b2-green-verification.json.
+  io_capture: Real Linux 64 MiB explicit point-control scan: 16,384 READ SQEs/CQEs, 16,384
+    publications, zero terminal destinations/read credits, zero timed allocations, 3,072
+    retained interior records, 1,374,008 metadata bytes. Exact executable/source/raw
+    hashes retained under target/readahead-coalescing/b2-smoke.
+  performance_gates: Not yet run. RC4 control/window producers and RC5 safety qualification
+    remain prerequisites.

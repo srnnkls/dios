@@ -144,8 +144,8 @@ impl MappedArena {
         self.len
     }
 
-    #[cfg(test)]
-    fn mapped_len(&self) -> usize {
+    #[cfg(any(test, feature = "bench"))]
+    pub(crate) fn mapped_len(&self) -> usize {
         self.total
     }
 }

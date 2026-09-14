@@ -2,8 +2,12 @@ use std::fs::{self, OpenOptions};
 use std::hint::black_box;
 use std::io::{BufWriter, Write};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 
+use dios::testing::{
+    PoolBuilderObservationExt, PoolTestingExt, ReadObservation, ReadObservationConfig,
+};
 use dios::{
     DirectIo, FileId, Get, PageId, PendingToken, Pool, Readahead, ReaderCtx, ReadyResult,
     RegistrationPolicy,
@@ -78,7 +82,7 @@ pub(super) fn sample<const TRACE: bool>(
         "cache_before": cache, "system_before": before, "system_after": after,
         "io_mode": io_mode, "registration": registration,
         "prefetch_credit_selection": credits, "miss_headroom": 3 * config.read_limit,
-        "coalescing": null,
+        "coalescing": pool.as_ref().and_then(|(pool, _)| pool.read_observation()).map(|capture| capture.snapshot()),
         "prefetch": super::sample_prefetch(pool.as_ref())});
     write(output, &row, &observer)
 }
@@ -126,6 +130,14 @@ fn pool(input: &Path, config: Config, credits: CreditSelection) -> Result<(Pool,
         .max_retained_frames(0)
         .registered_file_capacity(1)
         .registration_posture(RegistrationPolicy::Unregistered)
+        .read_observation(ReadObservationConfig {
+            event_capacity: 16_384,
+            interval_start_page: 8 * 1024 * 1024 / config.granule,
+            interval_pages: 4 * 1024 * 1024 / config.granule,
+            consumer_stop_bytes: Some(
+                u64::from(config.requests_per_pass()) * u64::from(config.granule),
+            ),
+        })
         .readahead(if config.method == Method::Automatic {
             Readahead::Automatic
         } else {
@@ -159,6 +171,7 @@ struct Pump<'a, const TRACE: bool> {
     pages: &'a [PageId],
     observer: &'a mut Observer<TRACE>,
     hint_next: u32,
+    capture: Option<Arc<ReadObservation>>,
 }
 
 #[inline(never)]
@@ -176,6 +189,7 @@ fn read_dios<const TRACE: bool>(
         pages,
         observer,
         hint_next: 0,
+        capture: pool.read_observation(),
     };
     for index in 0..config.requests() {
         if index.is_multiple_of(config.requests_per_pass()) {
@@ -196,6 +210,12 @@ fn read_one<const TRACE: bool>(pump: &mut Pump<'_, TRACE>, index: u32) -> Result
     let mut pending: Option<PendingToken> = None;
     let offset = index % pump.config.requests_per_pass();
     let page = pump.pages[offset as usize];
+    if let Some(capture) = &pump.capture {
+        capture.scan_position(
+            index / pump.config.requests_per_pass(),
+            offset * (pump.config.granule / GRANULE),
+        );
+    }
     let started = pump.observer.start();
     for _ in 0..POLLS_MAX {
         prefetch(pump, index, offset);

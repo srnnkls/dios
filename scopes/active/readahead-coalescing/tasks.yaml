@@ -5,7 +5,7 @@ next_id: 7
 meta:
   created: '2026-09-14'
   last_updated: '2026-09-14'
-  progress: 2/6
+  progress: 3/6
 discipline: Owner approval, 512 KiB default and scope review are recorded. Immutable
   source/executable baseline verified before RC1/RC2 dispatch. Each task captures
   bounded RED before code.
@@ -57,7 +57,7 @@ tasks:
     review: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-synthesis.yaml"
 - id: RC3
   title: Route vector completions through per-page terminal outcomes
-  status: pending
+  status: done
   depends_on:
   - RC1
   - RC2
@@ -77,7 +77,12 @@ tasks:
     credits, EOF/stop waste, overlap and actual descriptor/route metadata bytes. Add
     the scan adapter using captured observations; never derive actual SQEs from configuration
     or prefetch totals. Detailed records allocate only at construction and report
-    overflow/loss.'
+    overflow/loss. Use the existing feature-gated testing/bench extension in src/lib.rs
+    where a thin seam is needed to drive the real already-classified span mechanism
+    before RC4 public run classification; do not add a public product API or duplicate
+    the routing model in tests. The shared classified-span admission and existing
+    speculative-entry integration may add narrow pool-private helpers in prefetch.rs;
+    complete public explicit/automatic run classification remains RC4.'
   files:
   - src/pool/mod.rs
   - src/pool/read_spans.rs
@@ -92,6 +97,16 @@ tasks:
   - benches/mmap_workloads/scan.rs
   - benches/mmap_workloads/observe.rs
   - benches/mmap_workloads/mod.rs
+  - src/lib.rs
+  - src/pool/prefetch.rs
+  - src/driver/observation.rs
+  - src/allocation.rs
+  completed_at: '2026-09-14T11:05:05Z'
+  evidence:
+    tester: ".peer/readahead-coalescing/20260914T090833Z-505efd/b2-tester-RC3/native.yaml"
+    tester_oracle_correction: ".peer/readahead-coalescing/20260914T090833Z-505efd/b2-tester-RC3/correction.yaml"
+    implementer: ".peer/readahead-coalescing/20260914T090833Z-505efd/b2-implementer-RC3/native.yaml"
+    review: ".peer/readahead-coalescing/20260914T090833Z-505efd/b2-synthesis.yaml"
 - id: RC4
   title: Coalesce explicit and automatic missing runs
   status: pending
@@ -132,6 +147,7 @@ tasks:
   - benches/mmap_workloads/scan.rs
   - benches/mmap_workloads/observe.rs
   - benches/mmap_workloads/mod.rs
+  - src/driver/observation.rs
 - id: RC5
   title: Prove concurrency, lifetime and allocation invariants
   status: pending

@@ -24,10 +24,13 @@ impl FileOwned for MissEntry {
 
 const _: () = assert!(size_of::<FileSlot<MissEntry>>() == size_of::<Occupiable<MissEntry>>());
 use crate::completion::CompletionBatch;
+use crate::driver::read_vector::{ReadContinuation, ReadVector};
 use crate::driver::{
-    BackendProgress, FileHandle, FileId, OpToken, ReadRefusal, RegistrationPosture, SyncMode,
+    BackendProgress, FileHandle, FileId, OpToken, ReadPurpose, ReadRefusal, RegistrationPosture,
+    SyncMode,
 };
 use crate::error::FileRegistrationError;
+use crate::error::IoError;
 use crate::error::SubmitError;
 use crate::open::DirectIo;
 use crate::pool::write_arena::{ArenaState, WriteSlot};
@@ -47,6 +50,20 @@ pub(super) mod sealed {
 /// driver types; carried `#[doc(hidden)]` so it is not documented public API.
 pub(crate) trait PoolBackend: sealed::Sealed {
     fn identity(&self) -> u64;
+
+    fn operation_capacity(&self) -> u32;
+
+    #[cfg(feature = "bench")]
+    fn attach_read_observation(
+        &self,
+        observation: Arc<crate::driver::observation::ReadObservation>,
+    );
+
+    #[cfg(feature = "bench")]
+    fn read_observation(&self) -> Option<&Arc<crate::driver::observation::ReadObservation>>;
+
+    #[cfg(feature = "bench")]
+    fn read_metadata_bytes(&self) -> u64;
 
     /// The buffer-registration posture the backend runs; mocks have none.
     fn registration_posture(&self) -> RegistrationPosture {
@@ -81,7 +98,29 @@ pub(crate) trait PoolBackend: sealed::Sealed {
         file_offset: u64,
         destination_offset: u32,
         len: u32,
+        purpose: ReadPurpose,
     ) -> Result<OpToken, ReadRefusal>;
+
+    #[expect(
+        clippy::result_large_err,
+        reason = "refusal returns the unique bounded bundle"
+    )]
+    fn submit_read_vector(
+        &self,
+        fd: &FileHandle,
+        vector: ReadVector,
+        file_offset: u64,
+    ) -> Result<OpToken, (SubmitError, ReadVector)>;
+
+    #[expect(
+        clippy::result_large_err,
+        reason = "refusal returns the unique bounded suffix"
+    )]
+    fn continue_read_vector(
+        &self,
+        continuation: ReadContinuation,
+        vector: ReadVector,
+    ) -> Result<OpToken, (IoError, ReadVector)>;
 
     /// Drains ready completions and separately reports raw backend progress.
     fn poll_progress(&self, out: &mut CompletionBatch) -> BackendProgress;
@@ -248,6 +287,7 @@ pub(crate) struct MissEntry {
     token: OpToken,
     generation: NonZeroU64,
     filled: u32,
+    pending_position: u32,
     outcome: MissOutcome,
 }
 
@@ -367,10 +407,13 @@ impl MissTable {
     }
 
     fn pending_position(&self, slot: MissSlot) -> usize {
-        self.pending_live()
-            .iter()
-            .position(|pending| pending.is_some_and(|pending| pending.slot == slot))
-            .expect("a pending miss is indexed")
+        let entry = self.entry(slot.index());
+        let position = entry.pending_position as usize;
+        assert_eq!(
+            self.pending[position].expect("indexed pending miss").slot,
+            slot
+        );
+        position
     }
 
     fn pending_push(&mut self, pending: PendingMiss) {
@@ -390,6 +433,11 @@ impl MissTable {
         let moved = self.pending[last].take();
         if index < last {
             self.pending[index] = moved;
+            let moved = moved.expect("the pending prefix is occupied");
+            self.slots[moved.slot.index()]
+                .get_mut()
+                .expect("moved pending miss")
+                .pending_position = u32::try_from(index).expect("bounded pending position");
         }
         self.pending_len -= 1;
         assert!(
@@ -414,6 +462,30 @@ impl MissTable {
         })
     }
 
+    pub(super) fn admission_slots(
+        &self,
+        interests: &MissInterests,
+        slots: &mut [Option<MissSlot>],
+    ) -> bool {
+        assert!(!slots.is_empty());
+        assert!(slots.iter().all(Option::is_none));
+        let mut count = 0;
+        for (index, entry) in self.slots.iter().enumerate() {
+            let reusable = entry.get().is_none_or(|entry| {
+                entry.outcome != MissOutcome::Pending
+                    && interests.waiters(MissSlot::new(index), entry.generation) == Some(0)
+            });
+            if reusable {
+                slots[count] = Some(MissSlot::new(index));
+                count += 1;
+                if count == slots.len() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     pub(crate) fn admit(
         &mut self,
         slot: MissSlot,
@@ -432,7 +504,7 @@ impl MissTable {
         frame: ReadFrameIdx,
         token: OpToken,
         interests: &MissInterests,
-    ) {
+    ) -> NonZeroU64 {
         self.admit_initial(
             slot,
             page,
@@ -440,7 +512,7 @@ impl MissTable {
             token,
             interests,
             InitialInterest::Speculative,
-        );
+        )
     }
 
     fn admit_initial(
@@ -477,6 +549,7 @@ impl MissTable {
             token,
             generation,
             filled: 0,
+            pending_position: self.pending_len,
             outcome: MissOutcome::Pending,
         };
         self.slots.insert(slot.index(), entry);
