@@ -15,10 +15,11 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
 use crate::completion::CompletionBatch;
+use crate::driver::read_vector::{ReadContinuation, ReadDestination, ReadVector, VectorIo};
 use crate::driver::{
     Attempt, BackendProgress, DEFAULT_REGISTERED_FILE_CAPACITY, DriverCore, EagerExecutor,
-    Executor, FileHandle, FileId, OpContext, OpKind, OpToken, ReadLease, ReadRefusal, RingExecutor,
-    RingReap, Shared, SyncMode, file_registration_error_into_io, next_driver_id,
+    Executor, FileHandle, FileId, OpContext, OpKind, OpToken, ReadLease, ReadPurpose, ReadRefusal,
+    RingExecutor, RingReap, Shared, SyncMode, file_registration_error_into_io, next_driver_id,
 };
 use crate::error::{FileRegistrationError, IoError, SubmitError};
 use crate::open::DirectIo;
@@ -318,8 +319,54 @@ impl MockDriver {
     ///
     /// # Panics
     ///
-    /// If `fd` was minted by a different driver, or `frame` is out of range for
-    /// the configured frame count.
+    /// If the file is foreign, any frame is unavailable, or the slice is not
+    /// 2..=32 distinct frames totaling at most 128 KiB.
+    pub fn submit_read_vector(
+        &self,
+        fd: &FileHandle,
+        frames: &[ReadFrameIdx],
+        offset: u64,
+    ) -> Result<OpToken, SubmitError> {
+        let token = self.0.submit_raw_read_vector(fd, frames, offset)?;
+        Ok(token)
+    }
+
+    /// Continues a raw vector after aborting its completely transferred prefix.
+    /// The same logical token and original completion slot remain reserved.
+    ///
+    /// # Errors
+    /// Returns EINVAL when a direct-I/O suffix is misaligned.
+    ///
+    /// # Panics
+    /// Panics unless the batch's last completion holds this driver's short vector lease.
+    pub fn continue_read_vector(&self, batch: &mut CompletionBatch) -> Result<OpToken, IoError> {
+        let completion = batch
+            .pop()
+            .expect("a continuation batch contains its short completion");
+        let (_, kind, result, destination, continuation) = completion.into_parts();
+        assert_eq!(kind, OpKind::Read);
+        assert!(result.is_ok(), "continuation follows a positive read");
+        let Some(ReadDestination::Vector(mut vector)) = destination else {
+            panic!("continuation requires an owned vector");
+        };
+        vector.take_completed(|_, frame| {
+            self.0.arena().abort(frame);
+        });
+        self.0
+            .continue_read_vector(
+                continuation.expect("positive short read retains its slot"),
+                vector,
+            )
+            .map_err(|(error, _vector)| error)
+    }
+
+    /// Enqueues an ordinary point read into the selected test frame.
+    ///
+    /// # Errors
+    /// Returns bounded capacity or stale-handle refusal.
+    ///
+    /// # Panics
+    /// Panics for a foreign file or an unavailable frame.
     pub fn submit_read(
         &self,
         fd: &FileHandle,
@@ -492,8 +539,64 @@ impl MockWriteArena<'_> {
 }
 
 impl PoolBackend for MockDriver {
+    #[cfg(feature = "bench")]
+    fn attach_read_observation(
+        &self,
+        observation: Arc<crate::driver::observation::ReadObservation>,
+    ) {
+        self.0.attach_read_observation(observation);
+    }
+
+    #[cfg(feature = "bench")]
+    fn read_observation(&self) -> Option<&Arc<crate::driver::observation::ReadObservation>> {
+        self.0.read_observation()
+    }
+
+    #[cfg(feature = "bench")]
+    fn read_metadata_bytes(&self) -> u64 {
+        self.0.read_metadata_bytes()
+    }
     fn identity(&self) -> u64 {
         self.identity()
+    }
+
+    fn operation_capacity(&self) -> u32 {
+        self.0.operation_capacity()
+    }
+
+    fn submit_read_vector(
+        &self,
+        fd: &FileHandle,
+        vector: ReadVector,
+        file_offset: u64,
+    ) -> Result<OpToken, (SubmitError, ReadVector)> {
+        self.0.executor().record_read_attempt(
+            fd.file_id(),
+            ReadAttempt {
+                file_offset,
+                destination_offset: vector.destination_offset(),
+                requested_len: vector.remaining(),
+            },
+        );
+        self.0
+            .submit_read_vector(fd, vector, file_offset, crate::driver::FrameLease::Pool)
+    }
+
+    fn continue_read_vector(
+        &self,
+        continuation: ReadContinuation,
+        vector: ReadVector,
+    ) -> Result<OpToken, (IoError, ReadVector)> {
+        let (file, file_offset) = continuation.read_span();
+        self.0.executor().record_read_attempt(
+            file,
+            ReadAttempt {
+                file_offset,
+                destination_offset: vector.destination_offset(),
+                requested_len: vector.remaining(),
+            },
+        );
+        self.0.continue_read_vector(continuation, vector)
     }
 
     fn attach_pool_state(&self, lifecycle: Arc<LifecycleCounters>, wake: Arc<WaitState>) {
@@ -522,6 +625,7 @@ impl PoolBackend for MockDriver {
         file_offset: u64,
         destination_offset: u32,
         len: u32,
+        purpose: ReadPurpose,
     ) -> Result<OpToken, ReadRefusal> {
         self.0.executor().record_read_attempt(
             fd.file_id(),
@@ -533,7 +637,7 @@ impl PoolBackend for MockDriver {
         );
         self.0.submit_read(
             fd,
-            ReadLease::Pool(token),
+            ReadLease::Pool(token, purpose),
             file_offset,
             destination_offset,
             len,
@@ -574,11 +678,59 @@ impl PoolBackend for MockDriver {
     }
 }
 
+impl crate::testing::DriverObservation for MockDriver {
+    fn copy_frame(&self, frame: ReadFrameIdx, out: &mut [u8]) -> usize {
+        self.0.copy_frame_testing(frame, out)
+    }
+}
+
 impl crate::pool::PoolBackendSealed for MockDriver {}
 
 impl PoolBackend for MockRingDriver {
+    #[cfg(feature = "bench")]
+    fn attach_read_observation(
+        &self,
+        observation: Arc<crate::driver::observation::ReadObservation>,
+    ) {
+        self.0.attach_read_observation(observation);
+    }
+
+    #[cfg(feature = "bench")]
+    fn read_observation(&self) -> Option<&Arc<crate::driver::observation::ReadObservation>> {
+        self.0.read_observation()
+    }
+
+    #[cfg(feature = "bench")]
+    fn read_metadata_bytes(&self) -> u64 {
+        self.0.read_metadata_bytes()
+    }
     fn identity(&self) -> u64 {
         self.0.identity()
+    }
+
+    fn operation_capacity(&self) -> u32 {
+        self.0.operation_capacity()
+    }
+
+    fn submit_read_vector(
+        &self,
+        fd: &FileHandle,
+        vector: ReadVector,
+        file_offset: u64,
+    ) -> Result<OpToken, (SubmitError, ReadVector)> {
+        let token =
+            self.0
+                .submit_read_vector(fd, vector, file_offset, crate::driver::FrameLease::Pool)?;
+        self.0.executor().bind_pending(token.user_data());
+        Ok(token)
+    }
+
+    fn continue_read_vector(
+        &self,
+        continuation: ReadContinuation,
+        vector: ReadVector,
+    ) -> Result<OpToken, (IoError, ReadVector)> {
+        self.0.continue_read_vector(continuation, vector)
     }
 
     fn attach_pool_state(&self, _lifecycle: Arc<LifecycleCounters>, wake: Arc<WaitState>) {
@@ -604,15 +756,16 @@ impl PoolBackend for MockRingDriver {
         file_offset: u64,
         destination_offset: u32,
         len: u32,
+        purpose: ReadPurpose,
     ) -> Result<OpToken, ReadRefusal> {
         let token = self.0.submit_read(
             fd,
-            ReadLease::Pool(token),
+            ReadLease::Pool(token, purpose),
             file_offset,
             destination_offset,
             len,
         )?;
-        self.0.executor().bind_pending(u64::from(token.slot()));
+        self.0.executor().bind_pending(token.user_data());
         Ok(token)
     }
 
@@ -854,23 +1007,32 @@ impl MockExecutor {
 
     /// Fills the destination pool frame with the seeded byte for a clean read,
     /// modelling the disk transferring the granule's contents into the buffer.
-    fn fill_read(&self, context: &mut OpContext<'_>) {
-        let Ok(granule_idx) = u32::try_from(context.file_offset / u64::from(self.frame_bytes))
-        else {
-            return;
+    fn fill_read(&self, context: &mut OpContext<'_>, bytes: u32) {
+        assert!(
+            bytes <= context.requested_len,
+            "a short read cannot exceed the requested transfer"
+        );
+        let state = self.lock();
+        let file = context.fd;
+        let file_offset = context.file_offset;
+        let transfer = |offset: u32, destination: &mut [u8]| {
+            fill_seeded_prefix(
+                &state.seeds,
+                file,
+                self.frame_bytes,
+                file_offset + u64::from(offset),
+                destination,
+            );
         };
-        let Some(fill) = self.lock().seeds.get(&(context.fd, granule_idx)).copied() else {
-            return;
-        };
-        let destination_offset = context.destination_offset;
-        let requested_len = context.requested_len;
-        let token = context
-            .frame
-            .as_mut()
-            .expect("a read attempt owns its frame token");
-        self.arena
-            .transfer_mut(token, destination_offset, requested_len)
-            .fill(fill);
+        match context.frame.as_mut().expect("read destination owner") {
+            ReadDestination::Point(token) => {
+                let destination = self
+                    .arena
+                    .transfer_mut(token, context.destination_offset, bytes);
+                transfer(0, destination);
+            }
+            ReadDestination::Vector(vector) => vector.transfer_prefix(bytes, transfer),
+        }
     }
 
     fn persist_successful_write(&self, context: &OpContext<'_>, bytes: u32) {
@@ -901,7 +1063,7 @@ impl EagerExecutor for MockExecutor {
             context
                 .frame
                 .as_ref()
-                .is_none_or(|token| token.frame().get() < self.frames),
+                .is_none_or(|destination| destination.frames_in_bounds(self.frames)),
             "an op's frame indexes within the configured pool"
         );
         match kind {
@@ -943,12 +1105,17 @@ impl EagerExecutor for MockExecutor {
         let attempt = match injected {
             None => {
                 if matches!(kind, OpKind::Read) {
-                    self.fill_read(context);
+                    self.fill_read(context, clean_bytes);
                 }
                 Attempt::Done(clean_bytes)
             }
             Some(Injected::Io(errno)) => Attempt::Failed(errno),
-            Some(Injected::Short(bytes)) => Attempt::Done(bytes),
+            Some(Injected::Short(bytes)) => {
+                if matches!(kind, OpKind::Read) {
+                    self.fill_read(context, bytes);
+                }
+                Attempt::Done(bytes)
+            }
             Some(Injected::Eintr) => Attempt::Interrupted,
             Some(Injected::Eagain) => Attempt::WouldBlock,
         };
@@ -1161,6 +1328,15 @@ impl Drop for MockRingDriver {
 }
 
 impl MockRingDriver {
+    /// Seeds a mock file page before a vector read executes.
+    pub fn seed_page(&self, fd: &FileHandle, granule_idx: u32, fill: u8) {
+        self.0
+            .executor()
+            .lock()
+            .seeds
+            .insert((fd.file_id(), granule_idx), fill);
+    }
+
     #[must_use]
     pub fn builder() -> MockRingDriverBuilder {
         MockRingDriverBuilder::default()
@@ -1240,7 +1416,55 @@ impl MockRingDriver {
     ///
     /// # Panics
     ///
-    /// If `fd` was minted by a different driver, or `frame` is out of range.
+    /// If the file is foreign, any frame is unavailable, or the slice is not
+    /// 2..=32 distinct frames totaling at most 128 KiB.
+    pub fn submit_read_vector(
+        &self,
+        fd: &FileHandle,
+        frames: &[ReadFrameIdx],
+        offset: u64,
+    ) -> Result<OpToken, SubmitError> {
+        let token = self.0.submit_raw_read_vector(fd, frames, offset)?;
+        self.0.executor().bind_pending(token.user_data());
+        Ok(token)
+    }
+
+    /// Continues a raw vector after aborting its completely transferred prefix.
+    /// The same logical token and original completion slot remain reserved.
+    ///
+    /// # Errors
+    /// Returns EINVAL when a direct-I/O suffix is misaligned.
+    ///
+    /// # Panics
+    /// Panics unless the batch's last completion holds this driver's short vector lease.
+    pub fn continue_read_vector(&self, batch: &mut CompletionBatch) -> Result<OpToken, IoError> {
+        let completion = batch
+            .pop()
+            .expect("a continuation batch contains its short completion");
+        let (_, kind, result, destination, continuation) = completion.into_parts();
+        assert_eq!(kind, OpKind::Read);
+        assert!(result.is_ok(), "continuation follows a positive read");
+        let Some(ReadDestination::Vector(mut vector)) = destination else {
+            panic!("continuation requires an owned vector");
+        };
+        vector.take_completed(|_, frame| {
+            self.0.arena().abort(frame);
+        });
+        self.0
+            .continue_read_vector(
+                continuation.expect("positive short read retains its slot"),
+                vector,
+            )
+            .map_err(|(error, _vector)| error)
+    }
+
+    /// Enqueues an ordinary point read into the selected test frame.
+    ///
+    /// # Errors
+    /// Returns bounded capacity or stale-handle refusal.
+    ///
+    /// # Panics
+    /// Panics for a foreign file or an unavailable frame.
     pub fn submit_read(
         &self,
         fd: &FileHandle,
@@ -1248,7 +1472,7 @@ impl MockRingDriver {
         offset: u64,
     ) -> Result<OpToken, SubmitError> {
         let token = self.0.submit_raw_read(fd, frame, offset)?;
-        self.0.executor().bind_pending(u64::from(token.slot()));
+        self.0.executor().bind_pending(token.user_data());
         Ok(token)
     }
 
@@ -1261,7 +1485,7 @@ impl MockRingDriver {
         offset: u64,
     ) -> Result<OpToken, (SubmitError, WriteSlot<'arena>)> {
         let token = self.0.submit_write(fd, buf, offset)?;
-        self.0.executor().bind_pending(u64::from(token.slot()));
+        self.0.executor().bind_pending(token.user_data());
         Ok(token)
     }
 
@@ -1277,7 +1501,7 @@ impl MockRingDriver {
     /// If `fd` was minted by a different driver.
     pub fn submit_fsync(&self, fd: &FileHandle, mode: SyncMode) -> Result<OpToken, SubmitError> {
         let token = self.0.submit_fsync(fd, mode)?;
-        self.0.executor().bind_pending(u64::from(token.slot()));
+        self.0.executor().bind_pending(token.user_data());
         Ok(token)
     }
 
@@ -1375,6 +1599,8 @@ struct MockRingState {
     pending: Option<Vec<Injected>>,
     faults: HashMap<u64, VecDeque<Injected>>,
     cqes: VecDeque<(u64, i32)>,
+    vector_reads: VecDeque<(u64, FileId, u64, VectorIo)>,
+    seeds: HashMap<(FileId, u32), u8>,
     write_attempts: Vec<WriteAttempt>,
     #[cfg(test)]
     fsync_attempts: [u64; 2],
@@ -1389,6 +1615,8 @@ impl MockRingExecutor {
                 pending: None,
                 faults: HashMap::with_capacity(capacity),
                 cqes: VecDeque::with_capacity(capacity),
+                vector_reads: VecDeque::with_capacity(capacity),
+                seeds: HashMap::new(),
                 write_attempts: Vec::with_capacity(capacity),
                 #[cfg(test)]
                 fsync_attempts: [0; 2],
@@ -1419,8 +1647,11 @@ impl MockRingExecutor {
     /// counts the op in flight. Called once per admitted submit.
     fn bind_pending(&self, user_data: u64) {
         let mut state = self.lock();
+        let slot = user_data & u64::from(u32::MAX);
         if let Some(faults) = state.pending.take() {
-            state.faults.insert(user_data, faults.into());
+            state.faults.insert(slot, faults.into());
+        } else {
+            state.faults.remove(&slot);
         }
         drop(state);
         self.observation.submitted.fetch_add(1, Ordering::AcqRel);
@@ -1431,7 +1662,7 @@ impl MockRingExecutor {
     fn next_raw(state: &mut MockRingState, user_data: u64, clean_bytes: u32) -> i32 {
         let fault = state
             .faults
-            .get_mut(&user_data)
+            .get_mut(&(user_data & u64::from(u32::MAX)))
             .and_then(VecDeque::pop_front);
         match fault {
             None => i32::try_from(clean_bytes).expect("a clean transfer fits i32"),
@@ -1444,6 +1675,10 @@ impl MockRingExecutor {
 }
 
 impl Executor for MockRingExecutor {
+    fn on_op_finalized(&self) {
+        self.observation.reaped.fetch_add(1, Ordering::AcqRel);
+    }
+
     fn register_file(&self, _slot: u32, _file: File) -> Result<(), IoError> {
         Ok(())
     }
@@ -1475,6 +1710,25 @@ impl Executor for MockRingExecutor {
 }
 
 impl RingExecutor for MockRingExecutor {
+    fn push_read_vector(
+        &self,
+        user_data: u64,
+        file: FileId,
+        vector: &ReadVector,
+        file_offset: u64,
+    ) {
+        assert!(
+            file.slot() < self.file_capacity,
+            "vector targets a table slot"
+        );
+        let mut state = self.lock();
+        let raw = Self::next_raw(&mut state, user_data, vector.remaining());
+        state
+            .vector_reads
+            .push_back((user_data, file, file_offset, vector.io()));
+        state.cqes.push_back((user_data, raw));
+    }
+
     fn push_read(
         &self,
         user_data: u64,
@@ -1543,6 +1797,32 @@ impl RingExecutor for MockRingExecutor {
             let Some((user_data, raw)) = state.cqes.pop_front() else {
                 break;
             };
+            if let Some(index) = state
+                .vector_reads
+                .iter()
+                .position(|read| read.0 == user_data)
+            {
+                let (_, file, offset, descriptors) = state
+                    .vector_reads
+                    .remove(index)
+                    .expect("located retained vector transfer");
+                if raw >= 0 {
+                    let bytes = u32::try_from(raw).expect("nonnegative CQE");
+                    // SAFETY: the shared core retains this slot's descriptor
+                    // storage and every frame token until the sink reaps it.
+                    unsafe {
+                        descriptors.transfer_prefix(bytes, |advance, destination| {
+                            fill_seeded_prefix(
+                                &state.seeds,
+                                file,
+                                self.frame_bytes,
+                                offset + u64::from(advance),
+                                destination,
+                            );
+                        });
+                    };
+                }
+            }
             let keep_reaping = sink(user_data, raw);
             reaped += 1;
             if !keep_reaping {
@@ -1555,10 +1835,6 @@ impl RingExecutor for MockRingExecutor {
         }
     }
 
-    fn on_op_finalized(&self) {
-        self.observation.reaped.fetch_add(1, Ordering::AcqRel);
-    }
-
     #[cfg(target_os = "linux")]
     fn blocking_write(&self, _fd_slot: u32, _buf: &[u8], _offset: u64) -> Result<u32, i32> {
         unreachable!("the mock ring exposes no metadata plane")
@@ -1567,6 +1843,29 @@ impl RingExecutor for MockRingExecutor {
     #[cfg(target_os = "linux")]
     fn blocking_fsync(&self, _fd_slot: u32, _mode: SyncMode) -> Result<(), i32> {
         unreachable!("the mock ring exposes no metadata plane")
+    }
+}
+
+fn fill_seeded_prefix(
+    seeds: &HashMap<(FileId, u32), u8>,
+    file: FileId,
+    granule: u32,
+    file_offset: u64,
+    destination: &mut [u8],
+) {
+    let mut transferred = 0usize;
+    while transferred < destination.len() {
+        let offset = file_offset + u64::try_from(transferred).expect("vector prefix fits u64");
+        let Ok(page) = u32::try_from(offset / u64::from(granule)) else {
+            break;
+        };
+        let within = u32::try_from(offset % u64::from(granule)).expect("within granule");
+        let count = (granule - within) as usize;
+        let count = count.min(destination.len() - transferred);
+        if let Some(&fill) = seeds.get(&(file, page)) {
+            destination[transferred..transferred + count].fill(fill);
+        }
+        transferred += count;
     }
 }
 

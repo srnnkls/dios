@@ -1,0 +1,15 @@
+version: 1
+epoch:
+  id: 20260904T131000Z-rp0001
+  started_at: 2026-09-04T13:10:00Z
+  updated_at: 2026-09-04T13:10:00Z
+routing:
+  tester:
+    agent: codex-native
+    effort: inherit
+  implementer:
+    agent: terra
+    effort: high
+  reviewer:
+    agents: [codex-native, opus-cli, gemini]
+    effort: high

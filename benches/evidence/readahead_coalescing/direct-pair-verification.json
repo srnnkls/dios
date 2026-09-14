@@ -1,0 +1,14 @@
+{
+  "archive_verified": true,
+  "both_executables_verified": true,
+  "compiled_features_compiler_and_profile_match": true,
+  "paired_csv_hash_verified": true,
+  "summary": {
+    "adopted_bound": null,
+    "ci95_upper": 0.9810665066495924,
+    "kind": "characterization",
+    "pairs": 30,
+    "ratio_geomean": 0.918692147405878,
+    "ratio_orientation": "candidate/base"
+  }
+}

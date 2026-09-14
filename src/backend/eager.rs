@@ -5,9 +5,11 @@
 //! backend guards only its own file table and slab.
 
 use std::fs::File;
+use std::ops::ControlFlow;
 use std::os::unix::fs::FileExt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use crate::driver::read_vector::{ReadDestination, ReadVector};
 use crate::driver::{
     Attempt, Backend, DriverBuildError, EagerExecutor, Executor, OpContext, OpKind,
     RegistrationPolicy,
@@ -77,10 +79,6 @@ impl EagerExecutor for Eager {
         };
         match kind {
             OpKind::Read => {
-                debug_assert!(
-                    clean_bytes <= self.frame_bytes,
-                    "a read transfer spans at most one frame"
-                );
                 assert_eq!(
                     clean_bytes, context.requested_len,
                     "the eager attempt receives the admitted transfer length"
@@ -92,10 +90,17 @@ impl EagerExecutor for Eager {
                     .frame
                     .as_mut()
                     .expect("a read attempt owns its frame token");
-                let destination =
-                    self.frames
-                        .transfer_mut(token, destination_offset, requested_len);
-                attempt_map_transfer(file.read_at(destination, file_offset), requested_len)
+                match token {
+                    ReadDestination::Point(token) => {
+                        let destination =
+                            self.frames
+                                .transfer_mut(token, destination_offset, requested_len);
+                        attempt_map_transfer(file.read_at(destination, file_offset), requested_len)
+                    }
+                    ReadDestination::Vector(vector) => {
+                        attempt_read_vector(file, vector, file_offset)
+                    }
+                }
             }
             OpKind::Write => {
                 debug_assert!(
@@ -114,6 +119,36 @@ impl EagerExecutor for Eager {
                 Err(error) => classify(&error),
             },
         }
+    }
+}
+
+fn attempt_read_vector(file: &File, vector: &mut ReadVector, file_offset: u64) -> Attempt {
+    let requested = vector.remaining();
+    let mut progress = ControlFlow::Continue(0u32);
+    vector.transfer_prefix(requested, |offset, destination| {
+        let ControlFlow::Continue(transferred) = &mut progress else {
+            return;
+        };
+        match file.read_at(destination, file_offset + u64::from(offset)) {
+            Ok(bytes) => {
+                assert!(bytes <= destination.len(), "pread respects its destination");
+                *transferred += u32::try_from(bytes).expect("bounded vector transfer");
+                if bytes < destination.len() {
+                    progress = ControlFlow::Break(Attempt::Done(*transferred));
+                }
+            }
+            Err(error) => {
+                progress = ControlFlow::Break(if *transferred > 0 {
+                    Attempt::Done(*transferred)
+                } else {
+                    classify(&error)
+                });
+            }
+        }
+    });
+    match progress {
+        ControlFlow::Continue(bytes) => Attempt::Done(bytes),
+        ControlFlow::Break(outcome) => outcome,
     }
 }
 

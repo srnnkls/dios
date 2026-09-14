@@ -448,6 +448,115 @@ fn real_pool_warm_get_hit_allocates_nothing() {
 }
 
 #[test]
+fn shipping_prefetch_and_automatic_recycling_allocate_nothing() {
+    let path = temp_frames("prefetch-recycling", 2304, 0xC4);
+    let postures = [
+        dios::RegistrationPolicy::Unregistered,
+        #[cfg(target_os = "linux")]
+        dios::RegistrationPolicy::Registered,
+    ];
+    for posture in postures {
+        let pool = shipping_prefetch_and_automatic_recycling_allocate_nothing_pool(posture);
+        let file = pool.open(&path, DirectIo::Disabled).expect("fixture");
+        let reader = pool.register_reader().expect("reader");
+        drop(resolve_product_page(
+            &pool,
+            &reader,
+            PageId::new(file, 2303),
+        ));
+        let (allocations, (checksum, admitted)) = armed_allocations_result(|| {
+            let mut checksum = 0_u64;
+            for page in 0..2176 {
+                let guard = resolve_product_page(&pool, &reader, PageId::new(file, page));
+                checksum += guard.iter().map(|&byte| u64::from(byte)).sum::<u64>();
+                drop(guard);
+                pool.poll();
+            }
+            for _ in 0..DRAIN_POLLS_MAX {
+                pool.poll();
+                if pool.prefetch_stats().reads_in_flight == 0 {
+                    break;
+                }
+            }
+            let admitted = pool.prefetch_stats().admitted;
+            let _ = pool.retire_file(file);
+            for _ in 0..RETIRE_POLLS_MAX {
+                pool.poll();
+            }
+            (checksum, admitted)
+        });
+        assert_eq!(
+            allocations, 0,
+            "default vector admission, consumption and cleanup reuse fixed storage"
+        );
+        assert_eq!(checksum, 2176 * 4096 * 0xC4);
+        assert!(
+            admitted > 128,
+            "the workload must recycle a full speculative budget"
+        );
+        let stats = pool.prefetch_stats();
+        assert_eq!(
+            stats.capacity, 128,
+            "exercise the shipping default byte budget"
+        );
+        assert_eq!((stats.occupied, stats.reads_in_flight), (0, 0));
+        assert!(pool.file_is_retired_observed(file));
+        #[cfg(feature = "bench")]
+        shipping_prefetch_and_automatic_recycling_allocate_nothing_observe(&pool);
+    }
+    std::fs::remove_file(path).expect("fixture cleanup");
+}
+
+fn shipping_prefetch_and_automatic_recycling_allocate_nothing_pool(
+    posture: dios::RegistrationPolicy,
+) -> Pool<Driver> {
+    let builder = Pool::builder()
+        .frame_count(1024)
+        .granule(FRAME_BYTES)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(256)
+        .miss_headroom(768)
+        .write_slots(1)
+        .registration_posture(posture);
+    #[cfg(feature = "bench")]
+    let builder = {
+        use dios::testing::{PoolBuilderObservationExt, ReadObservationConfig};
+        builder.read_observation(ReadObservationConfig {
+            event_capacity: 32768,
+            interval_start_page: 0,
+            interval_pages: 0,
+            consumer_stop_bytes: Some(2176 * 4096),
+        })
+    };
+    builder
+        .build()
+        .expect("the 4 MiB arena fits the existing registration limit")
+}
+
+#[cfg(feature = "bench")]
+fn shipping_prefetch_and_automatic_recycling_allocate_nothing_observe(pool: &Pool<Driver>) {
+    let snapshot = pool.read_observation().expect("bounded capture").snapshot();
+    let lengths = snapshot["io"]["initial_vector_lengths"]
+        .as_array()
+        .expect("vector histogram");
+    assert!(
+        lengths.iter().any(|length| {
+            length["pages"] == 32 && length["requests"].as_u64().is_some_and(|count| count >= 32)
+        }),
+        "actual full vectors must carry at least 1024 pages"
+    );
+    assert!(
+        snapshot["io"]["read_bytes"]
+            .as_u64()
+            .is_some_and(|bytes| bytes >= 2176 * 4096)
+    );
+    assert_eq!(snapshot["io"]["terminal_destinations"], 0);
+    assert_eq!(snapshot["io"]["terminal_read_credits"], 0);
+    assert_eq!(snapshot["overflow"], 0);
+}
+
+#[test]
 fn real_pool_warm_hinted_hit_allocates_nothing() {
     let path = temp_frames("real-pool-hinted-hit", 1, 0xA5);
     let pool = product_pool();

@@ -234,6 +234,7 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "io-uring",
+ "libc",
  "loom",
  "serde",
  "serde_json",

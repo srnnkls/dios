@@ -1,0 +1,186 @@
+{
+  "recorded_at": "2026-09-14T18:46:44.819762+00:00",
+  "status": "unqualified_after_exact_symbol_replay",
+  "new_captures": 0,
+  "raw_perf_sha256": "3f1d8438d6b41f509a1bad8248aade9424aaf410d1d094499c0c0911cc263b9f",
+  "candidate_executable_sha256": "a10ca92b2bc199b387384bb0aa900413152252e29647647d38b9ebca8955af06",
+  "libc_build_id": "34df6094fa79d4d842a69928f98fae25ac983cce",
+  "qualification": {
+    "metadata": {
+      "configuration": "geometry:automatic:4:128:256",
+      "event": "cpu-clock",
+      "sample_unit": "samples",
+      "period": null,
+      "frequency": 997,
+      "repetitions": 16,
+      "executable_sha256": "a10ca92b2bc199b387384bb0aa900413152252e29647647d38b9ebca8955af06",
+      "credit_selection": "default",
+      "fixture": {
+        "granule": 4096,
+        "pages": 65536,
+        "schema": 1,
+        "sha256": "54ae45ec997182e04336fd1f928503fc1b8ac46f070c796332ca0133b03f1d2f",
+        "spare_pages": 1
+      },
+      "stack_bytes": 32768,
+      "recorder_cpu": 4,
+      "recorder_outside_memory_limit": true,
+      "mmap_pages": 128,
+      "collector_sha256": "967c3cc97092bb33072eb7b8567f22f63f99bde8a7c027c8e3bf86d4160914bf",
+      "orchestration_sha256": "439129754b925a6db24d133a0b79019b58f633108657b202f7d43119e3a13720",
+      "workload_command": [
+        "/run/current-system/sw/bin/bash",
+        "-c",
+        "printf \"%s\\n\" \"$$\" > \"$1\"; kill -STOP \"$$\"; shift; exec \"$@\"",
+        "scan-profile",
+        "/dev/shm/rc6-owner-clock-profile-mu14_if2/scratch/pid",
+        "/dev/shm/dios-rc6-headlines-20260914/cold-mmap/mmap_workloads-a10ca92b2bc199b387384bb0aa900413152252e29647647d38b9ebca8955af06",
+        "scan-default-profile",
+        "/home/srnnkls/build/dios-mmap-20260913/target/mmap-smoke-initial/input",
+        "geometry:automatic:4:128:256",
+        "16",
+        "/dev/shm/rc6-owner-clock-profile-mu14_if2/cold-candidate-clock/samples"
+      ],
+      "status": "complete",
+      "raw_perf_sha256": "3f1d8438d6b41f509a1bad8248aade9424aaf410d1d094499c0c0911cc263b9f",
+      "profile_collector_sha256": "34827fc269c3826c68356452a623d7b364c7b5eb6d3dd101cb1c204d1da8e509",
+      "workload_boundaries": [
+        "engine::timed_workload",
+        "engine::read_dios",
+        "engine::read_mmap",
+        "scan::read_dios",
+        "scan::read_mmap",
+        "probe::Probe::run"
+      ],
+      "workload_filter_sha256": "1f747cfe5de8f73889c1a9406868be7ea83274648eb0f59299ef313b1ea1112d",
+      "lost_events": 0,
+      "throttle_events": 0,
+      "unthrottle_events": 0,
+      "timed_samples": 249,
+      "sample_sha256": {
+        "0000.json": "240e24bfd5f3f2ae83e46837e859a80696e4724ff8d3eb5c144549bae039372f",
+        "0001.json": "ca0ce6ba7e253b24aed6eefba99e61faab10dce53975b04def7b866f344f4854",
+        "0002.json": "b18d13cb26feec4941e9d70bd7435f43a3837507e08ebe096b02be84167941a3",
+        "0003.json": "de9371d35f81de03f0aa104bbb6a9d8cb6922ed6f78e64f30723f7e5f64e87a2",
+        "0004.json": "608c74625a49a66fddfb0b68d1cf83367186537f2dbfaed8d2d95017bce1faeb",
+        "0005.json": "dc30b2b1ce03b3948d11f05f8d8e102434cbfb7bcc65dcf96b496f4cb9a261d5",
+        "0006.json": "3997e8ef1084011cded98d736dc8d6ae930a6cb3ce7ec91ef5d3a508bb4ebbcd",
+        "0007.json": "b38835fc0a1978471ebf00978b5d64bd225379abb39af6ca1b5e97c68dd8da07",
+        "0008.json": "20f367016f4ab4816be4e4e192b4ac27c15b47bd9869aef5d626d725102316c8",
+        "0009.json": "bc01b9597539de1a7be50257e84db2d39051df2da1498ab34ac314b0fcaccece",
+        "0010.json": "a2666d445080483ee9a8c3182bc1083db4630fd07fc27bee4939fed62e853dcf",
+        "0011.json": "f12c39e5d4b6a0c8fd02639d194a03d724e892ac54c4ccdf468f1709020c0e79",
+        "0012.json": "673225b8e6479e246102a3e7955b73e239d26739d0b3083f348739a24eb132d5",
+        "0013.json": "bbd655264f2df75a7ae7e9ea014007566ac3334b5eefdc1595e3d34f92c234c7",
+        "0014.json": "a281807f9f626654c1c80ceca61b54aae7ca80de31296a1313785e13800e32bc",
+        "0015.json": "77abc92a786a6c32afd479c231ef3effbfcb36c663d1de6b6923179de862c9d1"
+      },
+      "unwind_replay": {
+        "raw_data_unchanged": true,
+        "command": "../symfs-command.json",
+        "symbol_files": "../symbol-files.json",
+        "original_metadata_sha256": "77a5493936209db5ad56cf18a5696d0680315a68af32bef10d24bcf6362a2b7e"
+      }
+    },
+    "excluded_samples": 549,
+    "orphaned_samples": 366,
+    "cpu_budget_qualified": false,
+    "profile_cpu_over_primary": 0.9511057407398297,
+    "categories": {
+      "prefetch_and_prediction": {
+        "samples": 132,
+        "fraction": 0.5301204819277109,
+        "estimated_cpu_ns_per_page": null
+      },
+      "page_consumption": {
+        "samples": 49,
+        "fraction": 0.19678714859437751,
+        "estimated_cpu_ns_per_page": null
+      },
+      "poll_and_completion": {
+        "samples": 32,
+        "fraction": 0.1285140562248996,
+        "estimated_cpu_ns_per_page": null
+      },
+      "caller_loop_or_other": {
+        "samples": 14,
+        "fraction": 0.05622489959839357,
+        "estimated_cpu_ns_per_page": null
+      },
+      "lookup_and_admission": {
+        "samples": 10,
+        "fraction": 0.040160642570281124,
+        "estimated_cpu_ns_per_page": null
+      },
+      "unresolved_cpu": {
+        "samples": 9,
+        "fraction": 0.03614457831325301,
+        "estimated_cpu_ns_per_page": null
+      },
+      "ready_and_guard": {
+        "samples": 3,
+        "fraction": 0.012048192771084338,
+        "estimated_cpu_ns_per_page": null
+      }
+    }
+  },
+  "classifier_unchanged": true,
+  "qualification_unchanged": "orphaned * 100 <= timed",
+  "normalization": "perf6.6.64 script with explicit task-owned symfs; unchanged inferno-collapse-perf, rustfilt, workload_view and scan_analyze.profile",
+  "diagnosis": "Exact ELF/library replay reproduces249timed/366orphaned. Saved stack/return bytes are present, but libunwind falls back to frame pointer0 at posix_fadvise despite an rsp-based libc CFI rule. The pre-exec comm-state diagnostic produces byte-identical script output. Root cause remains unresolved; no category estimate, further capture or decoder change is authorized by this result.",
+  "setup_corrections": [
+    "Task-owned scratch had already been cleaned; restored exact archived raw data.",
+    "Qualification identity initially omitted its separately recorded fixture; supplied that same fixture before validation."
+  ],
+  "files": {
+    "buildids.txt": {
+      "sha256": "a1ee3e75248b4d73a0dae20fcba3a9709f24ecad7cb7e88d85546c5c775a52ef",
+      "size_bytes": 161
+    },
+    "symbol-files.json": {
+      "sha256": "1c6aee05fdb85b59972999e65c0ae809d77295e4e9a5f8b5369489f49bbea85e",
+      "size_bytes": 3502
+    },
+    "symfs-command.json": {
+      "sha256": "7e1f2e6a0dfdb910c06bf9372f3d9bb0966a5ed0c92ccfd5692941f5725f67a4",
+      "size_bytes": 417
+    },
+    "symfs.perf-script": {
+      "sha256": "a3898f7044ea1f34e20716422744f9b8a142d8c09698c33c1f36c6cc80c5609e",
+      "size_bytes": 2312892
+    },
+    "symfs.decode.log": {
+      "sha256": "d30f6d19f36d402aace067318c528dbc651ab69b0458139875875d46b8a9b6f7",
+      "size_bytes": 2871733
+    },
+    "comm-diagnostic.perf-script": {
+      "sha256": "a3898f7044ea1f34e20716422744f9b8a142d8c09698c33c1f36c6cc80c5609e",
+      "size_bytes": 2312892
+    },
+    "libc-frames.txt": {
+      "sha256": "6c417088d07e4ea672c2783f239ea237666a9d60508b8b741fc8be2fc1234f3f",
+      "size_bytes": 1904682
+    },
+    "symfs-replay/profile.folded": {
+      "sha256": "14d29cd655ef6d1245047717267bbf83be636dabd4dd3e725afde7699d4face7",
+      "size_bytes": 448300
+    },
+    "symfs-replay/metadata.json": {
+      "sha256": "f3135faffe7b335edb6c92a0d6e81f394aa905217c31ac5192ff1ce8c9455007",
+      "size_bytes": 3571
+    }
+  },
+  "archive": {
+    "local": "target/readahead-coalescing/rc6-unwind-replay.tar.gz",
+    "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-unwind-replay.tar.gz",
+    "sha256": "44d220209ad6218b69d9d1addee0aa34bd96f8bc5db71790aad6995bd6637ad8",
+    "size_bytes": 16504181
+  },
+  "local_verification": {
+    "files_verified": 9,
+    "qualification_exact_match": true,
+    "timed_samples": 249,
+    "orphaned_samples": 366,
+    "cpu_budget_qualified": false
+  }
+}

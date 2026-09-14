@@ -1,0 +1,16 @@
+checkpoint:
+  scope_name: registration-posture
+  scope_path: ./scopes/done/registration-posture
+  branch: feat/arena-registration-posture
+  pr: 7
+  timestamp: 2026-09-04T15:20:00Z
+  last_batch: 2
+  last_commit: b1db67d1f87d741c2ef36efdd9c3f933f662fa68
+  tasks:
+    done:
+      - {id: RP1, name: "Registration posture — Registered | Unregistered, Auto probe, arena lock, readback", commit: b1db67d}
+      - {id: RP2, name: "Merge PR #7 and notify consumers", commit: b1db67d, note: "sira pin advanced; T8b retargeted; Unregistered-forced suite run handed to sira DM005"}
+    in_progress: []
+    pending: []
+  next_batch: none
+  incomplete_stages: []

@@ -20,7 +20,7 @@ use std::time::Instant;
 use crate::completion::CompletionBatch;
 use crate::driver::{
     ArenaLockPolicy, BackendProgress, Driver, DriverBuildError, FileHandle, FileId, IoMode, OpKind,
-    OpToken, ReadRefusal, RegistrationPolicy, RegistrationPosture,
+    OpToken, ReadPurpose, ReadRefusal, RegistrationPolicy, RegistrationPosture,
 };
 use crate::error::{FileRegistrationError, IoError, SubmitError};
 use crate::open::DirectIo;
@@ -42,6 +42,8 @@ mod frames;
 #[cfg(loom)]
 pub mod loom_model;
 mod miss;
+mod prefetch;
+mod read_spans;
 mod retention;
 mod table;
 pub(crate) mod write_arena;
@@ -57,6 +59,7 @@ pub use frames::{FrameState, ReadFrameIdx};
 pub(crate) use frames::{Frames, InFlightFrame};
 pub(crate) use miss::PoolBackend;
 pub(crate) use miss::sealed::Sealed as PoolBackendSealed;
+pub use prefetch::{PrefetchReport, PrefetchStats, Readahead};
 pub use retention::{RetainRefused, RetainRefusedReason, RetainedFrame, RetentionStats};
 pub use table::PageTable;
 #[cfg(feature = "bench")]
@@ -446,6 +449,8 @@ impl Drop for PendingToken {
 /// — an open-time typed error, never a runtime deadlock (INV-9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PoolConfigError {
+    /// Speculation would consume frames required by the demand watermark.
+    PrefetchHeadroomTooLarge { requested: u32, available: u32 },
     /// Retention bookkeeping cannot represent the requested fixed budget.
     RetentionUnrepresentable {
         /// Requested retained-frame budget or reader bound.
@@ -523,6 +528,13 @@ impl std::fmt::Display for PoolConfigError {
             Self::RetentionUnrepresentable { requested, limit } => write!(
                 f,
                 "retention-capacity request {requested} exceeds the representable limit {limit}"
+            ),
+            Self::PrefetchHeadroomTooLarge {
+                requested,
+                available,
+            } => write!(
+                f,
+                "prefetch headroom {requested} exceeds the {available} spare frames"
             ),
             Self::BelowWatermark {
                 frame_count,
@@ -691,6 +703,10 @@ pub struct PoolBuilder {
     registered_file_capacity: u32,
     registration_policy: RegistrationPolicy,
     arena_lock: ArenaLockPolicy,
+    prefetch_headroom: Option<u32>,
+    readahead: Readahead,
+    #[cfg(feature = "bench")]
+    read_observation: Option<crate::driver::observation::ReadObservationConfig>,
 }
 
 impl Default for PoolBuilder {
@@ -708,11 +724,23 @@ impl Default for PoolBuilder {
             registered_file_capacity: crate::driver::DEFAULT_REGISTERED_FILE_CAPACITY,
             registration_policy: RegistrationPolicy::Auto,
             arena_lock: ArenaLockPolicy::BestEffort,
+            prefetch_headroom: None,
+            readahead: Readahead::Automatic,
+            #[cfg(feature = "bench")]
+            read_observation: None,
         }
     }
 }
 
 impl PoolBuilder {
+    #[cfg(feature = "bench")]
+    pub(crate) fn read_observation_internal(
+        mut self,
+        config: crate::driver::observation::ReadObservationConfig,
+    ) -> Self {
+        self.read_observation = Some(config);
+        self
+    }
     /// Sets the total number of resident frames.
     #[must_use]
     pub fn frame_count(mut self, frame_count: u32) -> Self {
@@ -845,6 +873,7 @@ impl PoolBuilder {
                 watermark: u32::try_from(watermark).unwrap_or(u32::MAX),
             });
         }
+        self.prefetch_capacity()?;
         Ok(())
     }
 
@@ -989,6 +1018,7 @@ struct Control {
     evict_queue: EvictQueue,
     miss: MissTable,
     free_frames: FreeFrames,
+    read_spans: read_spans::ReadSpans,
     frame_pages: FramePages,
     files: Box<[Option<PoolFile>]>,
     batch: CompletionBatch,
@@ -996,6 +1026,7 @@ struct Control {
     product_sequence: u64,
     release_cursor: u64,
     reads_in_flight: u32,
+    prefetch: prefetch::Prefetch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1170,6 +1201,8 @@ impl<D: PoolBackend> Pool<D> {
             .ok_or(PoolBuildError::Allocation)?,
             free_frames: FreeFrames::try_with_all(config.frame_count)
                 .ok_or(PoolBuildError::Allocation)?,
+            read_spans: read_spans::ReadSpans::try_new(config.max_inflight_reads, backend_capacity)
+                .ok_or(PoolBuildError::Allocation)?,
             frame_pages: FramePages::try_new(config.frame_count, config.registered_file_capacity)
                 .ok_or(PoolBuildError::Allocation)?,
             files: crate::allocation::try_boxed_slice_with(config.registered_file_capacity, || {
@@ -1189,6 +1222,17 @@ impl<D: PoolBackend> Pool<D> {
             product_sequence: 0,
             release_cursor: 0,
             reads_in_flight: 0,
+            prefetch: prefetch::Prefetch::try_with_geometry(
+                config
+                    .prefetch_capacity()
+                    .map_err(PoolBuildError::Configuration)?,
+                config.max_concurrent_readers,
+                config.max_inflight_reads,
+                config.readahead,
+                config.frame_count,
+                config.granule,
+            )
+            .ok_or(PoolBuildError::Allocation)?,
         })
     }
 
@@ -1242,16 +1286,19 @@ impl<D: PoolBackend> Pool<D> {
         wake.consume_current();
         let pool_identity = driver.identity();
         driver.attach_pool_state(Arc::clone(&lifecycle), Arc::clone(&wake));
-        let backend_capacity = config
-            .max_inflight_reads
-            .checked_add(config.max_inflight_product_ops)
-            .expect("validated queue capacity")
-            .max(1);
+        let backend_capacity = driver.operation_capacity();
+        assert!(backend_capacity > 0, "the backend has operation slots");
         let control = Self::try_preallocated_control(&config, backend_capacity)?;
         let table = PageTable::try_with_frame_count(config.frame_count)
             .ok_or(PoolBuildError::Allocation)?;
         let clock =
             Clock::try_with_frame_count(config.frame_count).ok_or(PoolBuildError::Allocation)?;
+        #[cfg(feature = "bench")]
+        let control = {
+            let mut control = control;
+            Self::try_preallocated_observation(&config, &driver, &mut control, &clock)?;
+            control
+        };
         let miss_interests = Arc::new(
             MissInterests::try_with_capacity(config.frame_count)
                 .ok_or(PoolBuildError::Allocation)?,
@@ -1289,6 +1336,37 @@ impl<D: PoolBackend> Pool<D> {
             cold_get_pause: Mutex::new(None),
             drop_hook: Self::shutdown_for_drop,
         })
+    }
+
+    #[cfg(feature = "bench")]
+    fn try_preallocated_observation(
+        config: &PoolBuilder,
+        driver: &D,
+        control: &mut Control,
+        clock: &Clock,
+    ) -> Result<(), PoolBuildError> {
+        if let Some(settings) = config.read_observation {
+            let indexes = control.prefetch.metadata_bytes();
+            let notifications = clock.notification_bytes();
+            let metadata_bytes = driver.read_metadata_bytes()
+                + control.read_spans.metadata_bytes()
+                + indexes
+                + notifications;
+            let observation = crate::driver::observation::ReadObservation::try_new(
+                settings,
+                config.granule,
+                driver.operation_capacity(),
+                config.frame_count,
+                metadata_bytes,
+                config.max_concurrent_readers,
+                (notifications, indexes),
+            )
+            .ok_or(PoolBuildError::Allocation)?;
+            let observation = Arc::new(observation);
+            control.prefetch.observation = Some(Arc::clone(&observation));
+            driver.attach_read_observation(observation);
+        }
+        Ok(())
     }
 
     fn shutdown_for_drop(pool: &mut Pool<D>) {
@@ -1478,9 +1556,11 @@ impl<D: PoolBackend> Pool<D> {
     /// [`RegisterError::AtCapacity`] once `max_concurrent_readers` slots are
     /// held — registration beyond capacity fails rather than deadlocking.
     pub fn register_reader(&self) -> Result<ReaderCtx, RegisterError> {
-        self.readers.register().ok_or(RegisterError::AtCapacity {
+        let reader = self.readers.register().ok_or(RegisterError::AtCapacity {
             max_concurrent_readers: self.max_concurrent_readers,
-        })
+        })?;
+        self.control().prefetch.reset_reader(reader.index());
+        Ok(reader)
     }
 
     /// Routes every `PageId` naming `fd`'s file to this handle. Reads for such a
@@ -1626,13 +1706,24 @@ impl<D: PoolBackend> Pool<D> {
                 None => Get::Busy,
             });
         }
-        Ok(self.get_cold(page, &mut control))
+        control.prefetch.reconcile(&self.clock);
+        let result = self.get_cold(page, reader.index(), &mut control);
+        if matches!(result, Get::Pending(_)) {
+            control.prefetch.observe(&self.clock, reader.index(), page);
+        }
+        Ok(result)
     }
 
     #[cold]
     #[inline(never)]
-    fn get_cold<'pool>(&'pool self, page: PageId, control: &mut Control) -> Get<'pool> {
+    fn get_cold<'pool>(
+        &'pool self,
+        page: PageId,
+        reader: u32,
+        control: &mut Control,
+    ) -> Get<'pool> {
         if let Some(index) = control.miss.find_pending(page) {
+            self.prefetch_promote(control, control.miss.entry(index).frame(), reader);
             let (slot, generation) = control.miss.join(index, &self.miss_interests);
             return Get::Pending(PendingToken::new(
                 page,
@@ -1655,7 +1746,7 @@ impl<D: PoolBackend> Pool<D> {
             .frames
             .claim(frame, page)
             .expect("the free stack holds only Free frames");
-        let token = match self.submit_page_read(control, page, write, 0) {
+        let token = match self.submit_page_read(control, page, write, ReadPurpose::Demand) {
             Ok(token) => token,
             Err(refusal) => {
                 control.free_frames.push(self.frames.abort(refusal.token));
@@ -2031,6 +2122,7 @@ impl<D: PoolBackend> Pool<D> {
         let reclaimed = self.advance_and_reclaim(&mut control);
         Self::deliver_product_completions(&mut control, out);
         self.progress_retirements(&mut control);
+        self.progress_prefetch(&mut control);
         if backend > 0 || reclaimed > 0 || out.iter().next().is_some() {
             self.wake.consume_current();
         }
@@ -2065,6 +2157,7 @@ impl<D: PoolBackend> Pool<D> {
         let reclaimed = self.advance_and_reclaim(&mut control);
         Self::deliver_product_completions(&mut control, out);
         self.progress_retirements(&mut control);
+        self.progress_prefetch(&mut control);
         if backend.backend_completions > 0 || reclaimed > 0 || out.iter().next().is_some() {
             self.wake.consume_current();
         }
@@ -2206,6 +2299,9 @@ impl<D: PoolBackend> Pool<D> {
                 continue;
             }
             let _ = self.table.remove_shared(page);
+            control
+                .prefetch
+                .finish(&self.clock, frame, prefetch::state::Terminal::Evicted);
             self.frames.advance(frame, FrameState::Evicting);
             control.evict_queue.push(frame, epoch);
         }
@@ -2220,6 +2316,7 @@ impl<D: PoolBackend> Pool<D> {
         let _ = self.drain_completions(&mut control);
         let reclaimed = self.advance_and_reclaim(&mut control);
         self.progress_retirements(&mut control);
+        self.progress_prefetch(&mut control);
         debug_assert!(
             reclaimed <= self.frame_count as usize,
             "a poll reclaims at most every frame"
@@ -2231,6 +2328,13 @@ impl<D: PoolBackend> Pool<D> {
     #[must_use]
     pub(crate) fn frame_state_internal(&self, frame: ReadFrameIdx) -> FrameState {
         self.frames.state(frame)
+    }
+
+    #[cfg(feature = "bench")]
+    pub(crate) fn read_observation_internal(
+        &self,
+    ) -> Option<Arc<crate::driver::observation::ReadObservation>> {
+        self.driver.read_observation().cloned()
     }
 
     #[cfg(feature = "bench")]
@@ -2286,7 +2390,7 @@ impl<D: PoolBackend> Pool<D> {
             slot.abort_pin(begun);
             return None;
         };
-        let _ = self.clock.reference(frame);
+        let _ = self.clock.reference_from(frame, slot);
         let pin = slot.commit_pin(begun);
         Some((self.frames.frame_bytes(frame, &pin), frame))
     }
@@ -2373,6 +2477,9 @@ impl<D: PoolBackend> Pool<D> {
             Some(frame),
             "the control lock keeps the eviction mapping stable"
         );
+        control
+            .prefetch
+            .finish(&self.clock, frame, prefetch::state::Terminal::Evicted);
         self.frames.advance(frame, FrameState::Evicting);
         control
             .evict_queue
@@ -2381,7 +2488,10 @@ impl<D: PoolBackend> Pool<D> {
     }
 
     fn claim_free_frame(&self, control: &mut Control) -> Option<ReadFrameIdx> {
-        let frame = control.free_frames.pop()?;
+        let frame = control
+            .free_frames
+            .pop()
+            .or_else(|| control.prefetch.reserve.pop())?;
         assert_eq!(
             self.frames.state(frame),
             FrameState::Free,
@@ -2395,11 +2505,11 @@ impl<D: PoolBackend> Pool<D> {
         control: &Control,
         page: PageId,
         write: InFlightFrame,
-        filled: u32,
+        purpose: ReadPurpose,
     ) -> Result<OpToken, ReadRefusal> {
-        let (offset, len) = read_span(page, self.granule, filled);
+        let (offset, len) = read_span(page, self.granule, 0);
         let fd = registered_file(&control.files, page);
-        self.driver.submit_read(fd, write, offset, filled, len)
+        self.driver.submit_read(fd, write, offset, 0, len, purpose)
     }
 
     /// Finds a `Free` frame, or runs one bounded reclaim attempt (drain, advance,
@@ -2428,7 +2538,12 @@ impl<D: PoolBackend> Pool<D> {
     }
 
     fn evict_one_victim(&self, control: &mut Control) {
-        let epoch = self.global_epoch.load(Ordering::Acquire);
+        if !self.prefetch_evict_unused(control) {
+            self.evict_clock_victim(control);
+        }
+    }
+
+    fn evict_clock_victim(&self, control: &mut Control) -> bool {
         for _ in 0..=self.frame_count.saturating_mul(2) {
             let victim = self.clock.evict_victim_shared();
             if self.frames.state(victim) != FrameState::Resident {
@@ -2437,20 +2552,17 @@ impl<D: PoolBackend> Pool<D> {
             if !control.miss.prepare_eviction(victim, &self.miss_interests) {
                 continue;
             }
+            if self.clock.is_speculative(victim) {
+                continue;
+            }
             assert!(
                 control.frame_pages[victim.get() as usize].get().is_some(),
                 "a resident CLOCK victim remains indexed"
             );
-            let page = self.frames.exact_page_locked(victim, control);
-            let removed = self
-                .table
-                .remove_shared(page)
-                .expect("a resident eviction victim remains mapped");
-            assert_eq!(removed, victim, "the reverse mapping names the victim");
-            self.frames.advance(victim, FrameState::Evicting);
-            control.evict_queue.push(victim, epoch);
-            return;
+            self.evict_resident(control, victim);
+            return true;
         }
+        false
     }
 
     fn drain_completions(&self, control: &mut Control) -> u32 {
@@ -2461,7 +2573,17 @@ impl<D: PoolBackend> Pool<D> {
 
     fn route_completion_batch(&self, control: &mut Control) {
         while let Some(completion) = control.batch.pop() {
-            let (driver_token, kind, result, write) = completion.into_parts();
+            let (driver_token, kind, result, destination, continuation) = completion.into_parts();
+            if let Some(crate::driver::read_vector::ReadDestination::Vector(vector)) = destination {
+                assert_eq!(kind, OpKind::Read);
+                self.route_span_completion(control, driver_token, vector, continuation, result);
+                continue;
+            }
+            assert!(
+                continuation.is_none(),
+                "point completions do not retain a vector slot"
+            );
+            let write = destination.map(crate::driver::read_vector::ReadDestination::into_point);
             if kind != OpKind::Read {
                 assert!(
                     write.is_none(),
@@ -2548,7 +2670,7 @@ impl<D: PoolBackend> Pool<D> {
             len,
         ) {
             self.driver
-                .submit_read(fd, write, offset, filled, len)
+                .submit_read(fd, write, offset, filled, len, ReadPurpose::Continuation)
                 .map_err(|refusal| refusal.token)
         } else {
             Err(write)
@@ -2671,13 +2793,21 @@ impl<D: PoolBackend> Pool<D> {
         entry: MissEntry,
         write: InFlightFrame,
     ) {
+        #[cfg(feature = "bench")]
+        if let Some(observation) = self.driver.read_observation() {
+            observation.terminal(entry.frame(), entry.page(), Ok(()));
+        }
         self.frames.publish(write);
         self.table.insert_shared(entry.page(), entry.frame());
         frame_pages.insert(
             entry.frame().get() as usize,
             FrameFileSlot::for_page(entry.page()),
         );
-        let _ = self.clock.reference(entry.frame());
+        if self.clock.is_speculative(entry.frame()) {
+            self.clock.completed.notify(entry.frame());
+        } else {
+            let _ = self.clock.reference(entry.frame());
+        }
         miss.succeed(index);
         miss.clean_terminal_zero(
             MissSlot::new(index),
@@ -2694,6 +2824,11 @@ impl<D: PoolBackend> Pool<D> {
         write: InFlightFrame,
         errno: i32,
     ) {
+        #[cfg(feature = "bench")]
+        if let Some(observation) = self.driver.read_observation() {
+            observation.terminal(entry.frame(), entry.page(), Err(errno));
+        }
+        self.prefetch_fail(control, entry.frame());
         control.free_frames.push(self.frames.abort(write));
         let miss = &mut control.miss;
         miss.fail(index, errno);
@@ -2822,7 +2957,7 @@ pub(crate) fn pin_with_resident_hint(
         slot.abort_pin(begun);
         return None;
     }
-    let _ = clock.reference(frame);
+    let _ = clock.reference_from(frame, slot);
     Some((frame, slot.commit_pin(begun)))
 }
 
@@ -2948,6 +3083,28 @@ impl PoolBackend for Driver {
         self.identity()
     }
 
+    fn operation_capacity(&self) -> u32 {
+        self.operation_capacity()
+    }
+
+    #[cfg(feature = "bench")]
+    fn attach_read_observation(
+        &self,
+        observation: Arc<crate::driver::observation::ReadObservation>,
+    ) {
+        self.attach_read_observation(observation);
+    }
+
+    #[cfg(feature = "bench")]
+    fn read_observation(&self) -> Option<&Arc<crate::driver::observation::ReadObservation>> {
+        self.read_observation()
+    }
+
+    #[cfg(feature = "bench")]
+    fn read_metadata_bytes(&self) -> u64 {
+        self.read_metadata_bytes()
+    }
+
     fn registration_posture(&self) -> RegistrationPosture {
         Driver::registration_posture(self)
     }
@@ -2979,8 +3136,26 @@ impl PoolBackend for Driver {
         file_offset: u64,
         destination_offset: u32,
         len: u32,
+        purpose: ReadPurpose,
     ) -> Result<OpToken, ReadRefusal> {
-        self.submit_read_range(fd, token, file_offset, destination_offset, len)
+        self.submit_read_range(fd, token, file_offset, destination_offset, len, purpose)
+    }
+
+    fn submit_read_vector(
+        &self,
+        fd: &FileHandle,
+        vector: crate::driver::read_vector::ReadVector,
+        file_offset: u64,
+    ) -> Result<OpToken, (SubmitError, crate::driver::read_vector::ReadVector)> {
+        Driver::submit_read_vector(self, fd, vector, file_offset)
+    }
+
+    fn continue_read_vector(
+        &self,
+        continuation: crate::driver::read_vector::ReadContinuation,
+        vector: crate::driver::read_vector::ReadVector,
+    ) -> Result<OpToken, (IoError, crate::driver::read_vector::ReadVector)> {
+        Driver::continue_read_vector(self, continuation, vector)
     }
 
     fn poll_progress(&self, out: &mut CompletionBatch) -> BackendProgress {

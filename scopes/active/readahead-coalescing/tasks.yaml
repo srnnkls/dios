@@ -1,0 +1,263 @@
+---
+scope: readahead-coalescing
+code: RC
+next_id: 7
+meta:
+  created: '2026-09-14'
+  last_updated: '2026-09-14'
+  progress: 6/6
+discipline: Owner approval, 512 KiB default and scope review are recorded. Immutable
+  source/executable baseline verified before RC1/RC2 dispatch. Each task captures
+  bounded RED before code.
+tasks:
+- id: RC1
+  title: Prepare the exact gate harness from the frozen baseline
+  status: done
+  depends_on: []
+  description: Use the immutable pre-dispatch source/executable snapshot while RC2
+    works independently. Materialize current-old-budget, current-new-budget and coalesced-default
+    arms using the owner-selected C, R=2*C and INV-9 headroom=3*R. Use the same 8
+    MiB cold / 64 MiB pressure payload arenas and poll/consume loops in pool comparisons.
+    Keep frozen DRP at max_inflight_reads(1). Add SQEs per 1,024 pages, vector lengths,
+    polls/page, control entry visits, EOF waste and source/raw/CSV checks. The explicit
+    arm extends hints in vector-sized chunks. Include demand READs in the steady SQE
+    bound. Add small-capacity fallback, shared-reader turn and explicit per-call protection/replacement
+    work witnesses.
+  files:
+  - benches/plans/readahead_coalescing.md
+  - benches/mmap_workloads.rs
+  - benches/mmap_workloads/
+  - tests/scan_geometry_validation.py
+  - benches/evidence/readahead_coalescing/
+  completed_at: '2026-09-14T10:10:33Z'
+  evidence:
+    tester: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-tester-RC1/native.yaml"
+    implementer: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-implementer-RC1/native.yaml"
+    review: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-synthesis.yaml"
+- id: RC2
+  title: Add owned bounded vector reads to the driver and backends
+  status: done
+  depends_on: []
+  description: |-
+    RED for ordered destinations, exact prefix transfer, submission refusal, generation reuse and lifecycle ownership. Add stable preallocated completion-slab iovecs and a unique frame bundle through refusal, retry, completion and teardown. Plain READV in both Linux postures; eager caller-thread vector fill and matching mock schedules. Point operation semantics remain intact. Miri and syscall tests validate actual retained pointers, not addresses alone. Carry the destination enum through OpEntry, OpContext and Completion construction/extraction; adapt the existing pool point consumer while keeping pool vector admission disabled until RC3.
+     Partial completions retain an exclusive continuation lease on the original op slot and file accounting. Rebuild suffix descriptors there after its CQE; no free-list round trip, new reservation or slab-exhaustion refusal. Cover abort/drop/teardown of the retained lease.
+  files:
+  - src/driver.rs
+  - src/driver/read_vector.rs
+  - src/completion.rs
+  - src/backend/uring.rs
+  - src/backend/eager.rs
+  - src/mock.rs
+  - src/pool/mod.rs
+  - tests/driver_vector_reads.rs
+  completed_at: '2026-09-14T10:10:33Z'
+  evidence:
+    tester: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-tester-RC2/native.yaml"
+    implementer: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-implementer-RC2/native.yaml"
+    review: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-synthesis.yaml"
+- id: RC3
+  title: Route vector completions through per-page terminal outcomes
+  status: done
+  depends_on:
+  - RC1
+  - RC2
+  description: 'RED for O(1) span-first routing, mid-iovec short reads, EOF/error
+    after a prefix, original-slot continuation while every other slot is full and
+    per-frame conservation. Use a construction-sized driver-slot-to-route index with
+    generation checks, sized to the actual backend slot namespace including product
+    ops. Add vector submission/continuation and slot-capacity integration to PoolBackend
+    and Driver/MockDriver/MockRingDriver together. Publish or abort each token once;
+    preserve read credits, lease ownership and file/buffer lifetime through retirement/drain.
+    A held continuation may finish an already admitted logical read after retirement,
+    matching point-read semantics; new logical admissions remain forbidden. Test retirement
+    before resubmit and through a later short completion. Integrate the RC1 observed-I/O
+    producer contract in benches/evidence/readahead_coalescing/README.md: bounded
+    bench-only capture of actual accepted READ/READV attempts and CQEs, including
+    retries/continuations, token/generation/ranges, per-frame publication/failure/terminal
+    credits, EOF/stop waste, overlap and actual descriptor/route metadata bytes. Add
+    the scan adapter using captured observations; never derive actual SQEs from configuration
+    or prefetch totals. Detailed records allocate only at construction and report
+    overflow/loss. Use the existing feature-gated testing/bench extension in src/lib.rs
+    where a thin seam is needed to drive the real already-classified span mechanism
+    before RC4 public run classification; do not add a public product API or duplicate
+    the routing model in tests. The shared classified-span admission and existing
+    speculative-entry integration may add narrow pool-private helpers in prefetch.rs;
+    complete public explicit/automatic run classification remains RC4.'
+  files:
+  - src/pool/mod.rs
+  - src/pool/read_spans.rs
+  - src/pool/miss.rs
+  - src/pool/prefetch/state.rs
+  - src/mock.rs
+  - tests/readahead_coalescing.rs
+  - src/driver.rs
+  - src/driver/read_vector.rs
+  - src/backend/uring.rs
+  - src/backend/eager.rs
+  - benches/mmap_workloads/scan.rs
+  - benches/mmap_workloads/observe.rs
+  - benches/mmap_workloads/mod.rs
+  - src/lib.rs
+  - src/pool/prefetch.rs
+  - src/driver/observation.rs
+  - src/allocation.rs
+  completed_at: '2026-09-14T11:05:05Z'
+  evidence:
+    tester: ".peer/readahead-coalescing/20260914T090833Z-505efd/b2-tester-RC3/native.yaml"
+    tester_oracle_correction: ".peer/readahead-coalescing/20260914T090833Z-505efd/b2-tester-RC3/correction.yaml"
+    implementer: ".peer/readahead-coalescing/20260914T090833Z-505efd/b2-implementer-RC3/native.yaml"
+    review: ".peer/readahead-coalescing/20260914T090833Z-505efd/b2-synthesis.yaml"
+- id: RC4
+  title: Coalesce explicit and automatic missing runs
+  status: done
+  depends_on:
+  - RC3
+  description: 'RED for steady singleton-refill collapse, smaller startup horizons,
+    resident/pending holes, duplicates, exhausted credits and partial-window protection.
+    Automatic admission waits for a full eligible vector; a one-page sliding horizon
+    is not a short tail. Explicit hints remain opportunistic and document vector-chunk
+    extension. Apply the owner byte budget through floor division and spare/read-limit
+    caps, retaining the explicit page-count override and automatic-on/disable behavior.
+    Remove per-poll capacity scans using direct entry indexes, per-incarnation cleanup
+    and a bounded dirty-frame bitmap notified only on first speculative consumption.
+    Preserve ordered feedback and progress without a new CQE. Keep repeated warm hits
+    and CLOCK policy unchanged. EOF uses short/Ok(0), prefix publication, tail failure
+    and predictor reset; no extent metadata or FileHandle changes. Protect the entire
+    examined prefix and defer the unexamined suffix without scanning it. Use per-page
+    automatic mode when min(C,R-1) cannot hold two full vectors; otherwise keep the
+    full target under temporary shortage. Preserve round-robin admission turns on
+    credit deferral, with event-updated ready-stream membership. Batch explicit protection
+    via preallocated per-call stamps and at most one replacement sweep over capacity
+    per call. Complete the RC1 observed-control producer contract in benches/evidence/readahead_coalescing/README.md:
+    capture confirmed-window timing, committed runs/refills, retained/admitted reader
+    turns, explicit examined-prefix/protection/replacement/admission/CLOCK work, affected-entry/cleanup/idle-poll
+    visits, post-final-CQE consumption recovery and actual notification/index metadata
+    bytes. Connect these observed bounded records to the scan adapter without changing
+    primary poll/consume cadence or adding timed-region allocation/request clocks.
+    Observer qualification remains a later gate.'
+  files:
+  - src/pool/mod.rs
+  - src/pool/prefetch.rs
+  - src/pool/prefetch/pattern.rs
+  - src/pool/prefetch/state.rs
+  - src/pool/prefetch/notifications.rs
+  - src/pool/clock.rs
+  - tests/readahead_coalescing.rs
+  - tests/prefetch.rs
+  - benches/mmap_workloads/scan.rs
+  - benches/mmap_workloads/observe.rs
+  - benches/mmap_workloads/mod.rs
+  - src/driver/observation.rs
+  - src/mock.rs
+  - src/driver/read_vector.rs
+  - benches/mmap_workloads/scan_analyze.py
+  - benches/mmap_workloads/coalescing.py
+  - benches/evidence/readahead_coalescing/README.md
+  completed_at: '2026-09-14T12:32:48.715476+00:00'
+  evidence:
+    tester: ".peer/readahead-coalescing/20260914T090833Z-505efd/b3-tester-RC4/native.yaml"
+    implementer: ".peer/readahead-coalescing/20260914T090833Z-505efd/b3-implementer-RC4/native.yaml"
+    legacy_oracle_correction: ".peer/readahead-coalescing/20260914T090833Z-505efd/b3-legacy-prefetch-oracles/correction.yaml"
+    review: ".peer/readahead-coalescing/20260914T090833Z-505efd/b3-synthesis.yaml"
+    validation: target/readahead-coalescing/b3-fix1-green-verification.json
+- id: RC5
+  title: Prove concurrency, lifetime and allocation invariants
+  status: done
+  depends_on:
+  - RC4
+  description: |-
+    Loom covers span publication racing point join and route reuse; integrate admission/join/completion into the existing seam. Check retained guards, file retirement, full queues, maximum admitted frames and zero allocation on eager and io_uring. Run stored-pointer Miri, syscall ASAN, existing lifetime/compile-fail and retention suites, strict Clippy and formatting. Every known safety failure blocks RC6.
+     Loom also covers notification/drain races, delayed earlier consumption, frame reuse and feedback order; empty polls must inspect no speculative-capacity entries. Include consumption after the final CQE and continuation-lease teardown.
+     Narrow pool-private visibility or cfg(loom) observation helpers in read_spans.rs and prefetch/state.rs may connect the existing Loom seam to the actual route, admission and notification primitives. No duplicate route/bitmap/predictor implementation or public product API is allowed.
+     The required cfg(loom) strict Clippy check also covers the existing Loom-only MappedSlice element initialization; a one-line wrapping_add/write expression retains its range invariant while leaving one unsafe operation per block.
+  files:
+  - src/pool/loom_model.rs
+  - tests/loom_pool.rs
+  - tests/readahead_coalescing.rs
+  - tests/driver_vector_reads.rs
+  - tests/guard_compile_fail.rs
+  - tests/zero_alloc.rs
+  - src/mock.rs
+  - src/pool/read_spans.rs
+  - src/pool/prefetch/state.rs
+  - src/allocation.rs
+  completed_at: '2026-09-14T13:35:34.230066+00:00'
+  evidence:
+    tester: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-tester-RC5/native.yaml"
+    tester_granule_correction: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-loom-granule-correction/correction.yaml"
+    tester_lint_correction: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-loom-lint-correction/correction.yaml"
+    implementer: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-implementer-RC5/native.yaml"
+    review: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-synthesis.yaml"
+    validation: target/readahead-coalescing/b4-green-verification.json
+- id: RC6
+  title: Run the owner gates and retain pool-layer attribution
+  status: done
+  depends_on:
+  - RC5
+  description: Run fresh RC-G1/G2 comparisons for both cold and pressure shapes, including
+    current per-page reads at the matched new budget. Run RC-G3/G4, RC-G5 witnesses
+    and all inherited gates. RC-G6 reports CPU and elapsed per useful page, polls/page,
+    qualified prefetch-control CPU/page, bookkeeping entry visits, achieved overlap
+    and EOF waste. A failing headline triggers exact pool-layer profiles/differentials
+    with observer qualification. Keep budgets and gate bounds fixed; do not chase
+    the serial-probe residual. Retain immutable evidence and final dispositions. Complete
+    the retained separate mechanism-capture adapter over the already implemented real-backend
+    observations before freezing the candidate. A portable mechanism-capture INPUT_FILE
+    NEW_JSON command in the existing hashed benches/mmap_workloads.rs entry drives
+    the five small-capacity configurations, simultaneous-reader retained turns, idle/post-final-CQE
+    recovery and the three full-credit explicit scenarios. Preserve raw stage snapshots
+    and measured occupancy/opportunity state; do not fabricate documents from configured
+    geometry. No product API or frozen runner-source-list change is needed. Owner
+    accepts the retained unqualified cold CPU category nulls for RC6 closure; measured
+    cold totals and qualified pressure attribution remain. Qualified cold attribution
+    using a separately identified frame-pointer diagnostic is required before readahead-efficiency
+    product implementation.
+  files:
+  - benches/mmap_workloads/
+  - benches/evidence/readahead_coalescing/
+  - benches/plans/readahead_coalescing.md
+  - README.md
+  - scopes/active/readahead-coalescing/validation.yaml
+  - scopes/active/readahead-coalescing/tasks.yaml
+  - benches/mmap_workloads.rs
+  - tests/scan_geometry_validation.py
+  evidence:
+    tester: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-tester-RC6/native.yaml"
+    implementer: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-implementer-RC6/native.yaml"
+    review: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-synthesis.yaml"
+    results: benches/evidence/readahead_coalescing/results.md
+    validator_revalidation: benches/evidence/readahead_coalescing/validator-revalidation.json
+    owner_disposition_verification: benches/evidence/readahead_coalescing/owner-disposition-verification.json
+    owner_disposition_review: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-owner-disposition-review/peer-gpt6-astra.normalized.yaml"
+    owner_cold_attribution_disposition: benches/evidence/readahead_coalescing/owner-cold-attribution-disposition-20260914.md
+    adoption_verification: benches/evidence/readahead_coalescing/adoption-verification.json
+  owner_dispositions: benches/evidence/readahead_coalescing/owner-dispositions-20260914.md
+  completed_at: '2026-09-14T19:00:26Z'
+  accepted_limitation:
+    recorded_at: '2026-09-14T18:59:28.756795+00:00'
+    owner: Sören via sibling Claude session and explicit user acceptance
+    source: benches/evidence/readahead_coalescing/owner-cold-attribution-disposition-20260914.md
+    source_sha256: 5a5ac180e3a99d3394356bc2278515dab6d1ece2165efaf02f8e35b834c1bb58
+    status: accepted_reporting_limitation_close_RC6
+    profile_qualified: false
+    timed_samples: 249
+    orphaned_samples: 366
+    cause: Incomplete caller unwinding; unchanged orphaned * 100 <= timed rule withholds
+      category CPU budgets.
+    cold_comparison: cold-mmap
+    cold_elapsed_ns_per_useful_4k: 1472.5425455729167
+    cold_cpu_ns_per_useful_4k: 1463.9500732421875
+    cold_category_budgets:
+    qualified_pressure_attribution_retained: true
+    numeric_gates_changed: false
+    default_budget_bytes: 524288
+    follow_up:
+      scope: readahead-efficiency
+      required_before: product implementation
+      deliverable: qualified cold CPU attribution
+      method: frame-pointer diagnostic replay
+      separate_perturbed_executable: true
+      own_source_build_executable_identity: true
+      bench_plan_before_replay: true
+      preserve_RC6_primary_and_failed_profiles: true
+      more_repetitions_are_not_a_remedy: true

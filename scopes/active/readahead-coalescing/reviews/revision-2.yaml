@@ -1,0 +1,148 @@
+synthesized_report:
+  reviewers: [peer-gpt6-astra, peer-opus]
+  initial_scope_revision: 1
+  scope_revision_reviewed: 2
+  gates:
+    completeness:
+      status: pass
+      failed_by: []
+    consistency:
+      status: pass
+      failed_by: []
+    feasibility:
+      status: pass
+      failed_by: []
+    clarity:
+      status: pass
+      failed_by: []
+    design_depth:
+      status: pass
+      failed_by: []
+  issues: []
+  resolved_issues:
+    - id: C1
+      severity: high
+      gate: completeness
+      area: integration
+      location: scopes/draft/readahead-coalescing/tasks.yaml:40
+      description: >
+        RC2 must return several unique frame tokens through a Completion that
+        currently carries only one, but no task owns src/completion.rs. Its
+        point consumer also needs adapting before RC2 can finish buildable.
+        The task cannot meet its completion contract within its declared paths.
+      suggestion: >
+        Give RC2 the completion carrier and point-consumer adaptation. Explicitly
+        stage the PoolBackend vector method and all implementations in RC3.
+      found_by: [peer-gpt6-astra, peer-opus, coordinator]
+      verified: >
+        src/completion.rs:15,23,56 use Option<InFlightFrame> and
+        src/pool/mod.rs:2517,2533 extract a point token. PoolBackend is declared
+        in src/pool/miss.rs and implemented in src/pool/mod.rs and src/mock.rs.
+      resolution: >
+        RC2 now owns src/completion.rs and src/pool/mod.rs and names the enum
+        handoff. RC3 owns the vector trait method and every implementation,
+        including src/mock.rs. Extent snapshots travel on the existing
+        FileHandle return, so RC4 needs no new PoolBackend query method.
+      status: verified_resolved
+    - id: M1
+      severity: medium
+      gate: consistency
+      area: behavior
+      location: scopes/draft/readahead-coalescing/scope.md:55
+      description: >
+        A hint slice longer than the request limit has two conflicting
+        protection contracts: the scope promises the full supplied window,
+        while the design protects only the examined prefix. A useful page in
+        the suffix may be evicted under one contract but not the other;
+        inspecting the arbitrary suffix would violate bounded work.
+      suggestion: Preserve the existing full examined-prefix protection consistently.
+      found_by: [coordinator]
+      verified: >
+        src/pool/prefetch.rs:129 bounds examined by request_limit and :142
+        passes examined to replacement; the unexamined suffix is deferred.
+      resolution: >
+        Scope, design and RC4 consistently protect the full examined prefix
+        across run boundaries and defer the unexamined suffix without scanning it.
+      status: verified_resolved
+    - id: M2
+      severity: medium
+      gate: clarity
+      area: behavior
+      location: scopes/draft/readahead-coalescing/design.md:110
+      description: >
+        The draft calls failed extent acquisition an operating error but leaves
+        its propagation, rollback and synthetic-descriptor behavior implicit.
+        RC4's registration-failure check needs that observable result stated.
+      suggestion: >
+        State the existing FileRegistrationError::Io propagation and file-slot
+        rollback explicitly; give both mocks initialized extent/error fixtures.
+      found_by: [peer-opus]
+      verified: >
+        The original design already requires failed metadata acquisition to be
+        an operating error. Driver open/create already return
+        FileRegistrationError::Io and abort reserved slots after failed probing.
+      resolution: >
+        The design now names that same error/rollback path, preserves existing
+        post-create failure semantics, and specifies fixture-backed mock extents.
+        Scope and RC4 reference the behavior. No new error variant or public
+        signature is introduced.
+      status: verified_resolved
+  residual:
+    - found_by: [peer-opus]
+      reason: already_grounded
+      description: A separate owner choice is required for metadata error propagation.
+      evidence: >
+        The original design already classifies acquisition failure as an
+        operating error, handled through the existing registration Result.
+        An unknown-extent fallback was never selected. Making propagation
+        explicit resolves wording within that contract; product implementation
+        still awaits owner scope approval.
+    - found_by: [peer-opus]
+      reason: already_grounded
+      description: RC4 necessarily needs a new PoolBackend extent-query method.
+      evidence: >
+        The registration snapshot can travel on the existing FileHandle
+        returned by open/create. The clarified design selects this path;
+        src/pool/miss.rs has no required RC4 signature mutation.
+  summary:
+    unresolved_critical: 0
+    unresolved_high: 0
+    unresolved_medium: 0
+    resolved_high: 1
+    resolved_medium: 2
+  recommendation: ready_to_implement
+  next_action: Owner scope approval remains required before product implementation.
+review_run:
+  run_id: 20260914T061143Z-81d670
+  reasoning_effort: high
+  selection: explicit_owner_selection
+  initial_reports:
+    - reviewer: peer-opus
+      status: ok
+      path: .peer/scope-readahead-coalescing/20260914T061143Z-81d670/review/peer-opus.yaml
+    - reviewer: peer-gpt6-astra
+      status: stalled
+      reason: Pane stopped at the Codex hook-trust dialog; no report produced.
+      path: .peer/scope-readahead-coalescing/20260914T061143Z-81d670/review/peer-gpt6-astra.pane.log
+    - reviewer: peer-gpt6-astra
+      status: ok
+      path: .peer/scope-readahead-coalescing/20260914T061143Z-81d670/review-retry-astra/peer-gpt6-astra.yaml
+  fix_rounds: 1
+  targeted_review:
+    reviewer: peer-opus
+    issue_ids: [C1, M1, M2]
+    status: passed
+    verified_at: 2026-09-14T06:33:12Z
+    path: .peer/scope-readahead-coalescing/20260914T061143Z-81d670/review-fix-1/peer-opus.yaml
+    normalized_path: .peer/scope-readahead-coalescing/20260914T061143Z-81d670/review-fix-1/peer-opus.normalized.yaml
+  validation:
+    yaml: passed
+    task_dependencies: passed
+    markdown_links: passed
+    strict_clippy: passed
+    rustfmt: passed
+    diff_check: passed
+    product_source_hashes_unchanged: 34
+    bench_plan_byte_identical: true
+  product_code_changed: false
+  performance_gates_run: false

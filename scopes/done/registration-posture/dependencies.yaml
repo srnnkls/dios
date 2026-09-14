@@ -1,0 +1,32 @@
+scope: registration-posture
+external_dependencies: []
+provides:
+  - scope: pinned-frame-retention
+    task: T8b
+    provided_by: RP2
+    contract: >-
+      a deterministically selectable Unregistered posture
+      (RegistrationPolicy::Unregistered, refused typed only where the
+      backend has no buffer table) so the exact-R8 8,035-page arm builds
+      under the stock 8 MiB RLIMIT_MEMLOCK; arm identity records
+      registration_posture() and arena_locked().
+  - scope: arena-modernization
+    task: AM4
+    provided_by: RP2
+    contract: >-
+      the RegistrationPolicy enum, the Auto ladder, the typed
+      explicit-posture refusal, the remediation text, the arena lock,
+      and both readbacks; AM4 adds the SparseRegistered variant and its
+      rung without changing the two rungs shipped here.
+  - scope: sira (sira-dios-migration)
+    task: dios-t14-registration-posture (DM005 real-driver pool build, DM009 bars)
+    provided_by: RP2
+    contract: >-
+      PoolBuilder::registration_posture, Auto never failing on ENOMEM,
+      Pool::registration_posture() and Pool::arena_locked() at the crate
+      root, PoolConfigError::{RegistrationRefused,
+      RegistrationUnsupported, ArenaLockRefused}. Discharged when the
+      accepted dios rev advances past the merge and sira is notified.
+graph:
+  RP1: []
+  RP2: [RP1]

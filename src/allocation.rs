@@ -144,8 +144,8 @@ impl MappedArena {
         self.len
     }
 
-    #[cfg(test)]
-    fn mapped_len(&self) -> usize {
+    #[cfg(any(test, feature = "bench"))]
+    pub(crate) fn mapped_len(&self) -> usize {
         self.total
     }
 }
@@ -206,7 +206,7 @@ zero_vacant_atomics! {
 unsafe impl<T> ZeroVacant for std::cell::UnsafeCell<MaybeUninit<T>> {
     #[cfg(loom)]
     fn vacant() -> Self {
-        Self::new(std::mem::MaybeUninit::uninit())
+        Self::new(MaybeUninit::uninit())
     }
 }
 
@@ -285,7 +285,7 @@ impl<T: ZeroVacant> MappedSlice<T> {
             let base = mapping.base().cast::<T>();
             for index in 0..len {
                 // SAFETY: `base` is aligned for `T` and spans `len` elements.
-                unsafe { base.add(index).write(T::vacant()) };
+                unsafe { base.as_ptr().wrapping_add(index).write(T::vacant()) };
             }
         }
         Some(Self {

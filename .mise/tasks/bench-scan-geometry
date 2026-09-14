@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Measure matched scan lookahead and coarse read granules (Linux)"
+#MISE depends=["bench-host-guard"]
+#MISE tools={"uv"="0.12.12"}
+set -euo pipefail
+exec uv run --python "${DIOS_BENCH_PYTHON:-3.12}" benches/mmap_workloads/scan_collect.py "$@"

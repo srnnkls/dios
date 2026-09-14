@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+#MISE description="Compare real mmap faults/reclaim with shipping Dios (Linux; output directory required)"
+#MISE depends=["bench-host-guard"]
+#MISE tools={"uv"="0.12.12"}
+set -euo pipefail
+
+if [ "$(uname -s)" != Linux ]; then
+  printf '%s\n' 'mmap cache/fault measurements require Linux; use the pinned nix host.' >&2
+  exit 1
+fi
+if [ "$#" -eq 0 ]; then
+  printf '%s\n' 'usage: mise run bench-mmap-workloads NEW_OUTPUT [--mode run|smoke|trace|observe] [--lanes NAME,...]' >&2
+  exit 1
+fi
+exec uv run --python "${DIOS_BENCH_PYTHON:-3.12}" benches/mmap_workloads/collect.py "$@"

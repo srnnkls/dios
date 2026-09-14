@@ -5,8 +5,8 @@ Completion-based async direct-IO driver plus a userspace frame pool:
 cfg-selected backends — io_uring on Linux, eager-inline elsewhere. No
 futures, no executor, no allocation on the hot path.
 
-The pool and both platform backends are implemented. Linux uses registered
-`io_uring` buffers; other platforms execute queued file operations when the
+The pool and both platform backends are implemented. Linux uses `io_uring`
+with configurable buffer registration; other platforms execute queued operations when the
 caller polls. Architecture, invariants, and perf gates are owned by the active
 scope under `scopes/`; process and style live in `AGENTS.md`.
 
@@ -31,7 +31,7 @@ let file = pool.open(Path::new("segment.data"), DirectIo::Preferred)?;
 let reader = pool.register_reader()?;
 let page = PageId::new(file, 0);
 
-if let Get::Pending(mut token) = pool.get(&reader, page) {
+if let Get::Pending(mut token) = pool.get(&reader, page)? {
     let mut polls = 0u32;
     while polls < 1_000_000 {
         pool.poll();
@@ -88,6 +88,44 @@ retained handles until the session drops them. The
 [R8 retained-set evidence and disposition](scopes/done/pinned-frame-retention/resources/r8-resident-set.md)
 records the rejected prototype and the selected session shape.
 
+### Readahead
+
+`Pool::prefetch(&[PageId])` requests future residency without acquiring guards
+or creating pending tokens. Its report partitions the window into resident,
+pending, admitted, deferred and rejected pages. `poll` drives the accepted
+reads; ordinary `get`/`ready` consumes their results. Retry deferred hints while
+they remain useful. For coalesced explicit I/O, extend a window in vector-sized
+chunks and repeat its still-useful prefix so replacement can preserve it.
+
+Consecutive absent pages can share a read of up to 32 pages and 128 KiB,
+using ordinary READV on Linux. Each page remains independently accessible
+through its own `FrameGuard`. Singleton hints use ordinary point reads;
+extending a window one page at a time can therefore produce point reads.
+
+Automatic forward-sequential detection is enabled by default. Set
+`.readahead(dios::Readahead::Disabled)` on the builder to use explicit hints
+alone. `.prefetch_headroom(16)` sets an explicit page-credit ceiling;
+`.prefetch_headroom(0)` disables all speculation. The default ceiling derives
+from a 512 KiB (524,288-byte) budget, rounded down to whole pool granules:
+128 pages at 4 KiB. Spare frames and the configured in-flight read limit minus
+one further cap those credits. A pool configured for only one in-flight read
+therefore has no default speculative capacity.
+
+Credits cover reads in flight and unconsumed resident pages. Per-reader
+training starts with consecutive cold demands and extends through confirmed
+speculative consumption. Discontinuities reset it; unrelated readers do not
+advance each other's predictors. This initial policy learns forward sequential
+access, with all metadata allocated at pool construction.
+
+Resident hints accelerate an existing lookup; prefetch requests I/O; retained
+handles preserve resident bytes. On the eager-inline backend, polling still
+executes queued I/O on the caller's thread.
+
+The [readahead-coalescing scope](scopes/active/readahead-coalescing/scope.md)
+specifies the contract; the
+[mechanism capture documentation](benches/evidence/readahead_coalescing/README.md#separate-mechanism-capture)
+describes its retained observations.
+
 ## Development
 
 ```sh
@@ -115,8 +153,91 @@ Two harnesses:
   shared compare harness (`benches/compare.rs`) as a one-sided 95% CI
   upper bound on the ratio.
 
+The storage workload suite exercises seven access patterns on real `Pool`
+instances: shared multirun readers, cold point batches, mixed-residency
+partition pipelines, retained read sessions, foreground reads during
+compaction-style writes, sequential pressure, and dependent-read controls.
+These are synthetic storage workloads; their comparisons characterize Dios's
+behavior rather than a complete database or a comparison with mmap.
+
+```sh
+mise run bench-workloads-smoke
+mise run bench-workloads                     # 30 alternating pairs per lane
+mise run bench-workloads-trace               # matched diagnostic API traces
+mise run bench-workloads-observer            # interleaved trace-off/on overhead
+mise run profile-workload -- point_batch candidate target/profiles/point_batch/candidate
+```
+
+Every run creates a separate artifact directory with checked work counts,
+checksums, zero-allocation evidence, CSV measurements, and provenance. Full
+runs require direct I/O; smoke runs are buffered and advisory. The suite's
+[bench plan](benches/plans/workload_suite.md) specifies workload boundaries and
+the [cost model](benches/plans/workload_cost_model.md) documents how CPU samples,
+traces, and resource limits can be combined.
+The [collection report](benches/evidence/workload_suite/README.md) includes
+Linux measurements, 14 workload flamegraphs, observer costs, fresh regression
+gates, and the separate advisory macOS results.
+
+Use an explicit `DIOS_REGISTRATION_POLICY=registered` or `unregistered` consistently
+across modes, on an idle benchmark host. Runs reject changes in the resolved
+posture. After collecting primary, trace, and observer runs and profiles stored as
+`PROFILES/<lane>/<arm>/{profile.folded,measurement/}`, generate the cost report:
+
+```sh
+uv run benches/workload_suite/analyze.py PRIMARY OUTPUT --trace TRACE --profiles PROFILES --observer OBSERVER
+```
+
+The analyzer requires matching executables, retains unmatched CPU samples,
+and reports interleaved observer ratios from the shared compare harness. Trace spans
+measure API observation latency; pending-interest depth is not device queue
+depth. `mise run bench-workload-fio -- INPUT OUTPUT` provides optional read-only
+QD1/QD16 calibration on an already-created suite input file on Linux.
+
 macOS numbers are advisory; gates run on the pinned Linux host per the
 scope's protocol.
+
+The Linux mmap suite adds actual file-mapping baselines: resident accesses,
+minor faults, cold point/gather/dependent reads, advice controls, shared readers,
+and scans/random reads under a private memory limit. Five resident API controls
+compare ordinary guards, reused hints, epoch batches, retained sessions and
+multiple fields per guard. [Results and fault/profile evidence](benches/evidence/mmap_workloads/README.md)
+include favorable and unfavorable results, setup costs and observer overhead.
+
+```sh
+mise run bench-mmap-workloads NEW_OUTPUT
+mise run bench-mmap-workloads NEW_OUTPUT --mode smoke
+mise run profile-mmap-workload PRIMARY NEW_PROFILE LANE ARM --repetitions 128
+```
+
+The [mmap plan](benches/plans/mmap_workloads.md) and
+[resident API plan](benches/plans/mmap_access_amortization.md) define comparable
+work and validated cache state. Use a new output directory per campaign and
+the same retained executable for its timing, trace and profile replays.
+
+The [prefetch plan](benches/plans/prefetch_admission.md) adds explicit-window,
+automatic/disabled, memory-pressure and wrong-hint controls.
+The [prefetch results](benches/evidence/mmap_workloads/prefetch.md) retain its
+frozen comparisons, CPU costs and regression gates. To compare against
+the retained pre-prefetch scan executable, preserving both runner identities:
+
+```sh
+uv run benches/mmap_workloads/frozen.py NEW_OUTPUT --baseline OLD_PRIMARY --candidate NEW_PRIMARY
+```
+
+The [scan geometry study](benches/evidence/scan_geometry/README.md) separates
+matched lookahead from larger cache/read granules and confirms selected
+configurations against mmap. Its [plan](benches/plans/scan_geometry.md) also
+defines trace-overhead controls, CPU attribution and storage-path fio calibration.
+
+```sh
+mise run bench-scan-geometry NEW_OUTPUT --input EXISTING_FIXTURE --experiment lookahead
+mise run bench-scan-geometry NEW_OUTPUT --input EXISTING_FIXTURE --experiment geometry
+```
+
+The [pipelined READ/READV probe](benches/evidence/readv_pipelined/README.md)
+compares four submission mechanisms at eight and sixteen outstanding 128 KiB
+groups. Its [plan](benches/plans/readv_pipelined.md) separates throughput parity
+under overlap from the earlier serial probe's cost.
 
 ## Profiling
 

@@ -1,0 +1,36 @@
+scope: readahead-coalescing
+prerequisites:
+- scope_review_passed
+- owner_default_byte_budget_recorded
+- owner_scope_approval
+- implemented_prefetch_contract
+- implemented_registration_posture
+- immutable_baseline_verified_before_first_batch
+excluded_prerequisites:
+- arena-modernization_AM2_run_allocator
+batches:
+- id: 1
+  tasks:
+  - RC1
+  - RC2
+  depends_on: []
+- id: 2
+  tasks:
+  - RC3
+  depends_on:
+  - 1
+- id: 3
+  tasks:
+  - RC4
+  depends_on:
+  - 2
+- id: 4
+  tasks:
+  - RC5
+  depends_on:
+  - 3
+- id: 5
+  tasks:
+  - RC6
+  depends_on:
+  - 4

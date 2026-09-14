@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+#MISE description="Read-only fio calibration on a suite input file: input output"
+#MISE depends=["bench-host-guard"]
+set -euo pipefail
+
+if [ "$#" -ne 2 ]; then
+  echo "usage: mise run bench-workload-fio -- input-file output-directory" >&2
+  exit 2
+fi
+input=$1
+output=$2
+[ -f "$input" ] || { echo "input must already exist" >&2; exit 1; }
+[ ! -e "$output" ] || { echo "output must be a new directory" >&2; exit 1; }
+mkdir -p "$output"
+case ${DIOS_REGISTRATION_POLICY:-auto} in
+  unregistered) fixed_buffers=0 ;;
+  registered|auto) fixed_buffers=1 ;;
+  *) echo "invalid DIOS_REGISTRATION_POLICY" >&2; exit 2 ;;
+esac
+for depth in 1 16; do
+  taskset -c 0 fio --name="random-read-qd$depth" --filename="$input" \
+    --readonly --allow_file_create=0 --ioengine=io_uring --direct=1 \
+    --rw=randread --bs=4096 --iodepth="$depth" --fixedbufs="$fixed_buffers" \
+    --time_based=1 --runtime=10 --ramp_time=2 --randrepeat=1 --randseed=73 \
+    --output-format=json --output="$output/qd$depth.json"
+done

@@ -1,0 +1,143 @@
+{
+  "recorded_at": "2026-09-14T19:45:15Z",
+  "finding": "RC6-CI1",
+  "status": "native_and_targeted_review_passed_ci_pending",
+  "pull_request": "https://github.com/srnnkls/dios/pull/17",
+  "initial_job": "https://github.com/srnnkls/dios/actions/runs/34886316227/job/104117744127",
+  "failure": "ASAN explicitly selected benchmark-required test targets while enabling only mock; Cargo exited101 before executing tests.",
+  "initial_log_sha256": "1f109db35ebb6eb9b717151d5889d23f526e3b20390ffcfd5bfff72e5ac84909",
+  "fix": "Exclude mmap_workload_contract and workload_suite_contract from the existing mock-only syscall sanitizer selection; document their bench-feature requirement and in-process execution accurately.",
+  "selected_before": 34,
+  "selected_after": 32,
+  "removed": [
+    "mmap_workload_contract",
+    "workload_suite_contract"
+  ],
+  "all_other_selected_tests_retained": true,
+  "native_red": {
+    "tester_report": {
+      "status": "success",
+      "test_files": [],
+      "test_command": "# Run with /bin/bash in the branch worktree.\nsource <(sed -n '/^orchestration=/,/^# An explicit target/p' mise.toml)\nexec mise exec -- cargo check --offline --locked --features mock $selected\n",
+      "red_kind": "compiler",
+      "rejected_wrong_implementation": "Excluding only mmap_workload_contract leaves workload_suite_contract selected without its required bench feature. The second native selector check rejects that partial fix before compilation. Enabling bench for ASAN instead violates the stated syscall/memory-only task boundary and is not the requested fix.",
+      "failure_output": "Attempt 1, exit 101:\nerror: target `mmap_workload_contract` in package `dios` requires the features: `bench`\nConsider enabling them by passing, e.g., `--features=\"bench\"`\n\nAttempt 2, exit 101 (only mmap_workload_contract removed from the selected arguments):\nerror: target `workload_suite_contract` in package `dios` requires the features: `bench`\nConsider enabling them by passing, e.g., `--features=\"bench\"`\n\nBoth match the repository-owned ASAN selector's incompatible target/feature\ncontract. Neither attempt built sanitizer code or ran tests or benchmarks.\nThe non-fatal mise cache-write warning was separate from Cargo's exit 101.\n",
+      "gap_reason": null,
+      "second_attempt_command": "# Run with /bin/bash in the branch worktree; no file mutation.\nsource <(sed -n '/^orchestration=/,/^# An explicit target/p' mise.toml)\nselected=${selected/ --test mmap_workload_contract/}\nexec mise exec -- cargo check --offline --locked --features mock $selected\n",
+      "metadata_command": "mise exec -- cargo metadata --no-deps --format-version 1 --features mock",
+      "required_features_audit": {
+        "comparison": "origin/main to HEAD, every added Rust integration target",
+        "targets": [
+          {
+            "name": "driver_vector_reads",
+            "required_features": [],
+            "compatible_with_mock": true
+          },
+          {
+            "name": "mmap_workload_contract",
+            "required_features": [
+              "bench"
+            ],
+            "compatible_with_mock": false
+          },
+          {
+            "name": "prefetch",
+            "required_features": [
+              "mock"
+            ],
+            "compatible_with_mock": true
+          },
+          {
+            "name": "readahead_coalescing",
+            "required_features": [],
+            "compatible_with_mock": true
+          },
+          {
+            "name": "workload_suite_contract",
+            "required_features": [
+              "bench"
+            ],
+            "compatible_with_mock": false
+          }
+        ],
+        "existing_bench_target": "drp009_gate_contract is already excluded by the selector.",
+        "shared_root": "The ASAN task selects Rust integration files by filename, but its exclusion list omits both newly added bench-only orchestration contracts."
+      },
+      "minimal_affected_files": [
+        {
+          "path": "mise.toml",
+          "location": "tasks.asan orchestration exclusion list",
+          "change": "Exclude mmap_workload_contract and workload_suite_contract."
+        }
+      ],
+      "observed_ci_failure": {
+        "path": "target/readahead-coalescing/pr17-asan-ci.log",
+        "line": 436,
+        "command": "mise run asan",
+        "exit_code": 101
+      },
+      "mutation_boundary": {
+        "tracked_files_changed": [],
+        "new_tests": 0,
+        "red_attempts": 2
+      }
+    }
+  },
+  "native_green": {
+    "implementer_report": {
+      "status": "success",
+      "implementation_files": [
+        "mise.toml"
+      ],
+      "test_command": "# Run with /bin/bash in the branch worktree.\nsource <(sed -n '/^orchestration=/,/^# An explicit target/p' mise.toml)\nexec mise exec -- cargo check --offline --locked --features mock $selected\n",
+      "test_output": "mise WARN failed to write cache file: Operation not permitted (os error 1).\nCompiling dios v0.1.0 (/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing)\nFinished `dev` profile [unoptimized + debuginfo] target(s) in 3.63s\nExact focused command exited 0; the mise cache-write warning was non-fatal.\nSelector audit against HEAD: 34 targets before, 32 after.\nRemoved only mmap_workload_contract and workload_suite_contract; no additions.\nRetained driver_vector_reads, prefetch, readahead_coalescing, and every other prior selected target.\ngit diff --check exited 0.\nOnly the ASAN exclusion list and explanatory comment changed; no sanitizer build or benchmark ran.\nComment correction: the two workload contracts call imported benchmark modules in-process.\nRetracted any nested cargo/mise-child rationale for these additions; both require bench in Cargo.toml.\nCargo.toml also requires bench for the already-excluded drp009_gate_contract; ASAN enables only mock.\nThe comment-only follow-up preserved the exact selector; source-reference audit and diff check passed.\nNo compile or test rerun was performed for the comment-only correction.\n",
+      "blocked_reason": null
+    }
+  },
+  "root_focused_check_exit": 0,
+  "initial_targeted_review": ".peer/readahead-coalescing/20260914T090833Z-505efd/ci-fix-review/peer-opus.yaml",
+  "comment_correction": "First targeted review verified selector/coverage and found inaccurate child-process rationale. Native implementer corrected only the comment; second targeted Opus report clears it.",
+  "targeted_review_raw_sha256": "d2bce375343a6a29808fec3832df66029c8c367bb3fe52dc0bd8399c0390f31d",
+  "targeted_review": {
+    "reviewer_report": {
+      "reviewer": "peer-opus",
+      "gates": {
+        "correctness": {
+          "status": "pass",
+          "issues": []
+        },
+        "architecture": {
+          "status": "pass",
+          "issues": []
+        },
+        "style": {
+          "status": "pass",
+          "issues": []
+        },
+        "performance": {
+          "status": "pass",
+          "issues": []
+        },
+        "security": {
+          "status": "pass",
+          "issues": []
+        }
+      },
+      "issues": [],
+      "strengths": [
+        "The RC6-CI1 rationale defect is removed at its root: every factual claim in the rewritten comment holds. `cargo metadata --no-deps` reports exactly three test targets with `required-features = [\"bench\"]` \u2014 drp009_gate_contract, mmap_workload_contract, workload_suite_contract \u2014 and tasks.asan ends in `cargo \"+$toolchain\" test --features mock $selected` (mise.toml:68), so \"Both, along with drp009_gate_contract, require bench; this syscall suite enables only mock\" is accurate and names the real exclusion criterion.",
+        "The replaced child-process wording is contradicted by the sources and the new wording matches them: tests/mmap_workload_contract.rs:3 and tests/workload_suite_contract.rs:3 pull the bench modules in via `#[path]` and call into them directly; `grep` for `Command::new`/`spawn`/`process::` across both files returns nothing. drp009_gate_contract does spawn (std::process::Command at its imports), which is why it is grouped by feature rather than by mechanism.",
+        "Selector is byte-for-byte the verified GREEN one. Evaluating the shipped shell block under `bash` against HEAD and the working tree gives 34 selected before and 32 after; `diff` of the sorted selections shows exactly mmap_workload_contract and workload_suite_contract removed, nothing else moved.",
+        "Change is confined to the comment plus the already-verified list reflow \u2014 no sanitizer flag, feature set, test, or product source touched."
+      ]
+    }
+  },
+  "product_source_change": false,
+  "benchmark_change": false,
+  "budget_bound_or_protocol_change": false,
+  "first_ci_other_jobs": {
+    "linux_lint_test": "passed",
+    "macos_lint_test": "passed",
+    "miri": "passed"
+  }
+}

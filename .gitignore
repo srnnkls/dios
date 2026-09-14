@@ -6,3 +6,4 @@
 /.claude/worktrees/
 /.worktreeinclude
 .peer
+__pycache__/

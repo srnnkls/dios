@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+#MISE description="Replay workload pairs with bounded API traces (optional output directory and lane)"
+#MISE depends=["bench-host-guard"]
+set -euo pipefail
+
+runner=()
+if [ "$(uname -s)" = Linux ]; then
+  runner=(taskset -c 0-3)
+fi
+exec "${runner[@]}" cargo bench --profile profiling --features bench --bench workload_suite -- trace "$@"

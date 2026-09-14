@@ -45,14 +45,15 @@ set -eu
 toolchain=${DIOS_NIGHTLY:-nightly}
 target=$(rustc "+$toolchain" -vV | sed -n 's/^host: //p')
 [ -n "$target" ] || { echo "could not resolve the host target triple" >&2; exit 1; }
-# Excluded suites. Those that shell out to a nested cargo or mise: the child
-# re-resolves the pinned stable toolchain, which rejects -Z, and they prove
-# process orchestration rather than memory behaviour. arena_registration drives
+# Excluded suites that shell out to cargo or mise re-resolve the pinned stable
+# toolchain, which rejects -Z. mmap_workload_contract and workload_suite_contract
+# run benchmark modules in-process. Both, along with drp009_gate_contract, require
+# bench; this syscall suite enables only mock. arena_registration drives
 # real setrlimit(RLIMIT_MEMLOCK) and asserts mlock is refused at the floor, which
 # the sanitizer's own mappings move. Everything else is in by default.
 orchestration="drp001_plan drp005_probe_gate drp009_gate_contract guard_compile_fail
-  pinned_frame_retention_plan public_api r7_source_manifest
-  arena_registration"
+  mmap_workload_contract pinned_frame_retention_plan public_api r7_source_manifest
+  workload_suite_contract arena_registration"
 selected=""
 for source in tests/*.rs; do
   name=$(basename "$source" .rs)
@@ -86,6 +87,10 @@ docker run --rm --security-opt seccomp=unconfined \
 description = "Criterion micro-benches + paired gate benches"
 depends = ["bench-host-guard"]
 run = "cargo bench --features bench"
+
+[tasks.bench-workloads-smoke]
+description = "Validate all seven workload contracts on the shipping backend"
+run = "cargo bench --features bench --bench workload_suite -- smoke"
 
 [tasks.bench-host-guard]
 description = "Require the active NixOS bench profile before benchmark timing"

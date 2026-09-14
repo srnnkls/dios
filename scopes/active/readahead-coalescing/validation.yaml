@@ -1,0 +1,230 @@
+---
+metadata:
+  issue_type: Feature
+  created: '2026-09-14'
+  source: owner_steering
+  approach: ordinary_READV_with_independent_frame_ownership
+  questions_used: 1
+  validation_depth: standard_from_explicit_owner_requirements
+  revision: 3
+decision:
+  status: recorded
+  owner: Sören
+  date: '2026-09-14'
+  source: "/private/tmp/dios-steering-readv-decision.md"
+  selected: Proceed toward READV coalescing
+  residual_attribution: not_pursued
+  scope_approval: recorded
+  scope_approval_source: explicit owner $implement invocation, 2026-09-14
+  default_budget_bytes: 524288
+  default_budget_pages_at_4k: 128
+  default_budget_alternative_bytes: 1048576
+  default_budget_recorded: '2026-09-14'
+  default_budget_evidence: benches/evidence/readv_pipelined/budget-depths/README.md
+  default_budget_rationale: 'Depth 4 is past the knee: 1,183.67 ns per useful 4 KiB
+    at 512 KiB versus 1,164.53 at 1 MiB, a 1.6% difference. It leaves 368 ns/page
+    of headroom to mmap''s 1,552.23 for pool-layer cost. It halves the minimum pool
+    tax (897 versus 1,793 frames) and the speculative pollution bound. The 1 MiB row
+    stays retained; raising the default later is a separate owner decision with that
+    evidence. If RC-G1 fails at 512 KiB, the lever remains profiling the pool layer,
+    not the budget. These separate workloads motivate the budget and do not prove
+    pool performance.
+
+'
+  derived_scan_geometry:
+    speculative_pages: 128
+    read_limit: 256
+    miss_headroom: 768
+    cold_payload_arena_bytes: 8388608
+    pressure_payload_arena_bytes: 67108864
+ambiguity_scan:
+  scope:
+    status: clear
+    gaps: []
+  behavior:
+    status: clear
+    gaps: []
+  data_model:
+    status: clear
+    gaps: []
+  constraints:
+    status: clear
+    gaps: []
+  edge_cases:
+    status: clear
+    gaps: []
+  integration:
+    status: clear
+    gaps: []
+  terminology:
+    status: clear
+    gaps: []
+review_focus:
+- Original-slot continuation ownership through partial completion, abort and teardown
+- Stable independent iovec memory and unique per-page ownership
+- Full-vector steady-state refill including the sliding-horizon trap
+- Budget/read/watermark/arena consistency and matched-budget control
+- Notification races, ordered feedback, zero-CQE progress and no capacity scan on
+  empty poll
+- EOF prefix publication, terminal tail and accepted vector waste
+- First-consumption notification without repeated warm-hit overhead
+- Independent RC1/RC2 against immutable pre-dispatch baseline
+- Small-capacity point compatibility and credit-deferred ready-stream turns
+- Linear explicit protected-prefix membership/replacement work
+- Retirement preserves admitted logical-read continuations
+review_gate:
+  status: passed
+  reviewers:
+  - peer-gpt6-astra
+  - peer-opus
+  reviewed_at: '2026-09-14T08:18:34Z'
+  reason: Astra and Claude reviewed revision 3; Claude verified the grouped H1/M1/M2
+    fixes with no surviving findings.
+  blocking_resolved: 1
+  deferred_nits: []
+  fix_rounds: 1
+  report: review.yaml
+  implementation_allowed: true
+review_config:
+  reasoning_effort: high
+  reviewers:
+  - peer-gpt6-astra
+  - peer-opus
+review_selection:
+  source: explicit_owner_selection
+  requested: astra + peer Claude
+  resolved: Astra and external Claude Opus
+  date: '2026-09-14'
+  reason: Owner replaced Claude-native defaults with two external reviewers available
+    from Codex.
+implementation_routes:
+  source: explicit_owner_selection
+  date: '2026-09-14'
+  testers: inherited native
+  implementers: inherited native
+  reviewers:
+  - peer-gpt6-astra
+  - peer-opus
+  reviewer_reasoning_effort: high
+readiness:
+  owner_mechanism_decision: true
+  scope_documents_complete: true
+  task_mutation_paths_declared: true
+  numeric_gates_recorded_before_code: true
+  safety_checks_declared: true
+  review_passed: true
+  owner_scope_approval: true
+  owner_default_budget_recorded: true
+  safety_validation_passed: true
+  performance_adoption_gates_passed: true
+  RC6_attribution_complete: true
+  implementation_review_complete: true
+  RC6_initial_review_complete: true
+  RC6_fix_review_complete: true
+  RC6_numeric_gates_passed: true
+  RC6_owner_disposition_review_complete: true
+  RC6_cold_attribution_qualified: false
+  RC6_cold_nulls_owner_accepted: true
+  scope_ready: true
+implementation:
+  product_edits: true
+  product_tests_claimed_passed: true
+  product_gates_claimed_passed: true
+  product_commit: 5edb6a7f64bcd0137cbd75d03821780b38c679f2
+  scan_snapshot_commit: ad434b21c2c5b31d54845052cf1b27cdeadde829
+  status: ready_with_owner_accepted_cold_cpu_limitation
+  results: "../../../benches/evidence/readahead_coalescing/results.md"
+  safety_verification: "../../../target/readahead-coalescing/b4-green-verification.json"
+  evidence_verification: "../../../target/readahead-coalescing/b5-evidence-verification.json"
+  gate_results:
+    RC-G1: passed_cold_and_pressure
+    RC-G2: passed_all_four_comparisons
+    RC-G3: passed_with_owner_preregistered_400_pair_confirmation
+    RC-G4: passed_fragmented_and_dependent
+    RC-G5: passed_30_processes_on_each_backend
+    RC-G6: complete_with_owner_accepted_cold_cpu_limitation
+  direct_product_comparison:
+    adopted_bound:
+    ci95_upper: 0.9810665066495924
+    kind: characterization
+    pairs: 30
+    ratio_geomean: 0.918692147405878
+    ratio_orientation: candidate/base
+  direct_disposition: Suspected branch regression not reproduced under matched compiled
+    features; no bisect. Original canonical gate failure retained.
+  blockers: []
+  review_report: review.yaml
+  validator_revalidation: "../../../benches/evidence/readahead_coalescing/validator-revalidation.json"
+  blocking_findings: []
+  final_integration_review: passed
+  owner_dispositions: "../../../benches/evidence/readahead_coalescing/owner-dispositions-20260914.md"
+  confirmation_registration: "../../../benches/evidence/readahead_coalescing/drp-confirmation-registration.json"
+  confirmation:
+    adopted_bound:
+    ci95_upper: 0.9980337616928986
+    kind: characterization
+    pairs: 400
+    ratio_geomean: 0.9776689295560357
+    ratio_orientation: candidate/base
+  confirmation_adopted_bound: 1.0
+  owner_disposition_verification: "../../../benches/evidence/readahead_coalescing/owner-disposition-verification.json"
+  remaining_acceptance_gaps: []
+  owner_disposition_review: "../../../.peer/readahead-coalescing/20260914T090833Z-505efd/b5-owner-disposition-review/peer-gpt6-astra.normalized.yaml"
+  owner_cold_attribution_disposition:
+    recorded_at: '2026-09-14T18:59:28.756795+00:00'
+    owner: Sören via sibling Claude session and explicit user acceptance
+    source: benches/evidence/readahead_coalescing/owner-cold-attribution-disposition-20260914.md
+    source_sha256: 5a5ac180e3a99d3394356bc2278515dab6d1ece2165efaf02f8e35b834c1bb58
+    status: accepted_reporting_limitation_close_RC6
+    profile_qualified: false
+    timed_samples: 249
+    orphaned_samples: 366
+    cause: Incomplete caller unwinding; unchanged orphaned * 100 <= timed rule withholds
+      category CPU budgets.
+    cold_comparison: cold-mmap
+    cold_elapsed_ns_per_useful_4k: 1472.5425455729167
+    cold_cpu_ns_per_useful_4k: 1463.9500732421875
+    cold_category_budgets:
+    qualified_pressure_attribution_retained: true
+    numeric_gates_changed: false
+    default_budget_bytes: 524288
+    follow_up:
+      scope: readahead-efficiency
+      required_before: product implementation
+      deliverable: qualified cold CPU attribution
+      method: frame-pointer diagnostic replay
+      separate_perturbed_executable: true
+      own_source_build_executable_identity: true
+      bench_plan_before_replay: true
+      preserve_RC6_primary_and_failed_profiles: true
+      more_repetitions_are_not_a_remedy: true
+  integration_review_evidence: "../../../benches/evidence/readahead_coalescing/integration-review.yaml"
+notes: All six tasks are done. Every numeric gate passes at the unchanged512KiB default.
+  RC6 adoption is complete under the owner acceptance of cold CPU category nulls caused
+  by incomplete caller unwinding; the1% qualification rule still withholds budgets.
+  Qualified pressure attribution and measured cold totals remain. readahead-efficiency
+  must obtain qualified cold attribution from a separately identified frame-pointer
+  diagnostic before product implementation. Final holistic Astra and Opus reviews
+  passed all five gates at high effort with no findings; scope readiness is complete.
+owner_feedback:
+  source: "/private/tmp/dios-steering-scope-feedback.md"
+  date: '2026-09-14'
+  default_budget_bytes: 524288
+  candidate_budget_bytes:
+  - 524288
+  - 1048576
+  budget_evidence: benches/evidence/readv_pipelined/budget-depths/README.md
+  read_limit: R = 2*C in scan runner; existing callers retain their configured limit
+  miss_headroom: 3*R; INV-9 unchanged
+  cold_payload_arena_bytes: 8388608
+  pressure_payload_arena_bytes: 67108864
+  frozen_drp_max_inflight_reads: 1
+  extent_tracking: removed
+  eof_limit: 128 KiB per request; accepted vectors may exceed one request per pass,
+    report total waste
+review_history:
+- revision: 2
+  status: passed
+  report: reviews/revision-2.yaml
+  superseded_by: Owner feedback requires revision 3; prior extent-fixture clarification
+    is removed with extent tracking.

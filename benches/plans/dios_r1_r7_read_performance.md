@@ -179,3 +179,24 @@ not a pass. This gate uses the shipping backend and exact full-frame bytes.
 
 The one-word lane may accompany the raw CSV for diagnosis, but it cannot
 authorize any contention or scaling conclusion.
+
+## Owner follow-up: DRP-G4 resolution
+
+Recorded by Sören on 2026-09-14, separately from readahead-coalescing RC6.
+The frozen ordinary eight-thread lane takes approximately 3 ms per process
+and has two observed placement modes; at 30 pairs its roughly 7% confidence
+half-width cannot resolve a tie. A protocol amendment, longer timed region
+or one worker per physical core requires a future owner decision. This entry
+changes no current workload, CPU placement, sample contract or bound.
+
+The owner adopted RC6's single pre-registered 400-pair confirmation at geomean
+0.977669 / upper 0.998034, then requested the unchanged-cutoff mode accounting.
+Candidate slow-mode share was 245/400 (61.25%), versus base 146/400 (36.50%);
+within-mode geomean ratios were 0.867721 fast and 0.928769 slow. The owner records
+this as startup/placement asymmetry on this short lane, not higher hot-path cost.
+The [RC6 mode evidence](../evidence/readahead_coalescing/drp-modes.json) retains
+all values and cutoffs; the rows do not directly observe scheduling. Carry the
+longer-region or physical-core protocol amendment into the warm-path scope's
+bench plan as an owner decision before any new binding campaign: placement
+variation can fail a subsequent tie by chance. The adopted RC6 campaign remains
+closed, and the original failed 30-pair campaign remains separate.
