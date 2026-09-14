@@ -247,6 +247,8 @@ pub(crate) struct Prefetch {
     feedback_scratch: Box<[Option<Feedback>]>,
     feedback_count: u32,
     stamp: u64,
+    #[cfg(loom)]
+    control_entry_visits: std::cell::Cell<u64>,
     #[cfg(feature = "bench")]
     explicit_evictions: Option<u64>,
     pub(super) replacement_cursor: u32,
@@ -313,6 +315,8 @@ impl Prefetch {
             feedback_scratch: crate::allocation::try_boxed_slice_with(feedback_capacity, || None)?,
             feedback_count: 0,
             stamp: 0,
+            #[cfg(loom)]
+            control_entry_visits: std::cell::Cell::new(0),
             #[cfg(feature = "bench")]
             explicit_evictions: None,
             replacement_cursor: 0,
@@ -340,7 +344,7 @@ impl Prefetch {
         }
     }
 
-    pub(super) fn admit(
+    pub(in crate::pool) fn admit(
         &mut self,
         clock: &Clock,
         page: PageId,
@@ -389,6 +393,49 @@ impl Prefetch {
             self.stats.automatic_admitted += 1;
         }
         assert!(self.stats.occupied <= self.capacity);
+    }
+
+    #[cfg(loom)]
+    pub(in crate::pool) fn admit_model_automatic(
+        &mut self,
+        clock: &Clock,
+        reader: u32,
+        page: PageId,
+        frame: ReadFrameIdx,
+    ) {
+        // A recycled frame may still have an old notification. Apply terminal
+        // feedback without draining that bit so the model tests its late arrival.
+        self.flush_feedback();
+        let (expected, source) = self.patterns[reader as usize]
+            .request(reader)
+            .expect("the modeled stream has a confirmed next page");
+        assert_eq!(expected, page);
+        self.admit(clock, page, frame, source);
+        self.issued(reader, page);
+        self.advance_turn(reader);
+    }
+
+    #[cfg(loom)]
+    pub(in crate::pool) fn model_next_page(&self, reader: u32) -> Option<PageId> {
+        self.patterns[reader as usize]
+            .request(reader)
+            .map(|(page, _)| page)
+    }
+
+    #[cfg(loom)]
+    pub(in crate::pool) fn model_stats(&self) -> PrefetchStats {
+        PrefetchStats {
+            capacity: self.capacity,
+            reserve_free: self.reserve.len(),
+            ..self.stats
+        }
+    }
+
+    #[cfg(loom)]
+    pub(in crate::pool) fn reconcile_model(&mut self, clock: &Clock) -> u64 {
+        let before = self.control_entry_visits.get();
+        self.reconcile(clock);
+        self.control_entry_visits.get() - before
     }
 
     pub(in crate::pool) fn reconcile(&mut self, clock: &Clock) {
@@ -744,6 +791,13 @@ impl Prefetch {
         cleanup: u32,
         recovered: u32,
     ) {
+        #[cfg(loom)]
+        self.control_entry_visits.set(
+            self.control_entry_visits
+                .get()
+                .checked_add(u64::from(visits))
+                .expect("bounded modeled control visits"),
+        );
         #[cfg(feature = "bench")]
         if let Some(observation) = &self.observation {
             observation.control(self.capacity, cause, visits, affected, cleanup, recovered);

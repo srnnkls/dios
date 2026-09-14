@@ -9,7 +9,7 @@ use crate::driver::read_vector::{
 };
 use crate::error::IoError;
 
-use super::miss::{MissEntry, MissOutcome, MissSlot};
+use super::miss::{MissEntry, MissOutcome, MissSlot, MissTable};
 use super::{Control, InFlightFrame, PageId, Pool, PoolBackend, SHORT_READ_EOF_ERRNO};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,10 +57,15 @@ impl ReadSpan {
         );
     }
 
-    fn entry(&self, control: &Control, ordinal: u32, frame: &InFlightFrame) -> (usize, MissEntry) {
+    pub(super) fn entry(
+        &self,
+        miss: &MissTable,
+        ordinal: u32,
+        frame: &InFlightFrame,
+    ) -> (usize, MissEntry) {
         assert!(ordinal < self.count);
         let page = self.pages[ordinal as usize].expect("committed span ordinal");
-        let entry = control.miss.entry(page.slot.index());
+        let entry = miss.entry(page.slot.index());
         assert_eq!(
             entry.generation(),
             page.generation,
@@ -74,6 +79,35 @@ impl ReadSpan {
             self.first.granule_idx() + ordinal
         );
         (page.slot.index(), entry)
+    }
+
+    pub(super) fn publish_completed(
+        &mut self,
+        vector: &mut ReadVector,
+        bytes: u32,
+        granule: u32,
+        mut publish: impl FnMut(&Self, u32, InFlightFrame),
+    ) {
+        assert!(bytes <= self.bytes - self.filled);
+        self.filled += bytes;
+        vector.take_completed(|ordinal, write| {
+            assert_eq!(
+                ordinal, self.published,
+                "publication follows the complete prefix"
+            );
+            publish(self, ordinal, write);
+            self.published += 1;
+        });
+        assert_eq!(self.published, self.filled / granule);
+    }
+
+    pub(super) fn is_complete(&self) -> bool {
+        if self.filled == self.bytes {
+            assert_eq!(self.published, self.count);
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -155,7 +189,7 @@ impl ReadSpans {
         self.slots[slot.0 as usize] = State::InFlight(span);
     }
 
-    fn completing(&mut self, token: OpToken) -> Option<(SpanSlot, ReadSpan)> {
+    pub(super) fn completing(&mut self, token: OpToken) -> Option<(SpanSlot, ReadSpan)> {
         let route = self.operations[token.slot() as usize]?;
         assert_eq!(route.token, token, "route generation is exact");
         let State::InFlight(span) =
@@ -167,13 +201,13 @@ impl ReadSpans {
         Some((route.slot, span))
     }
 
-    fn resume(&mut self, slot: SpanSlot, span: ReadSpan) {
+    pub(super) fn resume(&mut self, slot: SpanSlot, span: ReadSpan) {
         assert!(matches!(self.slots[slot.0 as usize], State::Completing));
         assert!(span.filled < span.bytes);
         self.slots[slot.0 as usize] = State::InFlight(span);
     }
 
-    fn finish(&mut self, slot: SpanSlot, token: OpToken) {
+    pub(super) fn finish(&mut self, slot: SpanSlot, token: OpToken) {
         assert!(matches!(self.slots[slot.0 as usize], State::Completing));
         let route = self.operations[token.slot() as usize]
             .take()
@@ -209,14 +243,8 @@ impl<D: PoolBackend> Pool<D> {
             .completing(token)
             .expect("a pool vector has a route");
         let bytes = result.as_ref().copied().unwrap_or(0);
-        assert!(bytes <= span.bytes - span.filled);
-        span.filled += bytes;
-        vector.take_completed(|ordinal, write| {
-            assert_eq!(
-                ordinal, span.published,
-                "publication follows the complete prefix"
-            );
-            let (index, entry) = span.entry(control, ordinal, &write);
+        span.publish_completed(&mut vector, bytes, self.granule, |span, ordinal, write| {
+            let (index, entry) = span.entry(&control.miss, ordinal, &write);
             Self::release_read_credit(control);
             self.drain_completions_finish_success(
                 &mut control.miss,
@@ -225,11 +253,8 @@ impl<D: PoolBackend> Pool<D> {
                 entry,
                 write,
             );
-            span.published += 1;
         });
-        assert_eq!(span.published, span.filled / self.granule);
-        if span.filled == span.bytes {
-            assert_eq!(span.published, span.count);
+        if span.is_complete() {
             control.read_spans.finish(slot, token);
             drop(continuation);
             return;
@@ -267,7 +292,7 @@ impl<D: PoolBackend> Pool<D> {
         let mut failed = 0;
         vector.take_remaining(|ordinal, write| {
             assert_eq!(ordinal, span.published + failed);
-            let (index, entry) = span.entry(control, ordinal, &write);
+            let (index, entry) = span.entry(&control.miss, ordinal, &write);
             Self::release_read_credit(control);
             self.drain_completions_finish_failure(control, index, entry, write, errno);
             failed += 1;

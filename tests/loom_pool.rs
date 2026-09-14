@@ -66,7 +66,7 @@
 use dios::loom_model::{DrainSource, PoolModel};
 use dios::{ResidentLeaseError, RetainRefusedReason};
 use loom::model::Builder;
-use loom::sync::{Arc, mpsc};
+use loom::sync::mpsc;
 use loom::thread;
 
 const HELD_PAGE: u32 = 10;
@@ -90,6 +90,111 @@ where
     model.max_permutations = Some(RETENTION_MAX_PERMUTATIONS);
     model.preemption_bound = Some(RETENTION_MAX_PREEMPTIONS);
     model.check(scenario);
+}
+
+// RC5's bounded entry must compose production ReadSpans, MissTable, Frames,
+// PageTable, Clock and Prefetch through crate::sync. with_readahead provides one
+// driver slot and 4096-byte granules; complete_span applies a byte-count CQE to
+// that retained operation.
+// A join retains the actual miss interest or resident identity; joined_span_bytes
+// reads the whole 4096-byte frame under the existing EBR pin, never saved content.
+// make_speculative_resident admits ordered automatic feedback and publishes a
+// real frame. Replacing its previous page runs terminal accounting and the real
+// EBR grace before reuse, without pre-draining its pending consumption bit.
+// consume_readahead pins and calls the production first-consumption path.
+// reconcile_readahead reports actual entry visits; no synthetic counter, route,
+// predictor, notification bitmap or replacement synchronization is permitted.
+
+#[test]
+fn rc5_span_publication_point_join_and_route_reuse_preserve_page_identity() {
+    retention_model(|| {
+        let pool = PoolModel::with_readahead(4, 4);
+        let first = pool.admit_span(7, &[0xA1, 0xB2]);
+        assert_eq!(pool.read_credits_used(), 2);
+        let joining_pool = pool.clone();
+        let joining = thread::spawn(move || joining_pool.join_span_page(8));
+
+        pool.complete_span(first, 4096);
+        assert_eq!(pool.read_credits_used(), 1);
+        assert_eq!(
+            pool.pin(7).expect("whole prefix is resident").generation(),
+            0xA1
+        );
+        assert!(pool.pin(8).is_none(), "the unpublished tail cannot be read");
+        pool.complete_span(first, 4096);
+        let joined = joining.join().expect("point join thread");
+        assert_eq!(pool.joined_span_bytes(&joined), Some([0xB2; 4096]));
+        assert_eq!(pool.read_credits_used(), 0);
+
+        let replacement = pool.admit_span(20, &[0xC3, 0xD4]);
+        assert_eq!(
+            pool.span_operation_slot(first),
+            pool.span_operation_slot(replacement)
+        );
+        assert_ne!(
+            first, replacement,
+            "slot reuse changes its exact generation"
+        );
+        let replacement_join = pool.join_span_page(21);
+        let completing_pool = pool.clone();
+        let completing = thread::spawn(move || completing_pool.complete_span(replacement, 8192));
+        assert_eq!(pool.joined_span_bytes(&joined), Some([0xB2; 4096]));
+        completing.join().expect("replacement completion thread");
+        assert_eq!(
+            pool.joined_span_bytes(&replacement_join),
+            Some([0xD4; 4096])
+        );
+        assert_eq!(pool.joined_span_bytes(&joined), Some([0xB2; 4096]));
+        assert_eq!(pool.read_credits_used(), 0);
+    });
+}
+
+#[test]
+fn rc5_delayed_consumption_survives_hierarchical_drain_and_frame_reuse() {
+    retention_model(|| {
+        let pool = PoolModel::with_readahead(65, 2);
+        for page in 0..3 {
+            pool.observe_readahead(0, page);
+        }
+        // Opposite bitmap words and reverse frame order expose lost ancestors
+        // and feedback applied in storage order rather than page order.
+        pool.make_speculative_resident(0, 64, 3, 0x33);
+        pool.make_speculative_resident(0, 0, 4, 0x44);
+        assert_eq!(pool.readahead_stats().occupied, 2);
+        let consuming_pool = pool.clone();
+        let consuming = thread::spawn(move || {
+            assert_eq!(consuming_pool.consume_readahead(0, 3), [0x33; 4096]);
+            assert_eq!(consuming_pool.consume_readahead(0, 4), [0x44; 4096]);
+        });
+        let _ = pool.reconcile_readahead();
+        consuming.join().expect("first-consumption thread");
+        let _ = pool.reconcile_readahead();
+        assert_eq!(pool.readahead_stats().occupied, 0);
+        assert_eq!(pool.readahead_stats().demand_promoted, 2);
+        assert_eq!(pool.next_readahead_page(0), Some(5));
+        assert_eq!(
+            pool.reconcile_readahead(),
+            0,
+            "an empty poll visits no entries"
+        );
+
+        pool.make_speculative_resident(0, 64, 5, 0x55);
+        assert_eq!(pool.consume_readahead(0, 5), [0x55; 4096]);
+        pool.make_speculative_resident(0, 64, 6, 0x66);
+        let _ = pool.reconcile_readahead();
+        assert_eq!(
+            pool.readahead_stats().occupied,
+            1,
+            "an old dirty bit cannot consume the reused frame"
+        );
+        assert_eq!(pool.readahead_stats().demand_promoted, 3);
+        assert_eq!(pool.consume_readahead(0, 6), [0x66; 4096]);
+        let _ = pool.reconcile_readahead();
+        assert_eq!(pool.readahead_stats().occupied, 0);
+        assert_eq!(pool.readahead_stats().demand_promoted, 4);
+        assert_eq!(pool.next_readahead_page(0), Some(7));
+        assert_eq!(pool.reconcile_readahead(), 0);
+    });
 }
 
 /// INV-1 + EBR: without `begin_pin`'s `SeqCst` fence the reader's `local_epoch`
@@ -386,11 +491,11 @@ fn a_hint_racing_eviction_two_advances_and_reuse_never_reads_refilled_bytes() {
 }
 
 fn retained_drop_producer(
-    pool: Arc<PoolModel>,
+    pool: &PoolModel,
     reader: u32,
     page: u32,
-    ready_tx: mpsc::Sender<bool>,
-    release_rx: mpsc::Receiver<()>,
+    ready_tx: &mpsc::Sender<bool>,
+    release_rx: &mpsc::Receiver<()>,
 ) {
     let retained = pool
         .pin_reader(reader, page)
@@ -405,9 +510,9 @@ fn retained_drop_producer(
 }
 
 fn nested_retained_drop_producer(
-    pool: Arc<PoolModel>,
-    ready_tx: mpsc::Sender<bool>,
-    release_rx: mpsc::Receiver<()>,
+    pool: &PoolModel,
+    ready_tx: &mpsc::Sender<bool>,
+    release_rx: &mpsc::Receiver<()>,
 ) {
     let outer = pool
         .pin_reader(0, HELD_PAGE)
@@ -426,12 +531,12 @@ fn nested_retained_drop_producer(
 }
 
 fn promotion_maturity_producer(
-    pool: Arc<PoolModel>,
-    ready_tx: mpsc::Sender<()>,
-    start_rx: mpsc::Receiver<()>,
-    inspect_rx: mpsc::Receiver<()>,
-    promoted_tx: mpsc::Sender<bool>,
-    bytes_tx: mpsc::Sender<bool>,
+    pool: &PoolModel,
+    ready_tx: &mpsc::Sender<()>,
+    start_rx: &mpsc::Receiver<()>,
+    inspect_rx: &mpsc::Receiver<()>,
+    promoted_tx: &mpsc::Sender<bool>,
+    bytes_tx: &mpsc::Sender<bool>,
 ) {
     let guard = pool
         .get_file(RETAINED_FILE_GENERATION, HELD_PAGE)
@@ -462,12 +567,12 @@ fn promotion_publication_racing_maturity_never_reuses_retained_bytes() {
         let producer_pool = pool.clone();
         let producer = thread::spawn(move || {
             promotion_maturity_producer(
-                producer_pool,
-                ready_tx,
-                start_rx,
-                inspect_rx,
-                promoted_tx,
-                bytes_tx,
+                &producer_pool,
+                &ready_tx,
+                &start_rx,
+                &inspect_rx,
+                &promoted_tx,
+                &bytes_tx,
             );
         });
         ready_rx.recv().expect("the pre-eviction guard is live");
@@ -519,18 +624,18 @@ fn nested_promotion_and_concurrent_last_drops_have_one_release_owner() {
 
         let first_pool = pool.clone();
         let first = thread::spawn(move || {
-            nested_retained_drop_producer(first_pool, first_ready_tx, first_release_rx);
+            nested_retained_drop_producer(&first_pool, &first_ready_tx, &first_release_rx);
         });
         assert!(first_ready_rx.recv().expect("nested promotion outcome"));
 
         let second_pool = pool.clone();
         let second = thread::spawn(move || {
             retained_drop_producer(
-                second_pool,
+                &second_pool,
                 1,
                 HELD_PAGE,
-                second_ready_tx,
-                second_release_rx,
+                &second_ready_tx,
+                &second_release_rx,
             );
         });
         assert!(second_ready_rx.recv().expect("second promotion outcome"));
@@ -567,11 +672,17 @@ fn concurrent_first_promotions_preserve_the_occupied_budget_floor() {
         let first_pool = pool.clone();
         let first_ready_tx = ready_tx.clone();
         let first = thread::spawn(move || {
-            retained_drop_producer(first_pool, 0, HELD_PAGE, first_ready_tx, first_release_rx);
+            retained_drop_producer(
+                &first_pool,
+                0,
+                HELD_PAGE,
+                &first_ready_tx,
+                &first_release_rx,
+            );
         });
         let second_pool = pool.clone();
         let second = thread::spawn(move || {
-            retained_drop_producer(second_pool, 1, HELD_PAGE, ready_tx, second_release_rx);
+            retained_drop_producer(&second_pool, 1, HELD_PAGE, &ready_tx, &second_release_rx);
         });
 
         let promotions = u32::from(ready_rx.recv().expect("one promotion outcome"))
@@ -613,11 +724,23 @@ fn two_ring_producers_overlap_consumer_and_turn_over_one_slot() {
         let first_pool = pool.clone();
         let first_ready_tx = ready_tx.clone();
         let first = thread::spawn(move || {
-            retained_drop_producer(first_pool, 0, HELD_PAGE, first_ready_tx, first_release_rx);
+            retained_drop_producer(
+                &first_pool,
+                0,
+                HELD_PAGE,
+                &first_ready_tx,
+                &first_release_rx,
+            );
         });
         let second_pool = pool.clone();
         let second = thread::spawn(move || {
-            retained_drop_producer(second_pool, 1, INTRUDER_PAGE, ready_tx, second_release_rx);
+            retained_drop_producer(
+                &second_pool,
+                1,
+                INTRUDER_PAGE,
+                &ready_tx,
+                &second_release_rx,
+            );
         });
 
         assert!(ready_rx.recv().expect("one producer promotion"));

@@ -285,7 +285,7 @@ impl<T: ZeroVacant> MappedSlice<T> {
             let base = mapping.base().cast::<T>();
             for index in 0..len {
                 // SAFETY: `base` is aligned for `T` and spans `len` elements.
-                unsafe { base.add(index).write(T::vacant()) };
+                unsafe { base.as_ptr().wrapping_add(index).write(T::vacant()) };
             }
         }
         Some(Self {

@@ -3,7 +3,14 @@ checkpoint:
   scope_name: readahead-coalescing
   scope_path: scopes/active/readahead-coalescing
   branch: feat/readahead-coalescing
-  last_commit: 0f001d7631992854581e0804cc9d3b8d0a3d6c0b
+  last_commit: 6a7c3883917c3fc59102864452b36b032fb6a9f9
+  updated_at: '2026-09-14T13:35:34.230066+00:00'
+  batch:
+    number: 4
+    tasks:
+    - RC5
+    phase: complete
+    status: completed
   routing_snapshot:
     epoch_id: 20260914T090833Z-505efd
     tester:
@@ -23,13 +30,74 @@ checkpoint:
         effort: high
         class: peer
     review_transport: headless peer
-  updated_at: '2026-09-14T12:32:48.715476+00:00'
-  batch:
-    number: 3
-    tasks:
-    - RC4
-    phase: complete
-    status: completed
   reports:
-    synthesis: ".peer/readahead-coalescing/20260914T090833Z-505efd/b3-synthesis.yaml"
-    verification: target/readahead-coalescing/b3-fix1-green-verification.json
+    tester:
+      RC5: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/readahead-coalescing/20260914T090833Z-505efd/b4-tester-RC5"
+    prior_batch_review: ".peer/readahead-coalescing/20260914T090833Z-505efd/b3-synthesis.yaml"
+    implementer:
+      RC5: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/readahead-coalescing/20260914T090833Z-505efd/b4-implementer-RC5"
+    tester_correction: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/readahead-coalescing/20260914T090833Z-505efd/b4-loom-granule-correction"
+    tester_lint_correction: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/readahead-coalescing/20260914T090833Z-505efd/b4-loom-lint-correction"
+    review:
+      general: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/readahead-coalescing/20260914T090833Z-505efd/b4-review-general"
+      architecture: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/readahead-coalescing/20260914T090833Z-505efd/b4-review-architecture"
+      compliance: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/readahead-coalescing/20260914T090833Z-505efd/b4-review-compliance"
+    synthesis: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-synthesis.yaml"
+  in_flight_mutations: []
+  red_gate:
+    status: passed
+    command: RUSTFLAGS='--cfg loom' mise exec -- cargo test --offline --test loom_pool
+      rc5_ --no-default-features
+    exit_code: 101
+    verification: target/readahead-coalescing/b4-red.log
+    representative_falsifier: A lost production first-consumption notification fails
+      the post-final-drain zero-occupancy, promotion and ordered next-page assertions;
+      route reuse must preserve the old joined page bytes. The compiler names only
+      the missing actual-production Loom constructor.
+    supplemental_allocation_case: The existing shipping allocation scenario now exercises
+      C=128/R=256 and full vectors and passed locally; it is not claimed as RED or
+      Linux qualification.
+  scope_path_extension:
+    paths:
+    - src/allocation.rs
+    reason: Required cfg(loom) strict Clippy exposes multiple unsafe operations in
+      one existing element-initialization block. The in-range wrapping_add/write expression
+      preserves the allocation boundary with one unsafe operation.
+  oracle_correction:
+    reason: The test-only 512-byte frame geometry contradicts the production 4096-byte
+      floor. Correct only byte geometry; preserve the missing-constructor RED, concurrency
+      scenarios and falsifiers.
+    status: completed
+    red_attempts_added: 0
+    production_frame_floor: unchanged
+    report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-loom-granule-correction/correction.yaml"
+    root_inspection: Only the two existing scenarios’ frame/CQE byte geometry and
+      contract comments changed from unsupported 512 to production 4096 bytes, plus
+      formatting. The constructor RED, all interleavings, byte identities, slot generations,
+      credit counts and order/reuse assertions remain intact. No additional RED attempt
+      or GREEN result is claimed.
+  loom_lint_correction:
+    status: completed
+    report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-loom-lint-correction/correction.yaml"
+    red_attempts_added: 0
+    root_inspection: The three existing helpers borrow pool/channel endpoints from
+      their unchanged owned move-closure captures. Retained-handle drops, message
+      order and assertions stay in the same bodies; all new RC5 scenarios remain intact.
+      Required cfg(loom) library/integration Clippy passed with warnings denied.
+  green_gate:
+    status: passed
+    verification: target/readahead-coalescing/b4-green-verification.json
+    local_tests: 378
+    linux_tests: 400
+    loom_tests: 20
+    miri_tests: 55
+    asan_local_tests: 271
+    asan_linux_tests: 284
+    numeric_adoption_gates_claimed: false
+  review_gate:
+    status: passed
+    canonical_reports: 6
+    fix_rounds: 0
+    report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-synthesis.yaml"
+  next_action: Commit RC5, then initialize the dependency-ready RC6 batch from its
+    routing snapshot.

@@ -5,7 +5,7 @@ next_id: 7
 meta:
   created: '2026-09-14'
   last_updated: '2026-09-14'
-  progress: 4/6
+  progress: 5/6
 discipline: Owner approval, 512 KiB default and scope review are recorded. Immutable
   source/executable baseline verified before RC1/RC2 dispatch. Each task captures
   bounded RED before code.
@@ -162,12 +162,14 @@ tasks:
     validation: target/readahead-coalescing/b3-fix1-green-verification.json
 - id: RC5
   title: Prove concurrency, lifetime and allocation invariants
-  status: pending
+  status: done
   depends_on:
   - RC4
   description: |-
     Loom covers span publication racing point join and route reuse; integrate admission/join/completion into the existing seam. Check retained guards, file retirement, full queues, maximum admitted frames and zero allocation on eager and io_uring. Run stored-pointer Miri, syscall ASAN, existing lifetime/compile-fail and retention suites, strict Clippy and formatting. Every known safety failure blocks RC6.
      Loom also covers notification/drain races, delayed earlier consumption, frame reuse and feedback order; empty polls must inspect no speculative-capacity entries. Include consumption after the final CQE and continuation-lease teardown.
+     Narrow pool-private visibility or cfg(loom) observation helpers in read_spans.rs and prefetch/state.rs may connect the existing Loom seam to the actual route, admission and notification primitives. No duplicate route/bitmap/predictor implementation or public product API is allowed.
+     The required cfg(loom) strict Clippy check also covers the existing Loom-only MappedSlice element initialization; a one-line wrapping_add/write expression retains its range invariant while leaving one unsafe operation per block.
   files:
   - src/pool/loom_model.rs
   - tests/loom_pool.rs
@@ -176,6 +178,17 @@ tasks:
   - tests/guard_compile_fail.rs
   - tests/zero_alloc.rs
   - src/mock.rs
+  - src/pool/read_spans.rs
+  - src/pool/prefetch/state.rs
+  - src/allocation.rs
+  completed_at: '2026-09-14T13:35:34.230066+00:00'
+  evidence:
+    tester: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-tester-RC5/native.yaml"
+    tester_granule_correction: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-loom-granule-correction/correction.yaml"
+    tester_lint_correction: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-loom-lint-correction/correction.yaml"
+    implementer: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-implementer-RC5/native.yaml"
+    review: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-synthesis.yaml"
+    validation: target/readahead-coalescing/b4-green-verification.json
 - id: RC6
   title: Run the owner gates and retain pool-layer attribution
   status: pending

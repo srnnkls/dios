@@ -12,18 +12,25 @@
 //! the seqlock write and read back after, so the seqlock's Release/Acquire pairing
 //! is what excludes the torn coupling.
 
-use crate::driver::FileId;
+use std::num::NonZeroU64;
+
+use crate::driver::read_vector::{ReadVector, VECTOR_FRAMES_MAX, VectorStorage};
+use crate::driver::{CompletionSlab, FileId, OpToken};
 use crate::pool::ReadFrameIdx;
 use crate::product::WaitState;
 use crate::sync::{Arc, AtomicU32, AtomicU64, Mutex, MutexGuard, Ordering};
 
 use super::epoch::{
-    EvictQueue, FrameGuard as PoolFrameGuard, FrameOutcome, ReaderSlot, advance_epoch,
+    EvictQueue, FrameGuard as PoolFrameGuard, FrameOutcome, ReaderRegistry, advance_epoch,
 };
+use super::miss::{MissEntry, MissInterests, MissOutcome, MissSlot, MissTable};
+use super::prefetch::state::{Prefetch, Terminal};
+use super::prefetch::{PrefetchStats, Readahead, Source};
+use super::read_spans::{ReadSpan, ReadSpans};
 use super::retention::{RetainRefused, RetainedFrame, Retention};
 use super::{
-    Clock, FrameState, Frames, PageId, PageTable, PoolFile, PoolFileState, ResidentFileLease,
-    ResidentHint, ResidentLeaseError, ResidentLeaseState, SECTOR_BYTES,
+    Clock, FrameState, Frames, InFlightFrame, PageId, PageTable, PoolFile, PoolFileState,
+    ResidentFileLease, ResidentHint, ResidentLeaseError, ResidentLeaseState, SECTOR_BYTES,
     acquire_resident_file_lease, begin_file_retirement, file_generation_is_live, file_is_live,
     pin_with_resident_hint, publish_live_file,
 };
@@ -32,6 +39,58 @@ struct Control {
     evict_queue: EvictQueue,
     release_cursor: u64,
     files: Box<[Option<PoolFile>]>,
+    readahead: Option<ReadaheadControl>,
+}
+
+struct ReadaheadControl {
+    miss: MissTable,
+    spans: ReadSpans,
+    prefetch: Prefetch,
+    operations: CompletionSlab<SpanRead>,
+    descriptors: VectorStorage,
+    reads_in_flight: u32,
+}
+
+impl ReadaheadControl {
+    fn new(frames: u32, capacity: u32) -> Self {
+        assert!((1..=frames).contains(&capacity));
+        Self {
+            miss: MissTable::try_with_capacity(frames, frames, 1).expect("loom miss table"),
+            spans: ReadSpans::try_new(frames, 1).expect("loom span routes"),
+            prefetch: Prefetch::try_with_geometry(
+                capacity,
+                2,
+                frames,
+                Readahead::Automatic,
+                frames,
+                SECTOR_BYTES,
+            )
+            .expect("loom prefetch ledger"),
+            operations: CompletionSlab::try_with_capacity(1).expect("loom operation slab"),
+            descriptors: VectorStorage::try_new(1).expect("loom iovec storage"),
+            reads_in_flight: 0,
+        }
+    }
+}
+
+/// Source bytes stand in for the disk; observations always borrow the arena.
+struct SpanRead {
+    vector: ReadVector,
+    contents: [u8; VECTOR_FRAMES_MAX as usize],
+    pages: u32,
+}
+
+impl SpanRead {
+    fn complete(&mut self, bytes: u32) {
+        assert!(bytes > 0, "this model injects positive byte-count CQEs");
+        let offset = self.pages * SECTOR_BYTES - self.vector.remaining();
+        self.vector
+            .transfer_prefix(bytes, |transferred, destination| {
+                let ordinal = (offset + transferred) / SECTOR_BYTES;
+                destination.fill(self.contents[ordinal as usize]);
+            });
+        self.vector.record_completion(bytes);
+    }
 }
 
 /// The transition that ran first in one bounded reclaim pass.
@@ -59,11 +118,11 @@ pub struct DrainReport {
 /// One shared control plane, `N` frames, and two reader slots — the bounded
 /// entry the Loom models drive.
 pub struct PoolModel {
-    frames: Frames,
+    frames: std::sync::Arc<Frames>,
     table: PageTable,
     clock: Clock,
     global_epoch: AtomicU64,
-    slots: [ReaderSlot; 2],
+    readers: std::sync::Arc<ReaderRegistry>,
     // Model scaffolding no loom proof reads; modelling it would add
     // interleavings the proofs never use.
     held_frames: [crate::pool::diagnostics::DiagnosticSlot; 2],
@@ -72,6 +131,7 @@ pub struct PoolModel {
     resident_lease_states: Box<[std::sync::Arc<ResidentLeaseState>]>,
     retention: Retention,
     retention_enabled: bool,
+    miss_interests: Option<std::sync::Arc<MissInterests>>,
     control: Mutex<Control>,
 }
 
@@ -84,6 +144,25 @@ impl PoolModel {
     /// Builds the bounded model with the production retention primitives enabled.
     #[must_use]
     pub fn with_retention(frames: u32, max_retained_frames: u32) -> Arc<Self> {
+        Self::with_geometry(frames, max_retained_frames, None)
+    }
+
+    /// Enables actual span ownership and speculative bookkeeping in this model.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless the speculative capacity is positive and fits the arena.
+    #[must_use]
+    pub fn with_readahead(frames: u32, capacity: u32) -> Arc<Self> {
+        assert!((1..=frames).contains(&capacity));
+        Self::with_geometry(frames, 0, Some(capacity))
+    }
+
+    fn with_geometry(
+        frames: u32,
+        max_retained_frames: u32,
+        readahead_capacity: Option<u32>,
+    ) -> Arc<Self> {
         assert!(frames > 0, "the bounded model has at least one frame");
         assert!(
             max_retained_frames <= frames,
@@ -92,11 +171,18 @@ impl PoolModel {
         let wake = std::sync::Arc::new(WaitState::default());
         let registered_file_capacity = 1;
         Arc::new(Self {
-            frames: Frames::preallocated(frames, SECTOR_BYTES),
+            frames: std::sync::Arc::new(Frames::preallocated(frames, SECTOR_BYTES)),
             table: PageTable::with_frame_count(frames),
             clock: Clock::with_frame_count(frames),
             global_epoch: AtomicU64::new(0),
-            slots: [ReaderSlot::vacant(2), ReaderSlot::vacant(2)],
+            readers: std::sync::Arc::new(
+                ReaderRegistry::try_with_capacity(
+                    2,
+                    2,
+                    std::sync::Arc::new(crate::product::LifecycleCounters::default()),
+                )
+                .expect("loom reader registry"),
+            ),
             held_frames: [
                 crate::pool::diagnostics::DiagnosticSlot::new(),
                 crate::pool::diagnostics::DiagnosticSlot::new(),
@@ -121,11 +207,18 @@ impl PoolModel {
             )
             .expect("loom retention allocation succeeds"),
             retention_enabled: max_retained_frames > 0,
+            miss_interests: readahead_capacity.map(|_| {
+                std::sync::Arc::new(
+                    MissInterests::try_with_capacity(frames).expect("loom miss interests"),
+                )
+            }),
             control: Mutex::new(Control {
                 evict_queue: EvictQueue::with_capacity(frames),
                 release_cursor: 0,
                 files: crate::allocation::try_boxed_slice_with(registered_file_capacity, || None)
                     .expect("loom file-table allocation succeeds"),
+                readahead: readahead_capacity
+                    .map(|capacity| ReadaheadControl::new(frames, capacity)),
             }),
         })
     }
@@ -140,6 +233,435 @@ impl PoolModel {
 
     fn file_page_id(file_generation: u32, page: u32) -> PageId {
         PageId::new(FileId::new(0, 0, file_generation), page)
+    }
+
+    fn miss_interests(&self) -> &MissInterests {
+        self.miss_interests
+            .as_ref()
+            .expect("readahead model enabled")
+    }
+
+    /// Admits one bounded vector through the real route, miss and operation slabs.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless readahead is enabled and all two-to-32 source pages are
+    /// absent, fit the page namespace, and have available credits and storage.
+    pub fn admit_span(&self, first: u32, contents: &[u8]) -> OpToken {
+        let count = u32::try_from(contents.len()).expect("bounded source pages");
+        assert!((2..=VECTOR_FRAMES_MAX).contains(&count));
+        let mut control = self.control();
+        let readahead = control.readahead.as_mut().expect("readahead model enabled");
+        readahead.prefetch.reconcile(&self.clock);
+        let stats = readahead.prefetch.model_stats();
+        assert!(count <= stats.capacity - stats.occupied);
+        assert!(count <= self.frames.count() - readahead.reads_in_flight);
+        let route = readahead.spans.reserve().expect("free span route");
+        let mut slots = [None; VECTOR_FRAMES_MAX as usize];
+        assert!(
+            readahead
+                .miss
+                .admission_slots(self.miss_interests(), &mut slots[..contents.len()],)
+        );
+        let (mut read, frames) = self.admit_span_claim(readahead, first, contents);
+        let operation = readahead
+            .operations
+            .reserve()
+            .expect("one free driver slot");
+        readahead.descriptors.prepare(operation, &mut read.vector);
+        let token = readahead.operations.fill(operation, read);
+        let mut span = ReadSpan::new(Self::page_id(first), token, count, SECTOR_BYTES);
+        for (ordinal, slot) in slots[..contents.len()].iter().enumerate() {
+            let page = Self::page_id(first + u32::try_from(ordinal).expect("bounded ordinal"));
+            let frame = frames[ordinal].expect("claimed frame");
+            let slot = slot.expect("reserved miss slot");
+            let generation =
+                readahead
+                    .miss
+                    .admit_speculative(slot, page, frame, token, self.miss_interests());
+            span.install(ordinal, slot, generation);
+            readahead
+                .prefetch
+                .admit(&self.clock, page, frame, Source::Explicit);
+        }
+        readahead.reads_in_flight += count;
+        readahead.spans.commit(route, span);
+        token
+    }
+
+    fn admit_span_claim(
+        &self,
+        readahead: &ReadaheadControl,
+        first: u32,
+        contents: &[u8],
+    ) -> (SpanRead, [Option<ReadFrameIdx>; VECTOR_FRAMES_MAX as usize]) {
+        let mut frames = [None; VECTOR_FRAMES_MAX as usize];
+        let mut count = 0;
+        for index in 0..self.frames.count() {
+            let frame = ReadFrameIdx::new(index);
+            if self.frames.state(frame) == FrameState::Free {
+                frames[count] = Some(frame);
+                count += 1;
+                if count == contents.len() {
+                    break;
+                }
+            }
+        }
+        assert_eq!(
+            count,
+            contents.len(),
+            "all destinations are reserved before claim"
+        );
+        let mut vector = ReadVector::new(&self.frames);
+        for (ordinal, frame) in frames[..count].iter().enumerate() {
+            let page = Self::page_id(
+                first
+                    .checked_add(u32::try_from(ordinal).expect("bounded ordinal"))
+                    .expect("modeled page range fits u32"),
+            );
+            assert!(self.table.lookup(page).is_none());
+            assert!(readahead.miss.find_pending(page).is_none());
+            vector.push(
+                self.frames
+                    .claim(frame.expect("free destination"), page)
+                    .expect("the control lock preserves exclusive claim"),
+            );
+        }
+        let mut source = [0; VECTOR_FRAMES_MAX as usize];
+        source[..count].copy_from_slice(contents);
+        (
+            SpanRead {
+                vector,
+                contents: source,
+                pages: u32::try_from(count).expect("bounded pages"),
+            },
+            frames,
+        )
+    }
+
+    /// Transfers the CQE's bytes and publishes only its newly complete prefix.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless `token` names the current retained span and `bytes` is a
+    /// positive count within its remaining destinations.
+    pub fn complete_span(&self, token: OpToken, bytes: u32) {
+        let mut control = self.control();
+        let ReadaheadControl {
+            miss,
+            spans,
+            operations,
+            descriptors,
+            reads_in_flight,
+            ..
+        } = control.readahead.as_mut().expect("readahead model enabled");
+        let (route, mut span) = spans.completing(token).expect("current span route");
+        let read = operations.peek_mut(token.slot());
+        read.complete(bytes);
+        span.publish_completed(
+            &mut read.vector,
+            bytes,
+            SECTOR_BYTES,
+            |span, ordinal, write| {
+                let (index, entry) = span.entry(miss, ordinal, &write);
+                self.complete_span_publish(miss, reads_in_flight, index, entry, write);
+            },
+        );
+        if span.is_complete() {
+            assert_eq!(read.vector.remaining(), 0);
+            spans.finish(route, token);
+            let (completed, read) = operations.reclaim(token.slot());
+            assert_eq!(completed, token, "the retained driver generation is exact");
+            drop(read);
+        } else {
+            descriptors.prepare(token.slot(), &mut read.vector);
+            spans.resume(route, span);
+        }
+    }
+
+    fn complete_span_publish(
+        &self,
+        miss: &mut MissTable,
+        reads_in_flight: &mut u32,
+        index: usize,
+        entry: MissEntry,
+        write: InFlightFrame,
+    ) {
+        *reads_in_flight = reads_in_flight
+            .checked_sub(1)
+            .expect("one terminal read credit");
+        assert_eq!(self.frames.publish(write), entry.frame());
+        self.table.insert_shared(entry.page(), entry.frame());
+        if self.clock.is_speculative(entry.frame()) {
+            self.clock.completed.notify(entry.frame());
+        } else {
+            let _ = self.clock.reference(entry.frame());
+        }
+        miss.succeed(index);
+        miss.clean_terminal_zero(
+            MissSlot::new(index),
+            entry.generation(),
+            self.miss_interests(),
+        );
+    }
+
+    /// Retains an exact pending miss interest or an already resident page identity.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless readahead is enabled and the page is pending or resident.
+    pub fn join_span_page(&self, page: u32) -> JoinedSpan {
+        let page = Self::page_id(page);
+        let mut control = self.control();
+        let readahead = control.readahead.as_mut().expect("readahead model enabled");
+        let interest = if self.table.lookup(page).is_some() {
+            None
+        } else {
+            let index = readahead
+                .miss
+                .find_pending(page)
+                .expect("one admitted page miss");
+            let interest = readahead.miss.join(index, self.miss_interests());
+            readahead.prefetch.finish(
+                &self.clock,
+                readahead.miss.entry(index).frame(),
+                Terminal::Promoted(Some(0)),
+            );
+            Some(interest)
+        };
+        JoinedSpan {
+            interests: std::sync::Arc::clone(
+                self.miss_interests
+                    .as_ref()
+                    .expect("readahead model enabled"),
+            ),
+            page,
+            interest,
+        }
+    }
+
+    /// Reads the current whole frame under the existing EBR pin protocol.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the join belongs to another model or its retained identity changed.
+    #[must_use]
+    pub fn joined_span_bytes(&self, joined: &JoinedSpan) -> Option<[u8; SECTOR_BYTES as usize]> {
+        assert!(std::sync::Arc::ptr_eq(
+            self.miss_interests
+                .as_ref()
+                .expect("readahead model enabled"),
+            &joined.interests,
+        ));
+        if let Some((slot, generation)) = joined.interest {
+            let control = self.control();
+            let readahead = control.readahead.as_ref().expect("readahead model enabled");
+            let entry = readahead.miss.validate(slot, generation, joined.page);
+            if entry.outcome() != MissOutcome::Succeeded {
+                return None;
+            }
+        }
+        let guard = self.pin_readahead_page(0, joined.page)?;
+        let bytes: &[u8; SECTOR_BYTES as usize] = (&*guard)
+            .try_into()
+            .expect("the model returns a whole granule");
+        Some(*bytes)
+    }
+
+    /// Observes the actual driver's slot component, including after route reuse.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the token names a slot outside the one-slot model.
+    #[must_use]
+    pub fn span_operation_slot(&self, token: OpToken) -> u32 {
+        assert_eq!(token.slot(), 0, "one bounded operation slot");
+        token.slot()
+    }
+
+    /// Counts admitted page destinations that have not reached their terminal outcome.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless readahead is enabled.
+    #[must_use]
+    pub fn read_credits_used(&self) -> u32 {
+        self.control()
+            .readahead
+            .as_ref()
+            .expect("readahead model enabled")
+            .reads_in_flight
+    }
+
+    /// Supplies an ordinary demand observation to the production predictor.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless readahead is enabled.
+    pub fn observe_readahead(&self, reader: u32, page: u32) {
+        self.control()
+            .readahead
+            .as_mut()
+            .expect("readahead model enabled")
+            .prefetch
+            .observe(&self.clock, reader, Self::page_id(page));
+    }
+
+    /// Installs one automatic prediction, reclaiming any previous identity through EBR.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless the frame is in range, has no live guard or miss interest,
+    /// and the next automatic prediction has available speculative capacity.
+    pub fn make_speculative_resident(&self, reader: u32, frame: u32, page: u32, content: u8) {
+        let frame = ReadFrameIdx::new(frame);
+        assert!(frame.get() < self.frames.count());
+        let mut control = self.control();
+        if self.frames.state(frame) == FrameState::Resident {
+            self.make_speculative_resident_reclaim(&mut control, frame);
+        }
+        assert_eq!(self.frames.state(frame), FrameState::Free);
+        let page = Self::page_id(page);
+        assert!(self.table.lookup(page).is_none());
+        let mut write = self
+            .frames
+            .claim(frame, page)
+            .expect("free modeled destination");
+        self.frames.fill(&mut write, content);
+        control
+            .readahead
+            .as_mut()
+            .expect("readahead model enabled")
+            .prefetch
+            .admit_model_automatic(&self.clock, reader, page, frame);
+        self.frames.publish(write);
+        self.table.insert_shared(page, frame);
+        self.clock.completed.notify(frame);
+    }
+
+    fn make_speculative_resident_reclaim(&self, control: &mut Control, frame: ReadFrameIdx) {
+        let slot = &self.readers.slots()[1];
+        let begun = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
+        assert_eq!(self.frames.state(frame), FrameState::Resident);
+        let pin = slot.commit_pin(begun);
+        let guard = PoolFrameGuard::new(
+            self.frames.frame_bytes(frame, &pin),
+            slot,
+            frame,
+            0,
+            &self.retention,
+        );
+        let page = self.frames.exact_page_guarded(&guard);
+        drop(guard);
+        let readahead = control.readahead.as_mut().expect("readahead model enabled");
+        assert!(
+            readahead
+                .miss
+                .prepare_eviction(frame, self.miss_interests())
+        );
+        assert_eq!(self.table.remove_shared(page), Some(frame));
+        readahead
+            .prefetch
+            .finish(&self.clock, frame, Terminal::Evicted);
+        self.frames.advance(frame, FrameState::Evicting);
+        control
+            .evict_queue
+            .push(frame, self.global_epoch.load(Ordering::Acquire));
+        for _ in 0..2 {
+            self.advance_and_reclaim(
+                &mut control.evict_queue,
+                &mut control.release_cursor,
+                |frame| {
+                    self.frames.advance(frame, FrameState::Free);
+                },
+            );
+        }
+        assert_eq!(
+            self.frames.state(frame),
+            FrameState::Free,
+            "reuse follows the real grace period"
+        );
+    }
+
+    /// Consumes real resident bytes through the first speculative-reference CAS.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless `reader` is in range and the prediction is resident.
+    #[must_use]
+    pub fn consume_readahead(&self, reader: u32, page: u32) -> [u8; SECTOR_BYTES as usize] {
+        let guard = self
+            .pin_readahead_page(reader, Self::page_id(page))
+            .expect("resident prediction");
+        let bytes: &[u8; SECTOR_BYTES as usize] = (&*guard)
+            .try_into()
+            .expect("the model returns a whole granule");
+        *bytes
+    }
+
+    fn pin_readahead_page(&self, reader: u32, page: PageId) -> Option<PoolFrameGuard<'_>> {
+        let slot = &self.readers.slots()[reader as usize];
+        let begun = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
+        let Some(frame) = self.table.lookup(page) else {
+            slot.abort_pin(begun);
+            return None;
+        };
+        let _ = self.clock.reference_from(frame, slot);
+        let pin = slot.commit_pin(begun);
+        let guard = PoolFrameGuard::new(
+            self.frames.frame_bytes(frame, &pin),
+            slot,
+            frame,
+            0,
+            &self.retention,
+        );
+        assert_eq!(self.frames.exact_page_guarded(&guard), page);
+        Some(guard)
+    }
+
+    /// Runs production reconciliation and reports visits from its actual control events.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless readahead is enabled.
+    pub fn reconcile_readahead(&self) -> u64 {
+        self.control()
+            .readahead
+            .as_mut()
+            .expect("readahead model enabled")
+            .prefetch
+            .reconcile_model(&self.clock)
+    }
+
+    /// Snapshots the production speculative ledger.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless readahead is enabled.
+    #[must_use]
+    pub fn readahead_stats(&self) -> PrefetchStats {
+        let control = self.control();
+        let readahead = control.readahead.as_ref().expect("readahead model enabled");
+        PrefetchStats {
+            reads_in_flight: readahead.reads_in_flight,
+            ..readahead.prefetch.model_stats()
+        }
+    }
+
+    /// Observes the production predictor's next eligible page without changing it.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless readahead is enabled and `reader` is in range.
+    #[must_use]
+    pub fn next_readahead_page(&self, reader: u32) -> Option<u32> {
+        self.control()
+            .readahead
+            .as_ref()
+            .expect("readahead model enabled")
+            .prefetch
+            .model_next_page(reader)
+            .map(PageId::granule_idx)
     }
 
     /// Makes `page` resident in `frame` filled with content-generation
@@ -165,6 +687,10 @@ impl PoolModel {
     }
 
     /// Setup, single-threaded before threads spawn: installs one exact frame/page pair.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless the frame is in range and free.
     pub fn make_resident_in_frame(&self, frame: u32, page: u32, generation: u8) {
         assert!(frame < self.frames.count(), "setup frame is in range");
         let _control = self.control();
@@ -197,8 +723,11 @@ impl PoolModel {
 
     fn pin_page(&self, reader: u32, page: PageId) -> Option<Guard<'_>> {
         let reader = reader as usize;
-        assert!(reader < self.slots.len(), "reader index is in range");
-        let slot = &self.slots[reader];
+        assert!(
+            reader < self.readers.slots().len(),
+            "reader index is in range"
+        );
+        let slot = &self.readers.slots()[reader];
         let begun = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
         let frame = if begun.is_first() {
             let mapped = self.table.lookup(page);
@@ -266,6 +795,11 @@ impl PoolModel {
         self.pin_page(0, page)
     }
 
+    /// Observes a generation-exact hint for a currently resident page.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a Resident state word violates its nonzero invariant.
     #[must_use]
     pub fn resident_hint(&self, file_generation: u32, page: u32) -> Option<ResidentHint> {
         let page = Self::file_page_id(file_generation, page);
@@ -277,8 +811,7 @@ impl PoolModel {
         Some(ResidentHint {
             granule: page.granule_idx(),
             frame: frame.get(),
-            stamp: std::num::NonZeroU64::new(stamp)
-                .expect("a Resident packed state word is nonzero"),
+            stamp: NonZeroU64::new(stamp).expect("a Resident packed state word is nonzero"),
         })
     }
 
@@ -299,7 +832,7 @@ impl PoolModel {
             &self.frames,
             &self.clock,
             &self.global_epoch,
-            &self.slots[0],
+            &self.readers.slots()[0],
             page,
             hint,
         ) else {
@@ -308,7 +841,7 @@ impl PoolModel {
         Some(Guard {
             inner: PoolFrameGuard::new(
                 self.frames.frame_bytes(frame, &pin),
-                &self.slots[0],
+                &self.readers.slots()[0],
                 frame,
                 0,
                 &self.retention,
@@ -386,6 +919,7 @@ impl PoolModel {
             evict_queue,
             release_cursor,
             files,
+            ..
         } = &mut *control;
         let report = self.advance_and_reclaim(evict_queue, release_cursor, |frame| {
             self.reopen_frame(files, frame, id, page, content_generation);
@@ -456,7 +990,8 @@ impl PoolModel {
             .load(Ordering::Acquire)
             .checked_add(1)
             .expect("the bounded Loom epoch remains below the quiescent sentinel");
-        self.slots
+        self.readers
+            .slots()
             .iter()
             .all(|slot| slot.permits_advance(next_epoch))
     }
@@ -511,6 +1046,10 @@ impl PoolModel {
     /// Poller under the control lock: advances the epoch and refills each matured
     /// frame with the exact `(file generation, page)` identity and content
     /// generation supplied by the bounded model.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a previously observed modeled file disappears before reopening.
     pub fn poll_file_pass(
         &self,
         file_generation: u32,
@@ -559,14 +1098,14 @@ impl PoolModel {
     /// Advances the epoch without consuming either reclaim queue.
     pub fn advance_epoch_only(&self) -> u64 {
         let _control = self.control();
-        advance_epoch(&self.global_epoch, &self.slots)
+        advance_epoch(&self.global_epoch, self.readers.slots())
     }
 
     /// Consumes matured epoch entries without invoking the drain-driver stand-in.
     #[must_use]
     pub fn drain_matured_only(&self) -> DrainReport {
         let mut control = self.control();
-        let global_epoch = advance_epoch(&self.global_epoch, &self.slots);
+        let global_epoch = advance_epoch(&self.global_epoch, self.readers.slots());
         self.drain_matured_entries(&mut control.evict_queue, global_epoch, |frame| {
             self.frames.advance(frame, FrameState::Free);
         })
@@ -606,7 +1145,7 @@ impl PoolModel {
                 Some(false) => (true, 0),
                 None => (false, 0),
             };
-        let global_epoch = advance_epoch(&self.global_epoch, &self.slots);
+        let global_epoch = advance_epoch(&self.global_epoch, self.readers.slots());
         let retention_occupied =
             retention_enabled && self.retention.occupied_budget.load(Ordering::Acquire) != 0;
         let mut report = if retention_occupied {
@@ -705,6 +1244,10 @@ impl PoolModel {
     }
 
     /// Observes whether a frame has reached the direct-free terminal state.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `frame` is outside the arena.
     #[must_use]
     pub fn frame_is_free(&self, frame: u32) -> bool {
         assert!(frame < self.frames.count(), "observed frame is in range");
@@ -712,6 +1255,10 @@ impl PoolModel {
     }
 
     /// Observes whether a matured retained frame remains physically held.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `frame` is outside the arena.
     #[must_use]
     pub fn frame_is_evicting(&self, frame: u32) -> bool {
         assert!(frame < self.frames.count(), "observed frame is in range");
@@ -728,7 +1275,7 @@ impl PoolModel {
     /// Reader: a lock-free seqlock read of `page`'s cell coupled with the frame's
     /// content generation, read under a pin on reader 0. `None` = unmapped.
     pub fn probe(&self, page: u32) -> Option<Snapshot> {
-        let slot = &self.slots[0];
+        let slot = &self.readers.slots()[0];
         let begun = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
         let Some(frame) = self.table.lookup(Self::page_id(page)) else {
             slot.abort_pin(begun);
@@ -741,6 +1288,21 @@ impl PoolModel {
             frame: frame.get(),
             generation,
         })
+    }
+}
+
+/// An owned exact miss interest or resident identity, with no saved frame contents.
+pub struct JoinedSpan {
+    interests: std::sync::Arc<MissInterests>,
+    page: PageId,
+    interest: Option<(MissSlot, NonZeroU64)>,
+}
+
+impl Drop for JoinedSpan {
+    fn drop(&mut self) {
+        if let Some((slot, generation)) = self.interest.take() {
+            self.interests.release(slot, generation);
+        }
     }
 }
 
@@ -759,6 +1321,10 @@ impl<'pool> Guard<'pool> {
     }
 
     /// Promotes through the production retention word while the epoch guard is live.
+    ///
+    /// # Errors
+    ///
+    /// Returns the production retention refusal with the original guard preserved.
     pub fn into_retained(self) -> Result<RetainedFrame<'pool>, RetainRefused<'pool>> {
         self.inner.into_retained()
     }

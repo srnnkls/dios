@@ -651,3 +651,181 @@ implementation_batches:
     about 1.98 per useful page. Default pending speculative bytes peak at 524288.
     This is mechanism evidence, not a numeric performance gate.
   performance_gates: Pending RC5 safety and the fresh RC6 owner campaigns.
+- batch: 4
+  tasks:
+  - RC5
+  reviewed_at: '2026-09-14T13:35:34.230066+00:00'
+  report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-synthesis.yaml"
+  initial_reports:
+  - role: general
+    reviewer: peer-gpt6-astra
+    report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-review-general/peer-gpt6-astra.yaml"
+    normalized: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-review-general/peer-gpt6-astra.normalized.yaml"
+  - role: general
+    reviewer: peer-opus
+    report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-review-general/peer-opus.yaml"
+    normalized: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-review-general/peer-opus.normalized.yaml"
+  - role: architecture
+    reviewer: peer-gpt6-astra
+    report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-review-architecture/peer-gpt6-astra.yaml"
+    normalized: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-review-architecture/peer-gpt6-astra.normalized.yaml"
+  - role: architecture
+    reviewer: peer-opus
+    report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-review-architecture/peer-opus.yaml"
+    normalized: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-review-architecture/peer-opus.normalized.yaml"
+  - role: compliance
+    reviewer: peer-gpt6-astra
+    report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-review-compliance/peer-gpt6-astra.yaml"
+    normalized: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-review-compliance/peer-gpt6-astra.normalized.yaml"
+  - role: compliance
+    reviewer: peer-opus
+    report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-review-compliance/peer-opus.yaml"
+    normalized: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-review-compliance/peer-opus.normalized.yaml"
+  synthesized_report:
+    reviewers:
+    - peer-gpt6-astra
+    - peer-opus
+    gates:
+      correctness:
+        status: pass
+        failed_by: []
+      security:
+        status: pass
+        failed_by: []
+      performance:
+        status: pass
+        failed_by: []
+      architecture:
+        status: pass
+        failed_by: []
+      style:
+        status: pass
+        failed_by: []
+    issues: []
+    residual:
+    - severity: medium
+      gate: style
+      area: testing
+      location: tests/loom_pool.rs:130
+      trigger: Any run of rc5_span_publication_point_join_and_route_reuse_preserve_page_identity;
+        the model's CompletionSlab has capacity 1, so every token's slot component
+        is 0.
+      wrong_outcome: assert_eq!(span_operation_slot(first), span_operation_slot(replacement))
+        compares 0 with 0 and cannot fail, and src/pool/loom_model.rs:478 asserts
+        the same constant inside the accessor. The route-reuse claim rests entirely
+        on ReadSpans::commit and assert_ne!(first, replacement); this line adds no
+        falsifier while reading like one.
+      suggestion: Delete span_operation_slot and the assert_eq; the capacity-1 reserve
+        plus commit's `operation.is_none()` already prove exclusive slot reuse and
+        assert_ne carries the generation change.
+      found_by:
+      - compliance-peer-opus
+      reason: already_grounded
+      evidence: The one-slot model pins the test geometry. The accessor checks each
+        actual token slot and the equality records that both operations use it; assert_ne
+        independently pins the changed generation, while full old/new page-byte assertions
+        falsify stale routing. Removing this explicit geometry assertion is an equivalent
+        rewrite of a representative test whose guarantee already has falsification
+        evidence, not a missing guarantee.
+    - severity: medium
+      gate: style
+      area: naming
+      location: src/pool/prefetch/state.rs:399,419,426,435
+      trigger: Adding the next cfg(loom) observation helper to Prefetch.
+      wrong_outcome: Three incompatible precedents exist for the same qualifier -
+        admit_model_automatic, model_next_page/model_stats, reconcile_model - so neither
+        a name nor a grep identifies the model-only surface, against the repository's
+        qualifiers-last rule and the established `_internal` suffix used for the equivalent
+        accessors in src/pool/mod.rs.
+      suggestion: Rename all four to a trailing qualifier, e.g. admit_automatic_model,
+        next_page_model, stats_model, reconcile_model.
+      found_by:
+      - compliance-peer-opus
+      reason: unreachable_input
+      evidence: The stated trigger is a future helper addition. All current model
+        helpers resolve to the intended cfg(loom)-only methods, with no ambiguous
+        dispatch or shipped surface. Renaming the currently conformant calls changes
+        no reachable outcome.
+    - severity: medium
+      gate: style
+      area: testing
+      location: tests/loom_pool.rs:95-106
+      trigger: Any later change to a PoolModel readahead method's contract.
+      wrong_outcome: The block duplicates doc comments that live on those methods
+        in src/pool/loom_model.rs, so the two descriptions drift with no compiler
+        or test signal, and its closing sentence states what an implementation is
+        permitted to do rather than any fact about the test.
+      suggestion: Reduce the block to why the two scenarios exist and what each falsifies;
+        delete the API description and the permission sentence.
+      found_by:
+      - compliance-peer-opus
+      reason: unreachable_input
+      evidence: The stated trigger is a later contract edit. The current comment matches
+        the actual production-backed model and explains the proof boundary against
+        saved data or substitute synchronization. No current contract drift is demonstrated;
+        shortening the accurate boundary explanation is deferred editorial work.
+    - severity: medium
+      gate: style
+      area: coupling
+      location: tests/zero_alloc.rs:469,529,552
+      trigger: Changing the scan length in the consumption loop at line 469.
+      wrong_outcome: consumer_stop_bytes at line 529 and the read_bytes floor at line
+        552 live in separate functions and keep the stale 2176 * 4096, so the observation
+        assertions silently weaken instead of failing. The same file already names
+        FRAME_BYTES, DRAIN_POLLS_MAX and RETIRE_POLLS_MAX for exactly this.
+      suggestion: Add one page-count constant beside FRAME_BYTES and derive the fixture
+        size, stop bytes, checksum and byte floor from it.
+      found_by:
+      - compliance-peer-opus
+      reason: already_falsified
+      evidence: Changing only the 0..2176 scan loop already fails the independent
+        checksum equality at tests/zero_alloc.rs:492 (2176 * 4096 * 0xC4). The reported
+        silent weakening therefore does not follow from its stated trigger. Current
+        fixture/stop/read-byte geometry agrees; extracting a shared constant is an
+        equivalent future refactor.
+    - gate: architecture
+      location: src/pool/loom_model.rs
+      source: general-peer-opus supplemental note
+      reason: unreachable_input
+      evidence: The model terminal fanout uses the same production publication, insertion,
+        notification, miss-success and cleanup primitives in the same current order.
+        Possible divergence after a future edit is not a reachable defect in this
+        artifact.
+    - gate: correctness
+      location: src/pool/loom_model.rs
+      source: architecture-peer-opus supplemental note
+      reason: already_grounded
+      evidence: The bounded Loom publication/join/reuse scenario is supplemented by
+        the existing driver/pool fault-injection continuation-refusal and teardown
+        suites. Another Loom permutation is not a missing documented guarantee.
+    strengths:
+    - Production span publication and generation routes are shared with the Loom seam.
+    - Real whole-page byte identities and notification/frame-reuse races are checked.
+    - Both shipping backends retain zero allocation under actual default full-vector
+      recycling.
+    summary:
+      critical: 0
+      high: 0
+      medium: 0
+    recommendation: ready_to_merge
+    next_action: Commit RC5 and start RC6. Numeric adoption gates remain pending.
+    coverage:
+      reports_received: 6
+      reports_successful: 6
+      execution_classes_required:
+      - peer
+      execution_classes_successful:
+      - peer
+      missing_canonical_reports: []
+      limitations:
+      - Opus could not rebuild inside the read-only review sandbox; its source review
+        used the hash-verified root logs. Astra general reran both focused Loom scenarios
+        from the existing executable and verified the recorded safety/source hashes.
+        Only each role’s assigned gates were aggregated.
+    fix_rounds: 0
+  native_validation: 'target/readahead-coalescing/b4-green-verification.json: 378
+    local, 400 Linux, 20 Loom, 55 Miri, 271 eager ASAN and 284 io_uring ASAN tests;
+    strict Clippy, formatting and Rustdoc pass. All 74 Linux source hashes match.
+    Preserved task-environment corrections required no product or oracle change.'
+  performance_gates: Pending RC6 fresh owner campaigns; no numeric adoption gate is
+    claimed.
