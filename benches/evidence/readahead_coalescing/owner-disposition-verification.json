@@ -1,0 +1,452 @@
+{
+  "recorded_at": "2026-09-14T16:26:05.838551+00:00",
+  "owner_dispositions": "benches/evidence/readahead_coalescing/owner-dispositions-20260914.md",
+  "owner_dispositions_sha256": "c162dbbb8a31c1c1109fa27a838d6341114024b3e49622295c2a39f14187316d",
+  "confirmation": {
+    "status": "complete",
+    "purpose": "owner-authorized pre-registered confirmation; adopted whichever way; no pooling or second attempt",
+    "ratio_orientation": "candidate/base",
+    "registration": {
+      "campaign_id": "rc6-drp-confirmation-20260914",
+      "registered_at": "2026-09-14T15:59:37.773491+00:00",
+      "owner": "Sören via sibling Claude session and explicit user disposition",
+      "owner_steering_sha256": "c162dbbb8a31c1c1109fa27a838d6341114024b3e49622295c2a39f14187316d",
+      "lane": "drp_g4_ordinary_base_8t",
+      "qualification_pairs": 2,
+      "measured_pairs": 400,
+      "attempts_max": 1,
+      "ratio_orientation": "candidate/base",
+      "bound": 1.0,
+      "gate_command": "mise run gate measurement/paired.csv 1.00",
+      "expected_geomean": 0.92,
+      "planning_sd_log": 0.238,
+      "planning_one_sided_log_half_width": 0.02,
+      "result_adoption": "Adopt this one confirmation result whichever way it goes. A failure stands and returns to the owner; no second attempt.",
+      "pool_previous_samples": false,
+      "previous_failed_pairs": 30,
+      "previous_archive_sha256": "1150a08a28ac572fb8631e6804f56cc2dab7042c3ec9584f3da27b5b59fd48b4",
+      "previous_csv_sha256": "57722332507f5a3a8f4d6bb683005e8da22a8ea45cde6dabe505c4d2ac246303",
+      "base_executable_sha256": "0b49dc7dbe86d89c5390f94d7462818308104b6ce0d2f4ac8d001f9a5b250cfd",
+      "candidate_executable_sha256": "ae50a099a18f7a508d17d605118801f06ebdf22e9f89a5833b02772ffd5f0529",
+      "base_source_commit": "1004a2e6fcae0bcc9552dc3211c2416e388a250d",
+      "candidate_source_commit": "5edb6a7f64bcd0137cbd75d03821780b38c679f2",
+      "runner_source_sha256": "34e376becd9db2abd9de95c53a8fe39b0986dfe64a6a4bf0f4ca1cc5f4c221d6",
+      "runner_build_sha256": "f7ed6e387c206c9a0cdc907c5791311166b63e225442dba894a5fce3479e261f",
+      "input_sha256": "915341006e824c0212e82abc923d5999e34ede24e102ebd821dcc3d4494af37a",
+      "worker_cpu_set": "0-3,32-35",
+      "controller_cpu": 4,
+      "iterations": 32768,
+      "workload": "real_pool_driver_shared_8_thread_ordinary_full_4096_byte_fold",
+      "pair_order": "Even pair: base then candidate; odd pair: candidate then base. Fresh process for each arm.",
+      "host_protocol": "Unchanged pinned Threadripper3970X/Samsung970PRO/Linux6.6.64, performance governor, THP never, resident prefill, no competing campaign.",
+      "budget_bytes": 524288,
+      "product_or_bound_change": false,
+      "withdrawn_instruction": "Prior no-large-campaign instruction withdrawn by owner after the direct pairing rejected the suspected branch regression.",
+      "raw_validation": "Existing direct-campaign frozen header/work/iteration/checksum/zero-allocation/arm/manifest/runner/CPU validation over all400 pairs, followed by existing write_comparison and shared summarize/gate. The frozen DRP converter hardcodes30 and is not rebuilt or used to truncate this sample."
+    },
+    "registration_sha256": "6c080048d9016cbc68cd858a40dcdcb0e850a066eb689598b4a72a0485156af9",
+    "products": [
+      {
+        "arm": "base",
+        "source_commit": "1004a2e6fcae0bcc9552dc3211c2416e388a250d",
+        "executable_sha256": "0b49dc7dbe86d89c5390f94d7462818308104b6ce0d2f4ac8d001f9a5b250cfd",
+        "cargo_lock_sha256": "ccbd0d132f8d0c00f7df428247338ea117222dd71b0dfaf9555c610e21dc6466"
+      },
+      {
+        "arm": "candidate",
+        "source_commit": "5edb6a7f64bcd0137cbd75d03821780b38c679f2",
+        "executable_sha256": "ae50a099a18f7a508d17d605118801f06ebdf22e9f89a5833b02772ffd5f0529",
+        "cargo_lock_sha256": "757e1121240aa29eed42c2de39f8ed0b257f161be4903e240fa8f43057b3f423"
+      }
+    ],
+    "input_sha256": "915341006e824c0212e82abc923d5999e34ede24e102ebd821dcc3d4494af37a",
+    "summarizer_sha256": "cc1e1ca41309c8115729ca07000b462c5f1a86cedf395414f5d487a9b4bff57c",
+    "qualification_pairs": 2,
+    "measured_pairs": 400,
+    "started_ns": 1789401874506343992,
+    "raw_validation": "Frozen process header, lane/work/iteration/checksum/zero-allocation contract, exact arm hashes and pre-run binding, fixed pair order and CPU set; canonical converter hardcodes30; this entire400-pair sample uses the existing raw-contract checks and shared comparison writer, summarizer and gate without changing converter/runner source.",
+    "summary": {
+      "adopted_bound": null,
+      "ci95_upper": 0.9980337616928986,
+      "kind": "characterization",
+      "pairs": 400,
+      "ratio_geomean": 0.9776689295560357,
+      "ratio_orientation": "candidate/base"
+    },
+    "csv_sha256": "a91ee7b0ee9805b182d0dbb93816b2a12f97f7313f4bc1ecf37cef510a03ec10",
+    "gate_exit_code": 0,
+    "adopted_bound": 1.0,
+    "gate_command": [
+      "mise",
+      "run",
+      "gate",
+      "/dev/shm/dios-rc6-drp-confirmation-20260914/measurement/paired.csv",
+      "1.00"
+    ],
+    "adopted_result": "pass",
+    "finished_ns": 1789401900990219092,
+    "archive": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-drp-confirmation-evidence/confirmation-pairs.tar.gz",
+    "archive_sha256": "87e91bbe8afb0cd93af6b625826c9f3bced95178ae0c33e831910d7111d692c5",
+    "full_result": "target/readahead-coalescing/rc6-drp-confirmation-evidence/result.json",
+    "local_verification": {
+      "status": "passed",
+      "registration_sha256": "6c080048d9016cbc68cd858a40dcdcb0e850a066eb689598b4a72a0485156af9",
+      "registration_precedes_campaign": true,
+      "stages": {
+        "qualification": {
+          "pairs": 2,
+          "raw_sha256": "ca9ac58590bf2f7fde7534386cd9104010b502f658c62aed7e8ffbf8d556c166",
+          "pre_run_sha256": "b3391b83747a3af23cefdf80508973f0693b126ef68e4bb3a63e79a24e388db4"
+        },
+        "measurement": {
+          "pairs": 400,
+          "raw_sha256": "154140214e082262066e27f3caf02a42ff409e7447c2024866ec6beb6c636a29",
+          "pre_run_sha256": "b3391b83747a3af23cefdf80508973f0693b126ef68e4bb3a63e79a24e388db4"
+        }
+      },
+      "all_raw_rows_in_order_with_original_work": true,
+      "all_400_pairs_reconstructed_exactly": true,
+      "old_30_pair_archive_unchanged_and_not_pooled": true,
+      "original_executable_hashes_verified": true,
+      "host_protocol_snapshot_stable": true,
+      "summary": {
+        "adopted_bound": null,
+        "ci95_upper": 0.9980337616928986,
+        "kind": "characterization",
+        "pairs": 400,
+        "ratio_geomean": 0.9776689295560357,
+        "ratio_orientation": "candidate/base"
+      },
+      "bound": 1.0,
+      "gate_exit_code": 0,
+      "adopted_result": "pass",
+      "archive_sha256": "87e91bbe8afb0cd93af6b625826c9f3bced95178ae0c33e831910d7111d692c5",
+      "csv_sha256": "a91ee7b0ee9805b182d0dbb93816b2a12f97f7313f4bc1ecf37cef510a03ec10",
+      "campaign_path": "target/readahead-coalescing/rc6-local-evidence/confirmation/confirmation-pairs",
+      "setup_correction": "Only prior scratch metadata restoration before any native benchmark process; rc6-confirmation-preflight-missing-scratch/correction.json retained."
+    },
+    "local_shared_gate": {
+      "command": "CARGO_NET_OFFLINE=true mise run gate target/readahead-coalescing/rc6-local-evidence/confirmation/confirmation-pairs/measurement/paired.csv 1.00",
+      "exit_code": 0,
+      "output": "gate paired: pairs 400, ratio geomean 0.9777, ci95 upper 0.9980, threshold 1.0000 -> PASS",
+      "tool_session": 21301,
+      "remeasurement": false
+    }
+  },
+  "frozen_reporting": {
+    "limitation": "The immutable frozen executables predate the observation seam and cannot emit exact SQE/CQE/range, EOF/consumer-stop-waste or control-entry-visit records. The owner RC-G6 clarification permits these three groups to remain null; native CPU/elapsed, polls and exposed prefetch stats remain reported. Configuration and prefetch totals are not substitutes for exact mechanism counts.",
+    "mechanism_groups": {
+      "actual_read_sqes_cqes_and_ranges": null,
+      "eof_and_consumer_stop_waste": null,
+      "control_entry_visits": null
+    }
+  },
+  "optional_frozen_strace": {
+    "optional": true,
+    "strace": "/run/current-system/sw/bin/strace",
+    "primary_timing_used": false,
+    "scope": "One whole-process frozen matched-budget cold replay; total submitted SQEs only, no CQE/range/waste/control or timed-region attribution.",
+    "command": [
+      "/run/current-system/sw/bin/strace",
+      "-f",
+      "-e",
+      "trace=io_uring_enter",
+      "-o",
+      "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-owner-attribution-evidence/frozen-strace/io_uring_enter.log",
+      "/dev/shm/dios-rc6-headlines-20260914/cold-current-new-budget/frozen/mmap_workloads",
+      "scan-sample",
+      "/home/srnnkls/build/dios-mmap-20260913/target/mmap-smoke-initial/input",
+      "geometry:automatic:4:128:256",
+      "plain",
+      "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-owner-attribution-evidence/frozen-strace/replay.json"
+    ],
+    "exit_code": 0,
+    "executable_sha256": "cc1e1ca41309c8115729ca07000b462c5f1a86cedf395414f5d487a9b4bff57c",
+    "configuration": "geometry:automatic:4:128:256",
+    "status": "captured",
+    "submitted_sqes_whole_process": 17123,
+    "io_uring_enter_returns": 1215,
+    "trace_sha256": "50711607fbaf210286a6908f21f5b1551895ee206399c7998014878c47b2d781",
+    "raw_sha256": "565bde18a82283a7894b4db16e30c71c0627c237850a5371a3ff349c5500d75a",
+    "timing_disposition": "Discarded: replay timing is neither a primary nor gate sample.",
+    "archive": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-owner-attribution-evidence/frozen-strace.tar.gz",
+    "archive_sha256": "17eb7b698dd6394ce86ceffa2abf7e0cc5ed1ffcf8b70c9cb636ffd744f3dc39"
+  },
+  "cold_candidate_attribution": {
+    "status": "unqualified",
+    "remaining_acceptance_gap": "Candidate cold prefetch/control CPU attribution remains unqualified: the initial 16-replay cycles/32768 profile has 20 orphaned / 1600 timed samples; the retained 64-replay cycles/65528 profile has 5859 / 4134; the 16-replay cycles/16384 capture has 1499 / 1023; the single 16-replay cpu-clock/32768 capture has 366 / 249. All exceed the unchanged orphaned * 100 <= timed requirement. Category estimates remain null. No further capture, classifier change or qualification relaxation was made.",
+    "cycles_16384": {
+      "qualification": {
+        "metadata": {
+          "configuration": "geometry:automatic:4:128:256",
+          "event": "cycles",
+          "sample_unit": "samples",
+          "period": 1000000,
+          "frequency": null,
+          "repetitions": 16,
+          "executable_sha256": "a10ca92b2bc199b387384bb0aa900413152252e29647647d38b9ebca8955af06",
+          "credit_selection": "default",
+          "fixture": {
+            "granule": 4096,
+            "pages": 65536,
+            "schema": 1,
+            "sha256": "54ae45ec997182e04336fd1f928503fc1b8ac46f070c796332ca0133b03f1d2f",
+            "spare_pages": 1
+          },
+          "stack_bytes": 16384,
+          "recorder_cpu": 4,
+          "recorder_outside_memory_limit": true,
+          "mmap_pages": 128,
+          "collector_sha256": "967c3cc97092bb33072eb7b8567f22f63f99bde8a7c027c8e3bf86d4160914bf",
+          "status": "complete",
+          "raw_perf_sha256": "3d70bcb5afb4c16b6dfb1d954da80d53cb96ef89f0111e14732f8155aa5b7b06",
+          "profile_collector_sha256": "34827fc269c3826c68356452a623d7b364c7b5eb6d3dd101cb1c204d1da8e509",
+          "workload_boundaries": [
+            "engine::timed_workload",
+            "engine::read_dios",
+            "engine::read_mmap",
+            "scan::read_dios",
+            "scan::read_mmap",
+            "probe::Probe::run"
+          ],
+          "workload_filter_sha256": "1f747cfe5de8f73889c1a9406868be7ea83274648eb0f59299ef313b1ea1112d",
+          "lost_events": 0,
+          "throttle_events": 0,
+          "unthrottle_events": 0,
+          "timed_samples": 1023,
+          "sample_sha256": {
+            "0000.json": "401be8e8785df37a53559f6043e3e67f9a8f1efd998cf3eca49ad22183d16103",
+            "0001.json": "479ab5c793774c9f248bf7ebde4ed40760811c6ca0300aa67ffa089492fdd43c",
+            "0002.json": "f57eb0d20b0077fcc2cf1d68438134cb5f4bfc468d55a71bc87ded2b25cea796",
+            "0003.json": "12a5bbe33efd9959ac9a1ff60df2fb77b836f4de7ab4cc8b7a56fb7042bc4ba6",
+            "0004.json": "64b5fc999944180ebc6037c134b205b7c0f98d7c73c865cb779c5553fd0ba4b8",
+            "0005.json": "dbb62d56fca061b73818537a53b8e9bdd769a59e09a3a6fb41ef97723c5b87c2",
+            "0006.json": "2d90794926b2dc1fe972bc3df0f7ca0f0e63fb7291ba837b3aeef6b36b12f84f",
+            "0007.json": "dcd8fd86d53aeb5d16478f2ec5b1809a0c5dfaa96f0e8ffb82d8fc5fca8b87ab",
+            "0008.json": "8bcc80590fd320836782ee753076da658af26790de27d9c6d3857cf151d9d7b4",
+            "0009.json": "a76b748292a2d03ba592ed2adc7b1fd8fd9f9467a1284f12fe197bad7ac6a4a7",
+            "0010.json": "977383568ecf223c7179d1bb513148ba2a4d390ca4daeab150f3c5dbeb1f896d",
+            "0011.json": "eb49be7f2dc8340bdb49b4e94327d0db2ad19f26e891bae1df132cd2a103d71b",
+            "0012.json": "d7ccec022a82928a8fbb010cb8a86f8d23b7377c2f411e4ce3a3a4433939ac20",
+            "0013.json": "9aa22054e5d8daf95eae93a4234e7b6bb380a2986e5d7076a726321a858a9fb6",
+            "0014.json": "8130feac4d52265f39f5cc246e00419fdba75aa7af7d4446f44e42e62b890451",
+            "0015.json": "38070d589102ffa815a6a5a119dad524be3b9c48610a6c7a2399ec35a91fdc54"
+          }
+        },
+        "excluded_samples": 2303,
+        "orphaned_samples": 1499,
+        "cpu_budget_qualified": false,
+        "profile_cpu_over_primary": 0.9569493813684166,
+        "categories": {
+          "prefetch_and_prediction": {
+            "samples": 563,
+            "fraction": 0.5503421309872922,
+            "estimated_cpu_ns_per_page": null
+          },
+          "page_consumption": {
+            "samples": 201,
+            "fraction": 0.19648093841642228,
+            "estimated_cpu_ns_per_page": null
+          },
+          "poll_and_completion": {
+            "samples": 134,
+            "fraction": 0.13098729227761485,
+            "estimated_cpu_ns_per_page": null
+          },
+          "lookup_and_admission": {
+            "samples": 53,
+            "fraction": 0.05180840664711633,
+            "estimated_cpu_ns_per_page": null
+          },
+          "caller_loop_or_other": {
+            "samples": 36,
+            "fraction": 0.03519061583577713,
+            "estimated_cpu_ns_per_page": null
+          },
+          "unresolved_cpu": {
+            "samples": 24,
+            "fraction": 0.02346041055718475,
+            "estimated_cpu_ns_per_page": null
+          },
+          "ready_and_guard": {
+            "samples": 12,
+            "fraction": 0.011730205278592375,
+            "estimated_cpu_ns_per_page": null
+          }
+        }
+      },
+      "archive": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-owner-attribution-evidence/cold-candidate-profile16384.tar.gz",
+      "archive_sha256": "a450cd92991707e7d44b8fbdcff87577ff9634827f9225df2e6afa44b4606cab"
+    },
+    "cpu_clock_32768": {
+      "qualification": {
+        "metadata": {
+          "configuration": "geometry:automatic:4:128:256",
+          "event": "cpu-clock",
+          "sample_unit": "samples",
+          "period": null,
+          "frequency": 997,
+          "repetitions": 16,
+          "executable_sha256": "a10ca92b2bc199b387384bb0aa900413152252e29647647d38b9ebca8955af06",
+          "credit_selection": "default",
+          "fixture": {
+            "granule": 4096,
+            "pages": 65536,
+            "schema": 1,
+            "sha256": "54ae45ec997182e04336fd1f928503fc1b8ac46f070c796332ca0133b03f1d2f",
+            "spare_pages": 1
+          },
+          "stack_bytes": 32768,
+          "recorder_cpu": 4,
+          "recorder_outside_memory_limit": true,
+          "mmap_pages": 128,
+          "collector_sha256": "967c3cc97092bb33072eb7b8567f22f63f99bde8a7c027c8e3bf86d4160914bf",
+          "orchestration_sha256": "439129754b925a6db24d133a0b79019b58f633108657b202f7d43119e3a13720",
+          "workload_command": [
+            "/run/current-system/sw/bin/bash",
+            "-c",
+            "printf \"%s\\n\" \"$$\" > \"$1\"; kill -STOP \"$$\"; shift; exec \"$@\"",
+            "scan-profile",
+            "/dev/shm/rc6-owner-clock-profile-mu14_if2/scratch/pid",
+            "/dev/shm/dios-rc6-headlines-20260914/cold-mmap/mmap_workloads-a10ca92b2bc199b387384bb0aa900413152252e29647647d38b9ebca8955af06",
+            "scan-default-profile",
+            "/home/srnnkls/build/dios-mmap-20260913/target/mmap-smoke-initial/input",
+            "geometry:automatic:4:128:256",
+            "16",
+            "/dev/shm/rc6-owner-clock-profile-mu14_if2/cold-candidate-clock/samples"
+          ],
+          "status": "complete",
+          "raw_perf_sha256": "3f1d8438d6b41f509a1bad8248aade9424aaf410d1d094499c0c0911cc263b9f",
+          "profile_collector_sha256": "34827fc269c3826c68356452a623d7b364c7b5eb6d3dd101cb1c204d1da8e509",
+          "workload_boundaries": [
+            "engine::timed_workload",
+            "engine::read_dios",
+            "engine::read_mmap",
+            "scan::read_dios",
+            "scan::read_mmap",
+            "probe::Probe::run"
+          ],
+          "workload_filter_sha256": "1f747cfe5de8f73889c1a9406868be7ea83274648eb0f59299ef313b1ea1112d",
+          "lost_events": 0,
+          "throttle_events": 0,
+          "unthrottle_events": 0,
+          "timed_samples": 249,
+          "sample_sha256": {
+            "0000.json": "240e24bfd5f3f2ae83e46837e859a80696e4724ff8d3eb5c144549bae039372f",
+            "0001.json": "ca0ce6ba7e253b24aed6eefba99e61faab10dce53975b04def7b866f344f4854",
+            "0002.json": "b18d13cb26feec4941e9d70bd7435f43a3837507e08ebe096b02be84167941a3",
+            "0003.json": "de9371d35f81de03f0aa104bbb6a9d8cb6922ed6f78e64f30723f7e5f64e87a2",
+            "0004.json": "608c74625a49a66fddfb0b68d1cf83367186537f2dbfaed8d2d95017bce1faeb",
+            "0005.json": "dc30b2b1ce03b3948d11f05f8d8e102434cbfb7bcc65dcf96b496f4cb9a261d5",
+            "0006.json": "3997e8ef1084011cded98d736dc8d6ae930a6cb3ce7ec91ef5d3a508bb4ebbcd",
+            "0007.json": "b38835fc0a1978471ebf00978b5d64bd225379abb39af6ca1b5e97c68dd8da07",
+            "0008.json": "20f367016f4ab4816be4e4e192b4ac27c15b47bd9869aef5d626d725102316c8",
+            "0009.json": "bc01b9597539de1a7be50257e84db2d39051df2da1498ab34ac314b0fcaccece",
+            "0010.json": "a2666d445080483ee9a8c3182bc1083db4630fd07fc27bee4939fed62e853dcf",
+            "0011.json": "f12c39e5d4b6a0c8fd02639d194a03d724e892ac54c4ccdf468f1709020c0e79",
+            "0012.json": "673225b8e6479e246102a3e7955b73e239d26739d0b3083f348739a24eb132d5",
+            "0013.json": "bbd655264f2df75a7ae7e9ea014007566ac3334b5eefdc1595e3d34f92c234c7",
+            "0014.json": "a281807f9f626654c1c80ceca61b54aae7ca80de31296a1313785e13800e32bc",
+            "0015.json": "77abc92a786a6c32afd479c231ef3effbfcb36c663d1de6b6923179de862c9d1"
+          }
+        },
+        "excluded_samples": 549,
+        "orphaned_samples": 366,
+        "cpu_budget_qualified": false,
+        "profile_cpu_over_primary": 0.9511057407398297,
+        "categories": {
+          "prefetch_and_prediction": {
+            "samples": 132,
+            "fraction": 0.5301204819277109,
+            "estimated_cpu_ns_per_page": null
+          },
+          "page_consumption": {
+            "samples": 49,
+            "fraction": 0.19678714859437751,
+            "estimated_cpu_ns_per_page": null
+          },
+          "poll_and_completion": {
+            "samples": 32,
+            "fraction": 0.1285140562248996,
+            "estimated_cpu_ns_per_page": null
+          },
+          "caller_loop_or_other": {
+            "samples": 14,
+            "fraction": 0.05622489959839357,
+            "estimated_cpu_ns_per_page": null
+          },
+          "lookup_and_admission": {
+            "samples": 10,
+            "fraction": 0.040160642570281124,
+            "estimated_cpu_ns_per_page": null
+          },
+          "unresolved_cpu": {
+            "samples": 9,
+            "fraction": 0.03614457831325301,
+            "estimated_cpu_ns_per_page": null
+          },
+          "ready_and_guard": {
+            "samples": 3,
+            "fraction": 0.012048192771084338,
+            "estimated_cpu_ns_per_page": null
+          }
+        }
+      },
+      "archive": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-owner-clock-profile-evidence/cold-candidate-clock.tar.gz",
+      "archive_sha256": "2c26fd3cb6c8d862a619ebe79c6be72ab1afb733716e156c4a8d455fc41fd6cc",
+      "local_verification": {
+        "status": "verified",
+        "archive_sha256": "2c26fd3cb6c8d862a619ebe79c6be72ab1afb733716e156c4a8d455fc41fd6cc",
+        "remote_hashes_verified": {
+          "cold-candidate-clock.tar.gz": "2c26fd3cb6c8d862a619ebe79c6be72ab1afb733716e156c4a8d455fc41fd6cc",
+          "preflight-directory-error.log": "15f32936e9c44353532b20332fb8ec3e3ef92fc8be561b653f3adf4f1c8e7258",
+          "capture.log": "1ceb4056f1d14c392f982c6f4bcedf56abd153c7bd9f1945995295f24ef6debe",
+          "result.json": "7201de60ed820a4d67e1abd06d7028d2cf8d823379c9cb41610b39ca5eb7e6a2",
+          "preflight-directory-error.py": "2e38ec8db926671484d6dd0f64583ff87d20358c35d6a887f3c3af7b0f7632fc",
+          "orchestration.py": "439129754b925a6db24d133a0b79019b58f633108657b202f7d43119e3a13720",
+          "declaration.json": "a8250d7a740d5b04b47a54a497d8c885faf2de1e48e4260c6a2da7231687dbe2"
+        },
+        "raw_perf_sha256": "3f1d8438d6b41f509a1bad8248aade9424aaf410d1d094499c0c0911cc263b9f",
+        "local_profile": "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/target/readahead-coalescing/rc6-owner-clock-profile-evidence/unpacked/cold-candidate-clock",
+        "executable_sha256": "a10ca92b2bc199b387384bb0aa900413152252e29647647d38b9ebca8955af06",
+        "fixture_sha256": "54ae45ec997182e04336fd1f928503fc1b8ac46f070c796332ca0133b03f1d2f",
+        "cpu_budget_qualified": false,
+        "timed_samples": 249,
+        "orphaned_samples": 366,
+        "excluded_samples": 549,
+        "lost_events": 0,
+        "throttle_events": 0,
+        "unthrottle_events": 0,
+        "replays": 16,
+        "all_category_estimates_null": true,
+        "analyzer_sha256": "f25e189249857ac380d5e9d6a81b950a27fb13fc5719e7e80da2ad17dc9d9ff0",
+        "no_product_rebuild": true,
+        "no_tracked_file_edits": true,
+        "preflight_correction": "Initial ignored-script check attempted to hash fixture directory; failed before capture. Corrected to existing pages.bin convention. One actual capture only."
+      }
+    },
+    "candidate_pressure_still_qualified": true,
+    "all_candidate_mechanism_fields_present": true
+  },
+  "product_budget_bound_protocol_changed": false,
+  "targeted_review": {
+    "reviewer": "peer-gpt6-astra",
+    "effort": "high",
+    "gates": [
+      "performance"
+    ],
+    "issues": [
+      "B5-P1",
+      "B5-P2"
+    ],
+    "status": "pass",
+    "report": ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-owner-disposition-review/peer-gpt6-astra.normalized.yaml",
+    "successful_reports": 1,
+    "replacement_attempts": 0,
+    "manifest_status": "ok",
+    "schema_valid": true,
+    "reviewed_file_hashes_verified": 13,
+    "scope": "Exact owner dispositions only; candidate cold attribution and final integration remain incomplete."
+  },
+  "final_record_checks": "target/readahead-coalescing/b5-owner-evidence-checks.json"
+}

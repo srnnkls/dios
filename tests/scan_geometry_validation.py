@@ -1,7 +1,10 @@
 """Reject scan results with unequal useful work or invalid resource witnesses."""
 
 import copy
+import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -10,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "benches/mmap_workl
 from scan_collect import matrix, validate_scan
 import scan_analyze
 import collect
+import coalescing
 
 
 def sample() -> dict:
@@ -52,6 +56,59 @@ def coalescing_sample() -> dict:
 
 
 class ScanEvidenceContract(unittest.TestCase):
+    def test_real_backend_mechanism_capture_retains_consumption_and_full_credit_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "pages.bin"
+            seed = int.from_bytes(os.urandom(4), "little") + (1 << 32)
+            with source.open("wb") as output:
+                for page in range(4096):
+                    output.write((seed + page).to_bytes(8, "little") * 512)
+            binary = collect.build_binary(root)
+            capture = root / "mechanisms.json"
+            result = subprocess.run(
+                [str(binary), "mechanism-capture", str(source), str(capture)],
+                text=True, capture_output=True, timeout=60,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            document = json.loads(capture.read_text())
+            coalescing.validate_mechanisms(document)
+            scenarios = document["raw_scenarios"]
+            self.assertGreater(len(scenarios), 0)
+            units = "ring_read_sqes" if sys.platform == "linux" else "eager_driver_attempts"
+            for scenario in scenarios:
+                pages = scenario["consumed_pages"]
+                self.assertGreater(len(pages), 0, scenario["scenario"])
+                self.assertTrue(all(0 <= page < 4096 for page in pages))
+                self.assertEqual(scenario["consumed_bytes"], len(pages) * 4096)
+                expected = (sum(seed + page for page in pages) * 512) % (1 << 64)
+                self.assertEqual(scenario["checksum"], expected, scenario["scenario"])
+                self.assertGreaterEqual(len(scenario["stages"]), 2)
+                observation = scenario["stages"][-1]["observation"]
+                self.assertEqual(observation["io_units"], units)
+                self.assertEqual(observation["capture_interval_pages"], 0)
+                self.assertEqual((observation["overflow"], observation["dropped_events"]), (0, 0))
+                attempts = [row for row in observation["read_events"] if row["event"] == "attempt"]
+                completions = [row for row in observation["read_events"]
+                               if row["event"] == "completion"]
+                self.assertGreater(len(attempts), 0, scenario["scenario"])
+                io = observation["io"]
+                self.assertEqual(len(attempts), io["read_sqes"])
+                self.assertEqual(len(completions), io["cqes"])
+                self.assertEqual(len(attempts), len(completions))
+                self.assertEqual(sum(row["bytes"] for row in attempts), io["requested_bytes"])
+                self.assertEqual(sum(max(0, row["result"]) for row in completions), io["read_bytes"])
+                self.assertEqual((io["terminal_read_credits"], io["terminal_destinations"]), (0, 0))
+            for call in document["explicit_calls"]:
+                matches = [row for row in scenarios if row["scenario"] == call["scenario"]]
+                self.assertEqual(len(matches), 1)
+                stages = matches[0]["stages"]
+                before = next(row for row in stages if row["stage"] == "before_call")
+                self.assertEqual(before["prefetch"]["occupied"], call["capacity"])
+                self.assertEqual(before["prefetch"]["capacity"], call["capacity"])
+                actual_call = stages[-1]["observation"]["explicit_calls"][-1]
+                self.assertEqual(actual_call, {key: call[key] for key in actual_call})
+
     def test_coalescing_matrix_keeps_both_frozen_budget_comparisons(self):
         try:
             cases = matrix("coalescing", None)

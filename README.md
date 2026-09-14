@@ -94,16 +94,22 @@ records the rejected prototype and the selected session shape.
 or creating pending tokens. Its report partitions the window into resident,
 pending, admitted, deferred and rejected pages. `poll` drives the accepted
 reads; ordinary `get`/`ready` consumes their results. Retry deferred hints while
-they remain useful. When extending a window, include its still-useful pages so
-replacement can preserve them.
+they remain useful. For coalesced explicit I/O, extend a window in vector-sized
+chunks and repeat its still-useful prefix so replacement can preserve it.
+
+Consecutive absent pages can share a read of up to 32 pages and 128 KiB,
+using ordinary READV on Linux. Each page remains independently accessible
+through its own `FrameGuard`. Singleton hints use ordinary point reads;
+extending a window one page at a time can therefore produce point reads.
 
 Automatic forward-sequential detection is enabled by default. Set
 `.readahead(dios::Readahead::Disabled)` on the builder to use explicit hints
-alone. `.prefetch_headroom(16)` sets the speculative credit ceiling;
-`.prefetch_headroom(0)` disables all speculation. The default ceiling is at most
-32, limited by spare frames and the configured in-flight read limit minus one.
-A pool configured for only one in-flight read therefore has no default
-speculative capacity.
+alone. `.prefetch_headroom(16)` sets an explicit page-credit ceiling;
+`.prefetch_headroom(0)` disables all speculation. The default ceiling derives
+from a 512 KiB (524,288-byte) budget, rounded down to whole pool granules:
+128 pages at 4 KiB. Spare frames and the configured in-flight read limit minus
+one further cap those credits. A pool configured for only one in-flight read
+therefore has no default speculative capacity.
 
 Credits cover reads in flight and unconsumed resident pages. Per-reader
 training starts with consecutive cold demands and extends through confirmed
@@ -114,6 +120,11 @@ access, with all metadata allocated at pool construction.
 Resident hints accelerate an existing lookup; prefetch requests I/O; retained
 handles preserve resident bytes. On the eager-inline backend, polling still
 executes queued I/O on the caller's thread.
+
+The [readahead-coalescing scope](scopes/active/readahead-coalescing/scope.md)
+specifies the contract; the
+[mechanism capture documentation](benches/evidence/readahead_coalescing/README.md#separate-mechanism-capture)
+describes its retained observations.
 
 ## Development
 

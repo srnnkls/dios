@@ -207,11 +207,75 @@ def validate_turns(events: list[dict]) -> None:
         raise ValueError("shared-reader witness lacks shared admission and credit deferral")
 
 
+def validate_mechanisms_canary_raw(canary: dict, scenarios: list[dict]) -> None:
+    matches = [row for row in records(scenarios, "raw mechanisms", 13)
+               if row["scenario"] == "wrong_hint_canary"]
+    if len(matches) != 1:
+        raise ValueError("missing or duplicate wrong-hint raw scenario")
+    raw = matches[0]
+    for field, expected in {"frame_count": 64, "granule": 4096, "reader_count": 1,
+                            "credits": 4, "read_limit": 16}.items():
+        if count(raw[field], field) != expected:
+            raise ValueError("wrong-hint raw geometry differs")
+    if raw["consumed_pages"] != list(range(60)) * 26:
+        raise ValueError("wrong-hint witness did not warm and recheck every hot page")
+    stages = records(raw["stages"], "wrong-hint stages", 8)
+    if [stage["stage"] for stage in stages] != ["hot_set_warmed", "wrong_hints_abandoned", "file_retired"]:
+        raise ValueError("wrong-hint recovery stages differ")
+    if stages[1]["prefetch"]["occupied"] != canary["occupied_before_recovery"]:
+        raise ValueError("wrong-hint abandoned occupancy differs from its raw stage")
+    recovered = stages[2]["prefetch"]
+    for field in ("admitted", "demand_promoted", "evicted_unused", "failed"):
+        if count(recovered[field], field) != canary[field]:
+            raise ValueError("wrong-hint recovery counts differ from their raw stage")
+    for field, expected in {"capacity": 4, "occupied": 0, "reads_in_flight": 0, "reserve_free": 4}.items():
+        if count(recovered[field], field) != expected:
+            raise ValueError("wrong-hint raw credits did not fully recover")
+    observation = stages[2]["observation"]
+    for field in ("terminal_read_credits", "terminal_destinations"):
+        if count(observation["io"][field], field):
+            raise ValueError("wrong-hint terminal ownership did not drain")
+    calls = records(observation["explicit_calls"], "wrong-hint calls", 25 * 128)
+    if sum(count(call["protected_evictions"], "protected evictions") for call in calls):
+        raise ValueError("wrong-hint raw calls evicted a protected page")
+    runs = records(observation["committed_runs"], "wrong-hint runs", 25)
+    if [(run["page"], run["pages"]) for run in runs] != [(start, 4) for start in range(100, 200, 4)]:
+        raise ValueError("wrong-hint witness did not admit 25 disjoint four-page windows")
+
+
+def validate_mechanisms_canary(document: dict) -> None:
+    canary = document.get("wrong_hint_canary")
+    if not isinstance(canary, dict):
+        raise ValueError("missing wrong-hint canary")
+    if canary["scenario"] != "wrong_hint_canary" or canary["file_retired"] is not True:
+        raise ValueError("wrong-hint canary did not retire its file")
+    expected_counts = {"credits": 4, "read_limit": 16, "hot_pages": 60, "wrong_windows": 25,
+                       "demand_hot_hits": 1500, "demand_hot_misses": 0, "protected_evictions": 0,
+                       "occupied_after_recovery": 0, "reads_after_recovery": 0, "admitted": 100}
+    for field, expected in expected_counts.items():
+        if count(canary[field], field) != expected:
+            raise ValueError(f"wrong-hint canary outcome differs: {field}")
+    if count(canary["occupied_before_recovery"], "abandoned occupancy", 4) == 0:
+        raise ValueError("wrong-hint canary lacks abandoned speculation")
+    if canary["admitted"] != sum(count(canary[field], field)
+                                 for field in ("demand_promoted", "evicted_unused", "failed")):
+        raise ValueError("wrong-hint speculative credits did not fully recover")
+    flights = records(canary["flights"], "wrong-hint flights", 25 * (2 * 128 + 1) + 16_384)
+    if not flights:
+        raise ValueError("wrong-hint canary lacks flight samples")
+    for flight in flights:
+        count(flight["polls"], "wrong-hint polls", 16_384)
+        count(flight["speculative"], "wrong-hint speculative occupancy", 4)
+        count(flight["reads"], "wrong-hint read occupancy", 16)
+    validate_mechanisms_canary_raw(canary, document["raw_scenarios"])
+
+
 def validate_mechanisms(document: dict) -> None:
     if document["schema"] != 1 or document["overflow"] or document["dropped_events"]:
         raise ValueError("invalid or lossy mechanism capture")
     validate_small_capacity(document["small_capacity"])
     validate_turns(document["shared_reader_turns"])
+    validate_mechanisms_canary(document)
     control = document["control"]
     validate_control(control)
     if {row["capacity"] for row in control if row["cause"] == "idle"} != {32, 128, 256}:

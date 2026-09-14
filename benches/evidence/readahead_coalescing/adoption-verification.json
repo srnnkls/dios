@@ -1,0 +1,169 @@
+{
+  "recorded_at": "2026-09-14T18:59:28.756795+00:00",
+  "owner_disposition": {
+    "recorded_at": "2026-09-14T18:59:28.756795+00:00",
+    "owner": "S\u00f6ren via sibling Claude session and explicit user acceptance",
+    "source": "benches/evidence/readahead_coalescing/owner-cold-attribution-disposition-20260914.md",
+    "source_sha256": "5a5ac180e3a99d3394356bc2278515dab6d1ece2165efaf02f8e35b834c1bb58",
+    "status": "accepted_reporting_limitation_close_RC6",
+    "profile_qualified": false,
+    "timed_samples": 249,
+    "orphaned_samples": 366,
+    "cause": "Incomplete caller unwinding; unchanged orphaned * 100 <= timed rule withholds category CPU budgets.",
+    "cold_comparison": "cold-mmap",
+    "cold_elapsed_ns_per_useful_4k": 1472.5425455729167,
+    "cold_cpu_ns_per_useful_4k": 1463.9500732421875,
+    "cold_category_budgets": null,
+    "qualified_pressure_attribution_retained": true,
+    "numeric_gates_changed": false,
+    "default_budget_bytes": 524288,
+    "follow_up": {
+      "scope": "readahead-efficiency",
+      "required_before": "product implementation",
+      "deliverable": "qualified cold CPU attribution",
+      "method": "frame-pointer diagnostic replay",
+      "separate_perturbed_executable": true,
+      "own_source_build_executable_identity": true,
+      "bench_plan_before_replay": true,
+      "preserve_RC6_primary_and_failed_profiles": true,
+      "more_repetitions_are_not_a_remedy": true
+    }
+  },
+  "native_validation": {
+    "recorded_at": "2026-09-14T18:32:13.168953+00:00",
+    "command": "CARGO_NET_OFFLINE=true mise run check",
+    "session_id": 57874,
+    "exit_code": 0,
+    "test_total": 378,
+    "result_groups": 48,
+    "clippy_fmt_doc": "passed",
+    "log": "target/readahead-coalescing/rc6-resume-native-check.log",
+    "log_sha256": "ed1e6dafe1d9e1f6461189cc63372f05e3a4b00f9501a5e712e0390c862aafdc",
+    "base_drift": {
+      "fetch": "git fetch origin main --quiet",
+      "behind": 0,
+      "ahead": 5
+    },
+    "mode_summary": {
+      "campaign": "confirmation-rc6-400",
+      "archive": "target/readahead-coalescing/rc6-drp-confirmation-evidence/confirmation-pairs.tar.gz",
+      "archive_sha256": "87e91bbe8afb0cd93af6b625826c9f3bced95178ae0c33e831910d7111d692c5",
+      "member": "confirmation-pairs/measurement/process.csv",
+      "raw_sha256": "154140214e082262066e27f3caf02a42ff409e7447c2024866ec6beb6c636a29",
+      "measured_pairs": 400,
+      "cutoffs_inherited_from": "canonical-rc6",
+      "interpretation": "Owner records the differing mode shares as startup/placement asymmetry on the approximately 3 ms lane, not higher within-mode hot-path cost. The elapsed records do not directly observe scheduling; mode labels and means are descriptive and exclude no gate samples.",
+      "sd_log_paired_ratio": 0.25170263029846074,
+      "in_mode_candidate_over_base": {
+        "fast": 0.8677214412544927,
+        "slow": 0.9287689438344845
+      },
+      "slow_share_difference_percentage_points": 24.75,
+      "arms": {
+        "base": {
+          "source_commits": [
+            "1004a2e6fcae0bcc9552dc3211c2416e388a250d"
+          ],
+          "executable_sha256": [
+            "0b49dc7dbe86d89c5390f94d7462818308104b6ce0d2f4ac8d001f9a5b250cfd"
+          ],
+          "mode_cutoff_ns": 3450000,
+          "modes": {
+            "fast": {
+              "count": 254,
+              "share": 0.635,
+              "min_ns": 2532212,
+              "max_ns": 3403833,
+              "mean_ns": 2764329.275590551,
+              "geomean_ns": 2757098.0806488907,
+              "median_ns": 2684690.5
+            },
+            "slow": {
+              "count": 146,
+              "share": 0.365,
+              "min_ns": 3462595,
+              "max_ns": 3879705,
+              "mean_ns": 3773886.0890410957,
+              "geomean_ns": 3773277.9475766746,
+              "median_ns": 3785157.5
+            }
+          }
+        },
+        "candidate": {
+          "source_commits": [
+            "5edb6a7f64bcd0137cbd75d03821780b38c679f2"
+          ],
+          "executable_sha256": [
+            "ae50a099a18f7a508d17d605118801f06ebdf22e9f89a5833b02772ffd5f0529"
+          ],
+          "mode_cutoff_ns": 3300000,
+          "modes": {
+            "fast": {
+              "count": 155,
+              "share": 0.3875,
+              "min_ns": 2263086,
+              "max_ns": 3256260,
+              "mean_ns": 2395885.6580645163,
+              "geomean_ns": 2392393.120220651,
+              "median_ns": 2368778
+            },
+            "slow": {
+              "count": 245,
+              "share": 0.6125,
+              "min_ns": 3343472,
+              "max_ns": 4521600,
+              "mean_ns": 3505769.832653061,
+              "geomean_ns": 3504503.3741647396,
+              "median_ns": 3495846
+            }
+          }
+        }
+      }
+    },
+    "mode_record_sha256": "d911a5c6f14b5d35707d9a55f3e39d17be47767500aa925eb01a41284ae01e09",
+    "confirmation_gate_rerun": false,
+    "linux_native_validation": {
+      "command": "keepawake mise run check",
+      "source_snapshot": "ad434b21c2c5b31d54845052cf1b27cdeadde829",
+      "session": 13229,
+      "exit_code": 0,
+      "tests_passed": 400,
+      "result_groups": 48,
+      "strict_clippy_fmt_rustdoc": "passed",
+      "log": "target/readahead-coalescing/rc6-resume-linux-check.log",
+      "log_sha256": "1fb395d59699a1692f0144c21b27ba1e65710395dd437dc1b87026ab9ca37df8"
+    },
+    "owner_cold_attribution_disposition": {
+      "recorded_at": "2026-09-14T18:59:28.756795+00:00",
+      "owner": "S\u00f6ren via sibling Claude session and explicit user acceptance",
+      "source": "benches/evidence/readahead_coalescing/owner-cold-attribution-disposition-20260914.md",
+      "source_sha256": "5a5ac180e3a99d3394356bc2278515dab6d1ece2165efaf02f8e35b834c1bb58",
+      "status": "accepted_reporting_limitation_close_RC6",
+      "profile_qualified": false,
+      "timed_samples": 249,
+      "orphaned_samples": 366,
+      "cause": "Incomplete caller unwinding; unchanged orphaned * 100 <= timed rule withholds category CPU budgets.",
+      "cold_comparison": "cold-mmap",
+      "cold_elapsed_ns_per_useful_4k": 1472.5425455729167,
+      "cold_cpu_ns_per_useful_4k": 1463.9500732421875,
+      "cold_category_budgets": null,
+      "qualified_pressure_attribution_retained": true,
+      "numeric_gates_changed": false,
+      "default_budget_bytes": 524288,
+      "follow_up": {
+        "scope": "readahead-efficiency",
+        "required_before": "product implementation",
+        "deliverable": "qualified cold CPU attribution",
+        "method": "frame-pointer diagnostic replay",
+        "separate_perturbed_executable": true,
+        "own_source_build_executable_identity": true,
+        "bench_plan_before_replay": true,
+        "preserve_RC6_primary_and_failed_profiles": true,
+        "more_repetitions_are_not_a_remedy": true
+      }
+    }
+  },
+  "all_numeric_gates_passed": true,
+  "full_integration_review": "pending",
+  "product_sources_unchanged_since_measured_RC5": true
+}

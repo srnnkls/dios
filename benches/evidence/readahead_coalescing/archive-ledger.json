@@ -1,0 +1,307 @@
+{
+  "archives": [
+    {
+      "archive": "rc6-headline-evidence/cold-mmap.tar.gz",
+      "sha256": "30ec426c55eb0efdac31c6b97bfc3a6b73781811389a74b6bc4a5fa606a999f4",
+      "local": "target/readahead-coalescing/rc6-headline-evidence/cold-mmap.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-headline-evidence/cold-mmap.tar.gz",
+      "bytes": 11223010
+    },
+    {
+      "archive": "rc6-headline-evidence/cold-current-old-budget.tar.gz",
+      "sha256": "7ac3afbdd647d78c6276bb316aa8059c50ce34c254dab316dfc708fb4b612e90",
+      "local": "target/readahead-coalescing/rc6-headline-evidence/cold-current-old-budget.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-headline-evidence/cold-current-old-budget.tar.gz",
+      "bytes": 11222974
+    },
+    {
+      "archive": "rc6-headline-evidence/cold-current-new-budget.tar.gz",
+      "sha256": "cb1c4511965849373a08b6e1ba857109e22c6060dceeeb41e7f5dde68459796f",
+      "local": "target/readahead-coalescing/rc6-headline-evidence/cold-current-new-budget.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-headline-evidence/cold-current-new-budget.tar.gz",
+      "bytes": 11222336
+    },
+    {
+      "archive": "rc6-headline-evidence/pressure-mmap.tar.gz",
+      "sha256": "c06b91b2d52a3792a6c3485f59d894664b7acc88112829634f1cae3abf2136ca",
+      "local": "target/readahead-coalescing/rc6-headline-evidence/pressure-mmap.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-headline-evidence/pressure-mmap.tar.gz",
+      "bytes": 11950369
+    },
+    {
+      "archive": "rc6-headline-evidence/pressure-current-old-budget.tar.gz",
+      "sha256": "25664c9b6619cfa176b79bbaff6a3efebff1b7e8bcb665162b81ac216fc62011",
+      "local": "target/readahead-coalescing/rc6-headline-evidence/pressure-current-old-budget.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-headline-evidence/pressure-current-old-budget.tar.gz",
+      "bytes": 11949295
+    },
+    {
+      "archive": "rc6-headline-evidence/pressure-current-new-budget.tar.gz",
+      "sha256": "088e7e0a53e0c93c79e519bc1537f79dbc61e677381ec46bf62dd5f3a0e8978e",
+      "local": "target/readahead-coalescing/rc6-headline-evidence/pressure-current-new-budget.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-headline-evidence/pressure-current-new-budget.tar.gz",
+      "bytes": 11948554
+    },
+    {
+      "archive": "rc6-inherited-evidence/primary.tar.gz",
+      "sha256": "f8e3de0241b276db22db05b95429f5a5f771faaecca3fc62bf3e92fab258c8f3",
+      "local": "target/readahead-coalescing/rc6-inherited-evidence/primary.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-inherited-evidence/primary.tar.gz",
+      "bytes": 5796456
+    },
+    {
+      "archive": "rc6-inherited-evidence/frozen.tar.gz",
+      "sha256": "4d040bd61d7f0be65fb6b0d58265520777a4a6e9e4de3add5c20cca3911269af",
+      "local": "target/readahead-coalescing/rc6-inherited-evidence/frozen.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-inherited-evidence/frozen.tar.gz",
+      "bytes": 5582867
+    },
+    {
+      "archive": "rc6-profile-evidence/cold-mmap.tar.gz",
+      "sha256": "17d6a572945e53633d0f5c6ae7e92b157b0650a7416275b48da34d6a866fa13e",
+      "local": "target/readahead-coalescing/rc6-profile-evidence/cold-mmap.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-profile-evidence/cold-mmap.tar.gz",
+      "bytes": 11283710
+    },
+    {
+      "archive": "rc6-profile-evidence/cold-current-old-budget.tar.gz",
+      "sha256": "ed695c0550ec2231aed32f346c3e5643ea91ed5d9f9e62077876286fdd5e13f1",
+      "local": "target/readahead-coalescing/rc6-profile-evidence/cold-current-old-budget.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-profile-evidence/cold-current-old-budget.tar.gz",
+      "bytes": 17866885
+    },
+    {
+      "archive": "rc6-profile-evidence/cold-current-new-budget.tar.gz",
+      "sha256": "fe93e49c8ba35554c6895e8f980fa5faff3ebff1beeb30a557591c8d443a266f",
+      "local": "target/readahead-coalescing/rc6-profile-evidence/cold-current-new-budget.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-profile-evidence/cold-current-new-budget.tar.gz",
+      "bytes": 9643375
+    },
+    {
+      "archive": "rc6-profile-evidence/cold-candidate.tar.gz",
+      "sha256": "252bdb84bb9bb1e207521664fab34cdbc16ed9323d3b61881927a7502b8c4bd8",
+      "local": "target/readahead-coalescing/rc6-profile-evidence/cold-candidate.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-profile-evidence/cold-candidate.tar.gz",
+      "bytes": 12866547
+    },
+    {
+      "archive": "rc6-profile-evidence/pressure-mmap.tar.gz",
+      "sha256": "5bf1ded5ba2a8a19a663962c9ee3224bd61c66189660b294164c8905246c7a62",
+      "local": "target/readahead-coalescing/rc6-profile-evidence/pressure-mmap.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-profile-evidence/pressure-mmap.tar.gz",
+      "bytes": 23088709
+    },
+    {
+      "archive": "rc6-profile-evidence/pressure-current-old-budget.tar.gz",
+      "sha256": "16d34258c35332692d9336c25b6b87e4c0b695547f35915e2f5a8e1d64b02b38",
+      "local": "target/readahead-coalescing/rc6-profile-evidence/pressure-current-old-budget.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-profile-evidence/pressure-current-old-budget.tar.gz",
+      "bytes": 36872114
+    },
+    {
+      "archive": "rc6-profile-evidence/pressure-current-new-budget.tar.gz",
+      "sha256": "51094b81be78b7388ee4da4726d8c08daf2fedfad9ee5ac6db279e88f129c2cc",
+      "local": "target/readahead-coalescing/rc6-profile-evidence/pressure-current-new-budget.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-profile-evidence/pressure-current-new-budget.tar.gz",
+      "bytes": 33954216
+    },
+    {
+      "archive": "rc6-profile-evidence/pressure-candidate.tar.gz",
+      "sha256": "174d12573b199117d131a9410d9de523a85fc01e23fc25bc30c966303c4a9772",
+      "local": "target/readahead-coalescing/rc6-profile-evidence/pressure-candidate.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-profile-evidence/pressure-candidate.tar.gz",
+      "bytes": 16292924
+    },
+    {
+      "archive": "rc6-observer-evidence/cold-mmap.tar.gz",
+      "sha256": "b93e53fbc8b5804710a14bab69adf040ca724c85381614adda5518c0e05b0a36",
+      "local": "target/readahead-coalescing/rc6-observer-evidence/cold-mmap.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-observer-evidence/cold-mmap.tar.gz",
+      "bytes": 11423767
+    },
+    {
+      "archive": "rc6-observer-evidence/cold-current-old-budget.tar.gz",
+      "sha256": "e9be716b738b297a82a7948e915c7e49aec5ebb0d85b545ef568a27965cd6a14",
+      "local": "target/readahead-coalescing/rc6-observer-evidence/cold-current-old-budget.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-observer-evidence/cold-current-old-budget.tar.gz",
+      "bytes": 11977645
+    },
+    {
+      "archive": "rc6-observer-evidence/cold-current-new-budget.tar.gz",
+      "sha256": "c6549b843169f989a47603b415b87723d4b5aba29f4745f29cbd12745d96e6a1",
+      "local": "target/readahead-coalescing/rc6-observer-evidence/cold-current-new-budget.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-observer-evidence/cold-current-new-budget.tar.gz",
+      "bytes": 11541552
+    },
+    {
+      "archive": "rc6-observer-evidence/cold-candidate.tar.gz",
+      "sha256": "693fb7839dad1d62a4834b51f3da4c7479151317942bfabaef1bf0881f4772bd",
+      "local": "target/readahead-coalescing/rc6-observer-evidence/cold-candidate.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-observer-evidence/cold-candidate.tar.gz",
+      "bytes": 12549764
+    },
+    {
+      "archive": "rc6-observer-evidence/pressure-mmap.tar.gz",
+      "sha256": "94ca55c6155a2be0f8993f65499f43fd1d55fe5d0dbe8dfcb4c08d931941bb69",
+      "local": "target/readahead-coalescing/rc6-observer-evidence/pressure-mmap.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-observer-evidence/pressure-mmap.tar.gz",
+      "bytes": 78350846
+    },
+    {
+      "archive": "rc6-observer-evidence/pressure-current-old-budget.tar.gz",
+      "sha256": "d49fd081550f65f58bca3a7e0445319a81a43eadd49356ed4e52541514d1e7ee",
+      "local": "target/readahead-coalescing/rc6-observer-evidence/pressure-current-old-budget.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-observer-evidence/pressure-current-old-budget.tar.gz",
+      "bytes": 83763076
+    },
+    {
+      "archive": "rc6-observer-evidence/pressure-current-new-budget.tar.gz",
+      "sha256": "933f22bcf47ba5495578081432abc2cb5e2548c862b999ab59d7e555dcdbfc23",
+      "local": "target/readahead-coalescing/rc6-observer-evidence/pressure-current-new-budget.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-observer-evidence/pressure-current-new-budget.tar.gz",
+      "bytes": 78673526
+    },
+    {
+      "archive": "rc6-observer-evidence/pressure-candidate.tar.gz",
+      "sha256": "1d4e902e0c46ebf2bb4db235d36b6a8f12b96c6cd7416aaa29e0bd660a0d8575",
+      "local": "target/readahead-coalescing/rc6-observer-evidence/pressure-candidate.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-observer-evidence/pressure-candidate.tar.gz",
+      "bytes": 79975321
+    },
+    {
+      "archive": "rc6-eager-executable/captures.tar.gz",
+      "sha256": "667cea46a022eec8bc639e902dece251c4d07d01836c11bccaf42bebfbcd2160",
+      "local": "target/readahead-coalescing/rc6-eager-executable/captures.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-eager-executable/captures.tar.gz",
+      "bytes": 958261
+    },
+    {
+      "archive": "rc6-linux-executable/captures.tar.gz",
+      "sha256": "6423b03d85995357b9c28892f53f4277e87031cb5b082f618dcac0302f382d64",
+      "local": "target/readahead-coalescing/rc6-linux-executable/captures.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-linux-executable/captures.tar.gz",
+      "bytes": 2436197
+    },
+    {
+      "local": "target/readahead-coalescing/rc6-drp-direct-evidence/direct-pairs.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-drp-direct-evidence/direct-pairs.tar.gz",
+      "sha256": "c2944d7ae999ea8a212d8673fe23c81570f9051874b5f3cc6661fc043d0f1c1c",
+      "bytes": 27735
+    },
+    {
+      "local": "target/readahead-coalescing/rc6-profile64-evidence/cold-candidate-profile64.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-profile64-evidence/cold-candidate-profile64.tar.gz",
+      "sha256": "4d0e40590ad09fc9d7213aea113429f67994e91003e5b8da2955f6d834a6e603",
+      "bytes": 64755062
+    },
+    {
+      "local": "target/readahead-coalescing/rc6-drp-qualified-evidence/drp_g2_warm_ordinary.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-drp-qualified-evidence/drp_g2_warm_ordinary.tar.gz",
+      "sha256": "f5fa54f7f3df9e94a2690d3ad12736e244297efa0382ad3fa2d61d91de2fab63",
+      "bytes": 28053
+    },
+    {
+      "local": "target/readahead-coalescing/rc6-drp-qualified-evidence/drp_g2_cycling_reuse.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-drp-qualified-evidence/drp_g2_cycling_reuse.tar.gz",
+      "sha256": "05879173a990fbea2e3b867b06e0bd2ab82bf84ed9638a3b1dc1a235aeda5beb",
+      "bytes": 28613
+    },
+    {
+      "local": "target/readahead-coalescing/rc6-drp-qualified-evidence/drp_g4_ordinary_base_8t.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-drp-qualified-evidence/drp_g4_ordinary_base_8t.tar.gz",
+      "sha256": "1150a08a28ac572fb8631e6804f56cc2dab7042c3ec9584f3da27b5b59fd48b4",
+      "bytes": 27730
+    },
+    {
+      "local": "target/readahead-coalescing/rc6-drp-qualified-evidence/drp_g4_ordinary_scaling.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-drp-qualified-evidence/drp_g4_ordinary_scaling.tar.gz",
+      "sha256": "d6f459d7bf9ae01e456d45c53e3610220549014ac26ed1771b2fddf562281401",
+      "bytes": 27436
+    },
+    {
+      "local": "target/readahead-coalescing/rc6-drp-profile-evidence/00-base.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-drp-profile-evidence/00-base.tar.gz",
+      "sha256": "8be4f5f6461329421796c11299812ddc589dd46103257a018b42dc2e8e828ad3",
+      "bytes": 289654
+    },
+    {
+      "local": "target/readahead-coalescing/rc6-drp-profile16-evidence/00-base.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-drp-profile16-evidence/00-base.tar.gz",
+      "sha256": "dbf4b026b404d795891b6cc8f82539a7d8b13a4374257ebc8019521fc5025b2a",
+      "bytes": 1425334
+    },
+    {
+      "local": "target/readahead-coalescing/rc6-drp-profile64-evidence/00-base.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-drp-profile64-evidence/00-base.tar.gz",
+      "sha256": "09054f2acb75b65d9214b648fa7f692c441810537f9bb2e592e7b83dca941829",
+      "bytes": 310898
+    },
+    {
+      "local": "target/readahead-coalescing/rc6-drp-clock-profile-evidence/00-base.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-drp-clock-profile-evidence/00-base.tar.gz",
+      "sha256": "d25f3a1cfc62df664b397ac03816270830aa581921c8a204d7033bd19e558e45",
+      "bytes": 92791
+    },
+    {
+      "local": "target/readahead-coalescing/rc6-drp-clock-profile-evidence/00-candidate.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-drp-clock-profile-evidence/00-candidate.tar.gz",
+      "sha256": "215906f3f5a8ad41879693cc353e0ee14fc8e41b2da445863ed1c3f7ae333afd",
+      "bytes": 78684
+    },
+    {
+      "local": "target/readahead-coalescing/rc6-drp-clock-profile-evidence/01-candidate.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-drp-clock-profile-evidence/01-candidate.tar.gz",
+      "sha256": "697b6f5d7ebe082f014d0f9bf246d0f472086bd4c2cbefc59345d551782691a2",
+      "bytes": 66431
+    },
+    {
+      "local": "target/readahead-coalescing/rc6-drp-clock-profile-evidence/01-base.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-drp-clock-profile-evidence/01-base.tar.gz",
+      "sha256": "820734f0f79a73f9dbdd0b8e7aae31d5c5796d3d049bf8f4b22d1762fb56bc04",
+      "bytes": 80690
+    },
+    {
+      "archive": "rc6-drp-confirmation-evidence/confirmation-pairs.tar.gz",
+      "sha256": "87e91bbe8afb0cd93af6b625826c9f3bced95178ae0c33e831910d7111d692c5",
+      "local": "target/readahead-coalescing/rc6-drp-confirmation-evidence/confirmation-pairs.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-drp-confirmation-evidence/confirmation-pairs.tar.gz",
+      "bytes": 74299
+    },
+    {
+      "archive": "rc6-confirmation-preregistration.tar.gz",
+      "sha256": "db454f90cc79baf1aa2ee9eb4e7d4b6d2c873ce3c9bcfe1584ed12071de06c3e",
+      "local": "target/readahead-coalescing/rc6-confirmation-preregistration.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-confirmation-preregistration.tar.gz",
+      "bytes": 17810
+    },
+    {
+      "archive": "rc6-owner-attribution-evidence/cold-candidate-profile16384.tar.gz",
+      "sha256": "a450cd92991707e7d44b8fbdcff87577ff9634827f9225df2e6afa44b4606cab",
+      "local": "target/readahead-coalescing/rc6-owner-attribution-evidence/cold-candidate-profile16384.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-owner-attribution-evidence/cold-candidate-profile16384.tar.gz",
+      "bytes": 2369309
+    },
+    {
+      "archive": "rc6-owner-attribution-evidence/frozen-strace.tar.gz",
+      "sha256": "17eb7b698dd6394ce86ceffa2abf7e0cc5ed1ffcf8b70c9cb636ffd744f3dc39",
+      "local": "target/readahead-coalescing/rc6-owner-attribution-evidence/frozen-strace.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-owner-attribution-evidence/frozen-strace.tar.gz",
+      "bytes": 3472
+    },
+    {
+      "archive": "rc6-owner-clock-profile-evidence/cold-candidate-clock.tar.gz",
+      "sha256": "2c26fd3cb6c8d862a619ebe79c6be72ab1afb733716e156c4a8d455fc41fd6cc",
+      "local": "target/readahead-coalescing/rc6-owner-clock-profile-evidence/cold-candidate-clock.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-owner-clock-profile-evidence/cold-candidate-clock.tar.gz",
+      "bytes": 3413232
+    },
+    {
+      "archive": "rc6-unwind-replay.tar.gz",
+      "sha256": "44d220209ad6218b69d9d1addee0aa34bd96f8bc5db71790aad6995bd6637ad8",
+      "local": "target/readahead-coalescing/rc6-unwind-replay.tar.gz",
+      "remote": "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-unwind-replay.tar.gz",
+      "bytes": 16504181
+    }
+  ],
+  "retention": "Raw archives and exact executables are retained in the task-owned local and pinned-host directories. Hashes bind both copies; no archive is a substitute for a passed gate."
+}

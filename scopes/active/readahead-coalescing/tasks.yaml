@@ -5,7 +5,7 @@ next_id: 7
 meta:
   created: '2026-09-14'
   last_updated: '2026-09-14'
-  progress: 5/6
+  progress: 6/6
 discipline: Owner approval, 512 KiB default and scope review are recorded. Immutable
   source/executable baseline verified before RC1/RC2 dispatch. Each task captures
   bounded RED before code.
@@ -191,7 +191,7 @@ tasks:
     validation: target/readahead-coalescing/b4-green-verification.json
 - id: RC6
   title: Run the owner gates and retain pool-layer attribution
-  status: pending
+  status: done
   depends_on:
   - RC5
   description: Run fresh RC-G1/G2 comparisons for both cold and pressure shapes, including
@@ -200,7 +200,18 @@ tasks:
     qualified prefetch-control CPU/page, bookkeeping entry visits, achieved overlap
     and EOF waste. A failing headline triggers exact pool-layer profiles/differentials
     with observer qualification. Keep budgets and gate bounds fixed; do not chase
-    the serial-probe residual. Retain immutable evidence and final dispositions.
+    the serial-probe residual. Retain immutable evidence and final dispositions. Complete
+    the retained separate mechanism-capture adapter over the already implemented real-backend
+    observations before freezing the candidate. A portable mechanism-capture INPUT_FILE
+    NEW_JSON command in the existing hashed benches/mmap_workloads.rs entry drives
+    the five small-capacity configurations, simultaneous-reader retained turns, idle/post-final-CQE
+    recovery and the three full-credit explicit scenarios. Preserve raw stage snapshots
+    and measured occupancy/opportunity state; do not fabricate documents from configured
+    geometry. No product API or frozen runner-source-list change is needed. Owner
+    accepts the retained unqualified cold CPU category nulls for RC6 closure; measured
+    cold totals and qualified pressure attribution remain. Qualified cold attribution
+    using a separately identified frame-pointer diagnostic is required before readahead-efficiency
+    product implementation.
   files:
   - benches/mmap_workloads/
   - benches/evidence/readahead_coalescing/
@@ -208,3 +219,45 @@ tasks:
   - README.md
   - scopes/active/readahead-coalescing/validation.yaml
   - scopes/active/readahead-coalescing/tasks.yaml
+  - benches/mmap_workloads.rs
+  - tests/scan_geometry_validation.py
+  evidence:
+    tester: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-tester-RC6/native.yaml"
+    implementer: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-implementer-RC6/native.yaml"
+    review: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-synthesis.yaml"
+    results: benches/evidence/readahead_coalescing/results.md
+    validator_revalidation: benches/evidence/readahead_coalescing/validator-revalidation.json
+    owner_disposition_verification: benches/evidence/readahead_coalescing/owner-disposition-verification.json
+    owner_disposition_review: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-owner-disposition-review/peer-gpt6-astra.normalized.yaml"
+    owner_cold_attribution_disposition: benches/evidence/readahead_coalescing/owner-cold-attribution-disposition-20260914.md
+    adoption_verification: benches/evidence/readahead_coalescing/adoption-verification.json
+  owner_dispositions: benches/evidence/readahead_coalescing/owner-dispositions-20260914.md
+  completed_at: '2026-09-14T19:00:26Z'
+  accepted_limitation:
+    recorded_at: '2026-09-14T18:59:28.756795+00:00'
+    owner: Sören via sibling Claude session and explicit user acceptance
+    source: benches/evidence/readahead_coalescing/owner-cold-attribution-disposition-20260914.md
+    source_sha256: 5a5ac180e3a99d3394356bc2278515dab6d1ece2165efaf02f8e35b834c1bb58
+    status: accepted_reporting_limitation_close_RC6
+    profile_qualified: false
+    timed_samples: 249
+    orphaned_samples: 366
+    cause: Incomplete caller unwinding; unchanged orphaned * 100 <= timed rule withholds
+      category CPU budgets.
+    cold_comparison: cold-mmap
+    cold_elapsed_ns_per_useful_4k: 1472.5425455729167
+    cold_cpu_ns_per_useful_4k: 1463.9500732421875
+    cold_category_budgets:
+    qualified_pressure_attribution_retained: true
+    numeric_gates_changed: false
+    default_budget_bytes: 524288
+    follow_up:
+      scope: readahead-efficiency
+      required_before: product implementation
+      deliverable: qualified cold CPU attribution
+      method: frame-pointer diagnostic replay
+      separate_perturbed_executable: true
+      own_source_build_executable_identity: true
+      bench_plan_before_replay: true
+      preserve_RC6_primary_and_failed_profiles: true
+      more_repetitions_are_not_a_remedy: true

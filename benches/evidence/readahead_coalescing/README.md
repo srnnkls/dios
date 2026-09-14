@@ -1,5 +1,10 @@
 # RC1 harness preparation and producer contract
 
+The [RC6 results](results.md) retain the measured headline passes, original DRP
+failure, direct diagnostic and passing owner-authorized confirmation. Adoption
+remains blocked by candidate cold CPU attribution. This capture contract includes
+the recorded owner clarification for unavailable frozen-arm mechanism fields.
+
 This directory records harness preparation, not a coalesced product gate pass.
 The owner-selected default remains 524,288 bytes. The retained 1 MiB budget
 probe remains separate evidence. RC-G1 failure invokes pool-layer profiling;
@@ -131,9 +136,14 @@ prepared harness. Instrumentation must not add a candidate-only poll, impose
 a new consumer cadence, allocate in the timed region, or put request clocks
 in primary samples. Detailed replay records have fixed startup capacities,
 explicit overflow/loss counters, and paired observer qualification. The
-immutable frozen runner requires a separately qualified external capture for
-any mechanism observations it does not already emit; missing values remain
-null in cost reports and cannot establish RC-G6 completion.
+2026-09-14 [owner clarification](owner-dispositions-20260914.md) applies RC-G6
+mechanism reporting to every arm that can emit it. Frozen executables predate
+this seam: report their CPU/elapsed per useful 4 KiB, polls/page and native
+prefetch stats; actual SQEs/CQEs/ranges, EOF/consumer-stop waste and control
+entry visits stay null with that limitation beside them. The candidate must
+report all fields with qualified attribution. Optional counter-only strace
+replay may supply exact frozen SQE totals; discard its timing. No numeric
+bound, executable, host-security setting or budget changes.
 
 ## Per-scan `coalescing` record
 
@@ -197,9 +207,19 @@ I/O observation produces null, never a zero or an estimated SQE count.
 
 ## Separate mechanism capture
 
+The existing `mmap_workloads` executable accepts the portable command
+`mechanism-capture INPUT_FILE NEW_JSON`. Build it with
+`cargo build --profile profiling --features bench --bench mmap_workloads`,
+or obtain its exact executable path through `collect.build_binary`. Supply
+an existing file containing at least 4,096 complete 4 KiB pages. The command
+uses real `Pool<Driver>` reads with direct I/O and Unregistered buffers on
+eager and Linux. It creates a new JSON file and refuses to overwrite one.
+Fixture preparation, report snapshots and serialization are outside the
+bounded scenario actions; these captures make no timing claim.
+
 Run `PYTHONDONTWRITEBYTECODE=1 python3 benches/mmap_workloads/coalescing.py
-CAPTURE.json` on a real backend capture after the producer exists. The
-document has `schema: 1`, zero `overflow`/`dropped_events`, and:
+CAPTURE.json` to validate the capture. The document has `schema: 1`, summed
+actual `overflow`/`dropped_events` counts, and:
 
 - `small_capacity`: exactly C/R=1/64, 8/64, 32/64, 32/33 and 128/33 at
   granule 4096. Each records `credits`, `read_limit`, `granule`, positive
@@ -217,7 +237,128 @@ document has `schema: 1`, zero `overflow`/`dropped_events`, and:
   `protected_evictions`, and `scenario: duplicates|multiple_runs|
   newly_admitted_protected`, with all three scenarios present at full credits.
 
+`raw_scenarios` retains all thirteen bounded scenarios, their actual pool
+geometry, native I/O mode, registration posture, consumed page indices,
+consumed bytes and wrapping u64 checksum over every little-endian word of
+each acquired page. Every stage retains cumulative `PrefetchStats`, the
+actual poll count and the complete interval-zero `ReadObservation` snapshot.
+`PrefetchStats` reconciles consumption feedback: these named boundaries are
+explicit control actions, not passive samples. Each observation has a fixed
+65,536-event capacity; truncation remains visible through the loss counters.
+
+The five small-capacity probes explicitly fill C-1 unrelated pages before
+the third consecutive cold demand confirms a fresh stream. The
+`before_opportunity` stage asserts one free speculative credit, available
+read capacity and a reserve frame. Its difference from `after_opportunity`
+supplies automatic admissions and actual point/vector attempts, excluding
+setup hints. `deferred_with_available_credit` records whether that measured
+opportunity admitted no page. The shared-reader scenario confirms both
+streams before polling at full C=4 credits, records their credit deferral,
+consumes the explicit setup pages and polls again. Its entire consecutive
+turn sequence is copied unchanged into `shared_reader_turns`.
+
+Only the dedicated disabled-automatic C=32/128/256 scenarios contribute the
+aggregate `control` rows. They drain a 32-page explicit run, consume it and
+poll twice with no additional read, retaining equal before/after CQE counts.
+Each aggregate explicit call is the last actual call in its named raw
+scenario. `before_call` records full occupied credits; `after_call` precedes
+drain and consumption. The raw `hint_pages` and partitioned `hint_report`
+preserve duplicates, separated missing runs and a newly admitted prefix
+repeated around capacity-deferred work.
+
+`wrong_hint_canary` is separate from those exact aggregate label sets. It
+uses the existing bounded 64-frame, 60-hot-page, C=4/R=16 protocol: warm the
+hot set, issue 25 disjoint four-page wrong windows and check all 60 hot pages
+after each window. It retains actual demand-hot hits/misses, per-hint and
+poll credit samples, and protected evictions summed from the actual explicit
+call records. The `wrong_hints_abandoned` stage precedes file retirement;
+`file_retired` retains full speculative/read recovery and actual terminal
+ownership. Run thirty fresh processes on each backend for RC-G5 and require
+1,500 hot hits, zero hot misses/protected evictions, bounded flight samples,
+nonzero abandoned occupancy, zero terminal ownership and full recovery in
+every capture. Preserve these mechanism witnesses separately from Linux
+wrong-hint latency and I/O-amplification characterization.
+
 Mechanism captures must be retained with their source/executable and raw
 hashes by RC5/RC6. This standalone validator checks the observed mechanism
 contract; it does not run the scenario, authenticate a synthetic document,
 or claim a performance gate passed.
+
+## Pre-registered DRP-G4 confirmation, 2026-09-14
+
+Registered at `2026-09-14T15:59:37.773491+00:00`, before any confirmation process runs.
+The [declaration](drp-confirmation-registration.json) has SHA-256
+`6c080048d9016cbc68cd858a40dcdcb0e850a066eb689598b4a72a0485156af9` and is copied into the RC6 checkpoint.
+The owner withdrew the earlier no-large-campaign instruction after the direct
+pairing dismissed the suspected branch regression.
+
+- Lane: `drp_g4_ordinary_base_8t`; 2 qualification pairs followed by exactly
+  400 alternating fresh-process measured pairs, one campaign only.
+- Frozen base executable: `0b49dc7dbe86d89c5390f94d7462818308104b6ce0d2f4ac8d001f9a5b250cfd`.
+- Candidate executable: `ae50a099a18f7a508d17d605118801f06ebdf22e9f89a5833b02772ffd5f0529`.
+- Same frozen runner/build, 32,768 full-4-KiB folds, worker CPUs `0-3,32-35`,
+  controller CPU 4, order alternation, fixture, host and resident-prefill protocol.
+- Candidate/base, lower is better; unchanged bound **1.00**, asserted with
+  `mise run gate measurement/paired.csv 1.00` on these 400 pairs alone.
+- Owner planning expectation: geomean approximately **0.92**; at sd(log ratio)
+  **0.238**, one-sided 95% log half-width approximately **0.020**.
+- **Adopt the result whichever way it goes. No second attempt if it fails.**
+  Retain the failed 30-pair campaign separately; never pool it with this sample.
+
+The frozen DRP converter hardcodes 30 pairs. Preserve all 400 raw pairs and
+apply the existing direct-campaign raw identity/work validation, then the
+existing shared comparison writer, summarizer and gate. No runner/converter
+source or measured executable is rebuilt to collect this campaign.
+
+## Confirmation outcome and owner reporting disposition
+
+The one campaign completed 2 qualification and 400 measured pairs. The shared
+gate passed remotely and locally: candidate/base geomean **0.9776689295560357**,
+one-sided 95% upper **0.9980337616928986**, unchanged bound **1.00**. Adopt this
+result as declared. The failed 30-pair archive remains unchanged and separate;
+no samples were pooled. Raw/CSV reconstruction, source/executable identities,
+pre-registration copies and the zero-sample preflight correction are retained in
+[owner-disposition-verification.json](owner-disposition-verification.json).
+
+The owner requested the same-cutoff mode accounting for the confirmation.
+Candidate landed in the slow group in **245/400 processes (61.25%)**, versus
+base **146/400 (36.50%)**. Fast/slow within-group geomean ratios are
+**0.867721 / 0.928769**. Counts, arithmetic and geometric means, all 800 elapsed
+values, unchanged cutoffs and raw identities are retained in [drp-modes.json](drp-modes.json)
+and [results.md](results.md). The owner records startup/placement asymmetry on
+the approximately 3 ms lane, not higher hot-path cost; the rows do not directly
+observe scheduling. The separate [protocol follow-up](../../plans/dios_r1_r7_read_performance.md#owner-follow-up-drp-g4-resolution)
+carries a longer timed region or one worker per physical core into future scope
+planning. No gate sample or adopted result changes.
+
+Frozen arms retain native CPU/elapsed, polls and prefetch statistics; the three
+unavailable mechanism groups remain null with their owner-approved limitation.
+The optional strace replay yielded **17,123 whole-process submitted SQEs** across
+1,215 syscall returns. Its timing is discarded and it supplies no timed-region
+CQE/range, waste or control attribution.
+
+Candidate cold CPU attribution remains unqualified: the latest single CPU-clock
+capture has **249 timed / 366 orphaned samples**, with zero loss/throttling. All
+four cold-profile attempts are retained in the [results](results.md); their CPU
+category estimates stay null under the unchanged qualification rule. Candidate
+pressure attribution and all measured mechanism fields remain qualified. The
+single targeted Astra review at high
+effort cleared B5-P1 and B5-P2; it does not clear the cold attribution gap.
+
+An exact-symbol replay of the retained CPU-clock data reproduced the same
+249 timed / 366 orphaned result. All sampled ELF mappings were made available in
+a task-owned symbol tree, including the SHA-pinned candidate and matching libc
+build ID. The same classifier and threshold still withhold CPU category costs.
+The [replay record](cold-unwind-verification.json) retains the commands, symbols,
+raw hash and failed qualification; no new workload capture ran.
+The [owner accepts these cold CPU nulls for RC6 closure](owner-cold-attribution-disposition-20260914.md),
+retaining the measured cold totals **1,472.5 ns elapsed / 1,464 ns CPU per useful
+4 KiB** and qualified pressure attribution. RC-G6 has no numeric adoption bound;
+no failed profile becomes qualified and no gate or default budget changes.
+
+The next **readahead-efficiency** scope must obtain qualified cold attribution
+before product implementation, using a frame-pointer diagnostic replay recorded
+as a **separate perturbed executable with its own identity**. Its bench plan
+precedes the replay. This deliverable carries the structural unwinding gap
+forward; more repetitions are not its remedy. RC6 adoption is complete under
+this disposition; final integration review and the PR follow.

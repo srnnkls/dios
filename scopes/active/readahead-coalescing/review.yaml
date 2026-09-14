@@ -829,3 +829,347 @@ implementation_batches:
     Preserved task-environment corrections required no product or oracle change.'
   performance_gates: Pending RC6 fresh owner campaigns; no numeric adoption gate is
     claimed.
+- batch: 5
+  tasks:
+  - RC6
+  status: passed_with_owner_accepted_cold_cpu_limitation
+  reviewer_reports:
+  - role: general
+    reviewer: peer-gpt6-astra
+    report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-review-general/peer-gpt6-astra.yaml"
+    normalized: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-review-general/peer-gpt6-astra.normalized.yaml"
+    manifest_status: ok
+    schema_valid: true
+  - role: general
+    reviewer: peer-opus
+    report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-review-general/peer-opus.yaml"
+    normalized: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-review-general/peer-opus.normalized.yaml"
+    manifest_status: ok
+    schema_valid: true
+  - role: architecture
+    reviewer: peer-gpt6-astra
+    report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-review-architecture/peer-gpt6-astra.yaml"
+    normalized: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-review-architecture/peer-gpt6-astra.normalized.yaml"
+    manifest_status: ok
+    schema_valid: true
+  - role: architecture
+    reviewer: peer-opus
+    report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-review-architecture/peer-opus.yaml"
+    normalized: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-review-architecture/peer-opus.normalized.yaml"
+    manifest_status: ok
+    schema_valid: true
+  - role: compliance
+    reviewer: peer-gpt6-astra
+    report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-review-compliance/peer-gpt6-astra.yaml"
+    normalized: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-review-compliance/peer-gpt6-astra.normalized.yaml"
+    manifest_status: ok
+    schema_valid: true
+  - role: compliance
+    reviewer: peer-opus
+    report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-review-compliance/peer-opus.yaml"
+    normalized: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-review-compliance/peer-opus.normalized.yaml"
+    manifest_status: ok
+    schema_valid: true
+  synthesized_report:
+    reviewers:
+    - general-peer-gpt6-astra
+    - general-peer-opus
+    - architecture-peer-gpt6-astra
+    - architecture-peer-opus
+    - compliance-peer-gpt6-astra
+    - compliance-peer-opus
+    gates:
+      correctness:
+        status: pass
+        failed_by: []
+      security:
+        status: pass
+        failed_by: []
+      performance:
+        status: pass
+        failed_by: []
+      architecture:
+        status: pass
+        failed_by: []
+      style:
+        status: pass
+        failed_by: []
+    issues: []
+    residual:
+    - gate: correctness
+      area: validation
+      location: benches/evidence/readahead_coalescing/results.md:attribution paragraph
+      trigger: 'The owner reads the RC-G6 attribution paragraph to dispose of the
+        recorded `RC-G6: incomplete_frozen_mechanism_counters` blocker. The paragraph
+        reads: "Their estimated prefetch/control CPU costs are 349.27 and 522.76 ns/page;
+        unresolved CPU remains 2,007.66 and 706.79 ns/page. These estimates use measured
+        unprofiled CPU times qualified sample shares; no historical coefficient is
+        subtracted. Other category budgets are null." The nearest antecedent of "Other"
+        is the remaining categories of those two qualified profiles.'
+      wrong_outcome: 'Those categories are not null. results.json records seven non-null
+        `estimated_cpu_ns_per_page` values per qualified profile — for `cc1e1ca4…:geometry:automatic:4:128:256`:
+        page_consumption 216.0088, poll_and_completion 138.4895, lookup_and_admission
+        72.2933, caller_loop_or_other 28.7431, ready_and_guard 2.6130, guard_release
+        0.8710, summing with prefetch_and_prediction and unresolved to 2815.94 against
+        that arm''s measured 2815.95 CPU ns/page; the pressure candidate sums to 1619.98
+        against 1619.97. The sentence tells the adoption reader that only two categories
+        were resolved when the qualified arms are fully partitioned, which is the
+        evidence the plan''s RC-G1 escalation lever ("profile both exact failing arms
+        at the pool layer") consumes.'
+      found_by:
+      - general-peer-opus
+      reason: already_grounded
+      evidence: Both qualified profiles retain non-null remaining category budgets
+        in results.json. The six unqualified profiles have null budgets. Correct the
+        ambiguous antecedent as a relabel; no measurement or acceptance claim changes
+        and no rerun is needed.
+      disposition: relabelled_without_rerun
+    strengths:
+    - All six initial reports and both targeted reports are canonical; admitted findings
+      are resolved.
+    - The owner-preregistered confirmation passes on its complete 400-pair sample;
+      the failed 30-pair campaign remains unchanged and separate.
+    - Frozen native fields and null limitations are explicit; unqualified candidate
+      cold CPU estimates remain null.
+    summary:
+      critical: 0
+      high: 0
+      medium: 0
+    recommendation: ready_to_merge
+    next_action: RC6 batch complete; run the single holistic integration review before
+      scope readiness and PR.
+    coverage:
+      reports_received: 6
+      reports_successful: 6
+      execution_classes_required:
+      - peer
+      execution_classes_successful:
+      - peer
+      missing_canonical_reports: []
+      limitations:
+      - Review assigns only each role's gates. The targeted review is limited to B5-A1
+        and does not clear performance adoption or final cross-batch integration.
+      - The owner-disposition targeted review clears B5-P1/P2 only. Candidate cold
+        CPU attribution remains an explicit acceptance gap, so RC6 and integration
+        readiness remain incomplete.
+      - Subsequent owner direction accepts the cold CPU nulls for RC6 closure with
+        an explicit pre-implementation deliverable in readahead-efficiency. Earlier
+        report limitations remain historical; no scientific qualification flag changes.
+    fix_rounds: 1
+    resolved:
+    - severity: high
+      gate: architecture
+      area: testing
+      location: benches/mmap_workloads/coalescing.py:210
+      trigger: Run the documented validation command `python3 benches/mmap_workloads/coalescing.py
+        CAPTURE.json` (or the new `ScanEvidenceContract.test_real_backend_mechanism_capture_retains_consumption_and_full_credit_state`,
+        which calls the same `validate_mechanisms`) on a capture whose `wrong_hint_canary`
+        reports demand-hot misses or protected evictions.
+      wrong_outcome: 'Both exit successfully. I confirmed this by falsification against
+        a retained capture: setting `demand_hot_misses: 99` and `protected_evictions:
+        7` in `rc6-local-evidence/mechanisms/linux/captures/0000.json` still passes
+        `validate_mechanisms`, and deleting the whole `wrong_hint_canary` key also
+        passes. The changed contract in benches/evidence/readahead_coalescing/README.md
+        states "Run thirty fresh processes on each backend for RC-G5 and require 1,500
+        hot hits, zero hot misses/protected evictions, bounded flight samples, nonzero
+        abandoned occupancy, zero terminal ownership and full recovery in every capture",
+        and describes the validator as what "checks the observed mechanism contract".
+        No committed script, test, or campaign manifest checks any of those six values;
+        the producer records them and stops. The 60 retained captures do satisfy them
+        (I checked all 60: 1500/0/0/0/0 with nonzero abandoned occupancy, zero deviations),
+        so no present claim is wrong — the guarantee is simply unenforced on rerun,
+        which is the one RC-G5 gate this wave''s capture adapter exists to witness.'
+      suggestion: In benches/mmap_workloads/coalescing.py, add a canary check to `validate_mechanisms`
+        alongside the existing `validate_small_capacity`/`validate_turns`/`validate_control`
+        calls, asserting the six values the README names. Shared root is the validator,
+        not the 60 captures or the Rust producer.
+      id: B5-A1
+      found_by:
+      - architecture-peer-opus
+      - general-peer-opus
+      verified: Root reproduced both corrupt-outcome and missing-key acceptance in
+        memory against the unchanged retained Linux 0000 capture; target/readahead-coalescing/b5-fix1-root-falsification.json.
+        All 60 actual captures meet the documented canary limits.
+      disposition: fixed
+      resolution: Shared checker enforces the documented canary. Root and Opus independently
+        reject the original corrupt/missing-canary falsifiers, accept all60 unchanged
+        captures, and verify immutable executable/archive/source identities. Root
+        existing 11-case Python suite passes.
+      verification: benches/evidence/readahead_coalescing/validator-revalidation.json
+    - severity: high
+      gate: performance
+      area: efficiency
+      location: benches/evidence/readahead_coalescing/results.md:42
+      trigger: Run the canonical frozen DRP-G4 ordinary eight-thread comparison under
+        the retained 30-pair protocol.
+      wrong_outcome: The elapsed-ratio upper is 1.074171, exceeding the required 1.00
+        bound; the archived shared gate reports FAIL. The passing direct comparison
+        does not satisfy this adoption requirement.
+      suggestion: 'needs decision: Retain the adoption blocker and obtain the owner''s
+        disposition of the failed canonical gate following the completed diagnostic;
+        its passing result authorizes neither gate substitution nor an unconfirmed-regression
+        bisect.'
+      id: B5-P1
+      found_by:
+      - general-peer-gpt6-astra
+      disposition: owner_disposition_implemented
+      verified: Retained shared-gate result and direct diagnostic verified in results.json
+        and results.md.
+      owner_disposition:
+        status: resolved
+        evidence:
+        - The owner explicitly authorized one confirmation and withdrew the earlier
+          no-large-campaign instruction. The hashed pre-registration archive matches
+          the retained declaration, README, checkpoint and orchestration; these precede
+          measurement and require adoption whichever way, without pooling or a second
+          campaign.
+        - Original executable hashes match. All 804 qualification and measurement
+          process rows preserve the original work, iterations, runner identities,
+          CPU set, alternating order and pre-run binding. Host protocol snapshots
+          remain stable.
+        - All 400 measured pairs reconstruct the paired CSV byte-for-byte. The declaration
+          recorded the frozen converter's 30-pair restriction and use of the existing
+          raw validation, shared comparison writer, summarizer and gate for all 400
+          pairs before measurement.
+        - 'The retained remote shared gate passes. Independently invoking the existing
+          local comparison executable on the retained CSV also passes: geomean 0.9776689295560357,
+          upper 0.9980337616928986 <= 1.00. results.json and results.md adopt this
+          confirmation as declared.'
+        - The original failed 30-pair archive and CSV retain their registered hashes
+          and remain separate. The initial metadata-only failure occurred before the
+          native-process loop; retained correction evidence and identical orchestration
+          support one scientific campaign, with no discarded samples. The historical
+          failure remains true but no longer constitutes the undispositioned adoption
+          blocker recorded in B5-P1.
+      verification: benches/evidence/readahead_coalescing/owner-disposition-verification.json
+    - severity: high
+      gate: performance
+      area: validation
+      location: benches/evidence/readahead_coalescing/results.md:109
+      trigger: Evaluate mandatory RC-G6 reporting for the immutable frozen scan arms
+        using the retained captures.
+      wrong_outcome: Exact SQE/CQE/range counts, EOF/consumer-stop waste and control-entry
+        visits remain null. The capture contract explicitly prevents these missing
+        measurements from establishing RC-G6 completion.
+      suggestion: 'needs decision: Keep RC-G6 incomplete until an owner-approved measurement
+        path can supply the missing guarantees within the frozen-executable and host-security
+        constraints; sampled stacks and configured geometry cannot substitute.'
+      id: B5-P2
+      found_by:
+      - general-peer-gpt6-astra
+      disposition: owner_disposition_implemented
+      verified: Frozen source/captures omit exact fields; source investigation and
+        host capability record retained; results.json values remain null.
+      owner_disposition:
+        status: resolved
+        evidence:
+        - 'The materialized documentation diff implements the exact owner clarification
+          in the plan and README: mechanism reporting applies to every arm capable
+          of emitting it, while candidate attribution must remain qualified.'
+        - Independently reconstructed frozen CPU/elapsed per useful 4 KiB, polls/page
+          and every native prefetch field from all 30 measured rows for each of the
+          six comparisons. Reported values match the hashed raw records; mmap controls
+          correctly have zero polls and no prefetch object.
+        - Actual SQE/CQE/range counts, EOF/consumer-stop waste and control-entry visits
+          remain three null groups with explicit adjacent limitations. These nulls
+          comply with the clarified contract, so the recorded frozen-field wrong outcome
+          no longer survives.
+        - Optional strace archive and raw hashes match. Independently summing 1,215
+          io_uring_enter returns reproduces 17,123 submitted SQEs. Reporting confines
+          this to whole-process submissions and excludes replay timing from primary
+          samples; it supplies no CQE/range, waste or control-entry attribution.
+      verification: benches/evidence/readahead_coalescing/owner-disposition-verification.json
+    targeted_review:
+      reviewer: peer-opus
+      effort: high
+      gates:
+      - architecture
+      issues:
+      - B5-A1
+      status: pass
+      report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-fix1-review/peer-opus.normalized.yaml"
+      successful_reports: 1
+      replacement_attempts: 0
+      limitation: Reviewer could not acquire the Cargo build lock under read-only
+        enforcement (10 of11 suite cases passed, real-backend case stopped before
+        validation); root11-case suite passed and reviewer independently validated60
+        captures plus falsifiers.
+    owner_disposition_review:
+      reviewer: peer-gpt6-astra
+      effort: high
+      gates:
+      - performance
+      issues:
+      - B5-P1
+      - B5-P2
+      status: pass
+      report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-owner-disposition-review/peer-gpt6-astra.normalized.yaml"
+      successful_reports: 1
+      replacement_attempts: 0
+      manifest_status: ok
+      schema_valid: true
+      reviewed_file_hashes_verified: 13
+      scope: Exact owner dispositions only; candidate cold attribution and final integration
+        remain incomplete.
+    owner_accepted_limitations:
+    - id: RC6-COLD-ATTRIBUTION
+      gate: RC-G6
+      status: owner_accepted_limitation
+      requirement: 'Owner disposition B5-P2: RC-G6 is complete when candidate fields
+        are all present and qualified.'
+      source: benches/evidence/readahead_coalescing/owner-dispositions-20260914.md
+      evidence: benches/evidence/readahead_coalescing/owner-disposition-verification.json
+      reason: 'Candidate cold prefetch/control CPU attribution remains unqualified:
+        the initial 16-replay cycles/32768 profile has 20 orphaned / 1600 timed samples;
+        the retained 64-replay cycles/65528 profile has 5859 / 4134; the 16-replay
+        cycles/16384 capture has 1499 / 1023; the single 16-replay cpu-clock/32768
+        capture has 366 / 249. All exceed the unchanged orphaned * 100 <= timed requirement.
+        Category estimates remain null. No further capture, classifier change or qualification
+        relaxation was made.'
+      next_action: &1
+        scope: readahead-efficiency
+        required_before: product implementation
+        deliverable: qualified cold CPU attribution
+        method: frame-pointer diagnostic replay
+        separate_perturbed_executable: true
+        own_source_build_executable_identity: true
+        bench_plan_before_replay: true
+        preserve_RC6_primary_and_failed_profiles: true
+        more_repetitions_are_not_a_remedy: true
+      owner_disposition:
+        recorded_at: '2026-09-14T18:59:28.756795+00:00'
+        owner: Sören via sibling Claude session and explicit user acceptance
+        source: benches/evidence/readahead_coalescing/owner-cold-attribution-disposition-20260914.md
+        source_sha256: 5a5ac180e3a99d3394356bc2278515dab6d1ece2165efaf02f8e35b834c1bb58
+        status: accepted_reporting_limitation_close_RC6
+        profile_qualified: false
+        timed_samples: 249
+        orphaned_samples: 366
+        cause: Incomplete caller unwinding; unchanged orphaned * 100 <= timed rule
+          withholds category CPU budgets.
+        cold_comparison: cold-mmap
+        cold_elapsed_ns_per_useful_4k: 1472.5425455729167
+        cold_cpu_ns_per_useful_4k: 1463.9500732421875
+        cold_category_budgets:
+        qualified_pressure_attribution_retained: true
+        numeric_gates_changed: false
+        default_budget_bytes: 524288
+        follow_up: *1
+    acceptance_gaps: []
+  review_completed_at: '2026-09-14T16:32:43.795407+00:00'
+  native_validation: Root11-case Python suite and all60 immutable captures passed;
+    source/executable/archive hashes and both original falsifiers verified. See benches/evidence/readahead_coalescing/validator-revalidation.json.
+    Current full native validation passes378 local/400 Linux, strict all-target Clippy,
+    formatting and Rustdoc; benches/evidence/readahead_coalescing/adoption-verification.json.
+  performance_gates: All numeric gates pass. RC-G6 reporting is complete under the
+    explicit owner acceptance of cold CPU nulls; qualification stays false and the
+    frame-pointer deliverable moves to readahead-efficiency before implementation.
+integration_review:
+  status: pending
+  directory: ".peer/readahead-coalescing/20260914T090833Z-505efd/integration-review"
+  reviewers:
+  - peer-gpt6-astra
+  - peer-opus
+  effort: high
+  scope: Cross-batch interactions, final acceptance/dispositions and current native
+    validation; no repeated batch-local role reviews.

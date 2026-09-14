@@ -3,14 +3,14 @@ checkpoint:
   scope_name: readahead-coalescing
   scope_path: scopes/active/readahead-coalescing
   branch: feat/readahead-coalescing
-  last_commit: 6a7c3883917c3fc59102864452b36b032fb6a9f9
-  updated_at: '2026-09-14T13:35:34.230066+00:00'
+  last_commit: 5edb6a7f64bcd0137cbd75d03821780b38c679f2
+  updated_at: '2026-09-14T19:00:26Z'
   batch:
-    number: 4
+    number: 5
     tasks:
-    - RC5
-    phase: complete
-    status: completed
+    - RC6
+    phase: integration
+    status: pending
   routing_snapshot:
     epoch_id: 20260914T090833Z-505efd
     tester:
@@ -32,72 +32,365 @@ checkpoint:
     review_transport: headless peer
   reports:
     tester:
-      RC5: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/readahead-coalescing/20260914T090833Z-505efd/b4-tester-RC5"
-    prior_batch_review: ".peer/readahead-coalescing/20260914T090833Z-505efd/b3-synthesis.yaml"
+      RC6: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/readahead-coalescing/20260914T090833Z-505efd/b5-tester-RC6"
+    prior_batch_review: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-synthesis.yaml"
     implementer:
-      RC5: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/readahead-coalescing/20260914T090833Z-505efd/b4-implementer-RC5"
-    tester_correction: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/readahead-coalescing/20260914T090833Z-505efd/b4-loom-granule-correction"
-    tester_lint_correction: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/readahead-coalescing/20260914T090833Z-505efd/b4-loom-lint-correction"
+      RC6: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/readahead-coalescing/20260914T090833Z-505efd/b5-implementer-RC6"
+    results: benches/evidence/readahead_coalescing/results.md
+    readme_completion: "/root/b5_implementer_rc6 completed README.md only; links and
+      diff check passed."
     review:
-      general: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/readahead-coalescing/20260914T090833Z-505efd/b4-review-general"
-      architecture: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/readahead-coalescing/20260914T090833Z-505efd/b4-review-architecture"
-      compliance: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/readahead-coalescing/20260914T090833Z-505efd/b4-review-compliance"
-    synthesis: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-synthesis.yaml"
-  in_flight_mutations: []
+      general: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/readahead-coalescing/20260914T090833Z-505efd/b5-review-general"
+      architecture: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/readahead-coalescing/20260914T090833Z-505efd/b5-review-architecture"
+      compliance: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/readahead-coalescing/20260914T090833Z-505efd/b5-review-compliance"
+    initial_synthesis: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-initial-synthesis.yaml"
+    fix1: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-fix1-canary"
+    fix1_review: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-fix1-review"
+    synthesis: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-synthesis.yaml"
+    owner_dispositions: benches/evidence/readahead_coalescing/owner-disposition-verification.json
+    owner_disposition_review: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-owner-disposition-review/peer-gpt6-astra.normalized.yaml"
+    integration_review: ".peer/readahead-coalescing/20260914T090833Z-505efd/integration-review"
+  capture_adapter_scope:
+    paths:
+    - benches/mmap_workloads.rs
+    - tests/scan_geometry_validation.py
+    reason: The existing accepted standalone capture contract has real producer observations
+      but lacks a portable scenario driver/aggregation. Keep it in the already hashed
+      entry file; preserve the frozen runner list.
+  performance_gates:
+    status: passed_with_owner_accepted_cold_cpu_reporting_limitation
+    default_budget_bytes: 524288
+    escalation: Exact-arm pool-layer profiling on RC-G1 failure; no budget or bound
+      change.
+    drp:
+      status: passed_owner_confirmation_original_failure_retained
+      product_commit: 5edb6a7f64bcd0137cbd75d03821780b38c679f2
+      candidate_executable_sha256: ae50a099a18f7a508d17d605118801f06ebdf22e9f89a5833b02772ffd5f0529
+      candidate_bundle_sha256: 5aa3ab2b489a0b2849ea9e2ad74ca984e20bb732062784c04da91fde4f5be821
+      remote_candidate: "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-rc5-candidate"
+      orchestration: target/readahead-coalescing/rc6-drp-orchestration-measured.py
+      setup_correction: target/readahead-coalescing/rc6-drp-qualification-correction.txt
+      reason_for_independence: Frozen DRP compiles the reviewed RC5 product through
+        its unchanged external runner. RC6 owns a separate bench capture entry; verify
+        measured product source equality at final acceptance.
+      results: target/readahead-coalescing/rc6-drp-qualified-evidence/gate-results.json
+      verification: target/readahead-coalescing/rc6-drp-qualified-evidence/local-verification.json
+      failed_lane: drp_g4_ordinary_base_8t
+      failed_upper: 1.0741712480733288
+      required_bound: 1.0
+      owner_direct_pairing:
+        status: passed_diagnostic_discriminator
+        session:
+        steering: "/private/tmp/dios-steering-drp-g4.md"
+        steering_sha256: ca3c820994114330fdb0122eead7b9fa9d284976e813d04a77a12382e26e047e
+        base: aa97c827fcf916fd3ecbbc71775dace0a27190a3
+        candidate: 5edb6a7f64bcd0137cbd75d03821780b38c679f2
+        qualification_pairs: 2
+        measured_pairs: 30
+        features:
+        - bench
+        original_protocol_unchanged: true
+        plan: benches/plans/readahead_coalescing.md
+        orchestration: target/readahead-coalescing/rc6-direct-orchestration.py
+        remote_evidence: "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-drp-direct-evidence"
+        next_action: Suspected branch regression not reproduced; no bisect. Original
+          canonical gate failure retained.
+        summary:
+          ratio_geomean: 0.918692147405878
+          ci95_upper: 0.9810665066495924
+          pairs: 30
+        archive_sha256: c2944d7ae999ea8a212d8673fe23c81570f9051874b5f3cc6661fc043d0f1c1c
+        local_verification: target/readahead-coalescing/rc6-drp-direct-evidence/local-verification.json
+      owner_confirmation:
+        campaign_id: rc6-drp-confirmation-20260914
+        registered_at: '2026-09-14T15:59:37.773491+00:00'
+        owner: Sören via sibling Claude session and explicit user disposition
+        owner_steering_sha256: c162dbbb8a31c1c1109fa27a838d6341114024b3e49622295c2a39f14187316d
+        lane: drp_g4_ordinary_base_8t
+        qualification_pairs: 2
+        measured_pairs: 400
+        attempts_max: 1
+        ratio_orientation: candidate/base
+        bound: 1.0
+        gate_command: mise run gate measurement/paired.csv 1.00
+        expected_geomean: 0.92
+        planning_sd_log: 0.238
+        planning_one_sided_log_half_width: 0.02
+        result_adoption: Adopt this one confirmation result whichever way it goes.
+          A failure stands and returns to the owner; no second attempt.
+        pool_previous_samples: false
+        previous_failed_pairs: 30
+        previous_archive_sha256: 1150a08a28ac572fb8631e6804f56cc2dab7042c3ec9584f3da27b5b59fd48b4
+        previous_csv_sha256: 57722332507f5a3a8f4d6bb683005e8da22a8ea45cde6dabe505c4d2ac246303
+        base_executable_sha256: 0b49dc7dbe86d89c5390f94d7462818308104b6ce0d2f4ac8d001f9a5b250cfd
+        candidate_executable_sha256: ae50a099a18f7a508d17d605118801f06ebdf22e9f89a5833b02772ffd5f0529
+        base_source_commit: 1004a2e6fcae0bcc9552dc3211c2416e388a250d
+        candidate_source_commit: 5edb6a7f64bcd0137cbd75d03821780b38c679f2
+        runner_source_sha256: 34e376becd9db2abd9de95c53a8fe39b0986dfe64a6a4bf0f4ca1cc5f4c221d6
+        runner_build_sha256: f7ed6e387c206c9a0cdc907c5791311166b63e225442dba894a5fce3479e261f
+        input_sha256: 915341006e824c0212e82abc923d5999e34ede24e102ebd821dcc3d4494af37a
+        worker_cpu_set: 0-3,32-35
+        controller_cpu: 4
+        iterations: 32768
+        workload: real_pool_driver_shared_8_thread_ordinary_full_4096_byte_fold
+        pair_order: 'Even pair: base then candidate; odd pair: candidate then base.
+          Fresh process for each arm.'
+        host_protocol: Unchanged pinned Threadripper3970X/Samsung970PRO/Linux6.6.64,
+          performance governor, THP never, resident prefill, no competing campaign.
+        budget_bytes: 524288
+        product_or_bound_change: false
+        withdrawn_instruction: Prior no-large-campaign instruction withdrawn by owner
+          after the direct pairing rejected the suspected branch regression.
+        raw_validation: Existing direct-campaign frozen header/work/iteration/checksum/zero-allocation/arm/manifest/runner/CPU
+          validation over all400 pairs, followed by existing write_comparison and
+          shared summarize/gate. The frozen DRP converter hardcodes30 and is not rebuilt
+          or used to truncate this sample.
+        registration: benches/evidence/readahead_coalescing/drp-confirmation-registration.json
+        registration_sha256: 6c080048d9016cbc68cd858a40dcdcb0e850a066eb689598b4a72a0485156af9
+        status: passed_adopted
+        exec_session: 63833
+        orchestration: target/readahead-coalescing/rc6-confirmation-orchestration.py
+        pre_registration_archive: target/readahead-coalescing/rc6-confirmation-preregistration.tar.gz
+        pre_registration_archive_sha256: db454f90cc79baf1aa2ee9eb4e7d4b6d2c873ce3c9bcfe1584ed12071de06c3e
+        setup_correction: Prior scratch metadata was absent; restored exact hashed30-pair
+          archive. First invocation reached no qualification or measured process,
+          and its setup evidence/empty scratch were preserved. Original orchestration/declaration
+          unchanged. No sample discarded or repeated.
+        remote_preflight_evidence: "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-confirmation-preflight-missing-scratch"
+        session:
+        summary:
+          adopted_bound:
+          ci95_upper: 0.9980337616928986
+          kind: characterization
+          pairs: 400
+          ratio_geomean: 0.9776689295560357
+          ratio_orientation: candidate/base
+        gate_exit_code: 0
+        adopted_bound: 1.0
+        archive_sha256: 87e91bbe8afb0cd93af6b625826c9f3bced95178ae0c33e831910d7111d692c5
+        csv_sha256: a91ee7b0ee9805b182d0dbb93816b2a12f97f7313f4bc1ecf37cef510a03ec10
+        evidence: benches/evidence/readahead_coalescing/owner-disposition-verification.json
+        mode_analysis:
+          record: benches/evidence/readahead_coalescing/drp-modes.json
+          measured_pairs: 400
+          base_slow_count: 146
+          candidate_slow_count: 245
+          base_slow_share: 0.365
+          candidate_slow_share: 0.6125
+          fast_in_mode_ratio: 0.8677214412544927
+          slow_in_mode_ratio: 0.9287689438344845
+          cutoffs_unchanged: true
+          samples_excluded: 0
+          owner_follow_up: benches/plans/dios_r1_r7_read_performance.md#owner-follow-up-drp-g4-resolution
+    mechanisms:
+      status: passed_both_backends
+      processes_per_backend: 30
+      orchestration: target/readahead-coalescing/rc6-mechanism-orchestration.py
+      eager_artifacts: target/readahead-coalescing/rc6-eager-executable
+      linux_artifacts: "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-linux-executable"
+      eager_executable_sha256: 55259b35f9ab24f1b24c7db5ac7ca54fe1930f5d14ba3c701994d8e3332c6495
+      eager_archive_sha256: 667cea46a022eec8bc639e902dece251c4d07d01836c11bccaf42bebfbcd2160
+      linux_executable_sha256: a10ca92b2bc199b387384bb0aa900413152252e29647647d38b9ebca8955af06
+      linux_archive_sha256: 6423b03d85995357b9c28892f53f4277e87031cb5b082f618dcac0302f382d64
+      linux_local_transfer: verified
+    headlines:
+      status: passed_all_six
+      orchestration: target/readahead-coalescing/rc6-headline-orchestration.py
+      remote_output: "/dev/shm/dios-rc6-headlines-20260914"
+      remote_archives: "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-headline-evidence"
+      candidate_executable_sha256: a10ca92b2bc199b387384bb0aa900413152252e29647647d38b9ebca8955af06
+      snapshot_commit: ad434b21c2c5b31d54845052cf1b27cdeadde829
+      session:
+      archive_hashes:
+        cold-mmap: 30ec426c55eb0efdac31c6b97bfc3a6b73781811389a74b6bc4a5fa606a999f4
+        cold-current-old-budget: 7ac3afbdd647d78c6276bb316aa8059c50ce34c254dab316dfc708fb4b612e90
+        cold-current-new-budget: cb1c4511965849373a08b6e1ba857109e22c6060dceeeb41e7f5dde68459796f
+        pressure-mmap: c06b91b2d52a3792a6c3485f59d894664b7acc88112829634f1cae3abf2136ca
+        pressure-current-old-budget: 25664c9b6619cfa176b79bbaff6a3efebff1b7e8bcb665162b81ac216fc62011
+        pressure-current-new-budget: '088e7e0a53e0c93c79e519bc1537f79dbc61e677381ec46bf62dd5f3a0e8978e'
+    inherited:
+      status: passed_all_existing_numeric_gates_and_witnesses
+      orchestration: target/readahead-coalescing/rc6-inherited-orchestration.py
+      remote_raw: "/dev/shm/dios-rc6-inherited-20260914"
+      remote_durable: "/home/srnnkls/build/dios-readahead-coalescing-20260914/target/readahead-coalescing/rc6-inherited-evidence"
+      primary_archive_sha256: f8e3de0241b276db22db05b95429f5a5f771faaecca3fc62bf3e92fab258c8f3
+      frozen_archive_sha256: 4d040bd61d7f0be65fb6b0d58265520777a4a6e9e4de3add5c20cca3911269af
+      session_completion: 93419
+    attribution:
+      status: reporting_complete_owner_accepted_cold_nulls
+      session:
+      profile_orchestration: target/readahead-coalescing/rc6-profile-orchestration.py
+      observer_orchestration_prepared: target/readahead-coalescing/rc6-observer-orchestration.py
+      frozen_missing:
+      - actual SQEs/CQEs and request ranges
+      - aggregate EOF and consumer-stop waste
+      - control entry visits
+      limitation: The immutable frozen executables predate the observation seam and
+        cannot emit exact SQE/CQE/range, EOF/consumer-stop-waste or control-entry-visit
+        records. The owner RC-G6 clarification permits these three groups to remain
+        null; native CPU/elapsed, polls and exposed prefetch stats remain reported.
+        Configuration and prefetch totals are not substitutes for exact mechanism
+        counts.
+      diagnostics: target/readahead-coalescing/rc6-diagnostics-notes.txt
+      observer_session_completion: 20527
+      profiles_qualified: 2
+      profile_arms: 8
+      observer_controls_passed: 8
+      verification: target/readahead-coalescing/b5-evidence-verification.json
+      results: benches/evidence/readahead_coalescing/results.json
+      owner_amendment: Every arm that can emit the mechanism fields; frozen missing
+        groups remain null with explicit limitation. Candidate fields must remain
+        qualified.
+      optional_strace: benches/evidence/readahead_coalescing/owner-disposition-verification.json
+      cold_profile_attempts_retained: 4
+      further_captures_scheduled: false
+      retained_raw_symbol_replay:
+        status: unqualified
+        timed_samples: 249
+        orphaned_samples: 366
+        new_captures: 0
+        classifier_and_threshold_unchanged: true
+        evidence: benches/evidence/readahead_coalescing/cold-unwind-verification.json
+      owner_cold_disposition: &1
+        recorded_at: '2026-09-14T18:59:28.756795+00:00'
+        owner: Sören via sibling Claude session and explicit user acceptance
+        source: benches/evidence/readahead_coalescing/owner-cold-attribution-disposition-20260914.md
+        source_sha256: 5a5ac180e3a99d3394356bc2278515dab6d1ece2165efaf02f8e35b834c1bb58
+        status: accepted_reporting_limitation_close_RC6
+        profile_qualified: false
+        timed_samples: 249
+        orphaned_samples: 366
+        cause: Incomplete caller unwinding; unchanged orphaned * 100 <= timed rule
+          withholds category CPU budgets.
+        cold_comparison: cold-mmap
+        cold_elapsed_ns_per_useful_4k: 1472.5425455729167
+        cold_cpu_ns_per_useful_4k: 1463.9500732421875
+        cold_category_budgets:
+        qualified_pressure_attribution_retained: true
+        numeric_gates_changed: false
+        default_budget_bytes: 524288
+        follow_up: &2
+          scope: readahead-efficiency
+          required_before: product implementation
+          deliverable: qualified cold CPU attribution
+          method: frame-pointer diagnostic replay
+          separate_perturbed_executable: true
+          own_source_build_executable_identity: true
+          bench_plan_before_replay: true
+          preserve_RC6_primary_and_failed_profiles: true
+          more_repetitions_are_not_a_remedy: true
   red_gate:
     status: passed
-    command: RUSTFLAGS='--cfg loom' mise exec -- cargo test --offline --test loom_pool
-      rc5_ --no-default-features
-    exit_code: 101
-    verification: target/readahead-coalescing/b4-red.log
-    representative_falsifier: A lost production first-consumption notification fails
-      the post-final-drain zero-occupancy, promotion and ordered next-page assertions;
-      route reuse must preserve the old joined page bytes. The compiler names only
-      the missing actual-production Loom constructor.
-    supplemental_allocation_case: The existing shipping allocation scenario now exercises
-      C=128/R=256 and full vectors and passed locally; it is not claimed as RED or
-      Linux qualification.
-  scope_path_extension:
-    paths:
-    - src/allocation.rs
-    reason: Required cfg(loom) strict Clippy exposes multiple unsafe operations in
-      one existing element-initialization block. The in-range wrapping_add/write expression
-      preserves the allocation boundary with one unsafe operation.
-  oracle_correction:
-    reason: The test-only 512-byte frame geometry contradicts the production 4096-byte
-      floor. Correct only byte geometry; preserve the missing-constructor RED, concurrency
-      scenarios and falsifiers.
-    status: completed
-    red_attempts_added: 0
-    production_frame_floor: unchanged
-    report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-loom-granule-correction/correction.yaml"
-    root_inspection: Only the two existing scenarios’ frame/CQE byte geometry and
-      contract comments changed from unsupported 512 to production 4096 bytes, plus
-      formatting. The constructor RED, all interleavings, byte identities, slot generations,
-      credit counts and order/reuse assertions remain intact. No additional RED attempt
-      or GREEN result is claimed.
-  loom_lint_correction:
-    status: completed
-    report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-loom-lint-correction/correction.yaml"
-    red_attempts_added: 0
-    root_inspection: The three existing helpers borrow pool/channel endpoints from
-      their unchanged owned move-closure captures. Retained-handle drops, message
-      order and assertions stay in the same bodies; all new RC5 scenarios remain intact.
-      Required cfg(loom) library/integration Clippy passed with warnings denied.
-  green_gate:
+    command: CARGO_NET_OFFLINE=true PYTHONDONTWRITEBYTECODE=1 UV_CACHE_DIR=target/readahead-coalescing/b5-uv-cache
+      UV_PYTHON_DOWNLOADS=never mise exec -- uv run --offline --python 3.12 tests/scan_geometry_validation.py
+      ScanEvidenceContract.test_real_backend_mechanism_capture_retains_consumption_and_full_credit_state
+    exit_code: 1
+    verification: target/readahead-coalescing/b5-red.log
+    representative_falsifier: A no-op or synthetic capture cannot satisfy randomized
+      caller-byte checksums, actual raw attempt/CQE conservation and full explicit
+      occupancy tied to its exact raw call. Current executable reaches only the old
+      Linux-only diagnostic; compilation succeeded.
+  adapter_green:
     status: passed
-    verification: target/readahead-coalescing/b4-green-verification.json
-    local_tests: 378
-    linux_tests: 400
-    loom_tests: 20
-    miri_tests: 55
-    asan_local_tests: 271
-    asan_linux_tests: 284
-    numeric_adoption_gates_claimed: false
-  review_gate:
+    local_validation: target/readahead-coalescing/b5-green-local.log
+    local_python_cases: 11
+    linux_python_cases: 11
+    linux_benchmark_contract_tests: 15
+    strict_all_target_clippy: bench,mock on both hosts; passed
+    format: passed on both hosts
+    linux_validation_session: 20527
+    linux_snapshot_commit: ad434b21c2c5b31d54845052cf1b27cdeadde829
+    overlay: target/readahead-coalescing/b5-scan-overlay.json
+    implementation_report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-implementer-RC6/native.yaml"
+  adoption:
+    status: adopted_with_owner_accepted_cold_cpu_limitation
+    blockers: []
+    budget_or_bound_changes: false
+    product_changes_after_gate_failure: false
+    direct_diagnostic_status: passed_no_bisect
+    all_numeric_gates_passed: true
+    acceptance_gaps: []
+    accepted_limitations:
+    - *1
+    owner_cold_disposition: *1
+  review_snapshot:
+    files: target/readahead-coalescing/b5-review-files.json
+    diff: target/readahead-coalescing/b5-review.diff
+    requirements: target/readahead-coalescing/b5-review-requirements.md
+    known_adoption_blockers_retained: true
+  fix_round:
+    number: 1
     status: passed
-    canonical_reports: 6
-    fix_rounds: 0
-    report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b4-synthesis.yaml"
-  next_action: Commit RC5, then initialize the dependency-ready RC6 batch from its
-    routing snapshot.
+    targeted_reviewer: peer-opus
+    targeted_gates:
+    - architecture
+    issues:
+    - B5-A1
+    needs_decision:
+    - B5-P1
+    - B5-P2
+    green_verification: benches/evidence/readahead_coalescing/validator-revalidation.json
+    native_cases: 11
+    unchanged_captures_validated: 60
+    targeted_review: ".peer/readahead-coalescing/20260914T090833Z-505efd/b5-fix1-review/peer-opus.normalized.yaml"
+    targeted_review_successes: 1
+  previous_pause:
+    reason: needs_owner_decisions
+    finding_ids:
+    - B5-P1
+    - B5-P2
+    review_authority: review.yaml
+    task_authority: tasks.yaml
+    resume_at: Resolve the two recorded owner-decision findings at RC6 review disposition.
+      Preserve completed RED/GREEN/initial/fix reviews; no repeated wave or timing
+      campaign is implied. Full native cross-batch validation and holistic integration
+      review remain after acceptance.
+  owner_dispositions:
+    recorded_at: '2026-09-14T15:59:37.773491+00:00'
+    source: benches/evidence/readahead_coalescing/owner-dispositions-20260914.md
+    sha256: c162dbbb8a31c1c1109fa27a838d6341114024b3e49622295c2a39f14187316d
+    B5-P1: One pre-registered2+400 confirmation; same binaries/work/protocol/bound;
+      adopt either result; no pooling or second attempt.
+    B5-P2: RC-G6 applies to every arm that can emit the fields; frozen native costs/stats
+      remain reported and three mechanism groups stay null with limitation. Candidate
+      fields must be present and qualified.
+    B5-P1_status: confirmation_pass_adopted_targeted_review_passed
+    B5-P2_status: frozen_reporting_clarification_reviewed_candidate_cold_qualification_still_required
+  owner_completion_direction:
+    source: "/private/tmp/dios-steering-world-class.md"
+    sha256: 9b00bb5aad9b0cff9c50334fa9a52d05b42a7aae65cb18abf05d948709367ba3
+    pr_explicitly_authorized: true
+    confirmation_adoption_reaffirmed: true
+    mode_accounting_requested_and_recorded: true
+    order:
+    - finish RC6 and PR
+    - warm-path scope draft and review
+    - scan scope and stall-containment scope drafts and reviews
+    - I/O scaling study scope draft and review
+    product_code_for_follow_up_scopes_authorized: false
+    owner_decisions_required:
+    - EBR protocol or FrameState changes
+    - ring topology change
+    - DRP-G4 protocol amendment
+    cold_attribution_disposition: accepted_with_mandatory_preimplementation_frame_pointer_follow_up
+    readahead_efficiency_preimplementation_deliverable: *2
+  resume_native_validation: target/readahead-coalescing/rc6-resume-checks.json
+  integration:
+    status: pending_review
+    native_validation: benches/evidence/readahead_coalescing/adoption-verification.json
+    report_directory: ".peer/readahead-coalescing/20260914T090833Z-505efd/integration-review"
+    pr_authorized: true
+    owner_decisions_pending: []
+  closed_attribution_pause:
+    reason: owner_cold_attribution_disposition_pending
+    acceptance_gap_ids:
+    - RC6-COLD-ATTRIBUTION
+    review_authority: review.yaml
+    task_authority: tasks.yaml
+    resume_at: Record whether the owner accepts the retained cold CPU nulls for closure
+      or keeps qualification required. No further capture, decoder investigation or
+      confirmation campaign scheduled. Preserve all cleared reviews. PR body prepared
+      at target/readahead-coalescing/rc6-pr-body.md; final integration remains after
+      RC6 acceptance.
+    forcing_requirement: 'B5-P2: RC-G6 is complete when the candidate fields are all
+      present and qualified and the frozen nulls carry their recorded limitation.'
