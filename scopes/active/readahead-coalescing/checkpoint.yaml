@@ -3,8 +3,8 @@ checkpoint:
   scope_name: readahead-coalescing
   scope_path: scopes/active/readahead-coalescing
   branch: feat/readahead-coalescing
-  last_commit: 8fb9e041ecc071126b3fc3ca23f5879a55008a4a
-  updated_at: '2026-09-14T19:18:47Z'
+  last_commit: 1adc6173edd02c553b734e6c6bf6ab1a35f7c301
+  updated_at: '2026-09-14T19:45:15Z'
   batch:
     number: 5
     tasks:
@@ -398,5 +398,21 @@ checkpoint:
       RC6 acceptance.
     forcing_requirement: 'B5-P2: RC-G6 is complete when the candidate fields are all
       present and qualified and the frozen nulls carry their recorded limitation.'
-  next_action: Publish authorized PR, then draft warm-path scope and required follow-up
-    scopes with bench plans and review gates.
+  next_action: Push ASAN task correction and verify PR CI; scientific adoption and
+    integrated product evidence remain unchanged.
+  pull_request:
+    number: 17
+    url: https://github.com/srnnkls/dios/pull/17
+    state: draft
+    head: 1adc6173edd02c553b734e6c6bf6ab1a35f7c301
+  post_pr_ci:
+    status: native_and_targeted_review_passed_ci_pending
+    failure: ASAN enumerates benchmark orchestration tests requiring bench, then enables
+      only mock; Cargo refuses mmap_workload_contract before executing tests.
+    job: https://github.com/srnnkls/dios/actions/runs/34886316227/job/104117744127
+    raw_log: target/readahead-coalescing/pr17-asan-ci.log
+    files:
+    - mise.toml
+    product_or_gate_change: false
+    evidence: benches/evidence/readahead_coalescing/pr-ci-verification.json
+    targeted_review: ".peer/readahead-coalescing/20260914T090833Z-505efd/ci-comment-review/peer-opus.normalized.yaml"
