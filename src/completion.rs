@@ -1,8 +1,8 @@
 //! Drained completions: driver-issued token, op kind, and the op result.
 
+use crate::driver::read_vector::{ReadContinuation, ReadDestination};
 use crate::driver::{OpKind, OpToken};
 use crate::error::IoError;
-use crate::pool::InFlightFrame;
 
 /// One drained op result. `result` carries the byte count on success or the
 /// operating failure surfaced from the backend. A pool read also returns the
@@ -12,7 +12,8 @@ pub struct Completion {
     token: OpToken,
     kind: OpKind,
     result: Result<u32, IoError>,
-    frame: Option<InFlightFrame>,
+    frame: Option<ReadDestination>,
+    continuation: Option<ReadContinuation>,
 }
 
 impl Completion {
@@ -20,13 +21,15 @@ impl Completion {
         token: OpToken,
         kind: OpKind,
         result: Result<u32, IoError>,
-        frame: Option<InFlightFrame>,
+        frame: Option<ReadDestination>,
+        continuation: Option<ReadContinuation>,
     ) -> Self {
         Self {
             token,
             kind,
             result,
             frame,
+            continuation,
         }
     }
 
@@ -53,8 +56,20 @@ impl Completion {
 
     pub(crate) fn into_parts(
         self,
-    ) -> (OpToken, OpKind, Result<u32, IoError>, Option<InFlightFrame>) {
-        (self.token, self.kind, self.result, self.frame)
+    ) -> (
+        OpToken,
+        OpKind,
+        Result<u32, IoError>,
+        Option<ReadDestination>,
+        Option<ReadContinuation>,
+    ) {
+        (
+            self.token,
+            self.kind,
+            self.result,
+            self.frame,
+            self.continuation,
+        )
     }
 }
 

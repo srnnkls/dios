@@ -1,8 +1,9 @@
 # Design: bounded readahead coalescing
 
-Revision 3, 2026-09-14. The owner selected ordinary READV;
-the revised [review gate passed](review.yaml). The owner approved implementation and selected a 512 KiB default;
-[validation.yaml](validation.yaml) records the decision and rationale.
+Draft revision 3, 2026-09-14. The owner selected ordinary READV;
+the revised [review gate passed](review.yaml). The owner recorded the
+512 KiB default byte budget and scope approval on 2026-09-14
+([validation.yaml](validation.yaml)).
 [scope.md](scope.md) defines the requirements and
 [the bench plan](../../../benches/plans/readahead_coalescing.md) defines gates.
 
@@ -173,14 +174,22 @@ Extent tracking returns only as a separate change if that cost matters.
 
 ## Byte budget and arena geometry
 
-The owner-selected default budget remains pending between 512 KiB and 1 MiB.
+The owner-selected default budget is 512 KiB (524,288 bytes). Depth 4 of the
+budget probe is past the knee (1,183.67 ns per useful 4 KiB versus 1,164.53
+at 1 MiB, 1.6%), leaves 368 ns/page of headroom to mmap's 1,552.23 for
+pool-layer cost, and halves the minimum pool tax and the speculative
+pollution bound. The 1 MiB row is retained for a later, separate owner
+decision. Those probe workloads motivate the budget; they do not prove pool
+performance.
 Convert bytes to whole pages with floor division, capped by spare frames and
 R-1, retaining demand reservation. An explicit page-count override preserves
 its existing semantics. Caller-configured R is not silently increased.
 The scan runner uses R=2*C, miss headroom=3*R and an 8 MiB cold payload arena
 for candidates and frozen controls; pressure retains its 64 MiB payload arena.
-At 4 KiB the two budgets require 897 / 1,793 minimum frames, including one
-guard. Report descriptor, routing and notification metadata separately.
+At 4 KiB the selected budget gives C=128, R=256 and miss headroom 768,
+requiring 897 minimum frames including one guard; the retained 1 MiB
+alternative would require 1,793. Report descriptor, routing and notification
+metadata separately.
 The frozen DRP runner keeps R=1 and zero default speculative credits.
 
 B vector credits, B >= 2 in vector mode, target a cycle between B-1 and B speculative vectors,
@@ -313,7 +322,7 @@ claimed improvement on the pinned 6.6 host. Plain READV follows the
 - A separate coarse-granule pool already has favorable scan evidence but
   changes acquisition granularity and can create duplicate residency. This
   scope preserves independent pages instead.
-- The byte budget is an explicit pending owner decision. RC-G2 compares
+- The byte budget is a recorded owner decision, 512 KiB. RC-G2 compares
   coalescing both with the frozen old default and with the current per-page
   mechanism at the same new budget, read limit and arena. This separates a
   capacity increase from vector benefits; the earlier 6.6% gain from 32 to

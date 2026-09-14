@@ -2,7 +2,6 @@
 
 import argparse
 from collections import Counter
-import csv
 import json
 from pathlib import Path
 from statistics import fmean
@@ -10,6 +9,7 @@ from statistics import fmean
 from collect import digest
 from diagnose import category
 from scan_collect import validate_scan
+from scan_campaign import validate_pair_csv, validate_raw_identity, verify_retained
 from stacks import workload_boundary
 from validate import counters, validate_row
 
@@ -21,7 +21,7 @@ def match_identity(candidate: dict, primary: dict) -> None:
 
 
 def read_pairs(root: Path, case: dict) -> list[tuple[dict, dict]]:
-    pairs = {}
+    pairs, seen = {}, set()
     for reference in case["rows"]:
         path = root / case["name"] / Path(reference["raw"]).name
         if digest(path) != reference["sha256"]:
@@ -36,6 +36,13 @@ def read_pairs(root: Path, case: dict) -> list[tuple[dict, dict]]:
         if row["trace"] != (reference["mode"] == "trace"):
             raise ValueError("raw scan observer differs from index")
         pair, position = reference["pair"], reference["position"]
+        if position not in (0, 1) or not -2 <= pair < 30:
+            raise ValueError("scan pair identity exceeds the fixed campaign bound")
+        if (pair, position) in seen:
+            raise ValueError("duplicate measured or qualification scan arm")
+        seen.add((pair, position))
+        if "arms" in case:
+            validate_raw_identity(row, reference, case["arms"][position])
         if pair < 0:
             continue
         values = pairs.setdefault(pair, [None, None])
@@ -47,20 +54,18 @@ def read_pairs(root: Path, case: dict) -> list[tuple[dict, dict]]:
         base, candidate = pairs[index]
         if base is None or candidate is None:
             raise ValueError("missing scan pair")
-        for name in ("expected_checksum", "useful_bytes", "runner_sha256"):
+        fields = ("expected_checksum", "useful_bytes") if "arms" in case else (
+            "expected_checksum", "useful_bytes", "runner_sha256")
+        for name in fields:
             if base[name] != candidate[name]:
                 raise ValueError(f"paired scan {name} differs")
         result.append((base, candidate))
     if "summary" in case:
-        path = root / case["name"] / "paired.csv"
-        if digest(path) != case["csv_sha256"]:
-            raise ValueError("scan CSV hash differs")
-        rows = list(csv.reader(path.open()))
-        expected = [[str(a["elapsed_ns"]), str(b["elapsed_ns"])] for a, b in result]
-        if rows != [["base_ns", "candidate_ns"]] + expected or len(result) < 30:
-            raise ValueError("scan CSV differs from validated pairs")
-        if case["summary"]["pairs"] != len(result):
-            raise ValueError("scan statistic sample count differs")
+        if seen != {(pair, position) for pair in range(-2, 30) for position in (0, 1)}:
+            raise ValueError("scan lacks two qualification pairs and 30 measured pairs")
+        validate_pair_csv(root, case, result)
+        if "cpu" in case:
+            validate_pair_csv(root, case, result, "cpu_ns")
     return result
 
 
@@ -92,7 +97,22 @@ def arm(rows: list[dict]) -> dict:
             values[field.replace("_us", "_ns_per_page")] = fmean(r["usage"][field] * 1000 / pages for r in rows)
         if first["prefetch"] is not None:
             values["prefetch"] = {key: fmean(r["prefetch"][key] for r in rows) for key in first["prefetch"]}
+        values["coalescing"] = measured_coalescing(rows, pages)
     return values
+
+
+def measured_coalescing(rows: list[dict], pages: int) -> dict | None:
+    if not all(isinstance(row.get("coalescing"), dict) and "io" in row["coalescing"] for row in rows):
+        return None
+    observations = [row["coalescing"] for row in rows]
+    io = {key: fmean(row["io"][key] for row in observations) for key in observations[0]["io"]
+          if not key.endswith("vector_lengths")}
+    io["read_sqes_per_1024_pages"] = io["read_sqes"] * 1024 / pages
+    return {"io": io, "vector_lengths": [{key: row["io"][key] for key in (
+                "initial_vector_lengths", "continuation_vector_lengths")} for row in observations],
+            "control_entry_visits_per_page": fmean(sum(event["entry_visits"] for event in row["control"])
+                                                   / pages for row in observations),
+            "metadata_bytes": fmean(row["metadata_bytes"] for row in observations)}
 
 
 def flights(row: dict) -> dict:
@@ -157,36 +177,46 @@ def profile(path: Path, cpu: float, identity: dict) -> dict:
 def analyze(options: argparse.Namespace) -> None:
     result, primary = {"comparisons": [], "observations": {}, "profiles": {}}, {}
     identity = json.loads((options.primary[0] / "manifest.json").read_text())
+    identities = {identity["executable_sha256"]: identity}
     for root in options.primary:
         manifest = json.loads((root / "manifest.json").read_text())
         match_identity(manifest, identity)
-        if manifest["status"] != "complete" or manifest["mode"] != "run":
-            raise ValueError("analysis requires completed primary campaigns")
+        if manifest["status"] not in ("complete", "failed") or manifest["mode"] != "run":
+            raise ValueError("analysis requires measured primary campaigns")
+        for role, executable in manifest.get("executables", {}).items():
+            verify_retained(root / "frozen" if role == "frozen" else root, executable)
+            identities[executable["executable_sha256"]] = {**executable, "fixture": manifest["fixture"]}
         for case in manifest["comparisons"]:
             pairs = read_pairs(root, case)
             base, candidate = [arm([pair[index] for pair in pairs]) for index in (0, 1)]
             result["comparisons"].append({"name": case["name"], "base": case["base"],
                                           "candidate": case["candidate"], "summary": case["summary"],
-                                          "base_cost": base, "candidate_cost": candidate})
-            for key, value in (("base", base), ("candidate", candidate)):
-                primary[case[key]] = value["cpu_ns_per_page"]
+                                          "base_cost": base, "candidate_cost": candidate,
+                                          "arms": case.get("arms"), "gate_status": case.get("gate_status")})
+            for position, (key, value) in enumerate((("base", base), ("candidate", candidate))):
+                executable = case["arms"][position] if "arms" in case else manifest
+                primary[(executable["executable_sha256"], case[key])] = value["cpu_ns_per_page"]
     for root in options.observe or []:
         manifest = json.loads((root / "manifest.json").read_text())
-        match_identity(manifest, identity)
+        match_identity(manifest, identities[manifest["executable_sha256"]])
         if manifest["status"] != "complete" or manifest["experiment"] != "observe":
             raise ValueError("observation campaign incomplete")
         for case in manifest["comparisons"]:
-            if case["base"] != case["candidate"] or case["candidate"] not in primary:
+            key = (manifest["executable_sha256"], case["candidate"])
+            if case["base"] != case["candidate"] or key not in primary:
                 raise ValueError("observer changes configuration or lacks primary samples")
             pairs = read_pairs(root, case)
             witnesses = [flights(candidate) for _, candidate in pairs]
-            result["observations"][case["candidate"]] = {"overhead": case["summary"],
+            result["observations"][":".join(key)] = {"overhead": case["summary"],
+                "cpu_overhead": case.get("cpu", {}).get("summary"),
                 "trace_latency_qualified": case["summary"]["ci95_upper"] <= 1.05,
+                "trace_cpu_qualified": case.get("cpu", {}).get("summary", {}).get("ci95_upper", float("inf")) <= 1.05,
                 "occupancy": {key: fmean(w[key] for w in witnesses) for key in witnesses[0]}}
     for directory in options.profiles or []:
         metadata = json.loads((directory / "metadata.json").read_text())
         config = metadata["configuration"]
-        result["profiles"][config] = profile(directory, primary[config], identity)
+        key = (metadata["executable_sha256"], config)
+        result["profiles"][":".join(key)] = profile(directory, primary[key], identities[key[0]])
     options.output.mkdir(parents=True, exist_ok=False)
     (options.output / "model.json").write_text(json.dumps(result, indent=2) + "\n")
     (options.output / "tables.md").write_text(tables(result))

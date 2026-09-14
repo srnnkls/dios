@@ -17,6 +17,7 @@ use serde_json::json;
 use catalog::{Arm, Cache, Lane};
 use engine::{Source, Work};
 use fixture::error;
+use scan_config::CreditSelection;
 
 pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
     match arguments {
@@ -25,14 +26,7 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
             println!("{}", json!(scan_config::catalog()));
             Ok(())
         }
-        [command, input, config, mode, output] if command == "scan-sample" => match mode.as_str() {
-            "plain" => scan::sample::<false>(Path::new(input), config, Path::new(output)),
-            "trace" => scan::sample::<true>(Path::new(input), config, Path::new(output)),
-            _ => Err("scan mode must be plain or trace".to_owned()),
-        },
-        [command, input, config, repetitions, output] if command == "scan-profile" => {
-            scan::profile(Path::new(input), config, repetitions, Path::new(output))
-        }
+        [command, ..] if command.starts_with("scan-") => run_scan(arguments),
         [command] if command == "list" => {
             let lanes: Vec<_> = Lane::ALL.into_iter().map(|lane| json!({
                 "name": lane.name(), "arms": lane.arms(), "cache": lane.cache(),
@@ -64,6 +58,37 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
             }
         }
         _ => Err("usage: list | create NEW_DIR | summarize CSV | sample INPUT LANE ARM SEED plain|trace NEW_JSON".to_owned()),
+    }
+}
+
+fn run_scan(arguments: &[String]) -> Result<(), String> {
+    let [command, input, config, mode_or_repetitions, output] = arguments else {
+        let usage = match arguments.first().map(String::as_str) {
+            Some("scan-profile" | "scan-default-profile") => {
+                "scan requires INPUT CONFIG REPETITIONS OUTPUT"
+            }
+            _ => "scan requires INPUT CONFIG MODE OUTPUT",
+        };
+        return Err(usage.to_owned());
+    };
+    let credits = match command.as_str() {
+        "scan-sample" | "scan-profile" => CreditSelection::Override,
+        "scan-default-sample" | "scan-default-profile" => CreditSelection::Default,
+        _ => return Err("unknown scan command".to_owned()),
+    };
+    if command.ends_with("profile") {
+        return scan::profile(
+            Path::new(input),
+            config,
+            credits,
+            mode_or_repetitions,
+            Path::new(output),
+        );
+    }
+    match mode_or_repetitions.as_str() {
+        "plain" => scan::sample::<false>(Path::new(input), config, credits, Path::new(output)),
+        "trace" => scan::sample::<true>(Path::new(input), config, credits, Path::new(output)),
+        _ => Err("scan mode must be plain or trace".to_owned()),
     }
 }
 

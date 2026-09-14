@@ -2514,7 +2514,12 @@ impl<D: PoolBackend> Pool<D> {
 
     fn route_completion_batch(&self, control: &mut Control) {
         while let Some(completion) = control.batch.pop() {
-            let (driver_token, kind, result, write) = completion.into_parts();
+            let (driver_token, kind, result, destination, continuation) = completion.into_parts();
+            assert!(
+                continuation.is_none(),
+                "pool vector admission is not enabled"
+            );
+            let write = destination.map(crate::driver::read_vector::ReadDestination::into_point);
             if kind != OpKind::Read {
                 assert!(
                     write.is_none(),

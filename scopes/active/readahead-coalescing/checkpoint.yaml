@@ -1,0 +1,88 @@
+---
+checkpoint:
+  scope_name: readahead-coalescing
+  scope_path: scopes/active/readahead-coalescing
+  branch: feat/readahead-coalescing
+  last_commit: aa97c827fcf916fd3ecbbc71775dace0a27190a3
+  updated_at: '2026-09-14T10:10:33Z'
+  batch:
+    number: 1
+    tasks:
+    - RC1
+    - RC2
+    phase: complete
+    status: completed
+  routing_snapshot:
+    epoch_id: 20260914T090833Z-505efd
+    tester:
+      agent: inherit
+      effort: inherit
+      class: native
+    implementer:
+      agent: inherit
+      effort: inherit
+      class: native
+    reviewer:
+      agents:
+      - agent: peer-gpt6-astra
+        effort: high
+        class: peer
+      - agent: peer-opus
+        effort: high
+        class: peer
+  reports:
+    tester:
+      RC1: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-tester-RC1"
+      RC2: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-tester-RC2"
+    implementer:
+      RC1: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-implementer-RC1"
+      RC2: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-implementer-RC2"
+    review:
+      general: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-review-general"
+      architecture: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-review-architecture"
+      compliance: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-review-compliance"
+    synthesis: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-synthesis.yaml"
+    review_recovery:
+      general: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-review-general-astra-recovery"
+      architecture: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-review-architecture-astra-recovery"
+      compliance: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-review-compliance-astra-recovery"
+    targeted_review: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/readahead-coalescing/20260914T090833Z-505efd/b1-rereview1"
+  base_drift_preflight: target/readahead-coalescing/preflight/preflight.json
+  red_gate:
+    status: passed
+    verified_at: '2026-09-14T09:21:48Z'
+    reports:
+    - ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-tester-RC1/native.yaml"
+    - ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-tester-RC2/native.yaml"
+    representative_falsifiers:
+    - Counting only speculative SQEs accepts 34 total reads, rejected by RC1.
+    - Releasing a short-read slot/file early violates RC2 capacity-one and retirement
+      assertions.
+  green_gate:
+    status: passed
+    verified_at: '2026-09-14T09:48:11Z'
+    logs:
+      python: target/readahead-coalescing/b1-green-python.log
+      local: target/readahead-coalescing/b1-green-local.log
+      miri: target/readahead-coalescing/b1-green-miri.log
+      linux: target/readahead-coalescing/b1-green-linux.log
+    summary: 27 Python contract tests plus cost-model checks; 110 local and 125 Linux
+      Rust tests; strict all-target bench,mock Clippy and fmt on both hosts; Linux
+      profiling benchmark build; 3 stored-pointer Miri tests. Nightly emitted two
+      existing fetch_update deprecations in unchanged miss.rs; pinned strict validation
+      passed.
+  fix_round: 1
+  fix_validation:
+    status: passed
+    logs:
+    - target/readahead-coalescing/b1-fix1-local.log
+    - target/readahead-coalescing/b1-fix1-linux.log
+    summary: 10 Python scan contract tests; local fmt and diff check; Linux 15 benchmark
+      contract tests, strict bench Clippy, profiling rebuild; actual executable rejected
+      wrong arity with correct MODE/REPETITIONS usage in all four scan command variants.
+  review_gate:
+    status: passed
+    synthesis: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-synthesis.yaml"
+    targeted_report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-rereview1/peer-opus.normalized.yaml"
+    reports_successful: 5
+    fix_rounds: 1

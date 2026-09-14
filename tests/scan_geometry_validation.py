@@ -29,7 +29,72 @@ def sample() -> dict:
     }
 
 
+def coalescing_sample() -> dict:
+    row = sample()
+    row["configuration"] = "geometry:automatic:4:128:256"
+    row["config"].update(method="automatic", granule=4096, credits=128, read_limit=256)
+    row["requests"] = 16384
+    row["counters"].update(operations=16384, hits=16352, pending=32, completed_pending=32)
+    row["prefetch"].update(capacity=128, admitted=16352, demand_promoted=16352,
+                           automatic_admitted=16352)
+    row["coalescing"] = dict(
+        confirmed_window_page=64,
+        steady_intervals=[dict(
+            pass_index=0, start_page=1024, pages=1024, refills=1,
+            reads=[dict(kind="demand", page=1024, pages=1)] + [
+                dict(kind="speculative", page=1025 + index * 32, pages=32)
+                for index in range(32)
+            ],
+        )],
+        explicit_calls=[],
+    )
+    return row
+
+
 class ScanEvidenceContract(unittest.TestCase):
+    def test_coalescing_matrix_keeps_both_frozen_budget_comparisons(self):
+        try:
+            cases = matrix("coalescing", None)
+        except ValueError as failure:
+            self.fail(f"coalescing gate matrix is unavailable: {failure}")
+        expected = set()
+        for shape in ("geometry", "pressure"):
+            candidate = f"{shape}:automatic:4:128:256"
+            for base in (f"{shape}:mmap:4:0:0", f"{shape}:automatic:4:32:64", candidate):
+                expected.add((base, candidate))
+        self.assertTrue(expected <= {(base, candidate) for _, base, candidate in cases})
+        self.assertEqual(len({name for name, _, _ in cases}), len(cases))
+
+    def test_steady_sqe_limit_includes_demand_reads(self):
+        row = coalescing_sample()
+        validate_scan(row)
+        interval = row["coalescing"]["steady_intervals"][0]
+        interval["reads"] = [
+            dict(kind="demand", page=1024, pages=1),
+            dict(kind="demand", page=1025, pages=1),
+        ] + [dict(kind="speculative", page=1026 + index * 32, pages=32)
+             for index in range(32)]
+        with self.assertRaises(ValueError, msg="32 READVs plus two demand READs exceed 33 SQEs"):
+            validate_scan(row)
+
+    def test_explicit_control_work_is_bounded_per_call(self):
+        row = coalescing_sample()
+        row["configuration"] = "geometry:explicit:4:128:256"
+        row["config"]["method"] = "explicit"
+        row["prefetch"]["automatic_admitted"] = 0
+        row["coalescing"]["steady_intervals"] = []
+        row["coalescing"]["explicit_calls"] = [dict(
+            examined=64, protection_lookups=64, replacement_visits=128,
+            admission_visits=32, clock_visits=256,
+        )]
+        validate_scan(row)
+        for field, excessive in (("protection_lookups", 65), ("replacement_visits", 129)):
+            with self.subTest(field=field):
+                broken = copy.deepcopy(row)
+                broken["coalescing"]["explicit_calls"][0][field] = excessive
+                with self.assertRaises(ValueError, msg=f"explicit per-call {field} exceeds its bound"):
+                    validate_scan(broken)
+
     def test_host_snapshot_retains_readahead_and_queue_limits(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

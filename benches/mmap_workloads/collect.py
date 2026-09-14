@@ -15,9 +15,41 @@ from pathlib import Path
 import platform
 import shutil
 import subprocess
+import tarfile
 import time
 
 from validate import validate_row
+
+
+RUNNER_SOURCES = ["benches/mmap_workloads.rs"] + [
+    f"benches/mmap_workloads/{name}" for name in (
+        "mod.rs", "catalog.rs", "engine.rs", "fixture.rs", "observe.rs", "os.rs",
+        "resident.rs", "scan_config.rs", "scan.rs", "probe.rs", "probe/clock.rs")
+]
+
+
+def source_paths() -> list[Path]:
+    sources = sorted(Path(__file__).parent.rglob("*.rs"))
+    sources += sorted(Path(__file__).parent.glob("*.py"))
+    sources += [Path("benches/mmap_workloads.rs"), Path("Cargo.toml"), Path("Cargo.lock")]
+    return sources + sorted(Path("src").rglob("*.rs")) + [Path("build.rs")]
+
+
+def source_hashes() -> dict[str, str]:
+    root = Path(__file__).resolve().parents[2]
+    return {str(path.resolve().relative_to(root)): digest(path) for path in source_paths()}
+
+
+def archive_sources(output: Path, expected: dict[str, str]) -> dict:
+    path = output / "source.tar.gz"
+    with tarfile.open(path, "x:gz") as archive:
+        for name, checksum in expected.items():
+            if digest(Path(name)) != checksum:
+                raise ValueError(f"source changed during snapshot: {name}")
+            archive.add(name, arcname=name, recursive=False)
+    if source_hashes() != expected:
+        raise ValueError("source changed during archival")
+    return {"source_archive": str(path), "source_archive_sha256": digest(path)}
 
 
 def digest(path: Path) -> str:
@@ -113,24 +145,8 @@ def prepare(options: argparse.Namespace) -> tuple[Path, Path, dict]:
     output.mkdir(parents=True, exist_ok=False)
     binary = options.binary.resolve() if options.binary else build_binary(output)
     compiled = json.loads(execute([str(binary), "identity"]))
-    runner_sources = [Path("benches/mmap_workloads.rs")] + [
-        Path("benches/mmap_workloads") / name
-        for name in (
-            "mod.rs",
-            "catalog.rs",
-            "engine.rs",
-            "fixture.rs",
-            "observe.rs",
-            "os.rs",
-            "resident.rs",
-            "scan_config.rs",
-            "scan.rs",
-            "probe.rs",
-            "probe/clock.rs",
-        )
-    ]
     runner_hash = hashlib.sha256(
-        b"".join(path.read_bytes() for path in runner_sources)
+        b"".join(Path(path).read_bytes() for path in RUNNER_SOURCES)
     ).hexdigest()
     if compiled["runner_sha256"] != runner_hash or compiled["debug_assertions"]:
         raise ValueError("retained executable does not match current release harness")
@@ -143,21 +159,13 @@ def prepare(options: argparse.Namespace) -> tuple[Path, Path, dict]:
     fixture_identity = json.loads((fixture / "fixture.json").read_text())
     if digest(fixture / "pages.bin") != fixture_identity["sha256"]:
         raise ValueError("fixture content hash differs")
-    sources = sorted(Path(__file__).parent.rglob("*.rs"))
-    sources += sorted(Path(__file__).parent.glob("*.py"))
-    sources += [
-        Path("benches/mmap_workloads.rs"),
-        Path("Cargo.toml"),
-        Path("Cargo.lock"),
-    ]
-    sources += sorted(Path("src").rglob("*.rs")) + [Path("build.rs")]
     manifest = {
         "schema": 1,
         "status": "running",
         "mode": options.mode,
         "executable_sha256": identity,
         "executable": str(saved),
-        "sources": {str(path): digest(path) for path in sources},
+        "sources": source_hashes(),
         "fixture": fixture_identity,
         "fixture_device": str(Path(execute(["findmnt", "-T", str(fixture / "pages.bin"),
                                             "-no", "SOURCE"]).strip()).resolve()),

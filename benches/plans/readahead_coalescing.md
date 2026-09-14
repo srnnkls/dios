@@ -4,17 +4,15 @@ Revision 3, written before product implementation, 2026-09-14. Ordinary
 READV is selected; [scope](../../scopes/active/readahead-coalescing/scope.md)
 and [design](../../scopes/active/readahead-coalescing/design.md) passed their
 [Astra/Claude review](../../scopes/active/readahead-coalescing/review.yaml).
-The owner approved implementation and selected a 512 KiB default (524288 bytes),
-C=128/R=256/headroom=768 at 4 KiB. The minimum pool geometry is 897 frames.
-The scope decision entry records the rationale; RC-G1 failure still triggers
-pool-layer profiling at this budget. The 1 MiB row remains retained evidence,
-and any increase requires a separate owner decision. This supersedes
+The owner recorded the 512 KiB default budget and scope approval on
+2026-09-14 in [validation.yaml](../../scopes/active/readahead-coalescing/validation.yaml).
+This supersedes
 `readv_integration.md`. No gate below has run for a product candidate.
 
 | Field | Value |
 |---|---|
 | Metric & direction | Candidate/base whole-workload elapsed ratio, lower is better; CPU ns per useful 4 KiB, actual SQEs/CQEs, vector lengths, useful/read bytes, in-flight frames/bytes, speculative occupancy and terminal outcomes |
-| Workload | Existing immutable 256 MiB + spare-page fixture and full-page u64 fold. Cold 64 MiB scan with 8 MiB payload arena for every pool arm. Three sequential 256 MiB passes with 64 MiB payload arena inside private memory.max=128 MiB, MemorySwapMax=0. One consumer, 4 KiB pages. Pending owner budget: 512 KiB or 1 MiB, giving C=128 or 256 speculative pages; scan read limit R=2*C and miss headroom=3*R. Preserve fragmented/dependent/wrong-hint and frozen DRP work from prefetch_admission.md |
+| Workload | Existing immutable 256 MiB + spare-page fixture and full-page u64 fold. Cold 64 MiB scan with 8 MiB payload arena for every pool arm. Three sequential 256 MiB passes with 64 MiB payload arena inside private memory.max=128 MiB, MemorySwapMax=0. One consumer, 4 KiB pages. Owner-selected budget 512 KiB: C=128 speculative pages, scan read limit R=256, miss headroom 768. Preserve fragmented/dependent/wrong-hint and frozen DRP work from prefetch_admission.md |
 | Host protocol | Pinned nix, Threadripper 3970X / Samsung 970 PRO / Linux 6.6.64/ext4; CPU 0 worker, CPU 4 controller; prescribed DRP placement for those gates. Performance governor, THP never, no competing campaign, direct/Unregistered read buffers. Snapshot boot, governor, activity, read_ahead_kb, max_sectors_kb and max_segments before/after |
 | Baseline | (1) mmap MADV_SEQUENTIAL; (2a) frozen current per-page mechanism at old default C=32/R=64; (2b) that same mechanism at new C/R, matched to the coalesced default; (3) unchanged frozen DRP runner/baselines; (4) disabled-demand candidate control for non-sequential lanes. Pool scan comparisons share payload arena, work and poll/consume loop; 2a intentionally retains old C/R. Freeze measured working-tree sources/executable before any product edit |
 | Reps | Two qualification pairs, then 30 alternating fresh-process pairs for each comparison; identical useful work/seed inside each pair. Wrong-hint witnesses hold in every one of 30 fresh-process repetitions on eager and Linux. Frozen DRP retains its original aggregation/sample contract |
@@ -40,9 +38,10 @@ does not inherit the new scan budget or arena.
 
 ## Budget and controls
 
-The owner must record the default in this plan and validation.yaml before
-implementation. At 512 KiB, C=128/R=256/headroom=768 requires 897 frames
-including one guard. At 1 MiB, C=256/R=512/headroom=1536 requires 1,793.
+The owner recorded the default of 512 KiB (524,288 bytes) on 2026-09-14:
+C=128/R=256/headroom=768, 897 frames including one guard. The retained
+alternative, 1 MiB with C=256/R=512/headroom=1536, would need 1,793 frames;
+raising the default later is a separate owner decision with that evidence.
 An 8 MiB cold payload arena fits both; use it for every new pool scan arm.
 The previous cold evidence used 4 MiB; collect fresh baselines rather than
 reuse those timings. Pressure stays at 64 MiB within its private 128 MiB cap.
@@ -50,10 +49,13 @@ Descriptor, route and notification metadata are additional and reported.
 
 The [budget probe](../evidence/readv_pipelined/budget-depths/README.md) gives
 READV 1,244.97 ns/page at depth 2 and 1,183.67 at depth 4, against historical
-mmap 1,552.23. This calibrates overlap; it selects no default and proves no
-end-to-end pool result. Prior 32-to-64 point-read credits improved cold scans
-6.6%; that motivates the matched-budget control but does not predict its cost
-at 128 or 256 credits.
+mmap 1,552.23; depth 8 is 1,164.53. Depth 4 is past the knee (1.6% from 1 MiB)
+and leaves 368 ns/page of headroom for pool-layer cost, which motivated the
+512 KiB selection. This calibrates overlap and proves no end-to-end pool
+result. If RC-G1 fails at 512 KiB, the lever is profiling the pool layer, not
+the budget. Prior 32-to-64 point-read credits improved cold scans 6.6%; that
+motivates the matched-budget control but does not predict its cost at 128
+credits.
 
 The headline candidate must use the actual default, without an explicit
 prefetch override. The frozen per-page matched control uses its existing
@@ -162,6 +164,11 @@ corresponding task. Run fault injection, Loom, stored-pointer Miri, syscall
 ASAN, both-backend zero-allocation and existing lifetime/retention suites;
 strict Clippy/formatting must pass. Fresh product gates follow safety checks.
 
-This revision changes documentation only. Its checks are scope/plan consistency
-and unchanged product hashes. Retained regression results are the baseline;
-no new product gate pass is claimed by this draft.
+RC1 prepares the exact six-comparison matrix, immutable frozen/candidate
+identities, actual-default scan commands, vector-sized explicit extensions,
+paired elapsed/CPU output and measured-witness rejection. The executable
+[capture contract](../evidence/readahead_coalescing/README.md) names the
+RC3/RC4 observation producer sites and exact collection/validation commands.
+Until those producers exist, the runner emits a null coalescing observation
+and the collector rejects it for RC gates. Retained regressions remain the
+baseline; harness preparation claims no product gate pass.

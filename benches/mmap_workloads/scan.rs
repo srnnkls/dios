@@ -14,14 +14,21 @@ use super::catalog::{Arm, GRANULE, POLLS_MAX, PageNumber, consume};
 use super::fixture::{self, error};
 use super::observe::{Observer, allocations_begin, allocations_end, nanoseconds};
 use super::os::{self, Mapping};
-use super::scan_config::{Config, Method};
+use super::scan_config::{Config, CreditSelection, Method};
 
 pub(super) fn sample<const TRACE: bool>(
     input: &Path,
     text: &str,
+    credits: CreditSelection,
     output: &Path,
 ) -> Result<(), String> {
     let config = Config::parse(text)?;
+    match credits {
+        CreditSelection::Default if config.method != Method::Automatic => {
+            return Err("default scan requires automatic readahead".to_owned());
+        }
+        _ => {}
+    }
     os::pin(0).map_err(error)?;
     let mapping = Mapping::open(&input.join("pages.bin")).map_err(error)?;
     let cache = fixture::prepare(&mapping, config.lane, Arm::MmapSequential, 0).map_err(error)?;
@@ -29,7 +36,7 @@ pub(super) fn sample<const TRACE: bool>(
     let pool = if config.method == Method::Mmap {
         None
     } else {
-        Some(pool(input, config)?)
+        Some(pool(input, config, credits)?)
     };
     let reader = pool
         .as_ref()
@@ -70,6 +77,8 @@ pub(super) fn sample<const TRACE: bool>(
         "useful_bytes": u64::from(config.lane.operations()) * u64::from(GRANULE),
         "cache_before": cache, "system_before": before, "system_after": after,
         "io_mode": io_mode, "registration": registration,
+        "prefetch_credit_selection": credits, "miss_headroom": 3 * config.read_limit,
+        "coalescing": null,
         "prefetch": super::sample_prefetch(pool.as_ref())});
     write(output, &row, &observer)
 }
@@ -106,8 +115,8 @@ fn measure<const TRACE: bool>(
     Ok((elapsed_ns, cpu_ns, usage))
 }
 
-fn pool(input: &Path, config: Config) -> Result<(Pool, FileId), String> {
-    let pool = Pool::builder()
+fn pool(input: &Path, config: Config, credits: CreditSelection) -> Result<(Pool, FileId), String> {
+    let builder = Pool::builder()
         .granule(config.granule)
         .frame_count(config.frames())
         .max_concurrent_readers(1)
@@ -117,14 +126,16 @@ fn pool(input: &Path, config: Config) -> Result<(Pool, FileId), String> {
         .max_retained_frames(0)
         .registered_file_capacity(1)
         .registration_posture(RegistrationPolicy::Unregistered)
-        .prefetch_headroom(config.credits)
         .readahead(if config.method == Method::Automatic {
             Readahead::Automatic
         } else {
             Readahead::Disabled
-        })
-        .build()
-        .map_err(error)?;
+        });
+    let builder = match credits {
+        CreditSelection::Override => builder.prefetch_headroom(config.credits),
+        CreditSelection::Default => builder,
+    };
+    let pool = builder.build().map_err(error)?;
     let file = pool
         .open(&input.join("pages.bin"), DirectIo::Required)
         .map_err(error)?;
@@ -245,7 +256,7 @@ fn prefetch<const TRACE: bool>(pump: &mut Pump<'_, TRACE>, index: u32, offset: u
         .prefetch(&pump.pages[offset as usize..end as usize]);
     assert_eq!(report.rejected, 0);
     pump.hint_next = if report.deferred == 0 {
-        index + 1
+        index + pump.config.prefetch_step()
     } else {
         index
     };
@@ -293,6 +304,7 @@ fn write<const TRACE: bool>(
 pub(super) fn profile(
     input: &Path,
     config: &str,
+    credits: CreditSelection,
     repetitions: &str,
     output: &Path,
 ) -> Result<(), String> {
@@ -302,7 +314,12 @@ pub(super) fn profile(
     }
     fs::create_dir(output).map_err(error)?;
     for index in 0..repetitions {
-        sample::<false>(input, config, &output.join(format!("{index:04}.json")))?;
+        sample::<false>(
+            input,
+            config,
+            credits,
+            &output.join(format!("{index:04}.json")),
+        )?;
     }
     Ok(())
 }

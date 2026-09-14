@@ -5,14 +5,14 @@ next_id: 7
 meta:
   created: '2026-09-14'
   last_updated: '2026-09-14'
-  progress: 0/6
+  progress: 2/6
 discipline: Owner approval, 512 KiB default and scope review are recorded. Immutable
   source/executable baseline verified before RC1/RC2 dispatch. Each task captures
   bounded RED before code.
 tasks:
 - id: RC1
   title: Prepare the exact gate harness from the frozen baseline
-  status: pending
+  status: done
   depends_on: []
   description: Use the immutable pre-dispatch source/executable snapshot while RC2
     works independently. Materialize current-old-budget, current-new-budget and coalesced-default
@@ -29,9 +29,14 @@ tasks:
   - benches/mmap_workloads/
   - tests/scan_geometry_validation.py
   - benches/evidence/readahead_coalescing/
+  completed_at: '2026-09-14T10:10:33Z'
+  evidence:
+    tester: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-tester-RC1/native.yaml"
+    implementer: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-implementer-RC1/native.yaml"
+    review: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-synthesis.yaml"
 - id: RC2
   title: Add owned bounded vector reads to the driver and backends
-  status: pending
+  status: done
   depends_on: []
   description: |-
     RED for ordered destinations, exact prefix transfer, submission refusal, generation reuse and lifecycle ownership. Add stable preallocated completion-slab iovecs and a unique frame bundle through refusal, retry, completion and teardown. Plain READV in both Linux postures; eager caller-thread vector fill and matching mock schedules. Point operation semantics remain intact. Miri and syscall tests validate actual retained pointers, not addresses alone. Carry the destination enum through OpEntry, OpContext and Completion construction/extraction; adapt the existing pool point consumer while keeping pool vector admission disabled until RC3.
@@ -45,22 +50,34 @@ tasks:
   - src/mock.rs
   - src/pool/mod.rs
   - tests/driver_vector_reads.rs
+  completed_at: '2026-09-14T10:10:33Z'
+  evidence:
+    tester: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-tester-RC2/native.yaml"
+    implementer: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-implementer-RC2/native.yaml"
+    review: ".peer/readahead-coalescing/20260914T090833Z-505efd/b1-synthesis.yaml"
 - id: RC3
   title: Route vector completions through per-page terminal outcomes
   status: pending
   depends_on:
   - RC1
   - RC2
-  description: RED for O(1) span-first routing, mid-iovec short reads, EOF/error after
-    a prefix, original-slot continuation while every other slot is full and per-frame
-    conservation. Use a construction-sized driver-slot-to-route index with generation
-    checks, sized to the actual backend slot namespace including product ops. Add
-    vector submission/continuation and slot-capacity integration to PoolBackend and
-    Driver/MockDriver/MockRingDriver together. Publish or abort each token once; preserve
-    read credits, lease ownership and file/buffer lifetime through retirement/drain.
+  description: 'RED for O(1) span-first routing, mid-iovec short reads, EOF/error
+    after a prefix, original-slot continuation while every other slot is full and
+    per-frame conservation. Use a construction-sized driver-slot-to-route index with
+    generation checks, sized to the actual backend slot namespace including product
+    ops. Add vector submission/continuation and slot-capacity integration to PoolBackend
+    and Driver/MockDriver/MockRingDriver together. Publish or abort each token once;
+    preserve read credits, lease ownership and file/buffer lifetime through retirement/drain.
     A held continuation may finish an already admitted logical read after retirement,
     matching point-read semantics; new logical admissions remain forbidden. Test retirement
-    before resubmit and through a later short completion.
+    before resubmit and through a later short completion. Integrate the RC1 observed-I/O
+    producer contract in benches/evidence/readahead_coalescing/README.md: bounded
+    bench-only capture of actual accepted READ/READV attempts and CQEs, including
+    retries/continuations, token/generation/ranges, per-frame publication/failure/terminal
+    credits, EOF/stop waste, overlap and actual descriptor/route metadata bytes. Add
+    the scan adapter using captured observations; never derive actual SQEs from configuration
+    or prefetch totals. Detailed records allocate only at construction and report
+    overflow/loss.'
   files:
   - src/pool/mod.rs
   - src/pool/read_spans.rs
@@ -68,12 +85,19 @@ tasks:
   - src/pool/prefetch/state.rs
   - src/mock.rs
   - tests/readahead_coalescing.rs
+  - src/driver.rs
+  - src/driver/read_vector.rs
+  - src/backend/uring.rs
+  - src/backend/eager.rs
+  - benches/mmap_workloads/scan.rs
+  - benches/mmap_workloads/observe.rs
+  - benches/mmap_workloads/mod.rs
 - id: RC4
   title: Coalesce explicit and automatic missing runs
   status: pending
   depends_on:
   - RC3
-  description: RED for steady singleton-refill collapse, smaller startup horizons,
+  description: 'RED for steady singleton-refill collapse, smaller startup horizons,
     resident/pending holes, duplicates, exhausted credits and partial-window protection.
     Automatic admission waits for a full eligible vector; a one-page sliding horizon
     is not a short tail. Explicit hints remain opportunistic and document vector-chunk
@@ -89,7 +113,13 @@ tasks:
     full target under temporary shortage. Preserve round-robin admission turns on
     credit deferral, with event-updated ready-stream membership. Batch explicit protection
     via preallocated per-call stamps and at most one replacement sweep over capacity
-    per call.
+    per call. Complete the RC1 observed-control producer contract in benches/evidence/readahead_coalescing/README.md:
+    capture confirmed-window timing, committed runs/refills, retained/admitted reader
+    turns, explicit examined-prefix/protection/replacement/admission/CLOCK work, affected-entry/cleanup/idle-poll
+    visits, post-final-CQE consumption recovery and actual notification/index metadata
+    bytes. Connect these observed bounded records to the scan adapter without changing
+    primary poll/consume cadence or adding timed-region allocation/request clocks.
+    Observer qualification remains a later gate.'
   files:
   - src/pool/mod.rs
   - src/pool/prefetch.rs
@@ -99,6 +129,9 @@ tasks:
   - src/pool/clock.rs
   - tests/readahead_coalescing.rs
   - tests/prefetch.rs
+  - benches/mmap_workloads/scan.rs
+  - benches/mmap_workloads/observe.rs
+  - benches/mmap_workloads/mod.rs
 - id: RC5
   title: Prove concurrency, lifetime and allocation invariants
   status: pending

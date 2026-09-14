@@ -1,0 +1,51 @@
+{
+  "branch": "feat/readahead-coalescing",
+  "base_commit": "812c812",
+  "upstream": "origin/main",
+  "base_drift": {
+    "behind": 0,
+    "ahead": 0,
+    "fetch_completed": true
+  },
+  "requested_scope": "../../scopes/active/readahead-coalescing",
+  "scope_review": "passed",
+  "scope_approval": "authorized by explicit $implement invocation",
+  "default_budget_bytes": 524288,
+  "routing_selection": {
+    "tester": "inherit",
+    "implementer": "inherit",
+    "reviewers": [
+      "peer-gpt6-astra",
+      "peer-opus"
+    ],
+    "review_effort": "high",
+    "source": "explicit owner response"
+  },
+  "parent_product_matches_archived_source": true,
+  "verified_product_file_count": 34,
+  "starting_tree_source_archive": "starting-tree.tar.gz",
+  "starting_tree_source_sha256": "8d30d5d9666f940a5f8273e1479394547bde9409940997d00c3693dc51f70406",
+  "retained_source_archive_sha256": "c6982a258ec351d9091728ebd664272e06edb18f191f1bf75c4930bc3bb6b709",
+  "retained_executable": "/home/srnnkls/build/dios-readv-budget-20260914/target/budget-archives/mmap_workloads",
+  "retained_executable_sha256": "cc1e1ca41309c8115729ca07000b462c5f1a86cedf395414f5d487a9b4bff57c",
+  "retained_executable_hash_verified_on_host": true,
+  "host": {
+    "ssh": "nix",
+    "kernel": "6.6.64",
+    "bench_profile": "active",
+    "governor": "performance",
+    "thp": "never"
+  },
+  "product_edits": false,
+  "product_tests_claimed_passed": false,
+  "product_gates_claimed_passed": false,
+  "prerequisite_snapshot_commit": "aa97c827fcf916fd3ecbbc71775dace0a27190a3",
+  "baseline_native_validation": {
+    "command": "cargo test --offline --features mock --test prefetch --test driver",
+    "driver_tests_passed": 29,
+    "prefetch_tests_passed": 19,
+    "format_and_clippy": "prerequisite snapshot commit hooks passed cargo fmt --check and cargo clippy --all-targets --features bench -- -D warnings"
+  },
+  "decision_record": "scopes/active/readahead-coalescing/validation.yaml",
+  "sibling_decision_session": "efd9acaf-4b4f-49e1-96d2-0655b5371c9c"
+}

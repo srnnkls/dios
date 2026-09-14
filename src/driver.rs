@@ -24,6 +24,10 @@
 //! driver.submit_read(&file, ReadFrameIdx::new(0), 0).unwrap();
 //! ```
 
+pub(crate) mod read_vector;
+
+use read_vector::{ReadContinuation, ReadDestination, VectorStorage};
+
 use std::collections::VecDeque;
 use std::fs::File;
 use std::path::Path;
@@ -796,7 +800,11 @@ impl OpToken {
         Self((u64::from(generation) << 32) | u64::from(slot))
     }
 
-    /// The completion-slab slot this token names — the ring's `user_data`.
+    pub(crate) fn user_data(self) -> u64 {
+        self.0
+    }
+
+    /// The completion-slab slot in the low word of ring `user_data`.
     pub(crate) fn slot(self) -> u32 {
         u32::try_from(self.0 & u64::from(u32::MAX)).expect("the low word is a u32 slot")
     }
@@ -934,6 +942,15 @@ impl<T> CompletionSlab<T> {
         Some(Self { slots, free })
     }
 
+    fn contains(&self, token: OpToken) -> bool {
+        let entry = &self.slots[token.slot() as usize];
+        entry.payload.is_some() && OpToken::new(token.slot(), entry.generation) == token
+    }
+
+    fn token(&self, slot: u32) -> OpToken {
+        OpToken::new(slot, self.slots[slot as usize].generation)
+    }
+
     pub(crate) fn reserve(&mut self) -> Option<u32> {
         self.free.pop()
     }
@@ -1024,6 +1041,8 @@ pub(crate) trait Executor {
 
     fn on_op_submitted(&self) {}
 
+    fn on_op_finalized(&self) {}
+
     fn on_op_completed(&self, _file: FileId, _kind: OpKind, _result: &Result<u32, IoError>) {}
 
     /// The buffer-registration posture this executor runs; backends without a
@@ -1073,6 +1092,15 @@ pub(crate) trait RingExecutor: Executor {
         requested_len: u32,
     );
 
+    /// Queues ordinary READV using the vector's retained descriptor storage.
+    fn push_read_vector(
+        &self,
+        user_data: u64,
+        file: FileId,
+        vector: &read_vector::ReadVector,
+        file_offset: u64,
+    );
+
     /// Fills one write SQE from a leased staging slot. The lease remains in the
     /// completion slab until this op is terminally reaped.
     fn push_write(
@@ -1105,10 +1133,6 @@ pub(crate) trait RingExecutor: Executor {
     /// Enqueues a fresh private wake poll after reap consumed the prior one.
     /// Called under the AD-4 mutex; the core submits it only after unlocking.
     fn rearm_after_reap(&self) {}
-
-    /// Fires once per op finalized in reap — never for a resubmitted
-    /// `EAGAIN`/`EINTR` CQE, which keeps the op live. Defaults to a no-op.
-    fn on_op_finalized(&self) {}
 
     /// Metadata-plane blocking write on the retained file (AD-3): `Ok(bytes)` or
     /// `Err(errno)`. Linux-only — the metadata plane rides only the real ring.
@@ -1189,12 +1213,21 @@ pub(crate) struct OpEntry {
     sync_mode: SyncMode,
     fd: FileId,
     file_offset: u64,
-    frame: Option<InFlightFrame>,
+    frame: Option<ReadDestination>,
     destination_offset: u32,
     requested_len: u32,
     frame_lease: FrameLease,
     write_slot: Option<u32>,
     retries: u32,
+    io_mode: IoMode,
+    state: OpState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpState {
+    Queued,
+    Active,
+    Continuation,
 }
 
 /// Per-op parameters the execute phase hands a backend: which file, at what
@@ -1205,7 +1238,7 @@ pub(crate) struct OpEntry {
 pub(crate) struct OpContext<'buf> {
     pub(crate) fd: FileId,
     pub(crate) file_offset: u64,
-    pub(crate) frame: Option<InFlightFrame>,
+    pub(crate) frame: Option<ReadDestination>,
     pub(crate) destination_offset: u32,
     pub(crate) requested_len: u32,
     pub(crate) write_buf: &'buf [u8],
@@ -1216,7 +1249,7 @@ impl<'buf> OpContext<'buf> {
     fn read(
         fd: FileId,
         file_offset: u64,
-        frame: InFlightFrame,
+        frame: ReadDestination,
         destination_offset: u32,
         requested_len: u32,
     ) -> Self {
@@ -1279,12 +1312,14 @@ pub(crate) struct Shared {
     files: FileTable,
     ready: VecDeque<u32>,
     completion_backlog: VecDeque<Completion>,
+    deferred: VecDeque<read_vector::DeferredCompletion>,
 }
 
 impl Shared {
     pub(crate) fn try_new(ready_capacity: u32, file_capacity: u32) -> Option<Self> {
         Some(Self {
             slab: CompletionSlab::try_with_capacity(ready_capacity)?,
+            deferred: crate::allocation::try_vec_deque_with_exact_capacity(ready_capacity)?,
             files: FileTable::try_with_capacity(file_capacity)?,
             ready: crate::allocation::try_vec_deque_with_exact_capacity(ready_capacity)?,
             completion_backlog: crate::allocation::try_vec_deque_with_exact_capacity(
@@ -1303,7 +1338,8 @@ impl Shared {
 /// wait in [`DriverCore::poll_wait`] also parks outside the lock (INV-3).
 #[derive(Debug)]
 pub(crate) struct DriverCore<E> {
-    inner: Mutex<Shared>,
+    inner: Arc<Mutex<Shared>>,
+    vectors: VectorStorage,
     retire: Mutex<Vec<FileId>>,
     shutdown_batch: Mutex<CompletionBatch>,
     executor: E,
@@ -1334,10 +1370,14 @@ impl<E> DriverCore<E> {
             queue_capacity > 0,
             "driver core queue capacity must be positive"
         );
+        let vector_attempts_max = u64::from(read_vector::VECTOR_BYTES_MAX)
+            .checked_mul(u64::from(retry_bound).checked_add(1)?)?;
+        assert!(vector_attempts_max >= u64::from(read_vector::VECTOR_BYTES_MAX));
         let file_capacity =
             u32::try_from(shared.files.slots.len()).expect("the configured file capacity fits u32");
         Some(Self {
-            inner: Mutex::new(shared),
+            inner: Arc::new(Mutex::new(shared)),
+            vectors: VectorStorage::try_new(queue_capacity)?,
             retire: Mutex::new(crate::allocation::try_vec_with_exact_capacity(
                 file_capacity,
             )?),
@@ -1414,11 +1454,19 @@ impl<E> DriverCore<E> {
         );
     }
 
-    pub(crate) fn reserve_file(&self) -> Option<FileId> {
+    pub(crate) fn reserve_file(&self) -> Option<FileId>
+    where
+        E: Executor,
+    {
+        self.flush_deferred();
         self.lock().files.open(self.id)
     }
 
-    pub(crate) fn is_closed(&self, id: FileId) -> bool {
+    pub(crate) fn is_closed(&self, id: FileId) -> bool
+    where
+        E: Executor,
+    {
+        self.flush_deferred();
         self.assert_own(id);
         self.lock().files.is_closed(id)
     }
@@ -1432,19 +1480,56 @@ impl<E> DriverCore<E> {
 }
 
 impl<E: Executor> DriverCore<E> {
+    fn finish_attempt(
+        &self,
+        shared: &mut Shared,
+        slot: u32,
+        result: Result<u32, IoError>,
+        destination: Option<ReadDestination>,
+    ) -> (Completion, Option<FileId>) {
+        let token = shared.slab.token(slot);
+        let entry = shared.slab.peek_mut(slot);
+        assert_eq!(entry.state, OpState::Active);
+        let mut destination = destination.or(entry.frame.take());
+        if let Some(ReadDestination::Vector(vector)) = destination.as_mut() {
+            let bytes = result.as_ref().copied().unwrap_or(0);
+            assert!(
+                bytes <= entry.requested_len,
+                "CQE fits its requested suffix"
+            );
+            vector.record_completion(bytes);
+            if bytes > 0 && bytes < entry.requested_len {
+                entry.file_offset = entry
+                    .file_offset
+                    .checked_add(u64::from(bytes))
+                    .expect("admitted file range fits u64");
+                entry.requested_len -= bytes;
+                entry.destination_offset = vector.destination_offset();
+                entry.state = OpState::Continuation;
+                let continuation = ReadContinuation::new(&self.inner, token);
+                return (
+                    Completion::new(token, entry.kind, result, destination, Some(continuation)),
+                    None,
+                );
+            }
+        }
+        let (token, entry) = shared.slab.reclaim(slot);
+        let retire = shared.files.on_complete(entry.fd);
+        let destination = self.release_frame(entry.frame_lease, destination);
+        self.release_write_slot(&entry);
+        self.executor.on_op_completed(entry.fd, entry.kind, &result);
+        self.executor.on_op_finalized();
+        (
+            Completion::new(token, entry.kind, result, destination, None),
+            retire.then_some(entry.fd),
+        )
+    }
+
     pub(crate) fn try_reconfigure_file_capacity(&mut self, file_capacity: u32) -> Option<()> {
-        let files = self
-            .inner
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner)
-            .files
-            .try_resized(file_capacity)?;
+        let files = self.lock().files.try_resized(file_capacity)?;
         let retire = crate::allocation::try_vec_with_exact_capacity(file_capacity)?;
         self.executor.try_reconfigure_file_capacity(file_capacity)?;
-        self.inner
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner)
-            .files = files;
+        self.lock().files = files;
         let prior_retire = self
             .retire
             .get_mut()
@@ -1458,7 +1543,7 @@ impl<E: Executor> DriverCore<E> {
     }
 
     #[cfg(any(feature = "mock", feature = "bench"))]
-    fn copy_frame_testing(&self, frame: ReadFrameIdx, out: &mut [u8]) -> usize {
+    pub(crate) fn copy_frame_testing(&self, frame: ReadFrameIdx, out: &mut [u8]) -> usize {
         let shared = self.lock();
         let copied = self.executor.copy_frame(frame, out);
         drop(shared);
@@ -1470,6 +1555,7 @@ impl<E: Executor> DriverCore<E> {
         reason = "close consumes the handle by value so it cannot be reused (INV-11)"
     )]
     pub(crate) fn close(&self, fd: FileHandle) {
+        self.flush_deferred();
         let id = fd.file_id();
         self.assert_own(id);
         let retire_due = {
@@ -1516,6 +1602,7 @@ impl<E: Executor> DriverCore<E> {
         destination_offset: u32,
         requested_len: u32,
     ) -> Result<OpToken, ReadRefusal> {
+        self.flush_deferred();
         let (token, frame_lease) = lease.split();
         assert!(
             token.frame().get() < self.arena.count(),
@@ -1548,12 +1635,14 @@ impl<E: Executor> DriverCore<E> {
             sync_mode: SyncMode::Full,
             fd: fd.file_id(),
             file_offset,
-            frame: Some(token),
+            frame: Some(ReadDestination::Point(token)),
             destination_offset,
             requested_len,
             frame_lease,
             write_slot: None,
             retries: 0,
+            io_mode: fd.io_mode(),
+            state: OpState::Queued,
         };
         Ok(self.commit(&mut shared, slot, entry))
     }
@@ -1564,6 +1653,7 @@ impl<E: Executor> DriverCore<E> {
         buf: WriteSlot<'arena>,
         offset: u64,
     ) -> Result<OpToken, (SubmitError, WriteSlot<'arena>)> {
+        self.flush_deferred();
         buf.assert_owner(self.id);
         if let IoMode::Direct(alignment) = fd.io_mode() {
             assert!(
@@ -1588,6 +1678,8 @@ impl<E: Executor> DriverCore<E> {
                     frame_lease: FrameLease::Absent,
                     write_slot: Some(buf.into_index()),
                     retries: 0,
+                    io_mode: fd.io_mode(),
+                    state: OpState::Queued,
                 };
                 Ok(self.commit(&mut shared, slot, entry))
             }
@@ -1600,6 +1692,7 @@ impl<E: Executor> DriverCore<E> {
         fd: &FileHandle,
         mode: SyncMode,
     ) -> Result<OpToken, SubmitError> {
+        self.flush_deferred();
         let mut shared = self.lock();
         let slot = self.admit(&mut shared, fd.file_id())?;
         let entry = OpEntry {
@@ -1613,6 +1706,8 @@ impl<E: Executor> DriverCore<E> {
             frame_lease: FrameLease::Absent,
             write_slot: None,
             retries: 0,
+            io_mode: fd.io_mode(),
+            state: OpState::Queued,
         };
         Ok(self.commit(&mut shared, slot, entry))
     }
@@ -1623,7 +1718,7 @@ impl<E: Executor> DriverCore<E> {
     fn admit(&self, shared: &mut Shared, fd: FileId) -> Result<u32, SubmitError> {
         self.assert_own(fd);
         if shared.files.is_live(fd) {
-            let retained = u32::try_from(shared.completion_backlog.len())
+            let retained = u32::try_from(shared.completion_backlog.len() + shared.deferred.len())
                 .expect("completion backlog length fits u32");
             if shared.files.total_inflight() + retained >= self.queue_capacity {
                 Err(SubmitError::Full)
@@ -1640,6 +1735,9 @@ impl<E: Executor> DriverCore<E> {
     fn commit(&self, shared: &mut Shared, slot: u32, entry: OpEntry) -> OpToken {
         let fd = entry.fd;
         let token = shared.slab.fill(slot, entry);
+        if let Some(ReadDestination::Vector(vector)) = shared.slab.peek_mut(slot).frame.as_mut() {
+            vector.bind(token);
+        }
         shared.files.on_submit(fd);
         let position = self.executor.schedule(shared.ready.len());
         debug_assert!(
@@ -1659,6 +1757,7 @@ impl<E: EagerExecutor> DriverCore<E> {
             "poll requires a non-empty completion batch"
         );
         out.reset();
+        self.flush_deferred();
         let mut drained = self.drain_completion_backlog(out);
         while drained < out.capacity() {
             let Some((slot, kind, context)) = self.prepare_next() else {
@@ -1720,6 +1819,7 @@ impl<E: EagerExecutor> DriverCore<E> {
     /// queue makes progress on each pass; the idle bound catches a broken
     /// backend rather than permitting an unbounded shutdown loop.
     pub(crate) fn quiesce(&self) {
+        self.abandon_held_continuations();
         if self.inflight_total() == 0 {
             return;
         }
@@ -1729,7 +1829,10 @@ impl<E: EagerExecutor> DriverCore<E> {
             .unwrap_or_else(PoisonError::into_inner);
         let mut idle = 0u32;
         while self.inflight_total() > 0 {
-            if self.poll(&mut out) > 0 {
+            let drained = self.poll(&mut out);
+            self.quiesce_continue_vectors(&mut out);
+            self.abandon_held_continuations();
+            if drained > 0 {
                 idle = 0;
             } else {
                 idle += 1;
@@ -1744,6 +1847,8 @@ impl<E: EagerExecutor> DriverCore<E> {
         let mut shared = self.lock();
         let slot = shared.ready.pop_front()?;
         let entry = shared.slab.peek_mut(slot);
+        assert_eq!(entry.state, OpState::Queued);
+        entry.state = OpState::Active;
         let context = match entry.kind {
             OpKind::Read => OpContext::read(
                 entry.fd,
@@ -1787,7 +1892,7 @@ impl<E: EagerExecutor> DriverCore<E> {
         &self,
         kind: OpKind,
         context: OpContext<'_>,
-    ) -> (Result<u32, i32>, Option<InFlightFrame>) {
+    ) -> (Result<u32, i32>, Option<ReadDestination>) {
         let retry_would_block = matches!(kind, OpKind::Read);
         let mut retries = 0u32;
         let logical_len = context.requested_len;
@@ -1841,19 +1946,15 @@ impl<E: EagerExecutor> DriverCore<E> {
         &self,
         slot: u32,
         outcome: Result<u32, i32>,
-        frame: Option<InFlightFrame>,
+        frame: Option<ReadDestination>,
         out: &mut CompletionBatch,
     ) {
         let retiring = {
             let mut shared = self.lock();
-            let (token, mut entry) = shared.slab.reclaim(slot);
-            let retire_due = shared.files.on_complete(entry.fd);
-            let frame = self.release_frame(entry.frame_lease, frame.or(entry.frame.take()));
-            self.release_write_slot(&entry);
-            let result = outcome.map_err(IoError::from_raw);
-            self.executor.on_op_completed(entry.fd, entry.kind, &result);
-            out.push(Completion::new(token, entry.kind, result, frame));
-            retire_due.then_some(entry.fd)
+            let (completion, retiring) =
+                self.finish_attempt(&mut shared, slot, outcome.map_err(IoError::from_raw), frame);
+            out.push(completion);
+            retiring
         };
         self.signal_pool_wait();
         if let Some(fd) = retiring {
@@ -1876,24 +1977,15 @@ impl<E: EagerExecutor> DriverCore<E> {
         &self,
         slot: u32,
         outcome: Result<u32, i32>,
-        frame: Option<InFlightFrame>,
+        frame: Option<ReadDestination>,
     ) {
         let retiring = {
             let mut shared = self.lock();
-            let (token, mut entry) = shared.slab.reclaim(slot);
-            let retire_due = shared.files.on_complete(entry.fd);
-            let frame = self.release_frame(entry.frame_lease, frame.or(entry.frame.take()));
-            self.release_write_slot(&entry);
-            assert!(
-                shared.completion_backlog.len() < self.queue_capacity as usize,
-                "completion backlog stays within the init-time admission bound"
-            );
-            let result = outcome.map_err(IoError::from_raw);
-            self.executor.on_op_completed(entry.fd, entry.kind, &result);
-            shared
-                .completion_backlog
-                .push_back(Completion::new(token, entry.kind, result, frame));
-            retire_due.then_some(entry.fd)
+            let (completion, retiring) =
+                self.finish_attempt(&mut shared, slot, outcome.map_err(IoError::from_raw), frame);
+            assert!(shared.completion_backlog.len() < self.queue_capacity as usize);
+            shared.completion_backlog.push_back(completion);
+            retiring
         };
         self.signal_pool_wait();
         if let Some(fd) = retiring {
@@ -1970,6 +2062,7 @@ impl<E: RingExecutor> DriverCore<E> {
             "poll requires a non-empty completion batch"
         );
         out.reset();
+        self.flush_deferred();
         let backlog = self.drain_completion_backlog(out);
         if backlog == out.capacity() {
             return BackendProgress {
@@ -2004,6 +2097,7 @@ impl<E: RingExecutor> DriverCore<E> {
             "poll requires a non-empty completion batch"
         );
         out.reset();
+        self.flush_deferred();
         let backlog = self.drain_completion_backlog(out);
         if backlog > 0 {
             return BackendProgress {
@@ -2063,6 +2157,7 @@ impl<E: RingExecutor> DriverCore<E> {
             "pool wait requires a non-empty private completion batch"
         );
         out.reset();
+        self.flush_deferred();
         let backlog = self.drain_completion_backlog(out);
         if backlog > 0 {
             return BackendProgress {
@@ -2091,8 +2186,8 @@ impl<E: RingExecutor> DriverCore<E> {
         }
     }
 
-    /// Prepare (locked): drain ready slots into SQEs, tagging each with its slab
-    /// slot as `user_data`. Slots stay occupied — reclaimed only in reap.
+    /// Prepare (locked): drain ready slots into SQEs, tagging each with its full
+    /// generational token as `user_data`. Slots stay occupied — reclaimed only in reap.
     fn fill_ring(&self, cap: u32) -> u32 {
         let mut shared = self.lock();
         let mut filled = 0u32;
@@ -2100,23 +2195,28 @@ impl<E: RingExecutor> DriverCore<E> {
             let Some(slot) = shared.ready.pop_front() else {
                 break;
             };
-            let entry = shared.slab.peek(slot);
-            let user_data = u64::from(slot);
+            let user_data = shared.slab.token(slot).user_data();
+            let entry = shared.slab.peek_mut(slot);
+            assert_eq!(entry.state, OpState::Queued);
+            entry.state = OpState::Active;
             let fd_slot = entry.fd.slot();
             match entry.kind {
-                OpKind::Read => {
-                    self.executor.push_read(
+                OpKind::Read => match entry.frame.as_ref().expect("queued read destination") {
+                    ReadDestination::Point(frame) => self.executor.push_read(
                         user_data,
                         fd_slot,
-                        entry
-                            .frame
-                            .as_ref()
-                            .expect("a queued read owns its frame token"),
+                        frame,
                         entry.file_offset,
                         entry.destination_offset,
                         entry.requested_len,
-                    );
-                }
+                    ),
+                    ReadDestination::Vector(vector) => self.executor.push_read_vector(
+                        user_data,
+                        entry.fd,
+                        vector,
+                        entry.file_offset,
+                    ),
+                },
                 OpKind::Fsync => self
                     .executor
                     .push_fsync(user_data, fd_slot, entry.sync_mode),
@@ -2157,20 +2257,21 @@ impl<E: RingExecutor> DriverCore<E> {
         F: FnMut(FileId) -> bool,
     {
         self.executor.reap(limit, |user_data, raw| {
-            let slot = u32::try_from(user_data).expect("uring user_data is a slab slot");
+            let echoed = OpToken(user_data);
+            assert!(
+                shared.slab.contains(echoed),
+                "CQE belongs to the live generation"
+            );
+            let slot = echoed.slot();
             let entry = shared.slab.peek_mut(slot);
             let RingProgress::Terminal(result) = ring_progress(entry, raw, retry_bound) else {
+                entry.state = OpState::Queued;
                 shared.ready.push_back(slot);
                 return true;
             };
-            let (token, mut entry) = shared.slab.reclaim(slot);
-            let file_retire_due = shared.files.on_complete(entry.fd);
-            let frame = self.release_frame(entry.frame_lease, entry.frame.take());
-            self.release_write_slot(&entry);
-            self.executor.on_op_completed(entry.fd, entry.kind, &result);
-            out.push(Completion::new(token, entry.kind, result, frame));
-            let keep_reaping = !file_retire_due || retire_due(entry.fd);
-            self.executor.on_op_finalized();
+            let (completion, retiring) = self.finish_attempt(shared, slot, result, None);
+            out.push(completion);
+            let keep_reaping = retiring.is_none_or(&mut retire_due);
             *caller_completions += 1;
             keep_reaping
         })
@@ -2266,6 +2367,7 @@ impl<E: RingExecutor> DriverCore<E> {
     /// abandoned (INV-8). Bounded: each poll that makes no progress counts against
     /// a fixed cap.
     pub(crate) fn quiesce_ring(&self) {
+        self.abandon_held_continuations();
         if self.inflight_total() == 0 {
             return;
         }
@@ -2276,6 +2378,8 @@ impl<E: RingExecutor> DriverCore<E> {
         let mut idle = 0u32;
         while self.inflight_total() > 0 {
             let progress = self.poll_ring_progress(&mut out);
+            self.quiesce_continue_vectors(&mut out);
+            self.abandon_held_continuations();
             if progress.backend_completions > 0 || progress.caller_completions > 0 {
                 idle = 0;
             } else {
@@ -2312,12 +2416,17 @@ impl<E> DriverCore<E> {
     fn release_frame(
         &self,
         lease: FrameLease,
-        frame: Option<InFlightFrame>,
-    ) -> Option<InFlightFrame> {
+        frame: Option<ReadDestination>,
+    ) -> Option<ReadDestination> {
         match lease {
             FrameLease::Raw => {
                 let token = frame.expect("a raw read op owns its frame token until completion");
-                self.arena.abort(token);
+                match token {
+                    ReadDestination::Point(frame) => {
+                        self.arena.abort(frame);
+                    }
+                    ReadDestination::Vector(vector) => drop(vector),
+                }
                 None
             }
             FrameLease::Absent | FrameLease::Pool => frame,

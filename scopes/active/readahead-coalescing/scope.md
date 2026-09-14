@@ -14,9 +14,9 @@ consumption. Sören selected this mechanism after the
 The [owner decision](../../../benches/plans/scan_geometry.md#owner-decision-coalescing-mechanism)
 is closed. Revision 3 incorporates the owner feedback in
 `/private/tmp/dios-steering-scope-feedback.md` and has passed a fresh
-[Astra/Claude review](review.yaml). The owner approved implementation and selected a 512 KiB default on
-2026-09-14. The decision and rationale are recorded in
-[validation.yaml](validation.yaml).
+[Astra/Claude review](review.yaml). The owner recorded the 512 KiB default
+byte budget and scope approval on 2026-09-14 in [validation.yaml](validation.yaml);
+implementation proceeds under [tasks.yaml](tasks.yaml).
 
 ## Evidence and intended result
 
@@ -137,20 +137,28 @@ evidence for the mechanism, not proof that the pool meets that headline.
 - All slabs, arrays, lookup scans, queue capacities and retry limits are
   fixed at construction. Admit/defer under exhaustion; never grow or spin.
 
-The owner budget decision is pending: candidates are 512 KiB and 1 MiB,
-giving 128 and 256 speculative pages at 4 KiB. For general granule g,
+The owner-selected default budget is 512 KiB (524,288 bytes): 128
+speculative pages at 4 KiB. Depth 4 of the budget probe is past the knee
+(1,183.67 ns per useful 4 KiB at 512 KiB versus 1,164.53 at 1 MiB, a 1.6%
+difference), leaves 368 ns/page of headroom to mmap's 1,552.23 for
+pool-layer cost, and halves the minimum pool tax and the speculative
+pollution bound relative to 1 MiB. The 1 MiB row stays retained; raising the
+default later is a separate owner decision with that evidence. If RC-G1
+fails at 512 KiB, the lever remains profiling the pool layer, not the
+budget. For general granule g,
 `C = min(floor(budget_bytes / g), spare_frames, max_inflight_reads - 1)`
 with saturating subtraction; an explicit `prefetch_headroom` keeps its
 existing page-count semantics. Read limits remain caller-configured.
 
 The gate runner scales its read-frame limit to R=2*C and miss headroom to
 3*R, preserving INV-9. With one guard and no retention, it needs at least
-1+3*R+C frames: 897 frames at 512 KiB, 1,793 at 1 MiB. Use an 8 MiB cold
-payload arena for every new pool comparison, including both frozen controls;
-the previous cold evidence used 4 MiB. Pressure remains 64 MiB in the private
-128 MiB cap. Metadata is additional and must be reported. No numeric budget
-is selected by this draft. The frozen DRP runner retains
-`max_inflight_reads(1)`, hence zero default speculative credits.
+1+3*R+C frames: 897 frames at the selected 512 KiB (C=128, R=256, miss
+headroom 768), against 1,793 at the retained 1 MiB alternative. Use an 8 MiB
+cold payload arena for every new pool comparison, including both frozen
+controls; the previous cold evidence used 4 MiB. Pressure remains 64 MiB in
+the private 128 MiB cap. Metadata is additional and must be reported. The
+frozen DRP runner retains `max_inflight_reads(1)`, hence zero default
+speculative credits.
 
 For vector mode with B >= 2, full-vector refills target B-1 to B outstanding
 speculative vectors, including resident-unconsumed pages. This is not a
@@ -207,9 +215,10 @@ The implemented prefetch and registration-posture contracts are prerequisites.
 Completion fanout responsibilities move into this scope; no dependency on
 constructing AM2's contiguous runs is introduced. Work is ordered in
 [tasks.yaml](tasks.yaml), with the graph in [dependencies.yaml](dependencies.yaml).
-[validation.yaml](validation.yaml) records review status and the two pending
-owner decisions. RC1 and RC2 share the first batch; an immutable baseline
+[validation.yaml](validation.yaml) records the review status and both owner
+decisions: the 512 KiB default budget and scope approval through the
+owner's explicit implement invocation, 2026-09-14. Recording them claims no
+product test or gate pass. RC1 and RC2 share the first batch; an immutable baseline
 snapshot must exist before dispatch so RC1 can work from it while RC2 edits.
 The budget-probe archive already contains a source/executable snapshot;
 verify its product identity against the approved starting tree before use.
-Mechanism selection alone is not scope approval.

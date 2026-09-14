@@ -276,6 +276,29 @@ impl Executor for Uring {
 }
 
 impl RingExecutor for Uring {
+    fn push_read_vector(
+        &self,
+        user_data: u64,
+        file: crate::driver::FileId,
+        vector: &crate::driver::read_vector::ReadVector,
+        file_offset: u64,
+    ) {
+        assert!(
+            file.slot() < self.file_capacity,
+            "vector targets a retained file"
+        );
+        let descriptors = vector.io();
+        let entry = opcode::Readv::new(
+            types::Fixed(file.slot()),
+            descriptors.pointer().cast(),
+            descriptors.count(),
+        )
+        .offset(file_offset)
+        .build()
+        .user_data(user_data);
+        self.push_sqe(&entry);
+    }
+
     fn push_read(
         &self,
         user_data: u64,

@@ -10,6 +10,13 @@ pub(super) enum Method {
     Automatic,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum CreditSelection {
+    Override,
+    Default,
+}
+
 #[derive(Clone, Copy, Debug, Serialize)]
 pub(super) struct Config {
     pub(super) lane: Lane,
@@ -95,6 +102,12 @@ impl Config {
         } else {
             self.requests()
         }
+    }
+
+    pub(super) fn prefetch_step(self) -> u32 {
+        assert!(self.credits > 0);
+        assert!(self.granule > 0);
+        self.credits.min((128 * 1024 / self.granule).clamp(1, 32))
     }
 }
 
