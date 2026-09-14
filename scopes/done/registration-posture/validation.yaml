@@ -1,0 +1,35 @@
+scope: registration-posture
+created: 2026-09-04
+issue_type: Task
+validation_depth: standard
+
+ambiguity_scan:
+  scope: clear        # two rungs + Auto + lock + readbacks; SparseRegistered excluded by name
+  behavior: clear     # Auto degrade on ENOMEM only; explicit posture refused typed; lock best-effort by default
+  integration: clear  # consumers named with contracts in dependencies.yaml
+
+provenance:
+  - scopes/done/pinned-frame-retention (revision 14 record; the revision-15 amendment that added T14 never reached it)
+  - scopes/draft/plan-prefetch/resources/landscape-audit.md (causal memlock probe)
+  - scopes/draft/arena-modernization/scope.md "Registration postures (AM4)" (ownership split)
+  - sira scopes/active/sira-dios-migration/validation.yaml amendment_2026_09_03 (TR probe: 8 MiB soft and hard, kernel 6.6.64)
+  - PR #7 feat/arena-registration-posture
+
+review_gate:
+  status: passed
+  passed_date: 2026-09-04
+  basis: >-
+    Task-type scope created after implementation: the gate is the PR #7
+    diff review (sira session, 2026-09-04) over the seam sira consumes —
+    posture table single dispatch point, Auto degrade only on ENOMEM,
+    ArenaLockGuard drop order and partial-lock unwind, readbacks at the
+    crate root, six setrlimit floor cases. Findings: (1) medium,
+    coverage — the ring suite runs Registered by default; run it once
+    forced to Unregistered before merge (carried as RP1's remaining
+    item); (2) low, wording — the QD1 gate bounds regression and does
+    not value registration; (3) sira-side — new PoolConfigError
+    variants map to CapacitiesRefused until DM005. No critical or high.
+  reviewers: ["claude-fable-5-1 (PR #7 diff review, sira session)"]
+  blocking_resolved: []
+  deferred_nits:
+    - "QD1 gate wording: state the QD1 qualifier wherever 0.9991 is cited"

@@ -1,0 +1,99 @@
+scope: registration-posture
+origin: >-
+  pinned-frame-retention T14 (amendment revision 15, 2026-09-03). The
+  parent scope closed at 3fae1a4 before the amendment reached its
+  record; this scope carries the task. Text below is the T14 brief as
+  amended, with the landing state appended.
+tasks:
+  - id: RP1
+    title: Registration posture — Registered | Unregistered, Auto probe, arena lock, readback
+    description: >
+      RED first: on a memlock-constrained build (lower the soft limit
+      in-test via setrlimit before Pool::build), PoolBuilder::build
+      returns PoolBuildError::Driver(ENOMEM) and no posture can be
+      selected. Then implement PoolBuilder::registration_posture(Auto |
+      Registered | Unregistered), default Auto. Registered is exactly
+      today's shape (frames buf_index 0, write arena buf_index 1,
+      READ_FIXED / WRITE_FIXED). Unregistered registers nothing: the
+      SAME preallocated non-moving slab, the same geometry, plain READ /
+      WRITE SQEs addressing the arena by pointer — the eager backend's
+      posture, uring-side. Auto attempts register_buffers (the kernel's
+      charge is authoritative; CAP_IPC_LOCK exempts a ring outright, so
+      getrlimit alone decides nothing), selects Registered when it
+      succeeds, else degrades to Unregistered on ENOMEM with an
+      eprintln! remediation (src/open.rs precedent) naming CAP_IPC_LOCK,
+      a raised limit, or the explicit posture. Auto never fails on
+      ENOMEM. An EXPLICIT posture is validated at build and refused
+      with a typed PoolConfigError variant when infeasible — loud,
+      never silently degraded. Swap hazard (separate step, separate
+      readback): after posture selection, mlock both arenas as a
+      best-effort step under the default (warn on ENOMEM/EPERM,
+      continue — TigerBeetle stdx/mlock.zig posture), with
+      PoolBuilder::require_locked() for deployments that want a typed
+      refusal instead. Readback: Pool::registration_posture() -> the
+      selected enum, Pool::arena_locked() -> bool, both re-exported at
+      the crate root beside IoMode. Dispatch goes through one posture
+      table — no hardcoded buf_index in submit paths; the SAFETY
+      contract is restated per posture. SparseRegistered stays in
+      arena-modernization:AM4 as a third rung added to this enum.
+      Acceptance: setrlimit-lowered integration cases for Auto-degrade,
+      explicit-Unregistered, explicit-Registered-refused, and
+      require_locked-refused; the ambient-limit Registered + locked
+      case; the pinned regression benches green under BOTH shippable
+      postures with the registered-vs-unregistered per-op delta
+      recorded as a numeric result; mlock readback asserted in both
+      states. LANDING STATE 2026-09-04: implemented on PR #7
+      feat/arena-registration-posture (1,240 additions; src/memlock.rs,
+      src/backend/uring.rs posture table, src/driver.rs
+      RegistrationPolicy/RegistrationPosture/ArenaLockGuard,
+      src/pool/mod.rs builder knobs + PoolConfigError::{
+      RegistrationRefused, RegistrationUnsupported, ArenaLockRefused},
+      tests/arena_registration.rs, benches/arena_registration.rs +
+      plan); darwin 309 passed, nix 314 passed + 1 unrelated, floor
+      cases 6/6, arena_registration gate 0.9991 / CI95 1.0035 PASS.
+      Merged to main as b1db67d (PR #7, 2026-09-04T12:57Z) before the
+      Unregistered-forced full-suite run the sira review asked for;
+      that run is carried as an open item on RP2's notification to
+      sira DM005 (first real-driver pool build), not silently dropped.
+    status: done
+    depends_on: []
+    files:
+      - src/backend/uring.rs
+      - src/backend/eager.rs
+      - src/pool/write_arena.rs
+      - src/pool/frames.rs
+      - src/pool/mod.rs
+      - src/pool/miss.rs
+      - src/driver.rs
+      - src/memlock.rs
+      - src/bench.rs
+      - src/lib.rs
+      - tests/arena_registration.rs
+      - tests/public_api.rs
+      - benches/arena_registration.rs
+      - benches/plans/arena_registration.md
+      - benches/read_path_product.rs
+  - id: RP2
+    title: Merge PR #7 and notify consumers
+    description: >
+      Merge feat/arena-registration-posture to main after RP1's
+      Unregistered-forced suite run; record the merge SHA here; notify
+      sira (dependency dios-t14-registration-posture -> satisfied at
+      the pin advance; DM005 adds sira variants for RegistrationRefused
+      and ArenaLockRefused, which dios.rs:112 maps to CapacitiesRefused
+      today) and pinned-frame-retention T8b (exact-R8 arm now runnable
+      under explicit Unregistered). DONE 2026-09-04: merge SHA b1db67d;
+      sira pin advanced 3fae1a4 -> b1db67d on sira main and
+      dependencies.yaml dios-t14-registration-posture marked satisfied;
+      pinned-frame-retention T8b's external dependency points here.
+      Open item handed to sira DM005: run the dios ring suite once with
+      DIOS_REGISTRATION_POLICY=unregistered on nix before the first
+      real-driver pool build binds a bar.
+    status: done
+    depends_on: [RP1]
+    files: []
+batches:
+  - id: b1
+    tasks: [RP1]
+  - id: b2
+    tasks: [RP2]

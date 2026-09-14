@@ -42,6 +42,7 @@ mod frames;
 #[cfg(loom)]
 pub mod loom_model;
 mod miss;
+mod prefetch;
 mod retention;
 mod table;
 pub(crate) mod write_arena;
@@ -57,6 +58,7 @@ pub use frames::{FrameState, ReadFrameIdx};
 pub(crate) use frames::{Frames, InFlightFrame};
 pub(crate) use miss::PoolBackend;
 pub(crate) use miss::sealed::Sealed as PoolBackendSealed;
+pub use prefetch::{PrefetchReport, PrefetchStats, Readahead};
 pub use retention::{RetainRefused, RetainRefusedReason, RetainedFrame, RetentionStats};
 pub use table::PageTable;
 #[cfg(feature = "bench")]
@@ -446,6 +448,8 @@ impl Drop for PendingToken {
 /// — an open-time typed error, never a runtime deadlock (INV-9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PoolConfigError {
+    /// Speculation would consume frames required by the demand watermark.
+    PrefetchHeadroomTooLarge { requested: u32, available: u32 },
     /// Retention bookkeeping cannot represent the requested fixed budget.
     RetentionUnrepresentable {
         /// Requested retained-frame budget or reader bound.
@@ -523,6 +527,13 @@ impl std::fmt::Display for PoolConfigError {
             Self::RetentionUnrepresentable { requested, limit } => write!(
                 f,
                 "retention-capacity request {requested} exceeds the representable limit {limit}"
+            ),
+            Self::PrefetchHeadroomTooLarge {
+                requested,
+                available,
+            } => write!(
+                f,
+                "prefetch headroom {requested} exceeds the {available} spare frames"
             ),
             Self::BelowWatermark {
                 frame_count,
@@ -691,6 +702,8 @@ pub struct PoolBuilder {
     registered_file_capacity: u32,
     registration_policy: RegistrationPolicy,
     arena_lock: ArenaLockPolicy,
+    prefetch_headroom: Option<u32>,
+    readahead: Readahead,
 }
 
 impl Default for PoolBuilder {
@@ -708,6 +721,8 @@ impl Default for PoolBuilder {
             registered_file_capacity: crate::driver::DEFAULT_REGISTERED_FILE_CAPACITY,
             registration_policy: RegistrationPolicy::Auto,
             arena_lock: ArenaLockPolicy::BestEffort,
+            prefetch_headroom: None,
+            readahead: Readahead::Automatic,
         }
     }
 }
@@ -845,6 +860,7 @@ impl PoolBuilder {
                 watermark: u32::try_from(watermark).unwrap_or(u32::MAX),
             });
         }
+        self.prefetch_capacity()?;
         Ok(())
     }
 
@@ -996,6 +1012,7 @@ struct Control {
     product_sequence: u64,
     release_cursor: u64,
     reads_in_flight: u32,
+    prefetch: prefetch::Prefetch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1189,6 +1206,15 @@ impl<D: PoolBackend> Pool<D> {
             product_sequence: 0,
             release_cursor: 0,
             reads_in_flight: 0,
+            prefetch: prefetch::Prefetch::try_new(
+                config
+                    .prefetch_capacity()
+                    .map_err(PoolBuildError::Configuration)?,
+                config.max_concurrent_readers,
+                config.max_inflight_reads,
+                config.readahead,
+            )
+            .ok_or(PoolBuildError::Allocation)?,
         })
     }
 
@@ -1478,9 +1504,11 @@ impl<D: PoolBackend> Pool<D> {
     /// [`RegisterError::AtCapacity`] once `max_concurrent_readers` slots are
     /// held — registration beyond capacity fails rather than deadlocking.
     pub fn register_reader(&self) -> Result<ReaderCtx, RegisterError> {
-        self.readers.register().ok_or(RegisterError::AtCapacity {
+        let reader = self.readers.register().ok_or(RegisterError::AtCapacity {
             max_concurrent_readers: self.max_concurrent_readers,
-        })
+        })?;
+        self.control().prefetch.reset_reader(reader.index());
+        Ok(reader)
     }
 
     /// Routes every `PageId` naming `fd`'s file to this handle. Reads for such a
@@ -1626,13 +1654,24 @@ impl<D: PoolBackend> Pool<D> {
                 None => Get::Busy,
             });
         }
-        Ok(self.get_cold(page, &mut control))
+        control.prefetch.reconcile(&self.clock);
+        let result = self.get_cold(page, reader.index(), &mut control);
+        if matches!(result, Get::Pending(_)) {
+            control.prefetch.observe(&self.clock, reader.index(), page);
+        }
+        Ok(result)
     }
 
     #[cold]
     #[inline(never)]
-    fn get_cold<'pool>(&'pool self, page: PageId, control: &mut Control) -> Get<'pool> {
+    fn get_cold<'pool>(
+        &'pool self,
+        page: PageId,
+        reader: u32,
+        control: &mut Control,
+    ) -> Get<'pool> {
         if let Some(index) = control.miss.find_pending(page) {
+            self.prefetch_promote(control, control.miss.entry(index).frame(), reader);
             let (slot, generation) = control.miss.join(index, &self.miss_interests);
             return Get::Pending(PendingToken::new(
                 page,
@@ -2031,6 +2070,7 @@ impl<D: PoolBackend> Pool<D> {
         let reclaimed = self.advance_and_reclaim(&mut control);
         Self::deliver_product_completions(&mut control, out);
         self.progress_retirements(&mut control);
+        self.progress_prefetch(&mut control);
         if backend > 0 || reclaimed > 0 || out.iter().next().is_some() {
             self.wake.consume_current();
         }
@@ -2065,6 +2105,7 @@ impl<D: PoolBackend> Pool<D> {
         let reclaimed = self.advance_and_reclaim(&mut control);
         Self::deliver_product_completions(&mut control, out);
         self.progress_retirements(&mut control);
+        self.progress_prefetch(&mut control);
         if backend.backend_completions > 0 || reclaimed > 0 || out.iter().next().is_some() {
             self.wake.consume_current();
         }
@@ -2206,6 +2247,9 @@ impl<D: PoolBackend> Pool<D> {
                 continue;
             }
             let _ = self.table.remove_shared(page);
+            control
+                .prefetch
+                .finish(&self.clock, frame, prefetch::state::Terminal::Evicted);
             self.frames.advance(frame, FrameState::Evicting);
             control.evict_queue.push(frame, epoch);
         }
@@ -2220,6 +2264,7 @@ impl<D: PoolBackend> Pool<D> {
         let _ = self.drain_completions(&mut control);
         let reclaimed = self.advance_and_reclaim(&mut control);
         self.progress_retirements(&mut control);
+        self.progress_prefetch(&mut control);
         debug_assert!(
             reclaimed <= self.frame_count as usize,
             "a poll reclaims at most every frame"
@@ -2286,7 +2331,7 @@ impl<D: PoolBackend> Pool<D> {
             slot.abort_pin(begun);
             return None;
         };
-        let _ = self.clock.reference(frame);
+        let _ = self.clock.reference_from(frame, slot);
         let pin = slot.commit_pin(begun);
         Some((self.frames.frame_bytes(frame, &pin), frame))
     }
@@ -2373,6 +2418,9 @@ impl<D: PoolBackend> Pool<D> {
             Some(frame),
             "the control lock keeps the eviction mapping stable"
         );
+        control
+            .prefetch
+            .finish(&self.clock, frame, prefetch::state::Terminal::Evicted);
         self.frames.advance(frame, FrameState::Evicting);
         control
             .evict_queue
@@ -2381,7 +2429,10 @@ impl<D: PoolBackend> Pool<D> {
     }
 
     fn claim_free_frame(&self, control: &mut Control) -> Option<ReadFrameIdx> {
-        let frame = control.free_frames.pop()?;
+        let frame = control
+            .free_frames
+            .pop()
+            .or_else(|| control.prefetch.reserve.pop())?;
         assert_eq!(
             self.frames.state(frame),
             FrameState::Free,
@@ -2428,7 +2479,12 @@ impl<D: PoolBackend> Pool<D> {
     }
 
     fn evict_one_victim(&self, control: &mut Control) {
-        let epoch = self.global_epoch.load(Ordering::Acquire);
+        if !self.prefetch_evict_unused(control, &[]) {
+            self.evict_clock_victim(control);
+        }
+    }
+
+    fn evict_clock_victim(&self, control: &mut Control) -> bool {
         for _ in 0..=self.frame_count.saturating_mul(2) {
             let victim = self.clock.evict_victim_shared();
             if self.frames.state(victim) != FrameState::Resident {
@@ -2437,20 +2493,17 @@ impl<D: PoolBackend> Pool<D> {
             if !control.miss.prepare_eviction(victim, &self.miss_interests) {
                 continue;
             }
+            if self.clock.is_speculative(victim) {
+                continue;
+            }
             assert!(
                 control.frame_pages[victim.get() as usize].get().is_some(),
                 "a resident CLOCK victim remains indexed"
             );
-            let page = self.frames.exact_page_locked(victim, control);
-            let removed = self
-                .table
-                .remove_shared(page)
-                .expect("a resident eviction victim remains mapped");
-            assert_eq!(removed, victim, "the reverse mapping names the victim");
-            self.frames.advance(victim, FrameState::Evicting);
-            control.evict_queue.push(victim, epoch);
-            return;
+            self.evict_resident(control, victim);
+            return true;
         }
+        false
     }
 
     fn drain_completions(&self, control: &mut Control) -> u32 {
@@ -2677,7 +2730,9 @@ impl<D: PoolBackend> Pool<D> {
             entry.frame().get() as usize,
             FrameFileSlot::for_page(entry.page()),
         );
-        let _ = self.clock.reference(entry.frame());
+        if !self.clock.is_speculative(entry.frame()) {
+            let _ = self.clock.reference(entry.frame());
+        }
         miss.succeed(index);
         miss.clean_terminal_zero(
             MissSlot::new(index),
@@ -2694,6 +2749,7 @@ impl<D: PoolBackend> Pool<D> {
         write: InFlightFrame,
         errno: i32,
     ) {
+        self.prefetch_fail(control, entry.frame());
         control.free_frames.push(self.frames.abort(write));
         let miss = &mut control.miss;
         miss.fail(index, errno);
@@ -2822,7 +2878,7 @@ pub(crate) fn pin_with_resident_hint(
         slot.abort_pin(begun);
         return None;
     }
-    let _ = clock.reference(frame);
+    let _ = clock.reference_from(frame, slot);
     Some((frame, slot.commit_pin(begun)))
 }
 

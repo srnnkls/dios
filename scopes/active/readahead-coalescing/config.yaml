@@ -1,0 +1,18 @@
+---
+version: 1
+epoch:
+  id: 20260914T090833Z-505efd
+  started_at: '2026-09-14T09:12:19Z'
+  updated_at: '2026-09-14T09:12:19Z'
+routing:
+  tester:
+    agent: inherit
+    effort: inherit
+  implementer:
+    agent: inherit
+    effort: inherit
+  reviewer:
+    agents:
+    - peer-gpt6-astra
+    - peer-opus
+    effort: high

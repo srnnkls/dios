@@ -206,7 +206,7 @@ zero_vacant_atomics! {
 unsafe impl<T> ZeroVacant for std::cell::UnsafeCell<MaybeUninit<T>> {
     #[cfg(loom)]
     fn vacant() -> Self {
-        Self::new(std::mem::MaybeUninit::uninit())
+        Self::new(MaybeUninit::uninit())
     }
 }
 

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+#MISE description="Profile one matched mmap/Dios lane, with perf outside the memory-limited process"
+#MISE tools={"uv"="0.12.12","cargo:inferno"="0.12.7","cargo:rustfilt"="0.2.1"}
+set -euo pipefail
+
+if [ "$(uname -s)" != Linux ]; then
+  printf '%s\n' 'This profiler requires Linux perf and the completed Linux primary artifacts.' >&2
+  exit 1
+fi
+exec uv run --python "${DIOS_BENCH_PYTHON:-3.12}" benches/mmap_workloads/profile.py "$@"

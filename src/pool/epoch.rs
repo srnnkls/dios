@@ -60,6 +60,7 @@ pub(crate) struct ReaderSlot {
     local_epoch: AtomicU64,
     guard_count: AtomicU64,
     peak_guards_per_reader: u32,
+    index: u32,
 }
 
 /// Arc-owned reader registration table. It deliberately retains no frames,
@@ -76,9 +77,13 @@ impl ReaderRegistry {
         peak_guards_per_reader: u32,
         lifecycle: Arc<LifecycleCounters>,
     ) -> Option<Self> {
+        let mut index = 0;
         Some(Self {
             slots: crate::allocation::try_boxed_slice_with(capacity, || {
-                ReaderSlot::vacant(peak_guards_per_reader)
+                let mut slot = ReaderSlot::vacant(peak_guards_per_reader);
+                slot.index = index;
+                index += 1;
+                slot
             })?,
             lifecycle,
         })
@@ -108,7 +113,12 @@ impl ReaderSlot {
             local_epoch: AtomicU64::new(QUIESCENT),
             guard_count: AtomicU64::new(0),
             peak_guards_per_reader,
+            index: u32::MAX,
         }
+    }
+
+    pub(super) fn index(&self) -> Option<u32> {
+        (self.index != u32::MAX).then_some(self.index)
     }
 
     /// Claims a vacant slot via CAS; a racing registrant that loses sees `false`
@@ -285,6 +295,10 @@ pub(crate) enum FrameOutcome {
 }
 
 impl EvictQueue {
+    pub(super) fn len(&self) -> u32 {
+        u32::try_from(self.entries.len()).expect("the eviction queue is frame bounded")
+    }
+
     #[cfg(loom)]
     pub(crate) fn with_capacity(capacity: u32) -> Self {
         Self::try_with_capacity(capacity)
@@ -353,6 +367,10 @@ pub struct ReaderCtx {
 }
 
 impl ReaderCtx {
+    pub(super) fn index(&self) -> u32 {
+        self.slot
+    }
+
     fn new(registry: Arc<ReaderRegistry>, slot: u32) -> Self {
         Self {
             registry,

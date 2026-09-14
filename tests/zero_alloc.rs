@@ -448,6 +448,46 @@ fn real_pool_warm_get_hit_allocates_nothing() {
 }
 
 #[test]
+fn shipping_prefetch_and_automatic_recycling_allocate_nothing() {
+    let path = temp_frames("prefetch-recycling", 256, 0xC4);
+    let pool = Pool::builder()
+        .frame_count(64)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(16)
+        .miss_headroom(48)
+        .prefetch_headroom(8)
+        .registration_posture(dios::RegistrationPolicy::Unregistered)
+        .build()
+        .expect("pool");
+    let file = pool.open(&path, DirectIo::Disabled).expect("fixture");
+    let reader = pool.register_reader().expect("reader");
+    drop(resolve_product_page(&pool, &reader, PageId::new(file, 255)));
+    let allocations = armed_allocations(|| {
+        for start in (0..128).step_by(8) {
+            let pages = std::array::from_fn::<_, 8, _>(|index| {
+                PageId::new(file, start + u32::try_from(index).expect("index"))
+            });
+            let _ = pool.prefetch(&pages);
+            for page in pages {
+                drop(resolve_product_page(&pool, &reader, page));
+                pool.poll();
+            }
+        }
+        let stats = pool.prefetch_stats();
+        assert!(stats.admitted > 0);
+        assert!(stats.occupied <= 8);
+    });
+    assert_eq!(
+        allocations, 0,
+        "all prediction, admission and recycling state is preallocated"
+    );
+    drop(reader);
+    drop(pool);
+    std::fs::remove_file(path).expect("fixture cleanup");
+}
+
+#[test]
 fn real_pool_warm_hinted_hit_allocates_nothing() {
     let path = temp_frames("real-pool-hinted-hit", 1, 0xA5);
     let pool = product_pool();

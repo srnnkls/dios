@@ -1,0 +1,173 @@
+synthesized_report:
+  reviewers:
+  - peer-gpt6-astra
+  - peer-opus
+  scope_revision_reviewed: 3
+  gates:
+    completeness:
+      status: pass
+      failed_by: []
+    consistency:
+      status: pass
+      failed_by: []
+    feasibility:
+      status: pass
+      failed_by: []
+    clarity:
+      status: pass
+      failed_by: []
+    design_depth:
+      status: pass
+      failed_by: []
+  issues: []
+  resolved_issues:
+  - id: H1
+    found_by:
+    - peer-opus
+    severity: high
+    gate: completeness
+    area: constraints
+    description: 'The owner''s fix 2 (form a vector only when free credits cover a full vector)
+      is generalized to every configuration without a floor on vectors-in-flight, and design.md
+      forbids shrinking a resource-limited target ("automatic resource shortage defers the full
+      target rather than shrinking it"). Combined with "When configured credits cannot hold
+      32 pages, reduce the target to that capacity", the admission target equals C whenever
+      C <= 32, so refill requires every speculative credit to be free. Three reachable triggers,
+      one mechanism. (a) Any pool with C <= 32 - which is the existing default for small pools
+      and any explicit prefetch_headroom(n<=32) that requirement 5 preserves: the admitted window
+      must fully drain before the next vector, so the consumer eats one uncovered device latency
+      every C pages, where today per-page admission keeps C pages continuously in flight. (b)
+      Multi-reader pools with C < readers * target: credits are a single global pool (Prefetch::capacity,
+      round-robin prefetch_next), so only one reader can hold speculation at a time and the
+      others get none until it drains; today credits interleave across readers. (c) The default
+      formula yields C = R - 1 whenever max_inflight_reads is small (e.g. R=33 -> C=32); admission
+      also needs C free read credits, so any concurrent demand read makes the full target permanently
+      ineligible and automatic readahead never fires. Scope.md''s "At a budget of B vectors,
+      full-vector refills target B-1 to B outstanding speculative vectors" is false for B <=
+      1, which is exactly these cases.'
+    suggestion: Set the effective automatic target to min(vector_frames_max, floor(C / 2)) with
+      a floor of 2 pages (below that, the point path), and permit a resource-limited target
+      to shrink to that floor rather than deferring unconditionally. State B >= 2 as a configuration
+      constraint and restate the B-1..B claim as conditional on it. Applies once in the admission-target
+      rule (scope requirement 3 and design "Admission transaction" step 1 / "Automatic windows,
+      refill and EOF").
+    status: verified_resolved
+    resolution: Accept small-capacity refill regression and ready-turn ambiguity. Preserve point
+      admission below two full-vector capacity and retain credit-deferred turns. Reject runtime
+      shrinking of default vectors, which would contradict owner full-refill requirement. The
+      specific claim that one demand read blocks R=33/C=32 is arithmetically false (32 read
+      credits remain); two or more can prevent a full target, and the construction-time fallback
+      covers that constrained configuration.
+    verified_by: peer-opus
+    verification_report: .peer/scope-readahead-coalescing/20260914T073732Z-c06a33/review-revision-3-fix-1/peer-opus.normalized.yaml
+  - id: M1
+    found_by:
+    - peer-opus
+    severity: medium
+    gate: completeness
+    area: constraints
+    description: 'Requirement 9 removes per-poll capacity scans from reconcile, obsolete eviction
+      and marker harvest, but not from the explicit-prefetch protection path that requirement
+      4 explicitly preserves ("Preserve the full examined prefix''s protection"). In src/pool/prefetch.rs:298
+      prefetch_evict_unused scans all C entries and calls protected.contains(&entry.page) over
+      the examined prefix, and prefetch_replace_unused runs once per deferred page inside Pool::prefetch.
+      request_limit is capacity.max(reads) * 4 (src/pool/prefetch/state.rs:170), so raising
+      the budget raises both factors: C=32/R=64 today gives 32 x 256 comparisons per deferred
+      page; the candidate budgets give 128 x 1024 and 256 x 2048, i.e. a 16x and 64x growth,
+      under the pool control mutex. RC1 instructs the explicit bench arm to repeat the protected
+      prefix in vector-sized chunks, which is the shape that maximizes both examined length
+      and deferrals. The scope states no bound for this path, so a conforming implementation
+      can pass every declared check while the explicit arm regresses on prefetch-control CPU
+      that RC-G6 is required to report.'
+    suggestion: Extend requirement 9's bounded-work rule to cover protection lookup during explicit
+      admission (a preallocated page->protected-membership structure rather than a linear contains
+      over the examined slice), and add the explicit-prefetch path to the bounded entry-visit
+      assertion already required for idle polls.
+    status: verified_resolved
+    resolution: Accept repeated C-by-prefix protection work. Reuse existing page lookup plus
+      per-entry stamps, with one replacement cursor per call; no new hash-table dependency.
+    verified_by: peer-opus
+    verification_report: .peer/scope-readahead-coalescing/20260914T073732Z-c06a33/review-revision-3-fix-1/peer-opus.normalized.yaml
+  - id: M2
+    found_by:
+    - peer-opus
+    severity: medium
+    gate: completeness
+    area: edge_cases
+    description: 'The continuation lease''s interaction with file retirement is left with two
+      incompatible readings. Trigger: retire_file(f) while a vector read on f has completed
+      short and the pool holds the unresubmitted lease. Requirement 7 keeps destinations alive
+      "until accepted work finishes" and the acceptance table requires "no new admission after
+      retirement"; a continuation is neither accepted work nor an admission. Design.md says
+      only that the lease "retains file accounting until final completion/abort, including file
+      retirement" - that fixes accounting, not the branch. Resubmitting issues fresh I/O against
+      a retiring file and defers close by the whole bounded continuation chain; terminating
+      drops the tail. RetireStatus is a public contract, so the two readings differ observably
+      for callers.'
+    suggestion: Name retirement as a terminal condition for an unresubmitted lease - the tail
+      fails once through the existing path and the slot releases - in requirement 7, and add
+      it to the "File retirement with active vector" acceptance row.
+    status: verified_resolved
+    resolution: Accept unspecified retirement branch. Preserve existing point continuation behavior
+      rather than introduce retirement cancellation. src/pool/mod.rs:2589-2607 resubmits via
+      registered_file without a live-only check; :2183-2225 holds the handle until live misses
+      finish; :2914-2926 retains the admitted-read descriptor.
+    verified_by: peer-opus
+    verification_report: .peer/scope-readahead-coalescing/20260914T073732Z-c06a33/review-revision-3-fix-1/peer-opus.normalized.yaml
+  residual:
+  - source: H1 arithmetic
+    disposition: corrected premise
+    reason: One demand read at R=33 leaves 32 read credits; the original any-demand claim was
+      too strong. Small-capacity fallback resolves the underlying refill-barrier case.
+  - source: M2 suggested retirement cancellation
+    disposition: not adopted
+    reason: Existing point reads continue while retiring; the clarified vector lease preserves
+      that contract instead of adding cancellation.
+  summary:
+    unresolved_critical: 0
+    unresolved_high: 0
+    unresolved_medium: 0
+    resolved_high: 1
+    resolved_medium: 2
+  recommendation: ready_to_implement
+  next_action: Review passed; implementation remains forbidden until owner selects the default
+    byte budget and approves the scope.
+review_run:
+  run_id: 20260914T073732Z-c06a33
+  reviewed_at: '2026-09-14T08:18:34Z'
+  reasoning_effort: high
+  selection: explicit_owner_selection
+  initial_reports:
+  - reviewer: peer-gpt6-astra
+    status: ok
+    path: .peer/scope-readahead-coalescing/20260914T073732Z-c06a33/review-revision-3/peer-gpt6-astra.yaml
+    normalized_path: .peer/scope-readahead-coalescing/20260914T073732Z-c06a33/review-revision-3/peer-gpt6-astra.normalized.yaml
+  - reviewer: peer-opus
+    status: ok
+    path: .peer/scope-readahead-coalescing/20260914T073732Z-c06a33/review-revision-3/peer-opus.yaml
+    normalized_path: .peer/scope-readahead-coalescing/20260914T073732Z-c06a33/review-revision-3/peer-opus.normalized.yaml
+  fix_rounds: 1
+  targeted_review:
+    reviewer: peer-opus
+    issue_ids:
+    - H1
+    - M1
+    - M2
+    status: passed
+    path: .peer/scope-readahead-coalescing/20260914T073732Z-c06a33/review-revision-3-fix-1/peer-opus.yaml
+    normalized_path: .peer/scope-readahead-coalescing/20260914T073732Z-c06a33/review-revision-3-fix-1/peer-opus.normalized.yaml
+  validation:
+    yaml: passed
+    task_dependencies: passed
+    parallel_mutation_paths: disjoint
+    markdown_links: passed
+    product_sources_unchanged: 34
+    budget: pending owner choice
+    owner_approval: false
+    diff_check: passed
+    rust_changes_since_linux_and_macos_lint: none
+  diff_qualification: .peer/scope-readahead-coalescing/20260914T073732Z-c06a33/review-revision-3-fix-1/diff-qualification.json
+  product_code_changed: false
+  product_performance_gates_run: false
+  benchmark_only_evidence: benches/evidence/readv_pipelined/budget-depths/README.md
+previous_report: reviews/revision-2.yaml

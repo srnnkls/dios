@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+#MISE description="Save a workload CPU profile and its matching measurements: lane arm output [repetitions]"
+#MISE depends=["bench-host-guard"]
+set -euo pipefail
+
+if [ "$#" -lt 3 ] || [ "$#" -gt 4 ]; then
+  echo "usage: mise run profile-workload -- lane arm output [repetitions]" >&2
+  exit 2
+fi
+lane=$1
+arm=$2
+output=$3
+repetitions=${4:-1024}
+if [ -e "$output" ]; then
+  echo "profile output must be a new directory: $output" >&2
+  exit 1
+fi
+mkdir -p "$output"
+mise_command=${MISE_EXE:-mise}
+if [ "$(uname -s)" = Linux ]; then
+  export DIOS_PROFILE_CPUS=0-3
+  taskset -c 4 "$mise_command" run flamegraph --bench workload_suite -- profile "$output/measurement" "$lane" "$arm" "$repetitions"
+else
+  "$mise_command" run flamegraph --bench workload_suite -- profile "$output/measurement" "$lane" "$arm" "$repetitions"
+fi
+profile_output=${DIOS_PROFILE_OUTPUT:-target/flamegraph}
+for artifact in profile.folded top_self.txt flamegraph.svg; do
+  cp "$profile_output/$artifact" "$output/$artifact"
+done
+if [ "$(uname -s)" = Linux ]; then
+  artifacts=(perf.data perf-header.txt perf-statistics.txt profile-metadata.json)
+else
+  artifacts=(sample.txt)
+fi
+for artifact in "${artifacts[@]}"; do
+  if [ -f "$profile_output/$artifact" ]; then
+    cp "$profile_output/$artifact" "$output/$artifact"
+  fi
+done

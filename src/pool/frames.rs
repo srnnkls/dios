@@ -822,6 +822,13 @@ pub(crate) struct FreeFrames {
 }
 
 impl FreeFrames {
+    pub(crate) fn try_empty(capacity: u32) -> Option<Self> {
+        Some(Self {
+            frames: crate::allocation::try_boxed_slice_with(capacity, || ReadFrameIdx::new(0))?,
+            len: 0,
+        })
+    }
+
     /// Holds every frame, ordered so the first pop claims frame 0.
     pub(crate) fn try_with_all(frame_count: u32) -> Option<Self> {
         let mut next = frame_count;
@@ -852,7 +859,6 @@ impl FreeFrames {
         Some(self.frames[index as usize])
     }
 
-    #[cfg(test)]
     pub(crate) fn len(&self) -> u32 {
         self.len
     }

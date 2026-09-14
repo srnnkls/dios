@@ -1,0 +1,136 @@
+---
+scope: readahead-coalescing
+code: RC
+next_id: 7
+meta:
+  created: '2026-09-14'
+  last_updated: '2026-09-14'
+  progress: 0/6
+discipline: Owner approval, 512 KiB default and scope review are recorded. Immutable
+  source/executable baseline verified before RC1/RC2 dispatch. Each task captures
+  bounded RED before code.
+tasks:
+- id: RC1
+  title: Prepare the exact gate harness from the frozen baseline
+  status: pending
+  depends_on: []
+  description: Use the immutable pre-dispatch source/executable snapshot while RC2
+    works independently. Materialize current-old-budget, current-new-budget and coalesced-default
+    arms using the owner-selected C, R=2*C and INV-9 headroom=3*R. Use the same 8
+    MiB cold / 64 MiB pressure payload arenas and poll/consume loops in pool comparisons.
+    Keep frozen DRP at max_inflight_reads(1). Add SQEs per 1,024 pages, vector lengths,
+    polls/page, control entry visits, EOF waste and source/raw/CSV checks. The explicit
+    arm extends hints in vector-sized chunks. Include demand READs in the steady SQE
+    bound. Add small-capacity fallback, shared-reader turn and explicit per-call protection/replacement
+    work witnesses.
+  files:
+  - benches/plans/readahead_coalescing.md
+  - benches/mmap_workloads.rs
+  - benches/mmap_workloads/
+  - tests/scan_geometry_validation.py
+  - benches/evidence/readahead_coalescing/
+- id: RC2
+  title: Add owned bounded vector reads to the driver and backends
+  status: pending
+  depends_on: []
+  description: |-
+    RED for ordered destinations, exact prefix transfer, submission refusal, generation reuse and lifecycle ownership. Add stable preallocated completion-slab iovecs and a unique frame bundle through refusal, retry, completion and teardown. Plain READV in both Linux postures; eager caller-thread vector fill and matching mock schedules. Point operation semantics remain intact. Miri and syscall tests validate actual retained pointers, not addresses alone. Carry the destination enum through OpEntry, OpContext and Completion construction/extraction; adapt the existing pool point consumer while keeping pool vector admission disabled until RC3.
+     Partial completions retain an exclusive continuation lease on the original op slot and file accounting. Rebuild suffix descriptors there after its CQE; no free-list round trip, new reservation or slab-exhaustion refusal. Cover abort/drop/teardown of the retained lease.
+  files:
+  - src/driver.rs
+  - src/driver/read_vector.rs
+  - src/completion.rs
+  - src/backend/uring.rs
+  - src/backend/eager.rs
+  - src/mock.rs
+  - src/pool/mod.rs
+  - tests/driver_vector_reads.rs
+- id: RC3
+  title: Route vector completions through per-page terminal outcomes
+  status: pending
+  depends_on:
+  - RC1
+  - RC2
+  description: RED for O(1) span-first routing, mid-iovec short reads, EOF/error after
+    a prefix, original-slot continuation while every other slot is full and per-frame
+    conservation. Use a construction-sized driver-slot-to-route index with generation
+    checks, sized to the actual backend slot namespace including product ops. Add
+    vector submission/continuation and slot-capacity integration to PoolBackend and
+    Driver/MockDriver/MockRingDriver together. Publish or abort each token once; preserve
+    read credits, lease ownership and file/buffer lifetime through retirement/drain.
+    A held continuation may finish an already admitted logical read after retirement,
+    matching point-read semantics; new logical admissions remain forbidden. Test retirement
+    before resubmit and through a later short completion.
+  files:
+  - src/pool/mod.rs
+  - src/pool/read_spans.rs
+  - src/pool/miss.rs
+  - src/pool/prefetch/state.rs
+  - src/mock.rs
+  - tests/readahead_coalescing.rs
+- id: RC4
+  title: Coalesce explicit and automatic missing runs
+  status: pending
+  depends_on:
+  - RC3
+  description: RED for steady singleton-refill collapse, smaller startup horizons,
+    resident/pending holes, duplicates, exhausted credits and partial-window protection.
+    Automatic admission waits for a full eligible vector; a one-page sliding horizon
+    is not a short tail. Explicit hints remain opportunistic and document vector-chunk
+    extension. Apply the owner byte budget through floor division and spare/read-limit
+    caps, retaining the explicit page-count override and automatic-on/disable behavior.
+    Remove per-poll capacity scans using direct entry indexes, per-incarnation cleanup
+    and a bounded dirty-frame bitmap notified only on first speculative consumption.
+    Preserve ordered feedback and progress without a new CQE. Keep repeated warm hits
+    and CLOCK policy unchanged. EOF uses short/Ok(0), prefix publication, tail failure
+    and predictor reset; no extent metadata or FileHandle changes. Protect the entire
+    examined prefix and defer the unexamined suffix without scanning it. Use per-page
+    automatic mode when min(C,R-1) cannot hold two full vectors; otherwise keep the
+    full target under temporary shortage. Preserve round-robin admission turns on
+    credit deferral, with event-updated ready-stream membership. Batch explicit protection
+    via preallocated per-call stamps and at most one replacement sweep over capacity
+    per call.
+  files:
+  - src/pool/mod.rs
+  - src/pool/prefetch.rs
+  - src/pool/prefetch/pattern.rs
+  - src/pool/prefetch/state.rs
+  - src/pool/prefetch/notifications.rs
+  - src/pool/clock.rs
+  - tests/readahead_coalescing.rs
+  - tests/prefetch.rs
+- id: RC5
+  title: Prove concurrency, lifetime and allocation invariants
+  status: pending
+  depends_on:
+  - RC4
+  description: |-
+    Loom covers span publication racing point join and route reuse; integrate admission/join/completion into the existing seam. Check retained guards, file retirement, full queues, maximum admitted frames and zero allocation on eager and io_uring. Run stored-pointer Miri, syscall ASAN, existing lifetime/compile-fail and retention suites, strict Clippy and formatting. Every known safety failure blocks RC6.
+     Loom also covers notification/drain races, delayed earlier consumption, frame reuse and feedback order; empty polls must inspect no speculative-capacity entries. Include consumption after the final CQE and continuation-lease teardown.
+  files:
+  - src/pool/loom_model.rs
+  - tests/loom_pool.rs
+  - tests/readahead_coalescing.rs
+  - tests/driver_vector_reads.rs
+  - tests/guard_compile_fail.rs
+  - tests/zero_alloc.rs
+  - src/mock.rs
+- id: RC6
+  title: Run the owner gates and retain pool-layer attribution
+  status: pending
+  depends_on:
+  - RC5
+  description: Run fresh RC-G1/G2 comparisons for both cold and pressure shapes, including
+    current per-page reads at the matched new budget. Run RC-G3/G4, RC-G5 witnesses
+    and all inherited gates. RC-G6 reports CPU and elapsed per useful page, polls/page,
+    qualified prefetch-control CPU/page, bookkeeping entry visits, achieved overlap
+    and EOF waste. A failing headline triggers exact pool-layer profiles/differentials
+    with observer qualification. Keep budgets and gate bounds fixed; do not chase
+    the serial-probe residual. Retain immutable evidence and final dispositions.
+  files:
+  - benches/mmap_workloads/
+  - benches/evidence/readahead_coalescing/
+  - benches/plans/readahead_coalescing.md
+  - README.md
+  - scopes/active/readahead-coalescing/validation.yaml
+  - scopes/active/readahead-coalescing/tasks.yaml

@@ -145,6 +145,12 @@ pub(crate) struct MissInterests {
     slots: MappedSlice<MissInterest>,
 }
 
+#[derive(Clone, Copy)]
+enum InitialInterest {
+    Speculative = 0,
+    Demand = 1,
+}
+
 impl MissInterests {
     #[cfg(test)]
     pub(crate) fn with_capacity(capacity: u32) -> Self {
@@ -159,6 +165,10 @@ impl MissInterests {
     }
 
     fn begin(&self, slot: MissSlot) -> NonZeroU64 {
+        self.begin_initial(slot, InitialInterest::Demand)
+    }
+
+    fn begin_initial(&self, slot: MissSlot, initial: InitialInterest) -> NonZeroU64 {
         let interest = &self.slots[slot.index()];
         assert_eq!(
             interest.waiters.load(Ordering::Acquire),
@@ -173,7 +183,7 @@ impl MissInterests {
         interest
             .generation
             .store(generation.get(), Ordering::Release);
-        interest.waiters.store(1, Ordering::Release);
+        interest.waiters.store(initial as u32, Ordering::Release);
         generation
     }
 
@@ -412,6 +422,36 @@ impl MissTable {
         token: OpToken,
         interests: &MissInterests,
     ) -> NonZeroU64 {
+        self.admit_initial(slot, page, frame, token, interests, InitialInterest::Demand)
+    }
+
+    pub(crate) fn admit_speculative(
+        &mut self,
+        slot: MissSlot,
+        page: PageId,
+        frame: ReadFrameIdx,
+        token: OpToken,
+        interests: &MissInterests,
+    ) {
+        self.admit_initial(
+            slot,
+            page,
+            frame,
+            token,
+            interests,
+            InitialInterest::Speculative,
+        );
+    }
+
+    fn admit_initial(
+        &mut self,
+        slot: MissSlot,
+        page: PageId,
+        frame: ReadFrameIdx,
+        token: OpToken,
+        interests: &MissInterests,
+        initial: InitialInterest,
+    ) -> NonZeroU64 {
         debug_assert!(
             !self.slots.is_empty(),
             "the miss table is sized to the frames"
@@ -427,7 +467,10 @@ impl MissTable {
             self.slots[slot.index()].is_none(),
             "admission reuses only an empty or cleaned terminal slot"
         );
-        let generation = interests.begin(slot);
+        let generation = match initial {
+            InitialInterest::Demand => interests.begin(slot),
+            InitialInterest::Speculative => interests.begin_initial(slot, initial),
+        };
         let entry = MissEntry {
             page,
             frame,

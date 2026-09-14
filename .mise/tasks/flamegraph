@@ -40,15 +40,19 @@ for arg in "$@"; do
   fi
 done
 
-out_dir="target/flamegraph"
+out_dir=${DIOS_PROFILE_OUTPUT:-target/flamegraph}
 mkdir -p "$out_dir"
 
-binary=$(
-  (cd "$build_cwd" && cargo build --profile profiling --features bench --message-format=json "${build_args[@]}") |
-    jq -r 'select(.reason == "compiler-artifact") | select(.executable != null) | .executable' |
-    tail -1
-)
+binary=${DIOS_PROFILE_BINARY:-}
+if [ -z "$binary" ]; then
+  binary=$(
+    (cd "$build_cwd" && cargo build --profile profiling --features bench --message-format=json "${build_args[@]}") |
+      jq -r 'select(.reason == "compiler-artifact") | select(.executable != null) | .executable' |
+      tail -1
+  )
+fi
 [ -n "$binary" ] || { echo "no executable produced for: ${build_args[*]}"; exit 1; }
+[ -x "$binary" ] || { echo "profile binary is not executable: $binary"; exit 1; }
 
 run_command=("$binary")
 if [ "${#run_args[@]}" -gt 0 ]; then
@@ -62,9 +66,33 @@ if [ "$(uname)" = "Darwin" ]; then
   wait "$target_pid"
   inferno-collapse-sample "$out_dir/sample.txt" | rustfilt >"$out_dir/profile.folded"
 else
-  perf record -o "$out_dir/perf.data" --call-graph dwarf,16384 -m 16 \
+  event=${DIOS_PROFILE_EVENT:-cpu-clock}
+  case "$event" in
+    cpu-clock) sampling=(-e cpu-clock -F 997) ;;
+    cycles) sampling=(-e cycles -c 100000) ;;
+    *) echo "unsupported profile event: $event" >&2; exit 2 ;;
+  esac
+  mapping_pages=${DIOS_PROFILE_MMAP_PAGES:-16}
+  case "$mapping_pages" in
+    16|32|64|128) mapping=(-m "$mapping_pages") ;;
+    *) echo "unsupported profile mmap page count: $mapping_pages" >&2; exit 2 ;;
+  esac
+  if [ -n "${DIOS_PROFILE_CPUS:-}" ]; then
+    run_command=(taskset -c "$DIOS_PROFILE_CPUS" "${run_command[@]}")
+  fi
+  perf record -o "$out_dir/perf.data" "${sampling[@]}" \
+    --call-graph dwarf,16384 "${mapping[@]}" \
     -- "${run_command[@]}"
-  perf script -i "$out_dir/perf.data" | inferno-collapse-perf >"$out_dir/profile.folded"
+  perf report -i "$out_dir/perf.data" --header-only >"$out_dir/perf-header.txt"
+  perf report -i "$out_dir/perf.data" --stdio --stats >"$out_dir/perf-statistics.txt"
+  if rg -q 'LOST(_SAMPLES)? events:' "$out_dir/perf-statistics.txt"; then
+    echo "profile contains lost events; retain raw data and repeat" >&2
+    exit 1
+  fi
+  perf script -i "$out_dir/perf.data" -F -period | inferno-collapse-perf | rustfilt >"$out_dir/profile.folded"
+  jq -n --arg event "$event" \
+    '{sample_unit: "samples", event: $event, lost_events: 0, period: (if $event == "cycles" then 100000 else null end), frequency: (if $event == "cpu-clock" then 997 else null end)}' \
+    >"$out_dir/profile-metadata.json"
 fi
 
 inferno-flamegraph <"$out_dir/profile.folded" >"$out_dir/flamegraph.svg"
@@ -79,7 +107,7 @@ awk '{
 END {
   for (frame in self)
     printf "%10d %6.2f%%  %s\n", self[frame], 100 * self[frame] / total, frame
-}' "$out_dir/profile.folded" | sort -rn | head -40 >"$out_dir/top_self.txt"
+}' "$out_dir/profile.folded" | sort -rn | awk 'NR <= 40' >"$out_dir/top_self.txt"
 
 echo "== top self-time frames =="
 cat "$out_dir/top_self.txt"

@@ -1,0 +1,167 @@
+# Bench plan: readahead coalescing
+
+Revision 3, written before product implementation, 2026-09-14. Ordinary
+READV is selected; [scope](../../scopes/active/readahead-coalescing/scope.md)
+and [design](../../scopes/active/readahead-coalescing/design.md) passed their
+[Astra/Claude review](../../scopes/active/readahead-coalescing/review.yaml).
+The owner approved implementation and selected a 512 KiB default (524288 bytes),
+C=128/R=256/headroom=768 at 4 KiB. The minimum pool geometry is 897 frames.
+The scope decision entry records the rationale; RC-G1 failure still triggers
+pool-layer profiling at this budget. The 1 MiB row remains retained evidence,
+and any increase requires a separate owner decision. This supersedes
+`readv_integration.md`. No gate below has run for a product candidate.
+
+| Field | Value |
+|---|---|
+| Metric & direction | Candidate/base whole-workload elapsed ratio, lower is better; CPU ns per useful 4 KiB, actual SQEs/CQEs, vector lengths, useful/read bytes, in-flight frames/bytes, speculative occupancy and terminal outcomes |
+| Workload | Existing immutable 256 MiB + spare-page fixture and full-page u64 fold. Cold 64 MiB scan with 8 MiB payload arena for every pool arm. Three sequential 256 MiB passes with 64 MiB payload arena inside private memory.max=128 MiB, MemorySwapMax=0. One consumer, 4 KiB pages. Pending owner budget: 512 KiB or 1 MiB, giving C=128 or 256 speculative pages; scan read limit R=2*C and miss headroom=3*R. Preserve fragmented/dependent/wrong-hint and frozen DRP work from prefetch_admission.md |
+| Host protocol | Pinned nix, Threadripper 3970X / Samsung 970 PRO / Linux 6.6.64/ext4; CPU 0 worker, CPU 4 controller; prescribed DRP placement for those gates. Performance governor, THP never, no competing campaign, direct/Unregistered read buffers. Snapshot boot, governor, activity, read_ahead_kb, max_sectors_kb and max_segments before/after |
+| Baseline | (1) mmap MADV_SEQUENTIAL; (2a) frozen current per-page mechanism at old default C=32/R=64; (2b) that same mechanism at new C/R, matched to the coalesced default; (3) unchanged frozen DRP runner/baselines; (4) disabled-demand candidate control for non-sequential lanes. Pool scan comparisons share payload arena, work and poll/consume loop; 2a intentionally retains old C/R. Freeze measured working-tree sources/executable before any product edit |
+| Reps | Two qualification pairs, then 30 alternating fresh-process pairs for each comparison; identical useful work/seed inside each pair. Wrong-hint witnesses hold in every one of 30 fresh-process repetitions on eager and Linux. Frozen DRP retains its original aggregation/sample contract |
+| Threshold | Six owner requirements below; one-sided 95% upper of candidate/base. Pin the owner-selected budget, derived read/watermark limits and arena before implementation; no later budget, granule or comparator change to obtain a pass |
+| Compare command | Shared `mise run gate CASE/paired.csv BOUND` with table bounds; shared `summarize` for characterization. Validate raw identities/checksum and exact CSV reconstruction. Observer controls use `mise run gate OBSERVER/paired.csv 1.05` and `OBSERVER/cpu/paired.csv 1.05` |
+| Escalation lever | Reject safety/path/byte/allocation/drain/host failures. If RC-G1 fails, profile both exact failing arms at the pool layer, retaining CPU demand, achieved overlap and observer qualification. Inspect run admission, reconciliation and completion before more kernel attribution. Keep failures and bounds; no relaxation or budget increase without owner decision |
+
+## Gate table
+
+| Gate | Candidate / base or witness | Pass requirement |
+|---|---|---|
+| RC-G1 | Default automatic coalesced 4 KiB scan / mmap SEQUENTIAL; cold and private 128 MiB-capped three-pass shapes separately | Elapsed-ratio upper <= **1.00** in each |
+| RC-G2 | Coalesced default / frozen per-page mechanism, both (a) old default C=32/R=64 and (b) matched new C/R; same shapes, arena, work and poll/consume loop | Elapsed-ratio upper <= **0.80** for both comparisons in each shape; preserve original improvement requirement and prove it at equal new budgets |
+| RC-G3 | Frozen DRP-G2 warm/cycling and DRP-G4 ordinary/scaling | Original **1.01 / 1.01 / 1.00 / 0.50** bounds |
+| RC-G4 | Cold fragmented/dependent: coalesced default / disabled demand | Elapsed-ratio upper <= **1.02** in each; **zero automatic admissions** |
+| RC-G5 | Wrong-hint demand-hot canary | **Zero protected evictions**, **zero demand-hot misses**, bounded credits, full recovery |
+| RC-G6 | CPU and elapsed per useful 4 KiB for every arm; polls/page, prefetch-control CPU/page, entry visits/event, EOF SQEs/bytes and achieved overlap | Mandatory reporting; coarse 256 KiB reference approximately **1,163 ns elapsed / 1,158 ns CPU** per useful 4 KiB; qualified attribution for CPU categories, unresolved CPU reported explicitly |
+
+RC-G6 is not another CPU ratio bound or a physical resource ceiling. All
+previously adopted prefetch gates retain their original bounds. Frozen DRP
+keeps `max_inflight_reads(1)`, hence zero default speculative credits; it
+does not inherit the new scan budget or arena.
+
+## Budget and controls
+
+The owner must record the default in this plan and validation.yaml before
+implementation. At 512 KiB, C=128/R=256/headroom=768 requires 897 frames
+including one guard. At 1 MiB, C=256/R=512/headroom=1536 requires 1,793.
+An 8 MiB cold payload arena fits both; use it for every new pool scan arm.
+The previous cold evidence used 4 MiB; collect fresh baselines rather than
+reuse those timings. Pressure stays at 64 MiB within its private 128 MiB cap.
+Descriptor, route and notification metadata are additional and reported.
+
+The [budget probe](../evidence/readv_pipelined/budget-depths/README.md) gives
+READV 1,244.97 ns/page at depth 2 and 1,183.67 at depth 4, against historical
+mmap 1,552.23. This calibrates overlap; it selects no default and proves no
+end-to-end pool result. Prior 32-to-64 point-read credits improved cold scans
+6.6%; that motivates the matched-budget control but does not predict its cost
+at 128 or 256 credits.
+
+The headline candidate must use the actual default, without an explicit
+prefetch override. The frozen per-page matched control uses its existing
+page-count override to reach the same C/R without coalescing. Comparison 2a
+measures the complete change; 2b isolates it from budget/read-limit changes.
+Both share independent 4 KiB pages, payload arena and ordinary guard use.
+Coarse-granule measurements remain labelled references. No candidate-only
+change to caller poll cadence is permitted.
+
+## Workload and path witnesses
+
+Count frames separately from SQEs: a k-page vector reserves k read credits
+and k speculative credits but submits one SQE. Record initial/continuation
+vector lengths, short bytes, CQEs, per-page publications/failures and credits
+at drain. Assert checksums, exact page identities and read bytes, no live
+destinations at teardown and zero timed allocations.
+
+The default automatic full-page scan must reach a 32-page confirmed window within
+its first 1,024 useful pages. After startup, select an interior 1,024-page
+interval per pass that includes a refill cycle. Count read SQEs whose file
+ranges intersect it, including demand READs as well as speculative READV.
+With no holes or injected failures, require full
+32-page initial vectors and <=33 SQEs (including boundary overlap). This
+rejects an initial burst followed by point refills. Short/error continuations
+are counted separately and tested through fault injection. One free credit
+or one newly eligible horizon page cannot trigger automatic singleton refill;
+ordinary demand stays independent. Explicit hints extend in vector-sized
+chunks while repeating the useful examined prefix for protection.
+
+Small-capacity compatibility uses current per-page automatic admission when
+min(C,R-1) cannot cover two granule-adjusted full vectors. Check C=1/8/32,
+R=33/C=32, and an explicit override C>R-1; no full-window refill barrier.
+Check two ready streams sharing a constrained budget: a credit-deferred
+stream retains its admission turn. The 128/256-credit default candidates
+retain full-vector mode; transient shortages do not shrink their vectors.
+
+Record outstanding requests/bytes, resident-unconsumed credits and refills
+while other requests remain pending. In vector mode B >= 2; B vector credits target B-1 to B
+speculative vectors; this is neither device depth nor a guarantee of overlap.
+The existing poll/consume protocol remains part of the measured workload.
+
+An empty poll with no completion/notification/invalidation must visit zero
+speculative entries at capacities 32, 128 and 256. A completed/dirty run
+visits its affected entries (at most 32), plus explicitly counted one-time
+invalidation cleanup. Test consumption after the last CQE so credits cannot
+be stranded waiting for another I/O completion. Include racing notification,
+frame reuse and ordered-feedback checks.
+
+Under explicit full-credit hint extension, record protection lookups and
+replacement candidates visited. For examined prefix L and capacity C, require
+at most L protected-page resolutions and C replacement-candidate visits per
+call, with O(1) preallocated stamp checks per candidate; count admission/CLOCK
+work separately. Include duplicates, multiple runs and protected newly
+admitted pages so later replacement cannot evict an earlier useful hint.
+
+Do not add extent snapshots. Measure reads beyond the consumer stop and
+actual EOF/error outcomes. Every vector is <=128 KiB, but already accepted
+vectors can also reach EOF before reset; report aggregate wasted calls/bytes
+rather than assume one wasted request per pass. Extent tracking is a separate
+owner-approved follow-up only if RC-G6 demonstrates a material cost.
+
+Mixed-residency controls have resident/pending holes every 2/4/8 pages,
+duplicates, file switches and partial-window consumption. Require no read
+into holes, correct report partition and bounded progress under exhausted
+reserve/miss/route/driver capacity. A short read with every other driver slot
+occupied continues in the original reserved slot, without a fresh reservation.
+Retirement with a held continuation permits the existing logical read's
+bounded remainder chain on its retained descriptor; it blocks new logical
+admissions and waits for terminal/reclamation conditions before close.
+These are mechanism/safety checks, not additional timing adoption gates.
+
+Exercise plain READV in both registration postures where existing memlock
+permits a small registered arena. Unregistered remains the headline posture;
+eager correctness/zero-allocation is required, macOS timings advisory. Change
+no memlock or host security settings and claim no READV_FIXED on Linux 6.6.
+
+## Measurement boundary and cost evidence
+
+Exclude fixture creation, cache preparation, pool/slab allocation, registration
+and output. Include admission, SQE construction, polling/completion, full-page
+consumption and final drain. Detailed traces/profiles stay outside the workload
+memory cgroup. Use task-owned tmpfs; archive each completed campaign/profile
+and its exact executable durably, verifying hashes before the next campaign.
+
+Record thread CPU independently of elapsed. Prior prefetch (~340 ns/page)
+and poll/completion (~180 ns/page) category estimates motivate batching, not
+fixed coefficients to subtract. Larger capacities make empty-poll scans a
+specific risk: report polls/useful page, control entry visits and qualified
+prefetch-control CPU/useful page alongside achieved overlap.
+
+Keep request clocks out of primary samples. Detailed replays use the same
+executable/work and bounded records, with paired trace/plain elapsed and CPU
+upper <=1.05. Validate overflow, sampling loss/throttle and caller unwinding;
+preserve unresolved CPU instead of inventing a complete category budget.
+Profile and diff failing pool arms before another implementation change.
+The 2.72 us serial-probe residual is noted and not pursued.
+
+## Pre-implementation and adoption
+
+Scope review, default-budget selection and owner scope approval precede
+product work. Freeze source/executable baseline before first-batch dispatch;
+RC1 uses that snapshot while independent RC2 edits. Capture bounded RED for
+vector ownership, short/failed continuation, range/point join, EOF prefix
+handling, file retirement, full queues and credit conservation before the
+corresponding task. Run fault injection, Loom, stored-pointer Miri, syscall
+ASAN, both-backend zero-allocation and existing lifetime/retention suites;
+strict Clippy/formatting must pass. Fresh product gates follow safety checks.
+
+This revision changes documentation only. Its checks are scope/plan consistency
+and unchanged product hashes. Retained regression results are the baseline;
+no new product gate pass is claimed by this draft.

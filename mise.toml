@@ -87,6 +87,10 @@ description = "Criterion micro-benches + paired gate benches"
 depends = ["bench-host-guard"]
 run = "cargo bench --features bench"
 
+[tasks.bench-workloads-smoke]
+description = "Validate all seven workload contracts on the shipping backend"
+run = "cargo bench --features bench --bench workload_suite -- smoke"
+
 [tasks.bench-host-guard]
 description = "Require the active NixOS bench profile before benchmark timing"
 run = '''

@@ -1,0 +1,130 @@
+---
+metadata:
+  issue_type: Feature
+  created: '2026-09-14'
+  source: owner_steering
+  approach: ordinary_READV_with_independent_frame_ownership
+  questions_used: 1
+  validation_depth: standard_from_explicit_owner_requirements
+  revision: 3
+decision:
+  status: recorded
+  owner: Sören
+  date: '2026-09-14'
+  source: "/private/tmp/dios-steering-readv-decision.md"
+  selected: Proceed toward READV coalescing
+  residual_attribution: not_pursued
+  scope_approval: approved
+  scope_approval_source: Explicit owner $implement invocation on 2026-09-14
+  default_budget:
+    status: recorded
+    owner: Sören
+    date: '2026-09-14'
+    bytes: 524288
+    rationale: 'Depth 4 is past the knee: 1183.67 ns per useful 4 KiB at 512 KiB versus
+      1164.53 at 1 MiB, a 1.6% difference. It leaves approximately 368 ns/page to
+      the historical mmap reference of 1552.23 for pool-layer cost. It halves the
+      minimum pool tax (897 versus 1793 frames) and the speculative pollution bound.
+      These separate workloads motivate the choice and do not prove pool performance.'
+    retained_alternative: Keep the 1 MiB row as evidence; raising the default is a
+      separate owner decision.
+    rc_g1_failure_lever: Profile the pool layer at 512 KiB; do not increase the budget.
+    source: Explicit owner response; relayed to sibling Claude session efd9acaf-4b4f-49e1-96d2-0655b5371c9c.
+ambiguity_scan:
+  scope:
+    status: clear
+    gaps: []
+  behavior:
+    status: clear
+    gaps: []
+  data_model:
+    status: clear
+    gaps: []
+  constraints:
+    status: clear
+    gaps: []
+  edge_cases:
+    status: clear
+    gaps: []
+  integration:
+    status: clear
+    gaps: []
+  terminology:
+    status: clear
+    gaps: []
+review_focus:
+- Original-slot continuation ownership through partial completion, abort and teardown
+- Stable independent iovec memory and unique per-page ownership
+- Full-vector steady-state refill including the sliding-horizon trap
+- Budget/read/watermark/arena consistency and matched-budget control
+- Notification races, ordered feedback, zero-CQE progress and no capacity scan on
+  empty poll
+- EOF prefix publication, terminal tail and accepted vector waste
+- First-consumption notification without repeated warm-hit overhead
+- Independent RC1/RC2 against immutable pre-dispatch baseline
+- Small-capacity point compatibility and credit-deferred ready-stream turns
+- Linear explicit protected-prefix membership/replacement work
+- Retirement preserves admitted logical-read continuations
+review_gate:
+  status: passed
+  reviewers:
+  - peer-gpt6-astra
+  - peer-opus
+  reviewed_at: '2026-09-14T08:18:34Z'
+  reason: Astra and Claude reviewed revision 3; Claude verified the grouped H1/M1/M2
+    fixes with no surviving findings.
+  blocking_resolved: 1
+  deferred_nits: []
+  fix_rounds: 1
+  report: review.yaml
+  implementation_allowed: true
+review_config:
+  reasoning_effort: high
+  reviewers:
+  - peer-gpt6-astra
+  - peer-opus
+review_selection:
+  source: explicit_owner_selection
+  requested: astra + peer Claude
+  resolved: Astra and external Claude Opus
+  date: '2026-09-14'
+  reason: Owner replaced Claude-native defaults with two external reviewers available
+    from Codex.
+readiness:
+  owner_mechanism_decision: true
+  scope_documents_complete: true
+  task_mutation_paths_declared: true
+  numeric_gates_recorded_before_code: true
+  safety_checks_declared: true
+  review_passed: true
+  owner_scope_approval: true
+  owner_default_budget_recorded: true
+implementation:
+  product_edits: false
+  product_tests_claimed_passed: false
+  product_gates_claimed_passed: false
+  baseline: target/readahead-coalescing/preflight/preflight.json
+notes: Owner selected 512 KiB and approved implementation on 2026-09-14. Review and
+  numerical gates remain unchanged; product results are pending.
+owner_feedback:
+  source: "/private/tmp/dios-steering-scope-feedback.md"
+  date: '2026-09-14'
+  default_budget_bytes: 524288
+  candidate_budget_bytes:
+  - 524288
+  - 1048576
+  budget_evidence: benches/evidence/readv_pipelined/budget-depths/README.md
+  read_limit: R = 2*C in scan runner; existing callers retain their configured limit
+  miss_headroom: 3*R; INV-9 unchanged
+  cold_payload_arena_bytes: 8388608
+  pressure_payload_arena_bytes: 67108864
+  frozen_drp_max_inflight_reads: 1
+  extent_tracking: removed
+  eof_limit: 128 KiB per request; accepted vectors may exceed one request per pass,
+    report total waste
+review_history:
+- revision: 2
+  status: passed
+  report: reviews/revision-2.yaml
+  superseded_by: Owner feedback requires revision 3; prior extent-fixture clarification
+    is removed with extent tracking.

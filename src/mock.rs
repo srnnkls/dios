@@ -854,7 +854,11 @@ impl MockExecutor {
 
     /// Fills the destination pool frame with the seeded byte for a clean read,
     /// modelling the disk transferring the granule's contents into the buffer.
-    fn fill_read(&self, context: &mut OpContext<'_>) {
+    fn fill_read(&self, context: &mut OpContext<'_>, bytes: u32) {
+        assert!(
+            bytes <= context.requested_len,
+            "a short read cannot exceed the requested transfer"
+        );
         let Ok(granule_idx) = u32::try_from(context.file_offset / u64::from(self.frame_bytes))
         else {
             return;
@@ -863,13 +867,12 @@ impl MockExecutor {
             return;
         };
         let destination_offset = context.destination_offset;
-        let requested_len = context.requested_len;
         let token = context
             .frame
             .as_mut()
             .expect("a read attempt owns its frame token");
         self.arena
-            .transfer_mut(token, destination_offset, requested_len)
+            .transfer_mut(token, destination_offset, bytes)
             .fill(fill);
     }
 
@@ -943,12 +946,17 @@ impl EagerExecutor for MockExecutor {
         let attempt = match injected {
             None => {
                 if matches!(kind, OpKind::Read) {
-                    self.fill_read(context);
+                    self.fill_read(context, clean_bytes);
                 }
                 Attempt::Done(clean_bytes)
             }
             Some(Injected::Io(errno)) => Attempt::Failed(errno),
-            Some(Injected::Short(bytes)) => Attempt::Done(bytes),
+            Some(Injected::Short(bytes)) => {
+                if matches!(kind, OpKind::Read) {
+                    self.fill_read(context, bytes);
+                }
+                Attempt::Done(bytes)
+            }
             Some(Injected::Eintr) => Attempt::Interrupted,
             Some(Injected::Eagain) => Attempt::WouldBlock,
         };
