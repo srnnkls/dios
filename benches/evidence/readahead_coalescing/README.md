@@ -177,13 +177,21 @@ refer to measured records; they are not a recipe for generating observations.
   `affected_entries` (at most 32) and separately charged `cleanup_entries`.
   Idle visits are zero; changed-run visits cannot exceed affected plus
   explicit cleanup entries. The producer must report each affected run, not
-  aggregate unrelated work into an invented 32-entry event.
+  aggregate unrelated work into an invented 32-entry event. These bounded
+  detailed records cover only the configured measurement interval per pass.
+- `control_entry_visits_total`: nonnegative integer summing actual entry
+  visits over the whole measured scan and final drain, across every pass.
+  Accumulate it before filtering detailed `control` records by interval or
+  capacity. It must cover at least the visits in those retained records;
+  missing or invalid totals reject a full measurement. Event counts and
+  configured capacity or width cannot substitute for observed entry visits.
 - `metadata_bytes`: actual descriptor, route, lookup and notification
   storage allocated at construction, excluding payload. `overflow` and
   `dropped_events` must both be zero.
 
 `scan_analyze.py` reports SQEs per 1,024 useful pages, both length
-histograms, control visits per page, metadata bytes, all waste/overlap
+histograms, whole-scan `control_entry_visits_total` divided by all useful
+pages in the scan, metadata bytes, all waste/overlap
 counters, and existing polls/page, elapsed/page and thread-CPU/page. An absent
 I/O observation produces null, never a zero or an estimated SQE count.
 

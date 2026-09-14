@@ -331,10 +331,10 @@ implementation_batches:
       found_by:
       - compliance-peer-opus
       reason: unreachable_input
-      evidence: The reviewed VECTOR_FRAMES_MAX is fixed at 32, as required by the settled
-        design. prefetch_admit_vector asserts the bound before claiming frames; a 33-page
-        input cannot reach the helper. The reported trigger requires changing the
-        implementation constant and the scope contract. No current bound mismatch
+      evidence: The reviewed VECTOR_FRAMES_MAX is fixed at 32, as required by the
+        settled design. prefetch_admit_vector asserts the bound before claiming frames;
+        a 33-page input cannot reach the helper. The reported trigger requires changing
+        the implementation constant and the scope contract. No current bound mismatch
         is reachable.
     - gate: style
       location: src/driver/observation.rs:230
@@ -382,12 +382,272 @@ implementation_batches:
         sandbox; it completed from the materialized diff/map and bounded source reads.
         No required structural question remained unresolved.
     fix_rounds: 0
-  native_validation: 164 local and 179 Linux tests; 6 retained-pointer/ownership Miri
-    tests; strict all-target bench,mock Clippy and formatting on both hosts. Implementer
-    full native suite: 375 tests and doctests. See target/readahead-coalescing/b2-green-verification.json.
-  io_capture: Real Linux 64 MiB explicit point-control scan: 16,384 READ SQEs/CQEs, 16,384
-    publications, zero terminal destinations/read credits, zero timed allocations, 3,072
-    retained interior records, 1,374,008 metadata bytes. Exact executable/source/raw
-    hashes retained under target/readahead-coalescing/b2-smoke.
+  native_validation: '164 local and 179 Linux tests; 6 retained-pointer/ownership
+    Miri tests; strict all-target bench,mock Clippy and formatting on both hosts.
+    Implementer full native suite: 375 tests and doctests. See target/readahead-coalescing/b2-green-verification.json.'
+  io_capture: 'Real Linux 64 MiB explicit point-control scan: 16,384 READ SQEs/CQEs,
+    16,384 publications, zero terminal destinations/read credits, zero timed allocations,
+    3,072 retained interior records, 1,374,008 metadata bytes. Exact executable/source/raw
+    hashes retained under target/readahead-coalescing/b2-smoke.'
   performance_gates: Not yet run. RC4 control/window producers and RC5 safety qualification
     remain prerequisites.
+- batch: 3
+  tasks:
+  - RC4
+  reviewed_at: '2026-09-14T12:32:48.715476+00:00'
+  status: passed
+  synthesized_report:
+    reviewers:
+    - general-peer-gpt6-astra
+    - architecture-peer-gpt6-astra
+    - compliance-peer-gpt6-astra
+    - compliance-peer-opus
+    gates:
+      correctness:
+        status: pass
+        failed_by: []
+      security:
+        status: pass
+        failed_by: []
+      performance:
+        status: pass
+        failed_by: []
+      architecture:
+        status: pass
+        failed_by: []
+      style:
+        status: pass
+        failed_by: []
+    residual:
+    - gate: style
+      location: src/pool/prefetch/state.rs:735
+      trigger: Any future edit to a record_control call site, e.g. the existing state.rs:663
+        form record_control("invalidation", visited, 0, visited, 0), where affected
+        and cleanup are adjacent u32 counts, or a new cause tag string.
+      wrong_outcome: Swapping the affected and cleanup arguments compiles and still
+        satisfies observation.rs's assert!(affected <= 32) and assert!(visits <= affected
+        + cleanup), emitting a control document whose affected_entries/cleanup_entries
+        partition is wrong against the README contract ('changed-run visits cannot
+        exceed affected plus explicit cleanup entries'); a mistyped cause string compiles
+        and produces a record coalescing.py rejects as outside idle|completion|consumption|invalidation.
+      found_by:
+      - compliance-peer-opus
+      reason: deferred_hardening
+      evidence: Every existing cause and positional count call has the intended mapping.
+        The trigger requires a future edited cause or argument swap; actual records
+        pass the shared control validator. A future typo is not a current reachable
+        input.
+    - gate: style
+      location: src/driver/observation.rs:167
+      trigger: Construction at src/pool/mod.rs:1360 passes (notifications, indexes);
+        both halves are u64 metadata byte counts, and explicit() at prefetch.rs:162
+        builds six u64 counters positionally.
+      wrong_outcome: Exchanging the tuple halves or reordering the array swaps notification_metadata_bytes
+        with index_metadata_bytes, or protection_lookups with replacement_visits,
+        in the emitted record — values the README contract constrains (protection
+        resolutions cannot exceed examined, replacement visits cannot exceed capacity)
+        and that RC-G6 reports as mandatory metadata. No compiler or assertion catches
+        either swap.
+      found_by:
+      - compliance-peer-opus
+      reason: deferred_hardening
+      evidence: Construction passes notifications then indexes, and snapshot names
+        .0/.1 in that same order; explicit work construction and decoding agree. The
+        alleged swap is a future edit, not the present artifact.
+    - gate: style
+      location: src/pool/prefetch.rs:670
+      trigger: A change to VECTOR_FRAMES_MAX — a path the scope explicitly keeps open
+        for other legal granules and the deferred READV_FIXED work.
+      wrong_outcome: 'src/driver/read_vector.rs storage and prefetch_admit_vector''s
+        assertion follow the constant, but prefetch_automatic_window_classify''s [PageId;
+        32] arrays and assert!((1..=32).contains(&count)) do not: a legal window above
+        32 panics on the assert, and below 32 the state.rs:283 clamp and the state.rs:638
+        confirmed-window threshold silently keep the stale bound, leaving confirmed_window_page
+        null at any granule where the effective width is under 32.'
+      found_by:
+      - compliance-peer-opus
+      reason: design_as_defect
+      evidence: The owner scope fixes VECTOR_FRAMES_MAX at32 and handles legal granules
+        through min(32,128KiB/granule). Other granules do not change that constant.
+        Confirmed-window timing is defined as reaching32 at the pinned4KiB scan. READV_FIXED
+        and a larger cap remain out of scope.
+    - gate: style
+      location: src/pool/prefetch/state.rs:557
+      trigger: Any change to the feedback key — widening page ordinals, dropping the
+        reader field, or adjusting the pass count in flush_feedback_sort independently
+        of Feedback::byte.
+      wrong_outcome: A shortened loop silently drops the high key bytes, so flush_feedback
+        applies feedback out of reader order, breaking the scope's 'preserve ordered
+        per-reader/incarnation feedback' requirement with no failing assertion; an
+        odd pass count leaves the sorted run in feedback_scratch and applies the unsorted
+        buffer, since the trailing mem::swap only lands correctly because 16 is even.
+      found_by:
+      - compliance-peer-opus
+      reason: unreachable_input
+      evidence: Feedback::byte currently has exactly16 bytes (4 page,8 incarnation,4
+        reader), and the existing16-pass even schedule lands the sorted buffer correctly.
+        Changing that key or the loop is a future implementation edit.
+    - gate: style
+      location: src/pool/prefetch.rs:645
+      trigger: prefetch_automatic_window returns the value of prefetch_automatic_window_finish;
+        a window that classifies every page as pending or already-issued reaches the
+        admitted == 0 branch.
+      wrong_outcome: Admission::Resident is returned for pages whose residency was
+        never established. Its only current consumer checks Deferred and Admitted,
+        so nothing misreports today, but the variant's contract at prefetch.rs:41
+        increments PrefetchReport.resident — a public counter — so routing this return
+        through the shared record path would inflate resident for non-resident pages.
+      found_by:
+      - compliance-peer-opus
+      reason: already_grounded
+      evidence: The only current caller of prefetch_automatic_window_finish distinguishes
+        Deferred and Admitted; it never routes this window result through PrefetchReport.record.
+        No current public resident count is inflated. A future caller is deferred
+        work.
+    - gate: architecture
+      location: src/driver/observation.rs:445
+      trigger: A non4KiB granule scan passes consumer position to capture_control.
+      wrong_outcome: Opus architecture claimed useful_page*4096 has the wrong scale.
+      found_by:
+      - architecture-peer-opus
+      reason: already_falsified
+      evidence: scan.rs passes offset*(granule/GRANULE), where GRANULE=4096. Multiplying
+        that useful-page ordinal by4096 yields the actual byte offset and correctly
+        matches granule-scaled interval bounds. Opus general independently rejected
+        this candidate.
+    strengths:
+    - Existing pin/fence, epoch maturity and retention checks remain the reclamation
+      boundary.
+    - Actual Linux mechanism captures retain full vectors and terminal ownership;
+      numerical adoption is still deferred.
+    summary:
+      critical: 0
+      high: 0
+      medium: 0
+    recommendation: ready_to_merge
+    next_action: Commit RC4 and start the dependency-ready RC5 safety batch. Numeric
+      adoption gates remain pending.
+    coverage:
+      reports_received: 6
+      reports_successful: 4
+      execution_classes_required:
+      - peer
+      execution_classes_successful:
+      - peer
+      missing_canonical_reports:
+      - general-peer-opus
+      - architecture-peer-opus
+      limitations:
+      - Opus general used noncanonical findings/outcome/fix fields; Opus architecture
+        contains malformed YAML. Raw artifacts were read and retained as supplemental
+        corroboration, not used for gate aggregation. All four canonical reports satisfy
+        the selected peer execution-class minimum. No claims or findings were invented
+        to repair report schemas.
+    fix_rounds: 1
+    resolved:
+    - id: B3-C1
+      severity: critical
+      gate: correctness
+      area: error_handling
+      location: src/pool/prefetch.rs:600
+      trigger: With supported automatic C=128/R=256 and a one-slot MockDriver, first
+        make page 4 resident, then demand pages 0..2. Startup window 3..6 admits page
+        3 and resolves resident page 4, then backend Full defers pages 5..6. More
+        generally a resident/pending/admitted prefix followed by ordinary bounded
+        resource refusal advances the predictor before returning.
+      wrong_outcome: The cursor advances but ready membership is stale; the next poll
+        has fewer eligible pages than the retained full target and panics at unreachable!("ready
+        stream has eligible horizon"). A partial committed run also bypasses the normal
+        turn/wake accounting.
+      suggestion: 'Restore ready membership at the shared cursor-mutation boundary,
+        including incarnation reset. Reconcile every partial-window exit with actual
+        committed work: retain the first unresolved cursor, preserve the turn on zero-commit
+        deferral, account for committed admissions when advancing turns/waking, and
+        keep observed turn-before/after records at their actual transition boundaries.'
+      found_by:
+      - general-peer-gpt6-astra
+      - architecture-peer-gpt6-astra
+      verified: Root inspected prefetch_automatic_window Deferred early return after
+        issued(), the unchanged issued() ready omission, and Pattern::window eligible<count
+        path. The supported startup sequence gives next=5, demand=2, width=4, eligible=2
+        while reader remains queued. Original-slot/read-credit refusal stays an operating
+        outcome. No root execution reproduction is claimed.
+      supplemental_reports:
+      - general-peer-opus
+      - architecture-peer-opus
+      status: verified_resolved
+      resolution: Inspected cursor advancement, readiness removal, incarnation reset,
+        partial-window exits, turn finalization and batch wake accounting. For the
+        recorded one-slot C=128/R=256 trigger, admitting page 3 and resolving resident
+        page 4 leaves next=5. Prefetch::issued now refreshes membership; eligible=2
+        cannot satisfy the retained four-page target, so the reader is absent from
+        ready. Backend Full on pages 5..6 preserves next=5. The shared finish path
+        accounts for the committed page, finalizes the turn observation, and returns
+        its count to progress_prefetch, which wakes even when the outcome is Deferred.
+        Zero-commit deferral preserves an eligible reader's turn. Incarnation resets
+        also refresh membership. The recorded panic and skipped accounting no longer
+        follow from this trigger.
+      verification_method: source-based
+      limitation: No execution reproduction of the exact MockDriver trigger is claimed.
+      verification_report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b3-fix1-review/peer-gpt6-astra.yaml"
+      verified_by: peer-gpt6-astra
+    - id: B3-P1
+      severity: high
+      gate: performance
+      area: validation
+      location: src/driver/observation.rs:468
+      trigger: Actual RC4 scan captures retain detailed control records only for 1024
+        useful pages per pass, while scan_analyze.measured_coalescing divides their
+        summed entry visits by every page in the run.
+      wrong_outcome: Cold geometry reports 2053/16384 instead of an interval rate
+        2053/1024; pressure reports 6135/196608 instead of6135/3072. The mandatory
+        whole-scan control-visits/page metric lacks its whole-scan numerator and understates
+        control work.
+      suggestion: Accumulate actual whole-run entry visits before the detail filter,
+        expose that total in snapshot and use it with the existing whole-run page
+        denominator. Preserve bounded detailed interval records and the correct 4
+        KiB useful-position conversion. Validate the required total without deriving
+        it from capacity, configured width, page count or event count.
+      found_by:
+      - general-peer-gpt6-astra
+      - architecture-peer-gpt6-astra
+      verified: Root inspected ReadObservation.control and capture_control, snapshot,
+        scan.rs position scaling and scan_analyze.measured_coalescing. The retained
+        hash-verified geometry/pressure artifacts have exactly the reported mismatched
+        numerator/denominator populations.
+      supplemental_reports:
+      - general-peer-opus
+      - architecture-peer-opus
+      status: verified_resolved
+      resolution: ReadObservation::control accumulates actual visits with checked
+        addition before both interval filtering and detail-capacity refusal. Snapshot
+        exposes the total; scan_analyze divides it by whole-scan useful pages. The
+        existing 4 KiB position conversion remains intact. Full measurement validation
+        rejects missing, invalid or detail-inconsistent totals. Independently verified
+        both automatic capture hashes, executable and archive hashes, and all 74 source
+        identities. Ran require_scan_measurements and measured_coalescing against
+        the retained Linux captures. Geometry reports 32424/16384=1.97900390625; pressure
+        reports 390715/196608=1.9872792561848958. Their bounded detail sums remain
+        2053 and 6072 respectively and no longer supply the whole-scan numerator.
+      verification_method: source inspection and execution of existing analysis on
+        retained captures
+      limitation: Retained captures were reanalyzed; Linux workloads were not rerun.
+        No numeric adoption gate pass is claimed.
+      verification_report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b3-fix1-review/peer-gpt6-astra.yaml"
+      verified_by: peer-gpt6-astra
+    issues: []
+    targeted_review:
+      reviewer: peer-gpt6-astra
+      effort: high
+      status: passed
+      report: ".peer/readahead-coalescing/20260914T090833Z-505efd/b3-fix1-review/peer-gpt6-astra.yaml"
+      successful_reports: 1
+  native_validation: 'target/readahead-coalescing/b3-fix1-green-verification.json:
+    203 local and 224 Linux tests, 10 Python validation cases, strict all-target Clippy
+    with bench,mock and mock, and formatting. Six prior stored-pointer Miri cases
+    remain valid; the fixes did not change ownership.'
+  io_capture: Three real Linux cases, source/archive/executable/raw identities verified.
+    Automatic steady intervals contain 33 read SQEs; actual whole-scan visits average
+    about 1.98 per useful page. Default pending speculative bytes peak at 524288.
+    This is mechanism evidence, not a numeric performance gate.
+  performance_gates: Pending RC5 safety and the fresh RC6 owner campaigns.

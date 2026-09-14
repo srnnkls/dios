@@ -97,6 +97,42 @@ struct Counters {
     continuation_lengths: [u64; 32],
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ControlRecord {
+    capacity: u32,
+    cause: &'static str,
+    visits: u32,
+    affected: u32,
+    cleanup: u32,
+    recovered: u32,
+    cqes: u64,
+    pending_requests: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExplicitRecord {
+    capacity: u32,
+    work: [u64; 6],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RunRecord {
+    page: PageId,
+    pages: u32,
+    pass: u32,
+    stream: Option<(u32, u64)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TurnRecord {
+    reader: u32,
+    after: Option<u32>,
+    admitted: u32,
+    outcome: &'static str,
+    ready_start: usize,
+    ready_end: usize,
+}
+
 #[derive(Debug)]
 struct State {
     operations: Box<[Option<Operation>]>,
@@ -105,6 +141,15 @@ struct State {
     counters: Counters,
     dropped: u64,
     units: Option<&'static str>,
+    control: Vec<ControlRecord>,
+    explicit: Vec<ExplicitRecord>,
+    runs: Vec<RunRecord>,
+    turns: Vec<TurnRecord>,
+    ready_members: Vec<u32>,
+    confirmed_window: Option<u32>,
+    automatic: bool,
+    control_count: u64,
+    control_entry_visits_total: u64,
 }
 
 /// Bench-only capture shared by driver attempts and pool terminal transitions.
@@ -116,6 +161,7 @@ pub struct ReadObservation {
     position: AtomicU64,
     state: Mutex<State>,
     metadata_bytes: u64,
+    pool_metadata: (u64, u64),
 }
 
 impl ReadObservation {
@@ -125,6 +171,8 @@ impl ReadObservation {
         operations: u32,
         frames: u32,
         product_metadata_bytes: u64,
+        readers: u32,
+        pool_metadata: (u64, u64),
     ) -> Option<Self> {
         let state = State {
             operations: try_boxed_slice_with(operations, || None)?,
@@ -133,14 +181,31 @@ impl ReadObservation {
             counters: Counters::default(),
             dropped: 0,
             units: None,
+            control: try_vec_with_exact_capacity(config.event_capacity)?,
+            explicit: try_vec_with_exact_capacity(config.event_capacity)?,
+            runs: try_vec_with_exact_capacity(config.event_capacity)?,
+            turns: try_vec_with_exact_capacity(config.event_capacity)?,
+            ready_members: try_vec_with_exact_capacity(
+                config.event_capacity.checked_mul(readers)?,
+            )?,
+            confirmed_window: None,
+            automatic: false,
+            control_count: 0,
+            control_entry_visits_total: 0,
         };
         let capture_bytes = size_of_val(&*state.operations)
             + size_of_val(&*state.owners)
             + state.records.capacity() * size_of::<Record>()
+            + state.control.capacity() * size_of::<ControlRecord>()
+            + state.explicit.capacity() * size_of::<ExplicitRecord>()
+            + state.runs.capacity() * size_of::<RunRecord>()
+            + state.turns.capacity() * size_of::<TurnRecord>()
+            + state.ready_members.capacity() * size_of::<u32>()
             + size_of::<Self>();
         Some(Self {
             config,
             granule,
+            pool_metadata,
             position: AtomicU64::new(0),
             state: Mutex::new(state),
             metadata_bytes: product_metadata_bytes
@@ -370,12 +435,201 @@ impl ReadObservation {
         }
     }
 
+    pub(crate) fn confirmed_window(&self) {
+        let mut state = self.lock();
+        state.confirmed_window.get_or_insert(self.position().1);
+    }
+
+    fn capture_control(&self) -> bool {
+        if self.config.interval_pages == 0 {
+            return true;
+        }
+        let useful_byte = u64::from(self.position().1) * 4096;
+        let start = u64::from(self.config.interval_start_page) * u64::from(self.granule);
+        let end = start + u64::from(self.config.interval_pages) * u64::from(self.granule);
+        (start..end).contains(&useful_byte)
+    }
+
+    pub(crate) fn control_count(&self) -> u64 {
+        self.lock().control_count
+    }
+
+    pub(crate) fn control(
+        &self,
+        capacity: u32,
+        cause: &'static str,
+        visits: u32,
+        affected: u32,
+        cleanup: u32,
+        recovered: u32,
+    ) {
+        assert!(affected <= 32);
+        assert!(visits <= affected + cleanup);
+        let mut state = self.lock();
+        state.control_count += 1;
+        state.control_entry_visits_total = state
+            .control_entry_visits_total
+            .checked_add(u64::from(visits))
+            .expect("whole-run control entry visits fit u64");
+        if !self.capture_control() {
+            return;
+        }
+        if state.control.len() == state.control.capacity() {
+            state.dropped += 1;
+            return;
+        }
+        let cqes = state.counters.cqes;
+        let pending_requests = state.counters.pending_requests;
+        state.control.push(ControlRecord {
+            capacity,
+            cause,
+            visits,
+            affected,
+            cleanup,
+            recovered,
+            cqes,
+            pending_requests,
+        });
+    }
+
+    pub(crate) fn explicit(&self, capacity: u32, work: [u64; 6]) {
+        if !self.capture_control() {
+            return;
+        }
+        let mut state = self.lock();
+        if state.explicit.len() == state.explicit.capacity() {
+            state.dropped += 1;
+            return;
+        }
+        state.explicit.push(ExplicitRecord { capacity, work });
+    }
+
+    pub(crate) fn committed_run(&self, page: PageId, pages: u32, stream: Option<(u32, u64)>) {
+        let mut state = self.lock();
+        state.automatic |= stream.is_some();
+        if self.config.interval_pages > 0 {
+            let start = self.config.interval_start_page;
+            let end = u64::from(start) + u64::from(self.config.interval_pages);
+            if u64::from(page.granule_idx()) >= end
+                || u64::from(page.granule_idx()) + u64::from(pages) <= u64::from(start)
+            {
+                return;
+            }
+        }
+        if state.runs.len() == state.runs.capacity() {
+            state.dropped += 1;
+            return;
+        }
+        state.runs.push(RunRecord {
+            page,
+            pages,
+            pass: self.position().0,
+            stream,
+        });
+    }
+
+    pub(crate) fn reader_turn(
+        &self,
+        reader: u32,
+        after: Option<u32>,
+        admitted: u32,
+        outcome: &'static str,
+        ready: impl Iterator<Item = u32>,
+    ) -> Option<usize> {
+        if !self.capture_control() {
+            return None;
+        }
+        let mut state = self.lock();
+        if state.turns.len() == state.turns.capacity() {
+            state.dropped += 1;
+            return None;
+        }
+        let ready_start = state.ready_members.len();
+        for member in ready {
+            if state.ready_members.len() == state.ready_members.capacity() {
+                state.dropped += 1;
+                return None;
+            }
+            state.ready_members.push(member);
+        }
+        let ready_end = state.ready_members.len();
+        let index = state.turns.len();
+        state.turns.push(TurnRecord {
+            reader,
+            after,
+            admitted,
+            outcome,
+            ready_start,
+            ready_end,
+        });
+        Some(index)
+    }
+
+    pub(crate) fn reader_turn_after(
+        &self,
+        index: Option<usize>,
+        after: Option<u32>,
+        admitted: u32,
+        outcome: &'static str,
+    ) {
+        if let Some(index) = index {
+            let mut state = self.lock();
+            let turn = &mut state.turns[index];
+            turn.after = after;
+            turn.admitted = admitted;
+            turn.outcome = outcome;
+        }
+    }
+
+    fn snapshot_steady_intervals(&self, state: &State) -> Vec<Value> {
+        if !state.automatic || self.config.interval_pages == 0 {
+            return Vec::new();
+        }
+        (0..=self.position().0).map(|pass| {
+            let reads: Vec<_> = state.records.iter().filter(|record| {
+                record.pass == pass && matches!(record.event, Event::Attempt)
+                    && record.purpose != ReadPurpose::Continuation
+            }).map(|record| json!({
+                "kind": if record.purpose == ReadPurpose::Demand { "demand" } else { "speculative" },
+                "page": record.offset / u64::from(self.granule), "pages": record.pages,
+            })).collect();
+            let refills = state.runs.iter().filter(|run| run.pass == pass && run.stream.is_some()).count();
+            json!({"pass_index": pass, "start_page": self.config.interval_start_page,
+                "pages": self.config.interval_pages, "refills": refills, "reads": reads})
+        }).collect()
+    }
+
     /// Allocates a report after the measured workload and final drain.
     #[must_use]
     pub fn snapshot(&self) -> Value {
         let state = self.lock();
         let counters = &state.counters;
         let records: Vec<_> = state.records.iter().map(|record| record.value()).collect();
+        let control: Vec<_> = state.control.iter().map(|event| json!({
+            "capacity": event.capacity, "cause": event.cause, "entry_visits": event.visits,
+            "affected_entries": event.affected, "cleanup_entries": event.cleanup,
+            "credits_recovered": event.recovered, "after_last_cqe": event.cqes > 0 && event.pending_requests == 0 && event.cqes == counters.cqes,
+        })).collect();
+        let explicit: Vec<_> = state.explicit.iter().map(|call| json!({
+            "capacity": call.capacity, "examined": call.work[0], "protection_lookups": call.work[1],
+            "replacement_visits": call.work[2], "admission_visits": call.work[3], "clock_visits": call.work[4],
+            "protected_evictions": call.work[5],
+        })).collect();
+        let turns: Vec<_> = state
+            .turns
+            .iter()
+            .map(|turn| {
+                let mut ready = state.ready_members[turn.ready_start..turn.ready_end].to_vec();
+                ready.sort_unstable();
+                json!({"ready": ready, "stream": turn.reader, "turn_before": turn.reader,
+                "turn_after": turn.after, "admitted_pages": turn.admitted, "outcome": turn.outcome})
+            })
+            .collect();
+        let runs: Vec<_> = state.runs.iter().map(|run| json!({
+            "pass_index": run.pass, "page": run.page.granule_idx(), "pages": run.pages,
+            "file_slot": run.page.file().slot(), "stream": run.stream.map(|stream| stream.0),
+            "incarnation": run.stream.map(|stream| stream.1),
+        })).collect();
         json!({
             "io": counters.value(), "read_events": records,
             "io_units": state.units,
@@ -384,7 +638,12 @@ impl ReadObservation {
             "capture_interval_pages": self.config.interval_pages,
             "capture_event_capacity": state.records.capacity(),
             "overflow": state.dropped, "dropped_events": state.dropped,
-            "confirmed_window_page": null, "steady_intervals": null, "explicit_calls": null, "control": null,
+            "confirmed_window_page": state.confirmed_window,
+            "steady_intervals": self.snapshot_steady_intervals(&state),
+            "explicit_calls": explicit, "control": control, "shared_reader_turns": turns,
+            "control_entry_visits_total": state.control_entry_visits_total,
+            "committed_runs": runs, "notification_metadata_bytes": self.pool_metadata.0,
+            "index_metadata_bytes": self.pool_metadata.1,
         })
     }
 }

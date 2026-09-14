@@ -110,8 +110,8 @@ def measured_coalescing(rows: list[dict], pages: int) -> dict | None:
     io["read_sqes_per_1024_pages"] = io["read_sqes"] * 1024 / pages
     return {"io": io, "vector_lengths": [{key: row["io"][key] for key in (
                 "initial_vector_lengths", "continuation_vector_lengths")} for row in observations],
-            "control_entry_visits_per_page": fmean(sum(event["entry_visits"] for event in row["control"])
-                                                   / pages for row in observations),
+            "control_entry_visits_per_page": fmean(row["control_entry_visits_total"] / pages
+                                                   for row in observations),
             "metadata_bytes": fmean(row["metadata_bytes"] for row in observations)}
 
 

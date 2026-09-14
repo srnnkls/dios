@@ -153,6 +153,10 @@ def require_scan_measurements(row: dict) -> None:
     validate_scan_witness(row)
     validate_io(witness["io"], row)
     validate_control(witness["control"])
+    control_entry_visits_total = count(witness.get("control_entry_visits_total"),
+                                      "whole-run control entry visits")
+    if control_entry_visits_total < sum(event["entry_visits"] for event in witness["control"]):
+        raise ValueError("whole-run control entry visits omit captured control work")
     if not witness["control"] or any(event["capacity"] != row["config"]["credits"]
                                      for event in witness["control"]):
         raise ValueError("missing or differently configured prefetch-control capture")

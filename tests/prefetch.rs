@@ -72,6 +72,14 @@ fn consume(pool: &Pool<MockDriver>, reader: &ReaderCtx, page: PageId) {
     panic!("demand did not complete within the fixed bound");
 }
 
+fn read_ranges(pool: &Pool<MockDriver>) -> Vec<(u64, u32)> {
+    pool.driver()
+        .read_attempts_in_order()
+        .into_iter()
+        .map(|attempt| (attempt.file_offset, attempt.requested_len))
+        .collect()
+}
+
 #[test]
 fn explicit_prefetch_is_queued_and_coalesces_with_demand() {
     let (pool, file) = fixture(Some(Readahead::Disabled), 8);
@@ -85,7 +93,7 @@ fn explicit_prefetch_is_queued_and_coalesces_with_demand() {
         (report.requested, report.admitted, report.pending),
         (3, 2, 1)
     );
-    assert_eq!(pool.driver().read_attempts_in_order().len(), 2);
+    assert_eq!(read_ranges(&pool), [(0, 8192)]);
     let observer = pool.register_reader().expect("observer");
     assert!(
         pool.pin(&observer, pages[0]).is_none(),
@@ -96,7 +104,7 @@ fn explicit_prefetch_is_queued_and_coalesces_with_demand() {
     let reader = pool.register_reader().expect("reader");
     consume(&pool, &reader, pages[0]);
     consume(&pool, &reader, pages[1]);
-    assert_eq!(pool.driver().read_attempts_in_order().len(), 2);
+    assert_eq!(read_ranges(&pool), [(0, 8192)]);
     assert_eq!(pool.prefetch_stats().demand_promoted, 2);
     assert_eq!(pool.prefetch_stats().occupied, 0);
     let report = pool.prefetch(&pages);
@@ -480,10 +488,18 @@ fn extending_a_partially_consumed_window_preserves_useful_lookahead_when_recycli
         0,
         "reserve top-up must preserve the useful window"
     );
-    let attempts = pool.driver().read_attempts_in_order();
+    let mut pages_read = Vec::new();
+    for (offset, bytes) in read_ranges(&pool) {
+        assert!(offset.is_multiple_of(4096));
+        assert!(bytes > 0);
+        assert!(bytes.is_multiple_of(4096));
+        let first = offset / 4096;
+        pages_read.extend(first..first + u64::from(bytes / 4096));
+    }
+    pages_read.sort_unstable();
     assert_eq!(
-        attempts.len(),
-        199,
+        pages_read,
+        (0..199).collect::<Vec<_>>(),
         "each unique hinted page is read exactly once"
     );
 }

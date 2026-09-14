@@ -1222,13 +1222,15 @@ impl<D: PoolBackend> Pool<D> {
             product_sequence: 0,
             release_cursor: 0,
             reads_in_flight: 0,
-            prefetch: prefetch::Prefetch::try_new(
+            prefetch: prefetch::Prefetch::try_with_geometry(
                 config
                     .prefetch_capacity()
                     .map_err(PoolBuildError::Configuration)?,
                 config.max_concurrent_readers,
                 config.max_inflight_reads,
                 config.readahead,
+                config.frame_count,
+                config.granule,
             )
             .ok_or(PoolBuildError::Allocation)?,
         })
@@ -1287,12 +1289,16 @@ impl<D: PoolBackend> Pool<D> {
         let backend_capacity = driver.operation_capacity();
         assert!(backend_capacity > 0, "the backend has operation slots");
         let control = Self::try_preallocated_control(&config, backend_capacity)?;
-        #[cfg(feature = "bench")]
-        Self::try_preallocated_observation(&config, &driver, &control)?;
         let table = PageTable::try_with_frame_count(config.frame_count)
             .ok_or(PoolBuildError::Allocation)?;
         let clock =
             Clock::try_with_frame_count(config.frame_count).ok_or(PoolBuildError::Allocation)?;
+        #[cfg(feature = "bench")]
+        let control = {
+            let mut control = control;
+            Self::try_preallocated_observation(&config, &driver, &mut control, &clock)?;
+            control
+        };
         let miss_interests = Arc::new(
             MissInterests::try_with_capacity(config.frame_count)
                 .ok_or(PoolBuildError::Allocation)?,
@@ -1336,19 +1342,29 @@ impl<D: PoolBackend> Pool<D> {
     fn try_preallocated_observation(
         config: &PoolBuilder,
         driver: &D,
-        control: &Control,
+        control: &mut Control,
+        clock: &Clock,
     ) -> Result<(), PoolBuildError> {
         if let Some(settings) = config.read_observation {
-            let metadata_bytes = driver.read_metadata_bytes() + control.read_spans.metadata_bytes();
+            let indexes = control.prefetch.metadata_bytes();
+            let notifications = clock.notification_bytes();
+            let metadata_bytes = driver.read_metadata_bytes()
+                + control.read_spans.metadata_bytes()
+                + indexes
+                + notifications;
             let observation = crate::driver::observation::ReadObservation::try_new(
                 settings,
                 config.granule,
                 driver.operation_capacity(),
                 config.frame_count,
                 metadata_bytes,
+                config.max_concurrent_readers,
+                (notifications, indexes),
             )
             .ok_or(PoolBuildError::Allocation)?;
-            driver.attach_read_observation(Arc::new(observation));
+            let observation = Arc::new(observation);
+            control.prefetch.observation = Some(Arc::clone(&observation));
+            driver.attach_read_observation(observation);
         }
         Ok(())
     }
@@ -2522,7 +2538,7 @@ impl<D: PoolBackend> Pool<D> {
     }
 
     fn evict_one_victim(&self, control: &mut Control) {
-        if !self.prefetch_evict_unused(control, &[]) {
+        if !self.prefetch_evict_unused(control) {
             self.evict_clock_victim(control);
         }
     }
@@ -2787,7 +2803,9 @@ impl<D: PoolBackend> Pool<D> {
             entry.frame().get() as usize,
             FrameFileSlot::for_page(entry.page()),
         );
-        if !self.clock.is_speculative(entry.frame()) {
+        if self.clock.is_speculative(entry.frame()) {
+            self.clock.completed.notify(entry.frame());
+        } else {
             let _ = self.clock.reference(entry.frame());
         }
         miss.succeed(index);

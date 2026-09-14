@@ -284,3 +284,230 @@ fn original_slot_survives_full_backend_slab_and_retirement_across_later_shorts()
     }
     panic!("finished span did not release its file and every destination");
 }
+
+#[cfg(feature = "bench")]
+mod rc4 {
+    use super::*;
+    use dios::testing::{PoolBuilderObservationExt, ReadObservationConfig};
+    use serde_json::Value;
+
+    fn fixture(mode: Readahead, credits: Option<u32>) -> (Pool<MockDriver>, FileId) {
+        let driver = MockDriver::builder()
+            .seed(91)
+            .frames(2048)
+            .frame_bytes(4096)
+            .queue_capacity(1024)
+            .build();
+        let file = driver
+            .open(Path::new("classified-readahead"), DirectIo::Disabled)
+            .expect("mock file opens");
+        for page in 0..2304 {
+            driver.seed_page(&file, page, u8::try_from(page % 251).expect("fill byte"));
+        }
+        let id = file.file_id();
+        let mut builder = Pool::builder()
+            .frame_count(2048)
+            .max_concurrent_readers(1)
+            .peak_guards_per_reader(1)
+            .max_inflight_reads(256)
+            .miss_headroom(768)
+            .readahead(mode)
+            .read_observation(ReadObservationConfig {
+                event_capacity: 32768,
+                interval_start_page: 0,
+                interval_pages: 0,
+                consumer_stop_bytes: Some(2176 * 4096),
+            });
+        if let Some(credits) = credits {
+            builder = builder.prefetch_headroom(credits);
+        }
+        let pool = builder.build_on(driver).expect("scan geometry fits");
+        pool.register_file(file);
+        (pool, id)
+    }
+
+    fn consume(pool: &Pool<MockDriver>, reader: &ReaderCtx, page: PageId) {
+        let expected = u8::try_from(page.granule_idx() % 251).expect("fill byte");
+        let mut token = match pool.get(reader, page).expect("live file") {
+            Get::Hit(guard) => {
+                assert_eq!(&*guard, &[expected; 4096]);
+                return;
+            }
+            Get::Pending(token) => token,
+            Get::Busy => panic!("one demand leaves configured read capacity"),
+        };
+        for _ in 0..POLLS_MAX {
+            pool.poll();
+            match pool.ready(reader, token) {
+                ReadyResult::Ready(guard) => {
+                    assert_eq!(&*guard, &[expected; 4096]);
+                    return;
+                }
+                ReadyResult::NotYet(next) => token = next,
+                ReadyResult::Err(error) => panic!("seeded demand failed: {error}"),
+            }
+        }
+        panic!("demand exceeded the fixed poll bound");
+    }
+
+    fn initial_reads(snapshot: &Value) -> Vec<(u64, u64)> {
+        let mut reads: Vec<_> = snapshot["read_events"]
+            .as_array()
+            .expect("bounded read observations")
+            .iter()
+            .filter(|event| event["event"] == "attempt" && event["kind"] != "continuation")
+            .map(|event| {
+                (
+                    event["offset"].as_u64().expect("file offset"),
+                    event["bytes"].as_u64().expect("requested bytes"),
+                )
+            })
+            .collect();
+        reads.sort_unstable();
+        reads
+    }
+
+    #[test]
+    fn explicit_runs_split_at_resident_and_pending_holes_and_deduplicate() {
+        let (pool, file) = fixture(Readahead::Disabled, Some(8));
+        let reader = pool.register_reader().expect("reader");
+        consume(&pool, &reader, PageId::new(file, 3));
+        assert_eq!(pool.prefetch(&[PageId::new(file, 5)]).admitted, 1);
+        let requested = [1, 2, 3, 4, 5, 6, 7, 7].map(|page| PageId::new(file, page));
+        let report = pool.prefetch(&requested);
+        assert_eq!(
+            (
+                report.requested,
+                report.resident,
+                report.pending,
+                report.admitted,
+                report.deferred,
+                report.rejected
+            ),
+            (8, 1, 2, 5, 0, 0)
+        );
+        poll_until_reads(&pool, 0);
+        let snapshot = pool.read_observation().expect("capture").snapshot();
+        assert_eq!(
+            initial_reads(&snapshot),
+            vec![
+                (4096, 8192),
+                (12288, 4096),
+                (16384, 4096),
+                (20480, 4096),
+                (24576, 8192)
+            ],
+            "only contiguous absent runs share a read; neither hole is reread"
+        );
+        for page in requested {
+            consume(&pool, &reader, page);
+        }
+        assert_eq!(pool.prefetch_stats().occupied, 0);
+        assert_eq!(snapshot["io"]["terminal_read_credits"], 0);
+        assert_eq!(snapshot["overflow"], 0);
+    }
+
+    #[test]
+    fn automatic_steady_refills_keep_full_vectors_with_the_actual_default_budget() {
+        let (pool, file) = fixture(Readahead::Automatic, None);
+        let reader = pool.register_reader().expect("reader");
+        let capture = pool.read_observation().expect("capture");
+        for page in 0..2176 {
+            capture.scan_position(0, page);
+            consume(&pool, &reader, PageId::new(file, page));
+        }
+        poll_until_reads(&pool, 0);
+        let snapshot = capture.snapshot();
+        let reads: Vec<_> = snapshot["read_events"]
+            .as_array()
+            .expect("bounded read observations")
+            .iter()
+            .filter(|event| event["event"] == "attempt" && event["kind"] != "continuation")
+            .map(|event| {
+                (
+                    event["offset"].as_u64().expect("file offset"),
+                    event["bytes"].as_u64().expect("requested bytes"),
+                    event["kind"].as_str().expect("initial read purpose"),
+                )
+            })
+            .filter(|&(offset, bytes, _)| offset < 2048 * 4096 && offset + bytes > 1024 * 4096)
+            .collect();
+        assert!(
+            reads.len() <= 33,
+            "a steady 1024-page interval needs at most 33 initial reads, got {}",
+            reads.len()
+        );
+        for &(_, bytes, kind) in &reads {
+            match kind {
+                "speculative" => assert_eq!(bytes, 32 * 4096),
+                "demand" => assert_eq!(bytes, 4096),
+                other => panic!("unexpected initial read purpose: {other}"),
+            }
+        }
+        for page in 1024..2048 {
+            let offset = page * 4096;
+            assert!(
+                reads
+                    .iter()
+                    .any(|&(start, bytes, _)| start <= offset && offset < start + bytes)
+            );
+        }
+        assert_eq!(pool.prefetch_stats().capacity, 128);
+        assert!(
+            snapshot["confirmed_window_page"]
+                .as_u64()
+                .is_some_and(|page| page < 1024)
+        );
+        assert_eq!(snapshot["io"]["terminal_destinations"], 0);
+        assert_eq!(snapshot["overflow"], 0);
+    }
+
+    #[test]
+    fn consumption_after_the_last_completion_recovers_credits_and_idle_visits_are_zero() {
+        for capacity in [32, 128, 256] {
+            let (pool, file) = fixture(Readahead::Disabled, Some(capacity));
+            let reader = pool.register_reader().expect("reader");
+            let run: [_; 32] = std::array::from_fn(|index| {
+                PageId::new(file, u32::try_from(index).expect("bounded index"))
+            });
+            assert_eq!(pool.prefetch(&run).admitted, 32);
+            poll_until_reads(&pool, 0);
+            assert_eq!(pool.prefetch_stats().occupied, 32);
+            let capture = pool.read_observation().expect("capture");
+            let completions = capture.snapshot()["io"]["cqes"].clone();
+            for page in run {
+                consume(&pool, &reader, page);
+            }
+            pool.poll();
+            pool.poll();
+            let snapshot = capture.snapshot();
+            assert_eq!(snapshot["io"]["cqes"], completions);
+            let events = snapshot["control"].as_array().expect(
+                "RC4 must observe affected-entry work, idle polls and consumption without a new CQE",
+            );
+            let idle: Vec<_> = events
+                .iter()
+                .filter(|event| event["cause"] == "idle")
+                .collect();
+            assert!(!idle.is_empty(), "the final empty poll is observed");
+            assert!(idle.iter().all(|event| event["entry_visits"] == 0));
+            assert!(events.iter().any(|event| {
+                event["cause"] == "consumption"
+                    && event["after_last_cqe"] == true
+                    && event["credits_recovered"]
+                        .as_u64()
+                        .is_some_and(|credits| credits > 0)
+            }));
+            for event in events {
+                let affected = event["affected_entries"].as_u64().expect("affected pages");
+                let cleanup = event["cleanup_entries"].as_u64().expect("one-time cleanup");
+                assert!(affected <= 32);
+                assert!(
+                    event["entry_visits"].as_u64().expect("actual visits") <= affected + cleanup
+                );
+            }
+            assert_eq!(pool.prefetch_stats().occupied, 0);
+            assert_eq!(snapshot["overflow"], 0);
+        }
+    }
+}

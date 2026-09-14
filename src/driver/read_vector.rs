@@ -326,6 +326,23 @@ pub(crate) struct ReadContinuation {
 }
 
 impl ReadContinuation {
+    #[cfg(feature = "mock")]
+    pub(crate) fn read_span(&self) -> (FileId, u64) {
+        let shared = self
+            .shared
+            .upgrade()
+            .expect("the forwarding mock owns its driver");
+        let shared = shared.lock().unwrap_or_else(PoisonError::into_inner);
+        let token = self.token.expect("an unconsumed continuation");
+        assert!(
+            shared.slab.contains(token),
+            "the lease owns its exact generation"
+        );
+        let entry = shared.slab.peek(token.slot());
+        assert_eq!(entry.state, OpState::Continuation);
+        (entry.fd, entry.file_offset)
+    }
+
     pub(super) fn new(shared: &Arc<Mutex<Shared>>, token: OpToken) -> Self {
         Self {
             shared: Arc::downgrade(shared),

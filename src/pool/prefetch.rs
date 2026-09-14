@@ -1,5 +1,6 @@
 //! Bounded speculative ownership beside the ordinary miss and EBR protocols.
 
+pub(super) mod notifications;
 mod pattern;
 pub(super) mod state;
 #[cfg(all(test, feature = "mock", not(loom)))]
@@ -32,6 +33,19 @@ pub struct PrefetchReport {
     pub admitted: u64,
     pub deferred: u64,
     pub rejected: u64,
+}
+
+impl PrefetchReport {
+    fn record(&mut self, admission: Admission, count: u64) {
+        match admission {
+            Admission::Resident => self.resident += count,
+            Admission::Pending => self.pending += count,
+            Admission::Admitted => self.admitted += count,
+            Admission::Deferred => self.deferred += count,
+            Admission::Rejected => self.rejected += count,
+            Admission::Obsolete => unreachable!("explicit hints have no incarnation"),
+        }
+    }
 }
 
 /// Cumulative outcomes plus the current bounded speculative occupancy.
@@ -68,8 +82,8 @@ pub(super) enum Admission {
 
 impl PoolBuilder {
     /// Sets speculative credits, covering both in-flight and unconsumed pages.
-    /// Zero disables all speculative admission. The default is at most 32,
-    /// bounded by spare frames and the configured read capacity minus one.
+    /// Zero disables all speculative admission. The default is 524288 bytes,
+    /// rounded down to pages and bounded by spare frames and read capacity minus one.
     #[must_use]
     pub fn prefetch_headroom(mut self, credits: u32) -> Self {
         self.prefetch_headroom = Some(credits);
@@ -90,9 +104,11 @@ impl PoolBuilder {
             + u64::from(self.max_retained_frames);
         let spare = u32::try_from(u64::from(self.frame_count).saturating_sub(committed))
             .expect("spare frames fit u32");
-        let credits = self
-            .prefetch_headroom
-            .unwrap_or(spare.min(self.max_inflight_reads.saturating_sub(1)).min(32));
+        let credits = self.prefetch_headroom.unwrap_or(
+            spare
+                .min(self.max_inflight_reads.saturating_sub(1))
+                .min(524_288 / self.granule),
+        );
         if credits > spare {
             return Err(PoolConfigError::PrefetchHeadroomTooLarge {
                 requested: credits,
@@ -117,6 +133,8 @@ impl<D: PoolBackend> Pool<D> {
     /// to release speculative credits. Already accepted reads are never cancelled.
     /// Failed speculative reads release their credits; joined demand sees the
     /// error, while later demand can retry an abandoned failed read.
+    /// Extending a sliding window by one page can issue a point read. To coalesce
+    /// extensions, add vector-sized chunks while repeating the useful prefix.
     ///
     /// # Panics
     ///
@@ -132,21 +150,29 @@ impl<D: PoolBackend> Pool<D> {
             deferred: u64::try_from(pages.len() - examined.len()).expect("suffix length fits u64"),
             ..PrefetchReport::default()
         };
-        for &page in examined {
-            let mut outcome = self.prefetch_admit(&mut control, page, Source::Explicit);
-            if matches!(outcome, Admission::Deferred) {
-                self.prefetch_replace_unused(&mut control, examined);
-                outcome = self.prefetch_admit(&mut control, page, Source::Explicit);
-            }
-            match outcome {
-                Admission::Resident => report.resident += 1,
-                Admission::Pending => report.pending += 1,
-                Admission::Admitted => report.admitted += 1,
-                Admission::Deferred => report.deferred += 1,
-                Admission::Rejected => report.rejected += 1,
-                Admission::Obsolete => unreachable!("an explicit hint has no pattern incarnation"),
-            }
+        control.prefetch.begin_explicit();
+        #[cfg(feature = "bench")]
+        let clock_before = self.clock.visits();
+        let protection_lookups = self.prefetch_protect(&mut control, examined);
+        let admission_visits = self.prefetch_examined(&mut control, examined, &mut report);
+        #[cfg(feature = "bench")]
+        let protected_evictions = control.prefetch.end_explicit();
+        #[cfg(feature = "bench")]
+        if let Some(observation) = self.driver.read_observation() {
+            observation.explicit(
+                control.prefetch.capacity,
+                [
+                    examined.len() as u64,
+                    protection_lookups,
+                    u64::from(control.prefetch.replacement_cursor),
+                    admission_visits,
+                    self.clock.visits() - clock_before,
+                    protected_evictions,
+                ],
+            );
         }
+        #[cfg(not(feature = "bench"))]
+        let _ = (protection_lookups, admission_visits);
         control.prefetch.stats.deferred += report.deferred;
         if report.admitted > 0 || report.deferred > 0 {
             self.wake.wake();
@@ -172,24 +198,122 @@ impl<D: PoolBackend> Pool<D> {
         }
     }
 
-    fn prefetch_admit(&self, control: &mut Control, page: PageId, source: Source) -> Admission {
-        control.prefetch.reconcile_feedback(&self.clock);
-        if control.prefetch.source_obsolete(source) {
-            return Admission::Obsolete;
+    fn prefetch_examined(
+        &self,
+        control: &mut Control,
+        examined: &[PageId],
+        report: &mut PrefetchReport,
+    ) -> u64 {
+        let mut admission_visits = 0;
+        let mut cursor = 0;
+        for _ in 0..examined.len() {
+            if cursor == examined.len() {
+                break;
+            }
+            let page = examined[cursor];
+            admission_visits += 1;
+            if let Some(outcome) = self.prefetch_classify(control, page) {
+                report.record(outcome, 1);
+                cursor += 1;
+                continue;
+            }
+            let end =
+                self.prefetch_examined_run_end(control, examined, cursor, &mut admission_visits);
+            let wanted = u32::try_from(end - cursor).expect("bounded explicit run");
+            self.prefetch_examined_replace_unused(control, wanted);
+            let count = wanted
+                .min(control.prefetch.available())
+                .min(self.max_inflight_reads - control.reads_in_flight);
+            if count == 0 {
+                report.deferred += u64::from(wanted);
+                cursor = end;
+                continue;
+            }
+            let run = &examined[cursor..cursor + count as usize];
+            control.prefetch.reconcile_feedback(&self.clock);
+            let outcome = self.prefetch_admit_run(control, run, Source::Explicit);
+            report.record(outcome, u64::from(count));
+            cursor += count as usize;
         }
+        assert_eq!(cursor, examined.len());
+        admission_visits
+    }
+
+    fn prefetch_protect(&self, control: &mut Control, pages: &[PageId]) -> u64 {
+        let mut lookups = 0;
+        for &page in pages {
+            lookups += 1;
+            assert_eq!(
+                page.file().driver(),
+                self.identity,
+                "prefetch uses its owning pool"
+            );
+            let frame = self.table.lookup(page).or_else(|| {
+                control
+                    .miss
+                    .find_pending(page)
+                    .map(|index| control.miss.entry(index).frame())
+            });
+            if let Some(frame) = frame {
+                control.prefetch.protect(frame);
+            }
+        }
+        lookups
+    }
+
+    fn prefetch_classify(&self, control: &Control, page: PageId) -> Option<Admission> {
         assert_eq!(
             page.file().driver(),
             self.identity,
             "prefetch uses its owning pool"
         );
         if !file_is_live(&control.files, page.file(), self.identity) {
-            return Admission::Rejected;
+            return Some(Admission::Rejected);
         }
         if self.table.lookup(page).is_some() {
-            return Admission::Resident;
+            return Some(Admission::Resident);
         }
         if control.miss.find_pending(page).is_some() {
-            return Admission::Pending;
+            return Some(Admission::Pending);
+        }
+        None
+    }
+
+    fn prefetch_examined_run_end(
+        &self,
+        control: &Control,
+        pages: &[PageId],
+        start: usize,
+        visits: &mut u64,
+    ) -> usize {
+        let mut end = start + 1;
+        let limit = pages
+            .len()
+            .min(start + control.prefetch.vector_width as usize);
+        for index in start + 1..limit {
+            if pages[index].file() != pages[index - 1].file() {
+                break;
+            }
+            if pages[index - 1].granule_idx().checked_add(1) != Some(pages[index].granule_idx()) {
+                break;
+            }
+            *visits += 1;
+            if self.prefetch_classify(control, pages[index]).is_some() {
+                break;
+            }
+            end += 1;
+        }
+        end
+    }
+
+    #[cfg(all(test, feature = "mock", not(loom)))]
+    fn prefetch_admit(&self, control: &mut Control, page: PageId, source: Source) -> Admission {
+        control.prefetch.reconcile_feedback(&self.clock);
+        if control.prefetch.source_obsolete(source) {
+            return Admission::Obsolete;
+        }
+        if let Some(outcome) = self.prefetch_classify(control, page) {
+            return outcome;
         }
         self.prefetch_admit_run(control, &[page], source)
     }
@@ -202,7 +326,11 @@ impl<D: PoolBackend> Pool<D> {
     ) -> Admission {
         assert!(!pages.is_empty());
         if pages.len() > 1 {
-            return self.prefetch_admit_vector(control, pages, source);
+            let outcome = self.prefetch_admit_vector(control, pages, source);
+            if matches!(outcome, Admission::Admitted) {
+                self.prefetch_admit_run_record(pages, source);
+            }
+            return outcome;
         }
         let page = pages[0];
         if control.prefetch.available() == 0 || control.reads_in_flight >= self.max_inflight_reads {
@@ -240,6 +368,7 @@ impl<D: PoolBackend> Pool<D> {
             .miss
             .admit_speculative(slot, page, frame, token, &self.miss_interests);
         control.prefetch.admit(&self.clock, page, frame, source);
+        self.prefetch_admit_run_record(pages, source);
         Admission::Admitted
     }
 
@@ -361,58 +490,252 @@ impl<D: PoolBackend> Pool<D> {
         report
     }
 
-    fn prefetch_replace_unused(&self, control: &mut Control, protected: &[PageId]) {
-        if control.prefetch.available() == 0 {
-            self.prefetch_evict_unused(control, protected);
+    fn prefetch_examined_replace_unused(&self, control: &mut Control, wanted: u32) {
+        for _ in control.prefetch.replacement_cursor..control.prefetch.capacity {
+            if control.prefetch.available() >= wanted {
+                break;
+            }
+            let index = control.prefetch.replacement_cursor as usize;
+            control.prefetch.replacement_cursor += 1;
+            let Some(entry) = control.prefetch.entries[index] else {
+                continue;
+            };
+            if control.prefetch.protected(entry) {
+                continue;
+            }
+            if self.frames.state(entry.frame) != FrameState::Resident {
+                continue;
+            }
+            if !control
+                .miss
+                .prepare_eviction(entry.frame, &self.miss_interests)
+            {
+                continue;
+            }
+            self.evict_resident(control, entry.frame);
         }
     }
 
     pub(super) fn progress_prefetch(&self, control: &mut Control) {
+        #[cfg(feature = "bench")]
+        let event_before = self
+            .driver
+            .read_observation()
+            .map(|observation| observation.control_count());
         control.prefetch.reconcile(&self.clock);
+        control
+            .prefetch
+            .retry_cleanup(self.lifecycle.pending_releases.load(Ordering::Acquire));
         self.prefetch_evict_obsolete(control);
         self.prefetch_top_up(control);
-        let readers =
-            u32::try_from(control.prefetch.patterns.len()).expect("reader count fits u32");
-        if readers == 0 {
-            return;
-        }
         let mut admitted = 0;
         for _ in 0..control.prefetch.capacity {
-            let Some((page, source)) = Self::prefetch_next(control, readers) else {
+            let Some(reader) = control.prefetch.ready.front() else {
                 break;
             };
-            let Source::Automatic { reader, .. } = source else {
-                unreachable!("automatic request source");
+            let Some((page, source, count)) = control.prefetch.patterns[reader as usize]
+                .window(reader, control.prefetch.automatic_width)
+            else {
+                unreachable!("ready stream has eligible horizon");
             };
             control.prefetch.active = true;
-            match self.prefetch_admit(control, page, source) {
-                Admission::Deferred => break,
-                Admission::Obsolete => {}
-                Admission::Rejected => control.prefetch.patterns[reader as usize].reset(),
-                outcome => {
-                    control.prefetch.patterns[reader as usize].issued(page);
-                    if matches!(outcome, Admission::Admitted) {
-                        admitted += 1;
-                    }
-                }
+            let (outcome, committed) = self.prefetch_automatic_window(control, page, source, count);
+            admitted += committed;
+            if matches!(outcome, Admission::Deferred) {
+                break;
             }
         }
         self.prefetch_top_up(control);
         if admitted > 0 {
             self.wake.wake();
         }
+        #[cfg(feature = "bench")]
+        match self.driver.read_observation() {
+            Some(observation) if event_before == Some(observation.control_count()) => {
+                control.prefetch.record_control("idle", 0, 0, 0, 0);
+            }
+            Some(_) | None => {}
+        }
     }
 
-    fn prefetch_next(control: &mut Control, readers: u32) -> Option<(PageId, Source)> {
-        assert!(readers > 0);
-        for _ in 0..readers {
-            let reader = control.prefetch.reader_cursor;
-            control.prefetch.reader_cursor = (reader + 1) % readers;
-            if let Some(request) = control.prefetch.patterns[reader as usize].request(reader) {
-                return Some(request);
-            }
+    fn prefetch_automatic_window(
+        &self,
+        control: &mut Control,
+        first: PageId,
+        source: Source,
+        count: u32,
+    ) -> (Admission, u32) {
+        let Source::Automatic { reader, .. } = source else {
+            unreachable!("automatic source");
+        };
+        assert_eq!(control.prefetch.ready.front(), Some(reader));
+        let (pages, classes) = self.prefetch_automatic_window_classify(control, first, count);
+        if !self.prefetch_automatic_window_has_credits(control, &classes[..count as usize]) {
+            let _ =
+                self.prefetch_automatic_window_record_turn(control, reader, 0, "credit_deferred");
+            return (Admission::Deferred, 0);
         }
-        None
+        let recorded = self.prefetch_automatic_window_record_turn(control, reader, 0, "pending");
+        let mut cursor = 0;
+        let mut admitted = 0;
+        let mut result = Admission::Resident;
+        for _ in 0..count {
+            if cursor == count as usize {
+                break;
+            }
+            let mut end = cursor + 1;
+            let outcome = if let Some(outcome) = classes[cursor] {
+                outcome
+            } else {
+                for class in &classes[end..count as usize] {
+                    if class.is_some() {
+                        break;
+                    }
+                    end += 1;
+                }
+                control.prefetch.reconcile_feedback(&self.clock);
+                if control.prefetch.source_obsolete(source) {
+                    result = Admission::Obsolete;
+                    break;
+                }
+                self.prefetch_admit_run(control, &pages[cursor..end], source)
+            };
+            if matches!(outcome, Admission::Deferred) {
+                result = outcome;
+                break;
+            }
+            if matches!(outcome, Admission::Rejected) {
+                control.prefetch.reset_reader(reader);
+                result = outcome;
+                break;
+            }
+            if matches!(outcome, Admission::Admitted) {
+                admitted += u32::try_from(end - cursor).expect("bounded run");
+            }
+            for &page in &pages[cursor..end] {
+                control.prefetch.issued(reader, page);
+            }
+            cursor = end;
+        }
+        self.prefetch_automatic_window_finish(control, reader, recorded, result, admitted)
+    }
+
+    fn prefetch_automatic_window_finish(
+        &self,
+        control: &mut Control,
+        reader: u32,
+        recorded: Option<usize>,
+        outcome: Admission,
+        admitted: u32,
+    ) -> (Admission, u32) {
+        match (outcome, admitted) {
+            (Admission::Deferred | Admission::Rejected | Admission::Obsolete, 0) => {}
+            _ => control.prefetch.advance_turn(reader),
+        }
+        #[cfg(not(feature = "bench"))]
+        let _ = (self, recorded);
+        #[cfg(feature = "bench")]
+        if let Some(observation) = self.driver.read_observation() {
+            let recorded_outcome = if admitted > 0 {
+                "admitted"
+            } else {
+                match outcome {
+                    Admission::Resident => "resident",
+                    Admission::Deferred => "resource_deferred",
+                    Admission::Rejected => "rejected",
+                    Admission::Obsolete => "obsolete",
+                    Admission::Admitted | Admission::Pending => unreachable!("window outcome"),
+                }
+            };
+            observation.reader_turn_after(
+                recorded,
+                control.prefetch.ready.front(),
+                admitted,
+                recorded_outcome,
+            );
+        }
+        (outcome, admitted)
+    }
+
+    fn prefetch_automatic_window_has_credits(
+        &self,
+        control: &Control,
+        classes: &[Option<Admission>],
+    ) -> bool {
+        let missing = u32::try_from(classes.iter().filter(|class| class.is_none()).count())
+            .expect("bounded window");
+        if control.prefetch.available() < missing {
+            return false;
+        }
+        self.max_inflight_reads - control.reads_in_flight >= missing
+    }
+
+    fn prefetch_automatic_window_classify(
+        &self,
+        control: &Control,
+        first: PageId,
+        count: u32,
+    ) -> ([PageId; 32], [Option<Admission>; 32]) {
+        assert!((1..=32).contains(&count));
+        let mut pages = [first; 32];
+        let mut classes = [None; 32];
+        for index in 0..count as usize {
+            pages[index] = PageId::new(
+                first.file(),
+                first
+                    .granule_idx()
+                    .checked_add(u32::try_from(index).expect("bounded vector index"))
+                    .expect("confirmed horizon"),
+            );
+            classes[index] = self.prefetch_classify(control, pages[index]);
+        }
+        (pages, classes)
+    }
+
+    fn prefetch_admit_run_record(&self, pages: &[PageId], source: Source) {
+        #[cfg(feature = "bench")]
+        if let Some(observation) = self.driver.read_observation() {
+            let stream = match source {
+                Source::Explicit => None,
+                Source::Automatic {
+                    reader,
+                    incarnation,
+                } => Some((reader, incarnation)),
+            };
+            observation.committed_run(
+                pages[0],
+                u32::try_from(pages.len()).expect("bounded run"),
+                stream,
+            );
+        }
+        #[cfg(not(feature = "bench"))]
+        let _ = (self, pages, source);
+    }
+
+    fn prefetch_automatic_window_record_turn(
+        &self,
+        control: &Control,
+        reader: u32,
+        admitted: u32,
+        outcome: &'static str,
+    ) -> Option<usize> {
+        #[cfg(feature = "bench")]
+        {
+            self.driver.read_observation().and_then(|observation| {
+                observation.reader_turn(
+                    reader,
+                    control.prefetch.ready.front(),
+                    admitted,
+                    outcome,
+                    control.prefetch.ready.iter(),
+                )
+            })
+        }
+        #[cfg(not(feature = "bench"))]
+        {
+            let _ = (self, control, reader, admitted, outcome);
+            None
+        }
     }
 
     fn prefetch_top_up(&self, control: &mut Control) {
@@ -430,21 +753,20 @@ impl<D: PoolBackend> Pool<D> {
                 break;
             }
         }
+        if deficit > 0 {
+            for _ in 0..2 {
+                self.advance_and_reclaim(control);
+            }
+            control.prefetch.fill_reserve(&mut control.free_frames);
+        }
     }
 
-    pub(super) fn prefetch_evict_unused(
-        &self,
-        control: &mut Control,
-        protected: &[PageId],
-    ) -> bool {
+    pub(super) fn prefetch_evict_unused(&self, control: &mut Control) -> bool {
         control.prefetch.reconcile(&self.clock);
         for index in 0..control.prefetch.entries.len() {
             let Some(entry) = control.prefetch.entries[index] else {
                 continue;
             };
-            if protected.contains(&entry.page) {
-                continue;
-            }
             if self.frames.state(entry.frame) != FrameState::Resident {
                 continue;
             }
@@ -461,13 +783,13 @@ impl<D: PoolBackend> Pool<D> {
     }
 
     fn prefetch_evict_obsolete(&self, control: &mut Control) {
-        for index in 0..control.prefetch.entries.len() {
-            let Some(entry) = control.prefetch.entries[index] else {
-                continue;
+        for _ in 0..control.prefetch.capacity {
+            let Some(index) = control.prefetch.cleanup.pop() else {
+                break;
             };
-            if !control.prefetch.obsolete(entry) {
-                continue;
-            }
+            let entry = control.prefetch.entries[index as usize].expect("queued entry");
+            assert!(control.prefetch.obsolete(entry));
+            control.prefetch.record_control("invalidation", 1, 0, 1, 0);
             if self.frames.state(entry.frame) != FrameState::Resident {
                 continue;
             }
@@ -476,6 +798,8 @@ impl<D: PoolBackend> Pool<D> {
                 .prepare_eviction(entry.frame, &self.miss_interests)
             {
                 self.evict_resident(control, entry.frame);
+            } else {
+                control.prefetch.wait_cleanup(index);
             }
         }
     }

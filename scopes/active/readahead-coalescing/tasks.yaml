@@ -5,7 +5,7 @@ next_id: 7
 meta:
   created: '2026-09-14'
   last_updated: '2026-09-14'
-  progress: 3/6
+  progress: 4/6
 discipline: Owner approval, 512 KiB default and scope review are recorded. Immutable
   source/executable baseline verified before RC1/RC2 dispatch. Each task captures
   bounded RED before code.
@@ -109,7 +109,7 @@ tasks:
     review: ".peer/readahead-coalescing/20260914T090833Z-505efd/b2-synthesis.yaml"
 - id: RC4
   title: Coalesce explicit and automatic missing runs
-  status: pending
+  status: done
   depends_on:
   - RC3
   description: 'RED for steady singleton-refill collapse, smaller startup horizons,
@@ -148,6 +148,18 @@ tasks:
   - benches/mmap_workloads/observe.rs
   - benches/mmap_workloads/mod.rs
   - src/driver/observation.rs
+  - src/mock.rs
+  - src/driver/read_vector.rs
+  - benches/mmap_workloads/scan_analyze.py
+  - benches/mmap_workloads/coalescing.py
+  - benches/evidence/readahead_coalescing/README.md
+  completed_at: '2026-09-14T12:32:48.715476+00:00'
+  evidence:
+    tester: ".peer/readahead-coalescing/20260914T090833Z-505efd/b3-tester-RC4/native.yaml"
+    implementer: ".peer/readahead-coalescing/20260914T090833Z-505efd/b3-implementer-RC4/native.yaml"
+    legacy_oracle_correction: ".peer/readahead-coalescing/20260914T090833Z-505efd/b3-legacy-prefetch-oracles/correction.yaml"
+    review: ".peer/readahead-coalescing/20260914T090833Z-505efd/b3-synthesis.yaml"
+    validation: target/readahead-coalescing/b3-fix1-green-verification.json
 - id: RC5
   title: Prove concurrency, lifetime and allocation invariants
   status: pending

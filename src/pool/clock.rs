@@ -14,6 +14,10 @@ pub struct Clock {
     hand: AtomicU32,
     reference_stores: super::diagnostics::DiagnosticCounter,
     speculation: crate::allocation::MappedSlice<AtomicU64>,
+    pub(super) consumed: super::prefetch::notifications::DirtyFrames,
+    pub(super) completed: super::prefetch::notifications::DirtyFrames,
+    #[cfg(feature = "bench")]
+    visits: super::diagnostics::DiagnosticCounter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +48,10 @@ impl Clock {
             hand: AtomicU32::new(0),
             reference_stores: super::diagnostics::DiagnosticCounter::new(),
             speculation: crate::allocation::MappedSlice::try_vacant(frame_count)?,
+            consumed: super::prefetch::notifications::DirtyFrames::try_new(frame_count)?,
+            completed: super::prefetch::notifications::DirtyFrames::try_new(frame_count)?,
+            #[cfg(feature = "bench")]
+            visits: super::diagnostics::DiagnosticCounter::new(),
         })
     }
 
@@ -93,7 +101,12 @@ impl Clock {
             let consumed = reader().map_or(u64::MAX, |reader| u64::from(reader) + 2);
             // Release orders this reader's earlier speculative observations for
             // bounded, ordered feedback reconciliation; EBR still owns bytes.
-            let _ = marker.compare_exchange(1, consumed, Ordering::Release, Ordering::Relaxed);
+            if marker
+                .compare_exchange(1, consumed, Ordering::Release, Ordering::Relaxed)
+                .is_ok()
+            {
+                self.consumed.notify(frame);
+            }
         }
     }
 
@@ -157,6 +170,8 @@ impl Clock {
         for _ in 0..=self.count {
             let index = hand;
             hand = (hand + 1) % self.count;
+            #[cfg(feature = "bench")]
+            self.visits.increment();
             let bit = &self.reference_bits[index as usize];
             if bit.load(Ordering::Relaxed) {
                 bit.store(false, Ordering::Relaxed);
@@ -167,6 +182,16 @@ impl Clock {
         }
         self.hand.store(hand, Ordering::Relaxed);
         ReadFrameIdx::new(hand)
+    }
+
+    #[cfg(feature = "bench")]
+    pub(super) fn visits(&self) -> u64 {
+        self.visits.get()
+    }
+
+    #[cfg(feature = "bench")]
+    pub(super) fn notification_bytes(&self) -> u64 {
+        self.consumed.metadata_bytes() + self.completed.metadata_bytes()
     }
 
     fn checked_index(&self, frame: ReadFrameIdx) -> usize {

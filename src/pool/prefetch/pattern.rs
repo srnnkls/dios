@@ -106,6 +106,37 @@ impl Pattern {
         ))
     }
 
+    pub(super) fn window(&self, reader: u32, vector_width: u32) -> Option<(PageId, Source, u32)> {
+        let (page, source) = self.request(reader)?;
+        let PatternState::Streaming {
+            demand,
+            next,
+            width,
+        } = self.state
+        else {
+            unreachable!("stream request");
+        };
+        let count = width.min(vector_width);
+        let eligible = demand.granule_idx().saturating_add(width) - next + 1;
+        if eligible < count {
+            return None;
+        }
+        Some((page, source, count))
+    }
+
+    pub(super) fn incarnation(&self) -> u64 {
+        self.incarnation
+    }
+
+    #[cfg(feature = "bench")]
+    pub(super) fn width(&self) -> u32 {
+        if let PatternState::Streaming { width, .. } = self.state {
+            width
+        } else {
+            0
+        }
+    }
+
     pub(super) fn issued(&mut self, page: PageId) {
         let PatternState::Streaming {
             demand,
@@ -156,11 +187,5 @@ impl Pattern {
 
     pub(super) fn owns(&self, incarnation: u64) -> bool {
         self.incarnation == incarnation
-    }
-
-    pub(super) fn failed(&mut self, incarnation: u64) {
-        if self.incarnation == incarnation {
-            self.reset();
-        }
     }
 }

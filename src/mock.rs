@@ -570,6 +570,14 @@ impl PoolBackend for MockDriver {
         vector: ReadVector,
         file_offset: u64,
     ) -> Result<OpToken, (SubmitError, ReadVector)> {
+        self.0.executor().record_read_attempt(
+            fd.file_id(),
+            ReadAttempt {
+                file_offset,
+                destination_offset: vector.destination_offset(),
+                requested_len: vector.remaining(),
+            },
+        );
         self.0
             .submit_read_vector(fd, vector, file_offset, crate::driver::FrameLease::Pool)
     }
@@ -579,6 +587,15 @@ impl PoolBackend for MockDriver {
         continuation: ReadContinuation,
         vector: ReadVector,
     ) -> Result<OpToken, (IoError, ReadVector)> {
+        let (file, file_offset) = continuation.read_span();
+        self.0.executor().record_read_attempt(
+            file,
+            ReadAttempt {
+                file_offset,
+                destination_offset: vector.destination_offset(),
+                requested_len: vector.remaining(),
+            },
+        );
         self.0.continue_read_vector(continuation, vector)
     }
 

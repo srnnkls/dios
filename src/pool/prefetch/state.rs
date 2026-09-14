@@ -8,6 +8,8 @@ pub(super) struct Entry {
     pub(super) page: PageId,
     pub(super) frame: ReadFrameIdx,
     source: Source,
+    membership: Option<Links>,
+    protected: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -18,8 +20,14 @@ struct Feedback {
 }
 
 impl Feedback {
-    fn key(self) -> (u32, u64, u32) {
-        (self.reader, self.incarnation, self.page.granule_idx())
+    fn byte(self, ordinal: u32) -> usize {
+        let byte = match ordinal {
+            0..=3 => (u64::from(self.page.granule_idx()) >> (ordinal * 8)) & 255,
+            4..=11 => (self.incarnation >> ((ordinal - 4) * 8)) & 255,
+            12..=15 => (u64::from(self.reader) >> ((ordinal - 12) * 8)) & 255,
+            _ => unreachable!("fixed-width feedback key"),
+        };
+        usize::try_from(byte).expect("one byte fits usize")
     }
 }
 
@@ -136,6 +144,87 @@ pub(in crate::pool) enum Terminal {
     Failed,
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+struct Links {
+    previous: Option<u32>,
+    next: Option<u32>,
+}
+
+#[derive(Debug)]
+pub(super) struct IndexQueue {
+    links: Box<[Option<Links>]>,
+    first: Option<u32>,
+    last: Option<u32>,
+}
+
+impl IndexQueue {
+    fn try_new(capacity: u32) -> Option<Self> {
+        Some(Self {
+            links: crate::allocation::try_boxed_slice_with(capacity, || None)?,
+            first: None,
+            last: None,
+        })
+    }
+
+    pub(super) fn front(&self) -> Option<u32> {
+        self.first
+    }
+
+    fn push(&mut self, index: u32) {
+        if self.links[index as usize].is_some() {
+            return;
+        }
+        self.links[index as usize] = Some(Links {
+            previous: self.last,
+            next: None,
+        });
+        if let Some(last) = self.last {
+            self.links[last as usize].as_mut().expect("queue tail").next = Some(index);
+        } else {
+            self.first = Some(index);
+        }
+        self.last = Some(index);
+    }
+
+    fn remove(&mut self, index: u32) {
+        let Some(links) = self.links[index as usize].take() else {
+            return;
+        };
+        if let Some(previous) = links.previous {
+            self.links[previous as usize]
+                .as_mut()
+                .expect("previous link")
+                .next = links.next;
+        } else {
+            self.first = links.next;
+        }
+        if let Some(next) = links.next {
+            self.links[next as usize]
+                .as_mut()
+                .expect("next link")
+                .previous = links.previous;
+        } else {
+            self.last = links.previous;
+        }
+    }
+
+    pub(super) fn pop(&mut self) -> Option<u32> {
+        let index = self.first?;
+        self.remove(index);
+        Some(index)
+    }
+
+    #[cfg(feature = "bench")]
+    pub(super) fn iter(&self) -> impl Iterator<Item = u32> + '_ {
+        let mut next = self.first;
+        (0..self.links.len()).map_while(move |_| {
+            let index = next?;
+            next = self.links[index as usize].expect("queue member").next;
+            Some(index)
+        })
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Prefetch {
     pub(in crate::pool) reserve: FreeFrames,
@@ -145,22 +234,64 @@ pub(crate) struct Prefetch {
     pub(super) capacity: u32,
     pub(super) request_limit: usize,
     pub(super) active: bool,
-    pub(super) reader_cursor: u32,
+    pub(super) vector_width: u32,
+    pub(super) automatic_width: u32,
+    pub(super) ready: IndexQueue,
+    pub(super) cleanup: IndexQueue,
+    waiting: IndexQueue,
+    reader_entries: Box<[Option<u32>]>,
+    frame_entries: Box<[Option<u32>]>,
+    vacant: Box<[u32]>,
+    vacant_count: u32,
     feedback: Box<[Option<Feedback>]>,
+    feedback_scratch: Box<[Option<Feedback>]>,
     feedback_count: u32,
+    stamp: u64,
+    #[cfg(feature = "bench")]
+    explicit_evictions: Option<u64>,
+    pub(super) replacement_cursor: u32,
+    pub(super) pending_releases: u32,
+    #[cfg(feature = "bench")]
+    pub(in crate::pool) observation:
+        Option<std::sync::Arc<crate::driver::observation::ReadObservation>>,
 }
 
 impl Prefetch {
+    #[cfg(all(test, loom))]
     pub(in crate::pool) fn try_new(
         capacity: u32,
         readers: u32,
         reads: u32,
         mode: Readahead,
     ) -> Option<Self> {
+        Self::try_with_geometry(capacity, readers, reads, mode, capacity.max(1), 4096)
+    }
+
+    pub(in crate::pool) fn try_with_geometry(
+        capacity: u32,
+        readers: u32,
+        reads: u32,
+        mode: Readahead,
+        frames: u32,
+        granule: u32,
+    ) -> Option<Self> {
         let pattern_count = match mode {
             Readahead::Automatic if capacity > 0 => readers,
             Readahead::Automatic | Readahead::Disabled => 0,
         };
+        let feedback_capacity = if pattern_count == 0 { 0 } else { capacity };
+        let vector_width = (crate::driver::read_vector::VECTOR_BYTES_MAX / granule).clamp(1, 32);
+        let automatic_width = if capacity.min(reads.saturating_sub(1)) >= 2 * vector_width {
+            vector_width
+        } else {
+            1
+        };
+        let mut next = 0;
+        let vacant = crate::allocation::try_boxed_slice_with(capacity, || {
+            let index = next;
+            next += 1;
+            index
+        })?;
         Some(Self {
             reserve: FreeFrames::try_empty(capacity)?,
             entries: crate::allocation::try_boxed_slice_with(capacity, || None)?,
@@ -169,27 +300,39 @@ impl Prefetch {
             capacity,
             request_limit: capacity.max(reads).saturating_mul(4).max(1) as usize,
             active: false,
-            reader_cursor: 0,
-            feedback: crate::allocation::try_boxed_slice_with(
-                if pattern_count == 0 { 0 } else { capacity },
-                || None,
-            )?,
+            vector_width,
+            automatic_width,
+            ready: IndexQueue::try_new(pattern_count)?,
+            cleanup: IndexQueue::try_new(capacity)?,
+            waiting: IndexQueue::try_new(capacity)?,
+            reader_entries: crate::allocation::try_boxed_slice_with(pattern_count, || None)?,
+            frame_entries: crate::allocation::try_boxed_slice_with(frames, || None)?,
+            vacant,
+            vacant_count: capacity,
+            feedback: crate::allocation::try_boxed_slice_with(feedback_capacity, || None)?,
+            feedback_scratch: crate::allocation::try_boxed_slice_with(feedback_capacity, || None)?,
             feedback_count: 0,
+            stamp: 0,
+            #[cfg(feature = "bench")]
+            explicit_evictions: None,
+            replacement_cursor: 0,
+            pending_releases: 0,
+            #[cfg(feature = "bench")]
+            observation: None,
         })
     }
 
     pub(super) fn available(&self) -> u32 {
         self.capacity
             .checked_sub(self.stats.occupied)
-            .expect("speculation stays within its credit bound")
+            .expect("bounded speculation")
     }
 
     pub(super) fn fill_reserve(&mut self, free: &mut FreeFrames) {
         if !self.active {
             return;
         }
-        let target = self.available();
-        for _ in self.reserve.len()..target {
+        for _ in self.reserve.len()..self.available() {
             let Some(frame) = free.pop() else {
                 break;
             };
@@ -206,15 +349,38 @@ impl Prefetch {
     ) {
         assert_eq!(self.feedback_count, 0, "admission follows ordered feedback");
         assert!(self.available() > 0);
-        let slot = self
-            .entries
-            .iter_mut()
-            .find(|entry| entry.is_none())
-            .expect("a credit has a metadata slot");
-        *slot = Some(Entry {
+        self.vacant_count -= 1;
+        let index = self.vacant[self.vacant_count as usize];
+        assert!(self.entries[index as usize].is_none());
+        assert!(
+            self.frame_entries[frame.get() as usize]
+                .replace(index)
+                .is_none()
+        );
+        let membership = if let Source::Automatic { reader, .. } = source {
+            let next = self.reader_entries[reader as usize].replace(index);
+            if let Some(next) = next {
+                self.entries[next as usize]
+                    .as_mut()
+                    .expect("reader entry")
+                    .membership
+                    .as_mut()
+                    .expect("linked entry")
+                    .previous = Some(index);
+            }
+            Some(Links {
+                previous: None,
+                next,
+            })
+        } else {
+            None
+        };
+        self.entries[index as usize] = Some(Entry {
             page,
             frame,
             source,
+            membership,
+            protected: self.stamp,
         });
         clock.begin_speculation(frame);
         self.stats.admitted += 1;
@@ -226,12 +392,28 @@ impl Prefetch {
     }
 
     pub(in crate::pool) fn reconcile(&mut self, clock: &Clock) {
-        // A later acquire can reveal an earlier consumption in a recycled slab
-        // slot already scanned. Every nonempty pass removes at least one entry.
+        clock.completed.drain(|frame| {
+            if let Some(index) = self.frame_entries[frame.get() as usize] {
+                if self.obsolete(self.entries[index as usize].expect("indexed entry")) {
+                    self.cleanup.push(index);
+                }
+                self.record_control("completion", 1, 1, 0, 0);
+            }
+        });
+        // Acquiring a later notification can reveal an earlier notification in
+        // a bitmap branch already drained. Each nonempty round returns credits.
         for _ in 0..=self.capacity {
             let before = self.stats.occupied;
-            self.reconcile_pass(clock);
-            if self.stats.occupied == before {
+            clock.consumed.drain(|frame| {
+                if let Some(index) = self.frame_entries[frame.get() as usize] {
+                    let recovered = u32::from(clock.speculation_consumed(frame));
+                    if recovered > 0 {
+                        self.finish_index(clock, index, Terminal::Promoted(None));
+                    }
+                    self.record_control("consumption", 1, 1, 0, recovered);
+                }
+            });
+            if before == self.stats.occupied {
                 break;
             }
         }
@@ -244,48 +426,84 @@ impl Prefetch {
         }
     }
 
-    fn reconcile_pass(&mut self, clock: &Clock) {
-        for index in 0..self.entries.len() {
-            let Some(entry) = self.entries[index] else {
-                continue;
-            };
-            if clock.speculation_consumed(entry.frame) {
-                self.finish_index(clock, index, Terminal::Promoted(None));
-            }
-        }
-    }
-
     pub(in crate::pool) fn finish(
         &mut self,
         clock: &Clock,
         frame: ReadFrameIdx,
         terminal: Terminal,
     ) {
-        if !clock.is_speculative(frame) {
-            return;
-        }
-        if let Some(index) = self
-            .entries
-            .iter()
-            .position(|entry| entry.is_some_and(|entry| entry.frame == frame))
-        {
+        if let Some(index) = self.frame_entries[frame.get() as usize] {
+            let before = self.stats.demand_promoted;
             self.finish_index(clock, index, terminal);
+            let recovered = u32::from(self.stats.demand_promoted > before);
+            let cause = match terminal {
+                Terminal::Promoted(_) => "consumption",
+                Terminal::Failed => "completion",
+                Terminal::Evicted => "invalidation",
+            };
+            self.record_control(cause, 1, 1, 0, recovered);
         } else {
             assert!(!clock.is_speculative(frame));
         }
     }
 
-    fn finish_index(&mut self, clock: &Clock, index: usize, terminal: Terminal) {
-        let entry = self.entries[index]
+    fn finish_index_unlink_reader(&mut self, index: u32, entry: Entry) {
+        let Some(links) = entry.membership else {
+            return;
+        };
+        let Source::Automatic { reader, .. } = entry.source else {
+            unreachable!("automatic member");
+        };
+        if let Some(previous) = links.previous {
+            self.entries[previous as usize]
+                .as_mut()
+                .expect("previous member")
+                .membership
+                .as_mut()
+                .expect("linked member")
+                .next = links.next;
+        } else {
+            assert_eq!(self.reader_entries[reader as usize], Some(index));
+            self.reader_entries[reader as usize] = links.next;
+        }
+        if let Some(next) = links.next {
+            self.entries[next as usize]
+                .as_mut()
+                .expect("next member")
+                .membership
+                .as_mut()
+                .expect("linked member")
+                .previous = links.previous;
+        }
+    }
+
+    fn finish_index(&mut self, clock: &Clock, index: u32, terminal: Terminal) {
+        let entry = self.entries[index as usize]
             .take()
-            .expect("a terminal transition owns one speculative credit");
+            .expect("one speculative credit");
+        #[cfg(feature = "bench")]
+        match (&mut self.explicit_evictions, terminal) {
+            (Some(evictions), Terminal::Evicted) if entry.protected == self.stamp => {
+                *evictions += 1;
+            }
+            _ => {}
+        }
+        self.finish_index_unlink_reader(index, entry);
+        self.cleanup.remove(index);
+        self.waiting.remove(index);
+        assert_eq!(
+            self.frame_entries[entry.frame.get() as usize].take(),
+            Some(index)
+        );
+        self.vacant[self.vacant_count as usize] = index;
+        self.vacant_count += 1;
         let outcome = clock.take_speculation(entry.frame);
         assert_ne!(outcome, SpeculationOutcome::Absent);
         self.stats.occupied = self
             .stats
             .occupied
             .checked_sub(1)
-            .expect("one credit is returned once");
+            .expect("one credit returned once");
         let terminal = if let SpeculationOutcome::Consumed(reader) = outcome {
             Terminal::Promoted(reader)
         } else {
@@ -296,7 +514,7 @@ impl Prefetch {
             Terminal::Evicted => self.stats.evicted_unused += 1,
             Terminal::Failed => self.stats.failed += 1,
         }
-        self.finish_feedback(entry, terminal);
+        self.finish_index_feedback(entry, terminal);
         assert_eq!(
             self.stats.admitted,
             self.stats.demand_promoted
@@ -306,7 +524,7 @@ impl Prefetch {
         );
     }
 
-    fn finish_feedback(&mut self, entry: Entry, terminal: Terminal) {
+    fn finish_index_feedback(&mut self, entry: Entry, terminal: Terminal) {
         if let Source::Automatic {
             reader,
             incarnation,
@@ -326,31 +544,53 @@ impl Prefetch {
                 }
                 Terminal::Promoted(_) => {}
                 Terminal::Evicted | Terminal::Failed => {
-                    self.patterns[reader as usize].failed(incarnation);
+                    if self.patterns[reader as usize].owns(incarnation) {
+                        self.reset_reader(reader);
+                    }
                 }
             }
         }
     }
 
-    fn flush_feedback(&mut self) {
+    fn flush_feedback_sort(&mut self) {
         let count = self.feedback_count as usize;
-        for index in 1..count {
-            for cursor in (1..=index).rev() {
-                let before = self.feedback[cursor - 1].expect("feedback prefix");
-                let after = self.feedback[cursor].expect("feedback prefix");
-                if before.key() <= after.key() {
-                    break;
-                }
-                self.feedback.swap(cursor - 1, cursor);
+        for ordinal in 0..16 {
+            let mut counts = [0_usize; 256];
+            for feedback in &self.feedback[..count] {
+                counts[feedback.expect("feedback prefix").byte(ordinal)] += 1;
             }
+            let mut offset = 0;
+            for count in &mut counts {
+                let length = *count;
+                *count = offset;
+                offset += length;
+            }
+            for feedback in &self.feedback[..count] {
+                let byte = feedback.expect("feedback prefix").byte(ordinal);
+                self.feedback_scratch[counts[byte]] = *feedback;
+                counts[byte] += 1;
+            }
+            std::mem::swap(&mut self.feedback, &mut self.feedback_scratch);
         }
-        for index in 0..count {
+    }
+
+    fn flush_feedback(&mut self) {
+        if self.feedback_count == 0 {
+            return;
+        }
+        if self.feedback_count > 1 {
+            self.flush_feedback_sort();
+        }
+        for index in 0..self.feedback_count as usize {
             let feedback = self.feedback[index].take().expect("feedback prefix");
-            self.patterns[feedback.reader as usize].promoted(
+            let reader = feedback.reader;
+            let before = self.patterns[reader as usize].incarnation();
+            self.patterns[reader as usize].promoted(
                 feedback.page,
                 feedback.incarnation,
                 self.capacity,
             );
+            self.pattern_changed(reader, before);
         }
         self.feedback_count = 0;
     }
@@ -372,13 +612,158 @@ impl Prefetch {
     pub(in crate::pool) fn observe(&mut self, clock: &Clock, reader: u32, page: PageId) {
         self.reconcile_feedback(clock);
         if let Some(pattern) = self.patterns.get_mut(reader as usize) {
+            let before = pattern.incarnation();
             pattern.observe(page, self.capacity);
+            self.pattern_changed(reader, before);
         }
     }
 
     pub(in crate::pool) fn reset_reader(&mut self, reader: u32) {
         if let Some(pattern) = self.patterns.get_mut(reader as usize) {
+            let before = pattern.incarnation();
             pattern.reset();
+            self.pattern_changed(reader, before);
         }
+    }
+
+    fn pattern_changed(&mut self, reader: u32, before: u64) {
+        if !self.patterns[reader as usize].owns(before) {
+            self.invalidate_reader(reader);
+        }
+        self.refresh_ready(reader);
+        #[cfg(feature = "bench")]
+        if let Some(observation) = self
+            .observation
+            .as_ref()
+            .filter(|_| self.patterns[reader as usize].width() >= 32)
+        {
+            observation.confirmed_window();
+        }
+    }
+
+    fn invalidate_reader(&mut self, reader: u32) {
+        let mut next = self.reader_entries[reader as usize].take();
+        let mut visited = 0;
+        for _ in 0..self.capacity {
+            let Some(index) = next else {
+                break;
+            };
+            next = self.entries[index as usize]
+                .as_mut()
+                .expect("reader member")
+                .membership
+                .take()
+                .expect("linked entry")
+                .next;
+            self.cleanup.push(index);
+            visited += 1;
+        }
+        assert!(next.is_none(), "bounded incarnation membership");
+        if visited > 0 {
+            self.record_control("invalidation", visited, 0, visited, 0);
+        }
+    }
+
+    pub(super) fn refresh_ready(&mut self, reader: u32) {
+        if self.patterns[reader as usize]
+            .window(reader, self.automatic_width)
+            .is_some()
+        {
+            self.ready.push(reader);
+        } else {
+            self.ready.remove(reader);
+        }
+    }
+
+    pub(super) fn issued(&mut self, reader: u32, page: PageId) {
+        let before = self.patterns[reader as usize].incarnation();
+        self.patterns[reader as usize].issued(page);
+        if !self.patterns[reader as usize].owns(before) {
+            self.invalidate_reader(reader);
+        }
+        self.refresh_ready(reader);
+    }
+
+    pub(super) fn advance_turn(&mut self, reader: u32) {
+        self.ready.remove(reader);
+        self.refresh_ready(reader);
+    }
+
+    pub(super) fn wait_cleanup(&mut self, index: u32) {
+        self.waiting.push(index);
+    }
+
+    pub(super) fn retry_cleanup(&mut self, releases: u32) {
+        if self.pending_releases == releases {
+            return;
+        }
+        self.pending_releases = releases;
+        for _ in 0..self.capacity {
+            let Some(index) = self.waiting.pop() else {
+                break;
+            };
+            self.cleanup.push(index);
+        }
+    }
+
+    pub(super) fn begin_explicit(&mut self) {
+        #[cfg(feature = "bench")]
+        assert!(self.explicit_evictions.replace(0).is_none());
+        self.stamp = self
+            .stamp
+            .checked_add(1)
+            .expect("prefetch protection stamp exhausted");
+        self.replacement_cursor = 0;
+    }
+
+    #[cfg(feature = "bench")]
+    pub(super) fn end_explicit(&mut self) -> u64 {
+        self.explicit_evictions
+            .take()
+            .expect("one active explicit call")
+    }
+
+    pub(super) fn protect(&mut self, frame: ReadFrameIdx) {
+        if let Some(index) = self.frame_entries[frame.get() as usize] {
+            self.entries[index as usize]
+                .as_mut()
+                .expect("indexed entry")
+                .protected = self.stamp;
+        }
+    }
+
+    pub(super) fn protected(&self, entry: Entry) -> bool {
+        entry.protected == self.stamp
+    }
+
+    pub(super) fn record_control(
+        &self,
+        cause: &'static str,
+        visits: u32,
+        affected: u32,
+        cleanup: u32,
+        recovered: u32,
+    ) {
+        #[cfg(feature = "bench")]
+        if let Some(observation) = &self.observation {
+            observation.control(self.capacity, cause, visits, affected, cleanup, recovered);
+        }
+        #[cfg(not(feature = "bench"))]
+        let _ = (self, cause, visits, affected, cleanup, recovered);
+    }
+
+    #[cfg(feature = "bench")]
+    pub(in crate::pool) fn metadata_bytes(&self) -> u64 {
+        let bytes = size_of_val(&*self.entries)
+            + size_of_val(&*self.patterns)
+            + size_of_val(&*self.ready.links)
+            + size_of_val(&*self.cleanup.links)
+            + size_of_val(&*self.waiting.links)
+            + size_of_val(&*self.reader_entries)
+            + size_of_val(&*self.frame_entries)
+            + size_of_val(&*self.vacant)
+            + size_of_val(&*self.feedback)
+            + size_of_val(&*self.feedback_scratch);
+        u64::try_from(bytes).expect("allocated metadata fits u64")
     }
 }
