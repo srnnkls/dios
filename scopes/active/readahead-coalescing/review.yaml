@@ -1165,11 +1165,55 @@ implementation_batches:
     explicit owner acceptance of cold CPU nulls; qualification stays false and the
     frame-pointer deliverable moves to readahead-efficiency before implementation.
 integration_review:
-  status: pending
+  status: passed
+  completed_at: '2026-09-14T19:18:47Z'
+  reviewed_commit: 8fb9e041ecc071126b3fc3ca23f5879a55008a4a
   directory: ".peer/readahead-coalescing/20260914T090833Z-505efd/integration-review"
   reviewers:
   - peer-gpt6-astra
   - peer-opus
   effort: high
-  scope: Cross-batch interactions, final acceptance/dispositions and current native
-    validation; no repeated batch-local role reviews.
+  gates:
+    correctness:
+      status: pass
+      failed_by: []
+    style:
+      status: pass
+      failed_by: []
+    performance:
+      status: pass
+      failed_by: []
+    security:
+      status: pass
+      failed_by: []
+    architecture:
+      status: pass
+      failed_by: []
+  issues: []
+  fix_rounds: 0
+  coverage:
+    reports_received: 2
+    reports_successful: 2
+    execution_classes_required:
+    - peer
+    execution_classes_successful:
+    - peer
+    missing_canonical_reports: []
+  scope: One holistic cross-batch review per configured reviewer; final acceptance,
+    owner dispositions and native validation. No repeated batch-local role reviews.
+  recommendation: ready_to_merge
+  accepted_limitation: 'Cold CPU category budgets remain null: 249 timed / 366 orphaned,
+    incomplete caller unwinding, unchanged 1% orphan rule. Mandatory separately identified
+    frame-pointer diagnostic before readahead-efficiency product implementation.'
+  report_artifact: benches/evidence/readahead_coalescing/integration-review.yaml
+readiness:
+  status: ready
+  all_tasks_done: true
+  all_numeric_gates_passed: true
+  native_validation_passed: true
+  integration_review_passed: true
+  blockers: []
+  owner_accepted_limitations:
+  - RC6-COLD-ATTRIBUTION
+  next_action: Publish the explicitly authorized PR; follow-up scopes remain drafts
+    without product implementation.

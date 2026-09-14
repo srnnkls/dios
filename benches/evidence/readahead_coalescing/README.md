@@ -361,4 +361,5 @@ before product implementation, using a frame-pointer diagnostic replay recorded
 as a **separate perturbed executable with its own identity**. Its bench plan
 precedes the replay. This deliverable carries the structural unwinding gap
 forward; more repetitions are not its remedy. RC6 adoption is complete under
-this disposition; final integration review and the PR follow.
+this disposition. The final [Astra and Opus integration reviews](integration-review.yaml)
+passed all five gates at high effort with no findings; scope readiness passes.

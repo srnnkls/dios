@@ -3,14 +3,14 @@ checkpoint:
   scope_name: readahead-coalescing
   scope_path: scopes/active/readahead-coalescing
   branch: feat/readahead-coalescing
-  last_commit: 5edb6a7f64bcd0137cbd75d03821780b38c679f2
-  updated_at: '2026-09-14T19:00:26Z'
+  last_commit: 8fb9e041ecc071126b3fc3ca23f5879a55008a4a
+  updated_at: '2026-09-14T19:18:47Z'
   batch:
     number: 5
     tasks:
     - RC6
-    phase: integration
-    status: pending
+    phase: complete
+    status: complete
   routing_snapshot:
     epoch_id: 20260914T090833Z-505efd
     tester:
@@ -355,7 +355,7 @@ checkpoint:
       remain reported and three mechanism groups stay null with limitation. Candidate
       fields must be present and qualified.
     B5-P1_status: confirmation_pass_adopted_targeted_review_passed
-    B5-P2_status: frozen_reporting_clarification_reviewed_candidate_cold_qualification_still_required
+    B5-P2_status: frozen_reporting_clarification_reviewed_cold_nulls_accepted_by_later_owner_disposition
   owner_completion_direction:
     source: "/private/tmp/dios-steering-world-class.md"
     sha256: 9b00bb5aad9b0cff9c50334fa9a52d05b42a7aae65cb18abf05d948709367ba3
@@ -376,11 +376,15 @@ checkpoint:
     readahead_efficiency_preimplementation_deliverable: *2
   resume_native_validation: target/readahead-coalescing/rc6-resume-checks.json
   integration:
-    status: pending_review
+    status: passed
     native_validation: benches/evidence/readahead_coalescing/adoption-verification.json
     report_directory: ".peer/readahead-coalescing/20260914T090833Z-505efd/integration-review"
     pr_authorized: true
     owner_decisions_pending: []
+    reviewed_commit: 8fb9e041ecc071126b3fc3ca23f5879a55008a4a
+    evidence: benches/evidence/readahead_coalescing/integration-review.yaml
+    completed_at: '2026-09-14T19:18:47Z'
+    scope_ready: true
   closed_attribution_pause:
     reason: owner_cold_attribution_disposition_pending
     acceptance_gap_ids:
@@ -394,3 +398,5 @@ checkpoint:
       RC6 acceptance.
     forcing_requirement: 'B5-P2: RC-G6 is complete when the candidate fields are all
       present and qualified and the frozen nulls carry their recorded limitation.'
+  next_action: Publish authorized PR, then draft warm-path scope and required follow-up
+    scopes with bench plans and review gates.

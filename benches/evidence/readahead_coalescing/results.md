@@ -247,5 +247,6 @@ The single targeted Astra performance review at high effort cleared both owner
 dispositions. The owner subsequently accepted the cold CPU limitation with the
 mandatory follow-up above, completing RC6 adoption. Current full native checks
 passed again on both backends, including strict Clippy, formatting and Rustdoc.
-The holistic integration review remains pending; no scope-readiness pass is yet
-claimed.
+The final holistic [Astra and Opus integration reviews](integration-review.yaml)
+passed all five gates at high effort with no findings. All six tasks are complete
+and scope readiness passes with the recorded cold-attribution limitation.

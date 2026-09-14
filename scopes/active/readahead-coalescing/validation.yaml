@@ -118,20 +118,21 @@ readiness:
   safety_validation_passed: true
   performance_adoption_gates_passed: true
   RC6_attribution_complete: true
-  implementation_review_complete: false
+  implementation_review_complete: true
   RC6_initial_review_complete: true
   RC6_fix_review_complete: true
   RC6_numeric_gates_passed: true
   RC6_owner_disposition_review_complete: true
   RC6_cold_attribution_qualified: false
   RC6_cold_nulls_owner_accepted: true
+  scope_ready: true
 implementation:
   product_edits: true
   product_tests_claimed_passed: true
-  product_gates_claimed_passed: false
+  product_gates_claimed_passed: true
   product_commit: 5edb6a7f64bcd0137cbd75d03821780b38c679f2
   scan_snapshot_commit: ad434b21c2c5b31d54845052cf1b27cdeadde829
-  status: RC6_adopted_integration_review_pending
+  status: ready_with_owner_accepted_cold_cpu_limitation
   results: "../../../benches/evidence/readahead_coalescing/results.md"
   safety_verification: "../../../target/readahead-coalescing/b4-green-verification.json"
   evidence_verification: "../../../target/readahead-coalescing/b5-evidence-verification.json"
@@ -155,7 +156,7 @@ implementation:
   review_report: review.yaml
   validator_revalidation: "../../../benches/evidence/readahead_coalescing/validator-revalidation.json"
   blocking_findings: []
-  final_integration_review: pending
+  final_integration_review: passed
   owner_dispositions: "../../../benches/evidence/readahead_coalescing/owner-dispositions-20260914.md"
   confirmation_registration: "../../../benches/evidence/readahead_coalescing/drp-confirmation-registration.json"
   confirmation:
@@ -197,13 +198,14 @@ implementation:
       bench_plan_before_replay: true
       preserve_RC6_primary_and_failed_profiles: true
       more_repetitions_are_not_a_remedy: true
+  integration_review_evidence: "../../../benches/evidence/readahead_coalescing/integration-review.yaml"
 notes: All six tasks are done. Every numeric gate passes at the unchanged512KiB default.
   RC6 adoption is complete under the owner acceptance of cold CPU category nulls caused
   by incomplete caller unwinding; the1% qualification rule still withholds budgets.
   Qualified pressure attribution and measured cold totals remain. readahead-efficiency
   must obtain qualified cold attribution from a separately identified frame-pointer
-  diagnostic before product implementation. Final holistic integration review and
-  scope readiness remain pending.
+  diagnostic before product implementation. Final holistic Astra and Opus reviews
+  passed all five gates at high effort with no findings; scope readiness is complete.
 owner_feedback:
   source: "/private/tmp/dios-steering-scope-feedback.md"
   date: '2026-09-14'

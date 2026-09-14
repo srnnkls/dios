@@ -1,0 +1,280 @@
+---
+integration_review:
+  status: passed
+  completed_at: '2026-09-14T19:18:47Z'
+  reviewed_commit: 8fb9e041ecc071126b3fc3ca23f5879a55008a4a
+  directory: ".peer/readahead-coalescing/20260914T090833Z-505efd/integration-review"
+  reviewers:
+  - peer-gpt6-astra
+  - peer-opus
+  effort: high
+  gates:
+    correctness:
+      status: pass
+      failed_by: []
+    style:
+      status: pass
+      failed_by: []
+    performance:
+      status: pass
+      failed_by: []
+    security:
+      status: pass
+      failed_by: []
+    architecture:
+      status: pass
+      failed_by: []
+  issues: []
+  fix_rounds: 0
+  coverage:
+    reports_received: 2
+    reports_successful: 2
+    execution_classes_required:
+    - peer
+    execution_classes_successful:
+    - peer
+    missing_canonical_reports: []
+  scope: One holistic cross-batch review per configured reviewer; final acceptance,
+    owner dispositions and native validation. No repeated batch-local role reviews.
+  recommendation: ready_to_merge
+  accepted_limitation: 'Cold CPU category budgets remain null: 249 timed / 366 orphaned,
+    incomplete caller unwinding, unchanged 1% orphan rule. Mandatory separately identified
+    frame-pointer diagnostic before readahead-efficiency product implementation.'
+  report_artifact: benches/evidence/readahead_coalescing/integration-review.yaml
+reviewer_reports:
+- reviewer: peer-gpt6-astra
+  effort: high
+  execution_class: peer
+  manifest_status: ok
+  schema_valid: true
+  raw_report: ".peer/readahead-coalescing/20260914T090833Z-505efd/integration-review/peer-gpt6-astra.yaml"
+  raw_sha256: d4a2d407d40f6ab5b05726c63f8e182c03133bfbe3ec4a0f3c4c4c813e25a0c0
+  normalized_report: ".peer/readahead-coalescing/20260914T090833Z-505efd/integration-review/peer-gpt6-astra.normalized.yaml"
+  normalized_sha256: 55f59510dfd992b9e1d260d9009013352e1a4ae1e443c2aa8b350a0a2666e4be
+  report:
+    reviewer: peer-gpt6-astra
+    gates:
+      correctness:
+        status: pass
+        issues: []
+      style:
+        status: pass
+        issues: []
+      performance:
+        status: pass
+        issues: []
+      security:
+        status: pass
+        issues: []
+      architecture:
+        status: pass
+        issues: []
+    issues: []
+    strengths:
+    - Vector ownership, continuation leases, span routing and per-page terminal accounting
+      compose consistently across both backends.
+    - Automatic admission, explicit protection and consumption notifications preserve
+      bounded resources and independent page access.
+    - Adoption preserves the failed campaign and unqualified profiles while recording
+      explicit owner dispositions and mandatory follow-up.
+    validation_performed:
+    - Confirmed HEAD 8fb9e041ecc071126b3fc3ca23f5879a55008a4a and exact equality of
+      scope.diff with aa97c82..HEAD. Verified all 57 non-baseline, non-archive manifest
+      file hashes; git diff --check passed.
+    - Inspected admission rollback, Free/Preparing/InFlight/Completing route transitions,
+      queued/active/continuation/terminal driver transitions, prefix publication,
+      tail failure, retirement and speculative terminal accounting.
+    - Inspected representative tests for byte-exact short reads, EOF/error conservation,
+      continuation with an exhausted driver slab, retirement, mixed residency and
+      post-completion consumption.
+    - Verified 41 product/build/lock files against the retained measured scan manifest
+      and confirmed no product changes since RC5. Checked matching scan entry and
+      scan implementation hashes.
+    - Verified native log hashes and counted 378 local and 400 Linux passing tests.
+      Inspected retained strict Clippy, formatting and Rustdoc results; verified retained
+      Loom, Miri and both ASAN log hashes.
+    - Reviewed cleared batch findings, targeted dispositions and the separately pinned
+      validator revalidation covering 60 unchanged captures.
+    - Recomputed confirmation mode counts, shares and arithmetic/geometric means from
+      all 800 retained elapsed values; confirmed unchanged cutoffs and within-mode
+      ratios.
+    - Verified the hashed cold-attribution owner disposition, preserved null category
+      budgets, qualified pressure attribution and mandatory planned frame-pointer
+      replay before readahead-efficiency implementation.
+    acceptance:
+      drp_g4_confirmation:
+        measured_pairs: 400
+        ratio_geomean: 0.9776689295560357
+        ci95_upper: 0.9980337616928986
+        bound: 1.0
+        disposition: Pass adopted under the single preregistered confirmation; original
+          failed 30 pairs remain separate.
+      cold_attribution:
+        disposition: owner_accepted_reporting_limitation
+        qualified: false
+        timed_samples: 249
+        orphaned_samples: 366
+        category_budgets:
+    limitations:
+    - This integration review relies on retained validation and previously reviewed
+      measurement summaries. No fresh builds, tests, benchmark campaigns or raw profiling
+      archives were opened or executed.
+    - The measured Linux snapshot revision is absent from local Git history; source
+      equality was verified using its retained manifest. The reviewed HEAD and authorized
+      diff are available.
+    - A shell heredoc was blocked by read-only temporary-file restrictions; equivalent
+      verification completed using python -B -c. This is a tooling limitation, not
+      a verified defect.
+    - Mode accounting is descriptive and does not establish scheduling causality.
+      Cold CPU categories remain unqualified under the unchanged orphan rule.
+- reviewer: peer-opus
+  effort: high
+  execution_class: peer
+  manifest_status: ok
+  schema_valid: true
+  raw_report: ".peer/readahead-coalescing/20260914T090833Z-505efd/integration-review/peer-opus.yaml"
+  raw_sha256: 6b1c236499e37a8eece86a7b2dca2fb19df02ce6a7fa99fe9c5414746255bab5
+  normalized_report: ".peer/readahead-coalescing/20260914T090833Z-505efd/integration-review/peer-opus.normalized.yaml"
+  normalized_sha256: cd8f9a647c6ce1e2fafb7dc57ee30509f637d8c193c134dd923bf00a015bee66
+  report:
+    reviewer: peer-opus
+    gates:
+      correctness:
+        status: pass
+        issues: []
+      style:
+        status: pass
+        issues: []
+      performance:
+        status: pass
+        issues: []
+      security:
+        status: pass
+        issues: []
+      architecture:
+        status: pass
+        issues: []
+    issues: []
+    strengths:
+    - 'Span termination is exact-once by construction: `publish_completed` asserts
+      `published == filled / granule` and `route_span_failure` asserts `span.published
+      + failed == span.count` (src/pool/read_spans.rs), so a destination cannot be
+      published twice or dropped silently across continuation resumes.'
+    - 'Original-slot continuation keeps ownership coherent across the slab: `finish_attempt`
+      (src/driver.rs:1560-1617) returns `OpState::Continuation` with the same OpToken
+      on a short read and only surrenders the slot at the terminal outcome via `ReadContinuation::drop`
+      -> `release_read_lease` -> bounded `DeferredCompletion`; slab exhaustion cannot
+      refuse a retry, and `FrameLease::Pool` vs `Raw` makes the reclaim/terminal split
+      unrepresentable in the wrong state.'
+    - Every `prefetch_admit_vector` failure arm rolls back completely — route slot,
+      miss slots, reserved frames and read credits — so a refusal at any admission
+      step leaves the pool in the pre-admission state; the vector-refusal rollback
+      test in tests/readahead_coalescing.rs falsifies it directly.
+    - "`DirtyFrames` (src/pool/prefetch/notifications.rs) publishes bottom-up with
+      Release `fetch_or` on every ancestor and drains top-down with Acquire swaps
+      from the root, giving a sound synchronizes-with edge for O(1) idle polls and
+      O(k) work per changed run — no capacity scan on an empty poll."
+    - Ready-stream membership is kept exactly equal to `window(..).is_some()` by `refresh_ready`
+      on every pattern mutation, which is what makes the `unreachable!("ready stream
+      has eligible horizon")` unreachable rather than optimistic; round-robin turn
+      advance is gated on admitted > 0 or a non-Deferred/Rejected/Obsolete outcome,
+      so credit deferral cannot starve a stream.
+    - 'The backend honors the deferred READV_FIXED boundary: `push_read_vector` (src/backend/uring.rs)
+      issues ordinary `Readv` over `types::Fixed(file.slot())` with no registered
+      buffer, and the eager backend''s `attempt_read_vector` breaks on the first short/erroring
+      pread so later destinations stay untouched — same observable contract on both
+      backends.'
+    - 'Geometry degrades to point reads correctly rather than by special-case: `vector_width
+      = (VECTOR_BYTES_MAX / granule).clamp(1, 32)` and `automatic_width = 1` unless
+      capacity admits two full vectors (src/pool/prefetch/state.rs:285-290), covering
+      both the large-granule zero-width trap and the small-capacity compatibility
+      requirement.'
+    - src/pool/loom_model.rs:29 imports the real `ReadSpan`/`ReadSpans`, so the loom
+      interleavings exercise the production route slab instead of a divergent hand
+      model; RC5 added span-publication/join/route-reuse and delayed-consumption-across-drain
+      cases to it.
+    - 'Evidence discipline: results.md retains the failed original 2+30 DRP ordinary-8t
+      lane (1.002841 / 1.074171) separately from the adopted 400-pair confirmation,
+      and discloses the mode-share asymmetry that makes the whole-sample geomean (0.9777)
+      conservative relative to both in-mode ratios (0.8677 / 0.9288), with the owner''s
+      recorded interpretation attached.'
+    - The mandatory readahead-efficiency follow-up (qualified cold attribution via
+      a separately identified frame-pointer diagnostic replay, before product implementation)
+      is recorded consistently in benches/plans/dios_r1_r7_read_performance.md:183-195,
+      tasks.yaml, validation.yaml, checkpoint.yaml and results.md — no single-copy
+      disposition that could be lost.
+    validation_performed:
+      artifact_reachability:
+      - HEAD 8fb9e04 present in this worktree; 5 commits over aa97c82; scope.diff
+        range matches the dispatched aa97c82..HEAD.
+      - 'All 60 files pinned in files.json hashed against the working tree: 60 match,
+        0 mismatch, 0 missing.'
+      code_inspection:
+      - Enumerated the span route slab state machine end to end — Free -> Preparing
+        -> InFlight -> Completing -> (InFlight via resume | Free via finish) — plus
+        the failure edge through `route_span_failure`. `span.filled` and `vector.filled`
+        stay in lockstep across continuations; `take_remaining` ordinals line up with
+        `span.published`. No reachable trigger produces a wrong outcome.
+      - 'Traced completion routing order: src/pool/mod.rs:2574-2612 dispatches `ReadDestination::Vector`
+        to `route_span_completion` before the point `find_by_token` lookup, satisfying
+        the span-completion ordering requirement.'
+      - 'Checked retirement interaction: the file handle is retained while any miss
+        entry is Pending, so an admitted logical read continues across retirement;
+        the deferred-completion queue is bounded exactly by `ready_capacity` and drained
+        at the head of every `poll`.'
+      - 'Checked the allocation contract: new zero-alloc cases (`shipping_prefetch_and_automatic_recycling_allocate_nothing_pool`
+        / `_observe`) cover the coalescing path on both backends; iovec memory lives
+        in `VectorStorage`''s `MappedArena` indexed by driver slot, independent of
+        the mutable slab.'
+      evidence_and_acceptance:
+      - 'Both native check log sha256s match adoption-verification.json (local 378
+        tests; Linux 400 tests, `test result: ok ... 0 failed` on every line).'
+      - drp-modes.json hash matches the recorded `mode_record_sha256`.
+      - owner-cold-attribution-disposition-20260914.md hashes to 5a5ac180e3a99d3394356bc2278515dab6d1ece2165efaf02f8e35b834c1bb58,
+        matching validation.yaml, checkpoint.yaml and adoption-verification.json.
+      - Three archive-ledger entries spot-checked by hash without opening archive
+        contents; all match.
+      - runtime-checkpoint.diff is orchestration-only (batch status pending -> in_progress,
+        integration status pending_review -> review_in_progress, last_commit bump);
+        no product content.
+      - Mode accounting in results.md/results.json reproduces the dispatched numbers
+        (base 254/146, candidate 155/245; in-mode 0.867721 / 0.928769) and is retained,
+        not substituted for the adopted whole-sample confirmation.
+    limitations:
+      read_only_tool_limitations:
+      - The measured Linux scan snapshot commit ad434b21c2c5b31d54845052cf1b27cdeadde829
+        is not an object in this repository (`git cat-file -t` fails), so snapshot-to-HEAD
+        source equality could not be established by git comparison. It rests instead
+        on the 60-file files.json manifest I hashed myself plus the recorded 41-compiled-source
+        claim. This is a reach limitation, not a defect.
+      - Whole-host and raw profiling archives are outside the authorized boundary;
+        they were verified by recorded hash only, never opened. Their contents were
+        validated by the earlier configured reviews.
+      - No benchmark campaign was executed and the frozen 400-pair confirmation was
+        not rerun, per dispatch. All performance conclusions derive from the retained
+        summarized reports and their hashes.
+      - The work tree is enforced read-only; only read-only inspection and hashing
+        commands were run. No file was created, modified or staged.
+      scope_boundaries_observed:
+      - Inherited prerequisite diff (origin/main..aa97c82), unrelated scopes, credentials
+        and hidden user configuration were not opened.
+      - Batch-local findings already cleared in b1-b5 reviews were not reopened; B5-A1
+        canary and B5-P1/P2 dispositions were taken as passed per their targeted reviews.
+    acceptance_verification:
+      rc6_cold_disposition: 'Accepted. The disposition is an explicit owner reporting
+        decision with a hash-matched artifact, not an unqualified result relabelled
+        as qualified: profile_qualified stays false, 249 timed / 366 orphaned is recorded,
+        the unchanged 1% orphan rule is cited as withholding category CPU budgets,
+        measured cold totals (1472.5425455729167 ns elapsed / 1463.9500732421875 ns
+        CPU per useful 4 KiB) and qualified pressure attribution remain, numeric_gates_changed
+        is false, and the four failed captures plus the failed exact-symbol replay
+        stay retained.'
+      drp_g4: Accepted. The original 2+30 ordinary-8t failure remains recorded as
+        gate_failed; the single preregistered 2+400 confirmation (geomean 0.9776689295560357,
+        upper 0.9980337616928986 <= 1.00) is adopted without rerun, exclusion or pooling,
+        and the future protocol decision is deferred in the bench plan.
+      residual_observation: 'Reported, not a finding: the confirmation''s whole-sample
+        geomean is closer to 1.00 than either in-mode ratio because the candidate''s
+        slow-mode share is 24.75 pp higher. The aggregation is conservative against
+        the candidate and results.md discloses it with the owner''s interpretation,
+        so the adopted claim cannot be wrong in the candidate''s favour.'

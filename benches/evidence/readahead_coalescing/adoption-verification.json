@@ -164,6 +164,57 @@
     }
   },
   "all_numeric_gates_passed": true,
-  "full_integration_review": "pending",
-  "product_sources_unchanged_since_measured_RC5": true
+  "full_integration_review": "passed",
+  "product_sources_unchanged_since_measured_RC5": true,
+  "integration_review": {
+    "status": "passed",
+    "completed_at": "2026-09-14T19:18:47Z",
+    "reviewed_commit": "8fb9e041ecc071126b3fc3ca23f5879a55008a4a",
+    "directory": ".peer/readahead-coalescing/20260914T090833Z-505efd/integration-review",
+    "reviewers": [
+      "peer-gpt6-astra",
+      "peer-opus"
+    ],
+    "effort": "high",
+    "gates": {
+      "correctness": {
+        "status": "pass",
+        "failed_by": []
+      },
+      "style": {
+        "status": "pass",
+        "failed_by": []
+      },
+      "performance": {
+        "status": "pass",
+        "failed_by": []
+      },
+      "security": {
+        "status": "pass",
+        "failed_by": []
+      },
+      "architecture": {
+        "status": "pass",
+        "failed_by": []
+      }
+    },
+    "issues": [],
+    "fix_rounds": 0,
+    "coverage": {
+      "reports_received": 2,
+      "reports_successful": 2,
+      "execution_classes_required": [
+        "peer"
+      ],
+      "execution_classes_successful": [
+        "peer"
+      ],
+      "missing_canonical_reports": []
+    },
+    "scope": "One holistic cross-batch review per configured reviewer; final acceptance, owner dispositions and native validation. No repeated batch-local role reviews.",
+    "recommendation": "ready_to_merge",
+    "accepted_limitation": "Cold CPU category budgets remain null: 249 timed / 366 orphaned, incomplete caller unwinding, unchanged 1% orphan rule. Mandatory separately identified frame-pointer diagnostic before readahead-efficiency product implementation.",
+    "report_artifact": "benches/evidence/readahead_coalescing/integration-review.yaml"
+  },
+  "integration_review_sha256": "8a8be01605565868aea2562911ca3d7b3c1cbea595845d9696f2512677348282"
 }

@@ -7541,7 +7541,7 @@
     "target/readahead-coalescing/b5-linux-validation.json"
   ],
   "retained_evidence_verification": "target/readahead-coalescing/b5-evidence-verification.json",
-  "review_status": "batch_review_cleared_owner_dispositions_recorded_integration_pending",
+  "review_status": "integration_passed_ready_with_owner_accepted_cold_cpu_limitation",
   "drp_diagnostics": {
     "rc6-drp-profile-evidence": [
       {
@@ -10047,7 +10047,7 @@
     ],
     "blocking_findings": [],
     "scope_review": "scopes/active/readahead-coalescing/review.yaml",
-    "final_integration": "pending_after_RC6_acceptance",
+    "final_integration": "passed",
     "owner_disposition_review": {
       "reviewer": "peer-gpt6-astra",
       "effort": "high",
@@ -10074,7 +10074,9 @@
     ],
     "owner_disposed_acceptance_gaps": [
       "RC6-COLD-ATTRIBUTION"
-    ]
+    ],
+    "integration_review_evidence": "benches/evidence/readahead_coalescing/integration-review.yaml",
+    "scope_ready": true
   },
   "missing_frozen_measurement_limitations": {
     "actual_read_sqes_cqes_and_ranges": "The immutable frozen executables predate the observation seam and cannot emit exact SQE/CQE/range, EOF/consumer-stop-waste or control-entry-visit records. The owner RC-G6 clarification permits these three groups to remain null; native CPU/elapsed, polls and exposed prefetch stats remain reported. Configuration and prefetch totals are not substitutes for exact mechanism counts.",
