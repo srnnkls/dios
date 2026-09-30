@@ -1,6 +1,6 @@
 [tools]
 rust = { version = "1.96.0", profile = "default" }   # pinned; default profile ships clippy+rustfmt (mise's rustup default is minimal)
-hk = { version = "1.47.0", postinstall = "hk install --mise", depends = ["pkl"] }
+hk = { version = "2.4.0", postinstall = "hk install --mise", depends = ["pkl"] }
 pkl = "0.31.0"
 actionlint = "1.7.12"
 

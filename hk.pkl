@@ -1,4 +1,4 @@
-amends "package://github.com/jdx/hk/releases/download/v1.47.0/hk@1.47.0#/Config.pkl"
+amends "package://github.com/jdx/hk/releases/download/v2.4.0/hk@2.4.0#/Config.pkl"
 
 local rustGlob = List("src/**/*.rs", "benches/**/*.rs", "tests/**/*.rs", "Cargo.toml", "Cargo.lock")
 
