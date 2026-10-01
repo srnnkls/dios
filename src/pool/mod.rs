@@ -13,7 +13,7 @@ use std::mem::size_of;
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::completion::CompletionBatch;
 use crate::driver::{
@@ -176,10 +176,10 @@ impl ColdGetPauseState {
     }
 
     pub(crate) fn wait_until_parked(&self, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
+        let deadline = std::time::Instant::now() + timeout;
         let mut phase = self.lock();
         while *phase == ColdGetPausePhase::Armed {
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
                 return false;
             }
@@ -1378,7 +1378,6 @@ impl<D: PoolBackend> Pool<D> {
     /// composed driver tears down. Caller-owned results may be discarded here:
     /// dropping the Pool relinquishes their delivery, not the accepted I/O.
     fn shutdown_internal(&mut self) {
-        let deadline = self.driver.teardown_deadline();
         loop {
             {
                 let mut control = self.control();
@@ -1403,7 +1402,7 @@ impl<D: PoolBackend> Pool<D> {
                 }
             }
 
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            let remaining = self.driver.teardown_remaining();
             if remaining.is_zero() {
                 break;
             }
@@ -3161,8 +3160,8 @@ impl PoolBackend for Driver {
         self.poll_wait_for_pool(out, timeout)
     }
 
-    fn teardown_deadline(&self) -> Instant {
-        self.teardown_deadline_for_pool()
+    fn teardown_remaining(&self) -> Duration {
+        self.teardown_remaining_for_pool()
     }
 
     fn write_arena_state(&self) -> &write_arena::ArenaState {

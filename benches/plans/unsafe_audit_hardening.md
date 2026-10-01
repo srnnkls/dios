@@ -30,6 +30,32 @@ which is the one change with a plausible cost.
 | Compare command | `mise run gate target/bench-samples/frame_write_path_<case>_default.csv 1.03`, both arms built with default flags |
 | Escalation lever | Profile the failed `hits` arm. If the witness frame index shows, keep the binding as a zero-sized lifetime-branded witness instead of a stored index. Never relax the bound silently. |
 
+## Workload contract
+
+One thread, one registered reader, one file, closed loop with at most one
+outstanding miss. Both cases run over `MockDriver` (seed `0x0016_0419`,
+`retry_bound(0)`), so no kernel I/O is measured; readahead is disabled.
+
+- `hits`: a 64-frame pool is filled by 64 cold misses, then 16,777,216
+  `Pool::get` calls draw pages uniformly from those 64 with xorshift32. Every
+  get must return `Get::Hit`; any other outcome panics, which proves the path.
+- `misses`: a 256-frame pool is filled by 256 cold misses, then 131,072 gets
+  each name a never-read sequential page. Every get must return `Get::Pending`
+  and reach `Ready`; a hit panics. At full occupancy every admission evicts
+  through CLOCK. Busy retries and ready polls are each bounded at 4096 per get.
+
+## Measurement boundary and attribution
+
+Timed: only the hit or miss loop, from `Instant::now()` to `elapsed()`, one
+nanosecond total per fresh process on stdout. Excluded: process start, mock
+and pool construction, file and reader registration, population, and teardown
+(the pool drops after the reading is taken).
+
+The arms share bench source and build flags and differ only in the dios source
+under test: base c1733cf plus the bench-only `Readahead::Disabled` change, and
+the candidate. Binary identities are recorded under Result. No profile or
+trace is taken; the per-get outcome assertions are the path evidence.
+
 ## Notes
 
 Threadripper 3970X, ssh nix, kernel 6.6.64, performance governor, THP never,

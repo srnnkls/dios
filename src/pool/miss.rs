@@ -40,7 +40,7 @@ use crate::sync::{AtomicU32, AtomicU64, Ordering};
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub(super) mod sealed {
     pub(crate) trait Sealed {}
@@ -129,8 +129,8 @@ pub(crate) trait PoolBackend: sealed::Sealed {
     /// drains ready completions into `out`.
     fn poll_wait_progress(&self, out: &mut CompletionBatch, timeout: Duration) -> BackendProgress;
 
-    /// The instant teardown stops draining in-flight operations.
-    fn teardown_deadline(&self) -> Instant;
+    /// The drain time left before teardown stops draining in-flight operations.
+    fn teardown_remaining(&self) -> Duration;
 
     fn write_arena_state(&self) -> &ArenaState;
 

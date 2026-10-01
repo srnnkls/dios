@@ -188,8 +188,9 @@ impl Uring {
     }
 
     fn push_sqe(&self, _access: &mut crate::driver::RingAccess<'_>, entry: &squeue::Entry) {
-        // SAFETY: a `RingAccess` exists only while the AD-4 mutex is held and is
-        // borrowed exclusively here, so no second submission handle exists.
+        // SAFETY: only the core that owns this ring mints a `RingAccess`, from
+        // its own AD-4 guard, and it is borrowed exclusively here, so no second
+        // submission handle exists.
         let mut sq = unsafe { self.ring.submission_shared() };
         Self::push_entry(&mut sq, entry);
     }
@@ -403,8 +404,9 @@ impl RingExecutor for Uring {
         mut sink: F,
     ) -> RingReap {
         assert!(limit > 0, "a reap drains into a non-empty batch");
-        // SAFETY: a `RingAccess` exists only while the AD-4 mutex is held and is
-        // borrowed exclusively here, so no second completion handle exists.
+        // SAFETY: only the core that owns this ring mints a `RingAccess`, from
+        // its own AD-4 guard, and it is borrowed exclusively here, so no second
+        // completion handle exists.
         let mut cq = unsafe { self.ring.completion_shared() };
         let mut reaped = 0u32;
         let mut woke = false;
@@ -574,54 +576,31 @@ mod tests {
     }
 
     #[test]
-    fn fsync_pushed_and_reaped_through_the_lock_witness_echoes_user_data() {
-        const USER_DATA: u64 = 0x5EED_0001;
-        let frames = Arc::new(Frames::try_preallocated(1, 4_096).expect("frame allocation"));
-        let write_arena = crate::pool::write_arena::shared(1, 4_096, 0);
-        let backend = Uring::new(frames, write_arena, 4, 1, RegistrationPolicy::Unregistered)
-            .expect("ring construction");
+    fn fsync_pushed_and_reaped_through_the_core_completes_its_token() {
+        let driver = crate::driver::Driver::builder()
+            .build()
+            .expect("the io_uring driver initializes");
         let path = std::env::temp_dir().join(format!(
             "dios_uring_lock_witness_{}.bin",
             std::process::id()
         ));
-        let file = File::options()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&path)
-            .expect("temp file");
+        File::create(&path).expect("temp file");
+        let fd = driver
+            .open(&path, crate::DirectIo::Disabled)
+            .expect("the driver opens the temp file");
         std::fs::remove_file(&path).expect("unlink temp file");
-        backend
-            .register_file(0, file)
-            .expect("fixed-file registration");
-        let lock = Mutex::new(crate::driver::Shared::try_new(4, 1).expect("shared allocation"));
+        let token = driver
+            .submit_fsync(&fd, crate::driver::SyncMode::Data)
+            .expect("submit within capacity");
 
-        {
-            let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-            let (mut access, _shared) = crate::driver::RingAccess::split(&mut guard);
-            backend.push_fsync(&mut access, USER_DATA, 0, crate::driver::SyncMode::Data);
-        }
-        backend.submit_and_wait(1, Duration::from_secs(5));
-        let mut reaped = Vec::new();
-        let progress = {
-            let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-            let (mut access, _shared) = crate::driver::RingAccess::split(&mut guard);
-            backend.reap(&mut access, 4, |user_data, result| {
-                reaped.push((user_data, result));
-                true
-            })
-        };
-
+        let mut out = crate::driver::CompletionBatch::with_capacity(1);
+        assert_eq!(driver.poll_wait(&mut out, Duration::from_secs(5)), 1);
+        let completion = out.iter().next().expect("one completion");
         assert_eq!(
-            reaped,
-            [(USER_DATA, 0)],
-            "the fsync CQE routes by its echoed user_data with a zero result"
+            completion.token(),
+            token,
+            "the fsync CQE routes back to its submitted token"
         );
-        assert_eq!(progress.backend_completions, 1);
-        assert!(
-            !progress.rearm_needed,
-            "the private wake poll stays armed when no wake fired"
-        );
+        assert_eq!(completion.result().ok(), Some(0));
     }
 }

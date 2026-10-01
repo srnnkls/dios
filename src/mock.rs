@@ -12,7 +12,7 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::completion::CompletionBatch;
 use crate::driver::read_vector::{ReadContinuation, ReadDestination, ReadVector, VectorIo};
@@ -653,8 +653,8 @@ impl PoolBackend for MockDriver {
         BackendProgress::from_terminal(self.0.poll_wait_eager_for_pool(out, timeout))
     }
 
-    fn teardown_deadline(&self) -> Instant {
-        self.0.teardown_deadline()
+    fn teardown_remaining(&self) -> Duration {
+        self.0.teardown_remaining()
     }
 
     fn write_arena_state(&self) -> &ArenaState {
@@ -789,8 +789,8 @@ impl PoolBackend for MockRingDriver {
         }
     }
 
-    fn teardown_deadline(&self) -> Instant {
-        self.0.teardown_deadline()
+    fn teardown_remaining(&self) -> Duration {
+        self.0.teardown_remaining()
     }
 
     fn write_arena_state(&self) -> &ArenaState {

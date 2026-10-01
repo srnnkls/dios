@@ -284,10 +284,6 @@ impl DriverBuilder {
             !self.teardown_budget.is_zero(),
             "teardown budget must be positive"
         );
-        assert!(
-            Instant::now().checked_add(self.teardown_budget).is_some(),
-            "teardown budget fits the monotonic clock"
-        );
         let id = next_driver_id();
         let write_arena = try_shared_write_arena(self.write_slots, self.frame_bytes, id)
             .ok_or(DriverBuildError::Allocation)?;
@@ -753,8 +749,8 @@ impl Driver {
         }
     }
 
-    pub(crate) fn teardown_deadline_for_pool(&self) -> Instant {
-        self.0.teardown_deadline()
+    pub(crate) fn teardown_remaining_for_pool(&self) -> Duration {
+        self.0.teardown_remaining()
     }
 
     pub(crate) fn poll_wait_for_pool(
@@ -1438,14 +1434,15 @@ pub(crate) struct Shared {
     deferred: VecDeque<read_vector::DeferredCompletion>,
 }
 
-/// Witness that the AD-4 mutex is held; every SQ fill and CQ reap takes it.
+/// Witness that the owning core's AD-4 mutex is held; every SQ fill and CQ
+/// reap takes it. Only [`DriverCore`] mints one, from the guard of its own lock.
 #[derive(Debug)]
 pub(crate) struct RingAccess<'a> {
     _guard: PhantomData<&'a mut Shared>,
 }
 
 impl<'a> RingAccess<'a> {
-    pub(crate) fn split(guard: &'a mut MutexGuard<'_, Shared>) -> (Self, &'a mut Shared) {
+    fn split(guard: &'a mut MutexGuard<'_, Shared>) -> (Self, &'a mut Shared) {
         let access = Self {
             _guard: PhantomData,
         };
@@ -1490,7 +1487,7 @@ pub(crate) struct DriverCore<E> {
     queue_capacity: u32,
     pool_wait: OnceLock<Arc<WaitState>>,
     teardown_budget: Duration,
-    teardown_deadline: OnceLock<Instant>,
+    teardown_start: OnceLock<Instant>,
     id: u64,
 }
 
@@ -1534,19 +1531,16 @@ impl<E> DriverCore<E> {
             queue_capacity,
             pool_wait: OnceLock::new(),
             teardown_budget: DEFAULT_TEARDOWN_BUDGET,
-            teardown_deadline: OnceLock::new(),
+            teardown_start: OnceLock::new(),
             id,
         })
     }
 
-    /// The instant every teardown drain gives up, fixed by the first drain to
-    /// ask so Pool shutdown and driver drop share one budget.
-    pub(crate) fn teardown_deadline(&self) -> Instant {
-        *self.teardown_deadline.get_or_init(|| {
-            Instant::now()
-                .checked_add(self.teardown_budget)
-                .expect("build validated that the teardown budget fits the clock")
-        })
+    /// The drain time left before teardown gives up, measured from the first
+    /// drain to ask so Pool shutdown and driver drop share one budget.
+    pub(crate) fn teardown_remaining(&self) -> Duration {
+        let start = *self.teardown_start.get_or_init(Instant::now);
+        self.teardown_budget.saturating_sub(start.elapsed())
     }
 
     fn inflight_total(&self) -> u32 {
@@ -2660,13 +2654,12 @@ impl<E: RingExecutor> DriverCore<E> {
         if self.inflight_total() == 0 {
             return Teardown::Drained;
         }
-        let deadline = self.teardown_deadline();
         let mut out = self
             .shutdown_batch
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         while self.inflight_total() > 0 {
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            let remaining = self.teardown_remaining();
             if remaining.is_zero() {
                 return Teardown::BudgetExhausted;
             }
@@ -3032,6 +3025,15 @@ mod tests {
             || panic!("only the shared-limit refusal downgrades"),
         );
         assert_eq!(policy, RegistrationPolicy::Auto);
+    }
+
+    #[test]
+    fn a_teardown_budget_past_the_clock_range_drains_without_panicking() {
+        let driver = Driver::builder()
+            .teardown_budget(Duration::MAX)
+            .build()
+            .expect("the driver initializes");
+        assert!(driver.teardown_remaining_for_pool() > Duration::ZERO);
     }
 
     #[test]
