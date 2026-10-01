@@ -3028,6 +3028,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "building the driver locks its arena with mlock")]
     fn a_teardown_budget_past_the_clock_range_drains_without_panicking() {
         let driver = Driver::builder()
             .teardown_budget(Duration::MAX)

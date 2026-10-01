@@ -576,6 +576,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "io_uring and mlock are foreign syscalls")]
     fn fsync_pushed_and_reaped_through_the_core_completes_its_token() {
         let driver = crate::driver::Driver::builder()
             .build()
