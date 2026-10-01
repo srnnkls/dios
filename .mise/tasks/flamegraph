@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #MISE description="Profile a bench/example/bin: folded stacks + top-N self-time table + SVG"
-#MISE tools={"cargo:inferno"="0.12.7","cargo:rustfilt"="0.2.1","jq"="latest"}
+#MISE tools={"cargo:inferno"="0.12.7","cargo:rustfilt"="0.2.1"}
 set -euo pipefail
 
 usage() {

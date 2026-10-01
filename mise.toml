@@ -3,6 +3,7 @@ rust = { version = "1.96.0", profile = "default" }   # pinned; default profile s
 hk = { version = "1.47.0", postinstall = "hk install --mise", depends = ["pkl"] }
 pkl = "0.31.0"
 actionlint = "1.7.12"
+jq = "1.8.2"
 
 [tasks.build]
 run = "cargo build"
