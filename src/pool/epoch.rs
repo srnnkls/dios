@@ -40,12 +40,20 @@ impl PinBegun {
     }
 }
 
-/// A committed pin: one live guard is counted on its reader, so the reader stays
-/// published until `release_guard`. Consumed by the byte borrow it justifies.
+/// A committed pin on the frame it validated: one live guard is counted on its
+/// reader, so the reader stays published until `release_guard`. Consumed by the
+/// byte borrow it justifies, which can address only this frame.
 #[must_use]
 #[derive(Debug)]
 pub(crate) struct PinCommit {
+    frame: ReadFrameIdx,
     _thread_bound: PhantomData<*const ()>,
+}
+
+impl PinCommit {
+    pub(crate) fn frame(&self) -> ReadFrameIdx {
+        self.frame
+    }
 }
 
 /// One registered reader's epoch state. A `ReaderCtx` is thread-bound (`!Send`),
@@ -189,12 +197,13 @@ impl ReaderSlot {
         }
     }
 
-    /// Commits a validated pin, counting one more live guard for this reader.
+    /// Commits a pin on the frame it validated, counting one more live guard
+    /// for this reader.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "the begun witness is linear: committing consumes it so it cannot also be aborted"
     )]
-    pub(crate) fn commit_pin(&self, begun: PinBegun) -> PinCommit {
+    pub(crate) fn commit_pin(&self, begun: PinBegun, frame: ReadFrameIdx) -> PinCommit {
         let taken = self
             .guard_count()
             .checked_add(1)
@@ -207,6 +216,7 @@ impl ReaderSlot {
         let PinBegun { first, .. } = begun;
         debug_assert_eq!(first, taken == 1, "the first pin commits the first guard");
         PinCommit {
+            frame,
             _thread_bound: PhantomData,
         }
     }

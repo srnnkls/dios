@@ -543,9 +543,9 @@ impl PoolModel {
         let slot = &self.readers.slots()[1];
         let begun = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
         assert_eq!(self.frames.state(frame), FrameState::Resident);
-        let pin = slot.commit_pin(begun);
+        let pin = slot.commit_pin(begun, frame);
         let guard = PoolFrameGuard::new(
-            self.frames.frame_bytes(frame, &pin),
+            self.frames.frame_bytes(&pin),
             slot,
             frame,
             0,
@@ -607,9 +607,9 @@ impl PoolModel {
             return None;
         };
         let _ = self.clock.reference_from(frame, slot);
-        let pin = slot.commit_pin(begun);
+        let pin = slot.commit_pin(begun, frame);
         let guard = PoolFrameGuard::new(
-            self.frames.frame_bytes(frame, &pin),
+            self.frames.frame_bytes(&pin),
             slot,
             frame,
             0,
@@ -745,10 +745,10 @@ impl PoolModel {
             "a pinned frame — resolved or the held frame a nested pin reuses — is in range"
         );
         let _ = self.clock.reference(frame);
-        let pin = slot.commit_pin(begun);
+        let pin = slot.commit_pin(begun, frame);
         Some(Guard {
             inner: PoolFrameGuard::new(
-                self.frames.frame_bytes(frame, &pin),
+                self.frames.frame_bytes(&pin),
                 slot,
                 frame,
                 0,
@@ -828,7 +828,7 @@ impl PoolModel {
         let Some(hint) = hint else {
             return self.get_file(file_generation, page.granule_idx());
         };
-        let Some((frame, pin)) = pin_with_resident_hint(
+        let Some(pin) = pin_with_resident_hint(
             &self.frames,
             &self.clock,
             &self.global_epoch,
@@ -840,9 +840,9 @@ impl PoolModel {
         };
         Some(Guard {
             inner: PoolFrameGuard::new(
-                self.frames.frame_bytes(frame, &pin),
+                self.frames.frame_bytes(&pin),
                 &self.readers.slots()[0],
-                frame,
+                pin.frame(),
                 0,
                 &self.retention,
             ),
@@ -1281,8 +1281,8 @@ impl PoolModel {
             slot.abort_pin(begun);
             return None;
         };
-        let pin = slot.commit_pin(begun);
-        let generation = self.frames.frame_bytes(frame, &pin)[0];
+        let pin = slot.commit_pin(begun, frame);
+        let generation = self.frames.frame_bytes(&pin)[0];
         slot.release_guard();
         Some(Snapshot {
             frame: frame.get(),

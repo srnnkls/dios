@@ -25,8 +25,17 @@ fn pool_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 fn bypasses_the_alias(line: &str) -> bool {
     let code = line.split("//").next().unwrap_or_default();
     let dense: String = code.chars().filter(|c| !c.is_whitespace()).collect();
-    if dense.contains("std::sync::atomic") || dense.contains("std::sync::Mutex") {
+    if dense.contains("std::sync::atomic")
+        || dense.contains("std::sync::Mutex")
+        || dense.contains("std::cell::UnsafeCell")
+    {
         return true;
+    }
+    if let Some((_, after)) = dense.split_once("std::cell::{") {
+        let group = after.split('}').next().unwrap_or_default();
+        if group.contains("UnsafeCell") {
+            return true;
+        }
     }
     let Some((_, after)) = dense.split_once("std::sync::{") else {
         return false;
@@ -80,6 +89,11 @@ fn the_guard_catches_a_brace_group_bypass_and_spares_prose() {
         "    let x: std::sync::atomic::AtomicU64;"
     ));
     assert!(bypasses_the_alias("use std::sync::atomic as a;"));
+    assert!(bypasses_the_alias("use std::cell::UnsafeCell;"));
+    assert!(bypasses_the_alias("use std::cell::{Cell, UnsafeCell};"));
+    assert!(bypasses_the_alias(
+        "    cells: MappedSlice<std::cell::UnsafeCell<MaybeUninit<PageId>>>,"
+    ));
 
     assert!(!bypasses_the_alias(
         "// never reach for std::sync::atomic here"
@@ -88,6 +102,9 @@ fn the_guard_catches_a_brace_group_bypass_and_spares_prose() {
         "/// See `std::sync::Mutex` for the shipping type."
     ));
     assert!(!bypasses_the_alias("use std::sync::Arc;"));
+    assert!(!bypasses_the_alias("use std::cell::Cell;"));
+    assert!(!bypasses_the_alias("    visits: std::cell::Cell<u64>,"));
+    assert!(!bypasses_the_alias("use crate::sync::UnsafeCell;"));
     assert!(!bypasses_the_alias(
         "use crate::sync::{AtomicU64, Ordering};"
     ));

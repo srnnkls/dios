@@ -13,9 +13,7 @@ use std::mem::size_of;
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
-#[cfg(all(feature = "mock", not(loom)))]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::completion::CompletionBatch;
 use crate::driver::{
@@ -130,7 +128,6 @@ pub(crate) const SECTOR_BYTES: u32 = 4096;
 const SHORT_READ_EOF_ERRNO: i32 = 5;
 
 const DROP_PROGRESS_WAIT: Duration = Duration::from_millis(100);
-const SHUTDOWN_IDLE_MAX: u32 = 1_000_000;
 
 #[cfg(all(feature = "mock", not(loom)))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1381,7 +1378,7 @@ impl<D: PoolBackend> Pool<D> {
     /// composed driver tears down. Caller-owned results may be discarded here:
     /// dropping the Pool relinquishes their delivery, not the accepted I/O.
     fn shutdown_internal(&mut self) {
-        let mut idle = 0u32;
+        let deadline = self.driver.teardown_deadline();
         loop {
             {
                 let mut control = self.control();
@@ -1406,22 +1403,20 @@ impl<D: PoolBackend> Pool<D> {
                 }
             }
 
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
             let mut waited = self.wait_batch();
-            let progress = self
+            let _ = self
                 .driver
-                .poll_wait_progress(&mut waited, DROP_PROGRESS_WAIT);
+                .poll_wait_progress(&mut waited, remaining.min(DROP_PROGRESS_WAIT));
             let mut control = self.control();
             while let Some(completion) = waited.pop() {
                 control.batch.push(completion);
             }
             drop(waited);
             self.route_completion_batch(&mut control);
-            if progress.backend_completions > 0 || progress.caller_completions > 0 {
-                idle = 0;
-            } else {
-                idle += 1;
-                assert!(idle < SHUTDOWN_IDLE_MAX, "pool drop made no progress");
-            }
         }
     }
 
@@ -1887,7 +1882,7 @@ impl<D: PoolBackend> Pool<D> {
         let Some(hint) = hint else {
             return self.get(reader, page);
         };
-        let Some((frame, pin)) = pin_with_resident_hint(
+        let Some(pin) = pin_with_resident_hint(
             &self.frames,
             &self.clock,
             &self.global_epoch,
@@ -1898,9 +1893,9 @@ impl<D: PoolBackend> Pool<D> {
             return self.get(reader, page);
         };
         Ok(Get::Hit(FrameGuard::new(
-            self.frames.frame_bytes(frame, &pin),
+            self.frames.frame_bytes(&pin),
             reader.slot(),
-            frame,
+            pin.frame(),
             page.file().slot(),
             &self.retention,
         )))
@@ -2391,8 +2386,8 @@ impl<D: PoolBackend> Pool<D> {
             return None;
         };
         let _ = self.clock.reference_from(frame, slot);
-        let pin = slot.commit_pin(begun);
-        Some((self.frames.frame_bytes(frame, &pin), frame))
+        let pin = slot.commit_pin(begun, frame);
+        Some((self.frames.frame_bytes(&pin), pin.frame()))
     }
 
     fn assert_reader_owner(&self, reader: &ReaderCtx) {
@@ -2947,7 +2942,7 @@ pub(crate) fn pin_with_resident_hint(
     slot: &epoch::ReaderSlot,
     page: PageId,
     hint: ResidentHint,
-) -> Option<(ReadFrameIdx, PinCommit)> {
+) -> Option<PinCommit> {
     if hint.granule != page.granule_idx() || hint.frame >= frames.count() {
         return None;
     }
@@ -2958,7 +2953,7 @@ pub(crate) fn pin_with_resident_hint(
         return None;
     }
     let _ = clock.reference_from(frame, slot);
-    Some((frame, slot.commit_pin(begun)))
+    Some(slot.commit_pin(begun, frame))
 }
 
 /// The file offset and length of the read that fills a page's granule from
@@ -3164,6 +3159,10 @@ impl PoolBackend for Driver {
 
     fn poll_wait_progress(&self, out: &mut CompletionBatch, timeout: Duration) -> BackendProgress {
         self.poll_wait_for_pool(out, timeout)
+    }
+
+    fn teardown_deadline(&self) -> Instant {
+        self.teardown_deadline_for_pool()
     }
 
     fn write_arena_state(&self) -> &write_arena::ArenaState {

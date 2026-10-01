@@ -202,8 +202,9 @@ zero_vacant_atomics! {
     std::sync::atomic::AtomicU64 => 0,
 }
 
-// SAFETY: a `MaybeUninit` admits every bit pattern.
-unsafe impl<T> ZeroVacant for std::cell::UnsafeCell<MaybeUninit<T>> {
+// SAFETY: the shipping cell is a transparent wrapper over
+// `std::cell::UnsafeCell`, and a `MaybeUninit` admits every bit pattern.
+unsafe impl<T> ZeroVacant for crate::sync::UnsafeCell<MaybeUninit<T>> {
     #[cfg(loom)]
     fn vacant() -> Self {
         Self::new(MaybeUninit::uninit())

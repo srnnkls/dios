@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use dios::testing::{MockDriver, PoolBuilderTestingExt, PoolTestingExt};
-use dios::{DirectIo, FileId, Get, PageId, PendingToken, Pool, ReaderCtx, ReadyResult};
+use dios::{DirectIo, FileId, Get, PageId, PendingToken, Pool, Readahead, ReaderCtx, ReadyResult};
 
 const GRANULE: u32 = 4096;
 const HIT_FRAMES: u32 = 64;
@@ -45,6 +45,7 @@ impl Arm {
             .peak_guards_per_reader(1)
             .max_inflight_reads(inflight)
             .miss_headroom(inflight * 3)
+            .readahead(Readahead::Disabled)
             .build_on(mock)
             .expect("watermark-satisfying pool composes over the mock");
         pool.register_file(handle);

@@ -12,14 +12,15 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::completion::CompletionBatch;
 use crate::driver::read_vector::{ReadContinuation, ReadDestination, ReadVector, VectorIo};
 use crate::driver::{
     Attempt, BackendProgress, DEFAULT_REGISTERED_FILE_CAPACITY, DriverCore, EagerExecutor,
     Executor, FileHandle, FileId, OpContext, OpKind, OpToken, ReadLease, ReadPurpose, ReadRefusal,
-    RingExecutor, RingReap, Shared, SyncMode, file_registration_error_into_io, next_driver_id,
+    RingAccess, RingExecutor, RingReap, Shared, SyncMode, file_registration_error_into_io,
+    next_driver_id,
 };
 use crate::error::{FileRegistrationError, IoError, SubmitError};
 use crate::open::DirectIo;
@@ -652,6 +653,10 @@ impl PoolBackend for MockDriver {
         BackendProgress::from_terminal(self.0.poll_wait_eager_for_pool(out, timeout))
     }
 
+    fn teardown_deadline(&self) -> Instant {
+        self.0.teardown_deadline()
+    }
+
     fn write_arena_state(&self) -> &ArenaState {
         self.0.write_arena_state()
     }
@@ -782,6 +787,10 @@ impl PoolBackend for MockRingDriver {
         {
             self.0.poll_wait_ring_progress(out, timeout)
         }
+    }
+
+    fn teardown_deadline(&self) -> Instant {
+        self.0.teardown_deadline()
     }
 
     fn write_arena_state(&self) -> &ArenaState {
@@ -1321,9 +1330,10 @@ impl MockRingDriverBuilder {
 #[derive(Debug)]
 pub struct MockRingDriver(DriverCore<MockRingExecutor>);
 
+/// No kernel reaches mock memory, so an exhausted teardown budget frees it.
 impl Drop for MockRingDriver {
     fn drop(&mut self) {
-        self.0.quiesce_ring();
+        let _ = self.0.quiesce_ring();
     }
 }
 
@@ -1712,6 +1722,7 @@ impl Executor for MockRingExecutor {
 impl RingExecutor for MockRingExecutor {
     fn push_read_vector(
         &self,
+        _access: &mut RingAccess<'_>,
         user_data: u64,
         file: FileId,
         vector: &ReadVector,
@@ -1731,6 +1742,7 @@ impl RingExecutor for MockRingExecutor {
 
     fn push_read(
         &self,
+        _access: &mut RingAccess<'_>,
         user_data: u64,
         fd_slot: u32,
         _token: &InFlightFrame,
@@ -1746,6 +1758,7 @@ impl RingExecutor for MockRingExecutor {
 
     fn push_write(
         &self,
+        _access: &mut RingAccess<'_>,
         user_data: u64,
         fd_slot: u32,
         source: *const u8,
@@ -1768,7 +1781,13 @@ impl RingExecutor for MockRingExecutor {
         state.cqes.push_back((user_data, raw));
     }
 
-    fn push_fsync(&self, user_data: u64, fd_slot: u32, mode: SyncMode) {
+    fn push_fsync(
+        &self,
+        _access: &mut RingAccess<'_>,
+        user_data: u64,
+        fd_slot: u32,
+        mode: SyncMode,
+    ) {
         assert!(fd_slot < self.file_capacity, "fsync targets a table slot");
         let mut state = self.lock();
         #[cfg(test)]
@@ -1789,7 +1808,12 @@ impl RingExecutor for MockRingExecutor {
 
     fn submit_and_wait(&self, _want: u32, _timeout: Duration) {}
 
-    fn reap<F: FnMut(u64, i32) -> bool>(&self, limit: u32, mut sink: F) -> RingReap {
+    fn reap<F: FnMut(u64, i32) -> bool>(
+        &self,
+        _access: &mut RingAccess<'_>,
+        limit: u32,
+        mut sink: F,
+    ) -> RingReap {
         assert!(limit > 0, "a reap drains into a non-empty batch");
         let mut state = self.lock();
         let mut reaped = 0u32;
