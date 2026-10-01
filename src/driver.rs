@@ -32,6 +32,8 @@ use read_vector::{ReadContinuation, ReadDestination, ReadVector, VectorStorage};
 
 use std::collections::VecDeque;
 use std::fs::File;
+use std::marker::PhantomData;
+use std::mem::ManuallyDrop;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -61,6 +63,8 @@ const EAGAIN: i32 = 11;
 const EAGAIN: i32 = 35;
 const POLL_WAIT_QUANTUM: Duration = Duration::from_millis(5);
 const QUIESCE_IDLE_MAX: u32 = 1_000_000;
+/// Above the 30 s `NVMe` default I/O timeout.
+pub(crate) const DEFAULT_TEARDOWN_BUDGET: Duration = Duration::from_mins(1);
 
 /// Distinguishes driver instances so a [`FileHandle`] minted by one core is
 /// rejected by another whose fd slots happen to coincide. Bumped once per
@@ -126,7 +130,7 @@ pub(crate) enum ArenaLockPolicy {
 /// The public driver over the cfg-selected backend, composing the same driver
 /// core the mock uses so the two cannot structurally drift.
 #[derive(Debug)]
-pub struct Driver(DriverCore<backend::Impl>);
+pub struct Driver(ManuallyDrop<DriverCore<backend::Impl>>);
 
 /// Builds a [`Driver`] with every capacity fixed up front.
 #[derive(Debug, Clone, Copy)]
@@ -139,6 +143,7 @@ pub struct DriverBuilder {
     registered_file_capacity: u32,
     registration_policy: RegistrationPolicy,
     arena_lock: ArenaLockPolicy,
+    teardown_budget: Duration,
 }
 
 #[derive(Debug)]
@@ -163,6 +168,7 @@ impl Default for DriverBuilder {
             registered_file_capacity: DEFAULT_REGISTERED_FILE_CAPACITY,
             registration_policy: RegistrationPolicy::Auto,
             arena_lock: ArenaLockPolicy::BestEffort,
+            teardown_budget: DEFAULT_TEARDOWN_BUDGET,
         }
     }
 }
@@ -203,6 +209,15 @@ impl DriverBuilder {
         self
     }
 
+    /// Sets how long drop blocks draining kernel-visible operations. When the
+    /// budget runs out with operations still in flight, the driver leaks every
+    /// allocation the kernel may still write instead of freeing it.
+    #[must_use]
+    pub fn teardown_budget(mut self, teardown_budget: Duration) -> Self {
+        self.teardown_budget = teardown_budget;
+        self
+    }
+
     pub(crate) fn registered_file_capacity(mut self, registered_file_capacity: u32) -> Self {
         self.registered_file_capacity = registered_file_capacity;
         self
@@ -226,7 +241,8 @@ impl DriverBuilder {
     ///
     /// # Panics
     ///
-    /// If any capacity is zero — capacities are fixed and positive at init.
+    /// If any capacity or the teardown budget is zero, or the teardown budget
+    /// overflows the monotonic clock — both are fixed and positive at init.
     pub fn build(self) -> Result<Driver, IoError> {
         assert!(self.queue_capacity > 0, "queue capacity must be positive");
         assert!(self.frames > 0, "frame count must be positive");
@@ -264,6 +280,10 @@ impl DriverBuilder {
             self.frame_bytes,
             "driver and arena frame sizes match"
         );
+        assert!(
+            !self.teardown_budget.is_zero(),
+            "teardown budget must be positive"
+        );
         let id = next_driver_id();
         let write_arena = try_shared_write_arena(self.write_slots, self.frame_bytes, id)
             .ok_or(DriverBuildError::Allocation)?;
@@ -300,7 +320,8 @@ impl DriverBuilder {
         )
         .ok_or(DriverBuildError::Allocation)?;
         core.arena_lock = arena_lock;
-        Ok(Driver(core))
+        core.teardown_budget = self.teardown_budget;
+        Ok(Driver(ManuallyDrop::new(core)))
     }
 }
 
@@ -728,6 +749,10 @@ impl Driver {
         }
     }
 
+    pub(crate) fn teardown_remaining_for_pool(&self) -> Duration {
+        self.0.teardown_remaining()
+    }
+
     pub(crate) fn poll_wait_for_pool(
         &self,
         out: &mut CompletionBatch,
@@ -820,10 +845,30 @@ impl Driver {
 impl Drop for Driver {
     fn drop(&mut self) {
         #[cfg(target_os = "linux")]
-        self.0.quiesce_ring();
+        let teardown = self.0.quiesce_ring();
         #[cfg(not(target_os = "linux"))]
-        self.0.quiesce();
+        let teardown = {
+            self.0.quiesce();
+            Teardown::Drained
+        };
+        match teardown {
+            Teardown::Drained => {
+                // SAFETY: drop runs once and nothing touches the core after it;
+                // no operation remains that could reach its memory.
+                unsafe { ManuallyDrop::drop(&mut self.0) };
+            }
+            // The kernel may still write memory the core owns, so it is leaked.
+            Teardown::BudgetExhausted => {}
+        }
     }
+}
+
+/// How a bounded teardown drain ended.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Teardown {
+    Drained,
+    BudgetExhausted,
 }
 
 /// The three op kinds the driver issues; echoed in each completion.
@@ -1130,8 +1175,13 @@ pub(crate) trait RingExecutor: Executor {
     /// Fills one read SQE addressing the registered buffer of the frame `token`
     /// owns at `file_offset`, tagged with `user_data`. Called under the AD-4 mutex;
     /// the token stays in the slab until the CQE reaps it.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one SQE's fields plus the AD-4 lock witness"
+    )]
     fn push_read(
         &self,
+        access: &mut RingAccess<'_>,
         user_data: u64,
         fd_slot: u32,
         token: &InFlightFrame,
@@ -1141,12 +1191,24 @@ pub(crate) trait RingExecutor: Executor {
     );
 
     /// Queues ordinary READV using the vector's retained descriptor storage.
-    fn push_read_vector(&self, user_data: u64, file: FileId, vector: &ReadVector, file_offset: u64);
+    fn push_read_vector(
+        &self,
+        access: &mut RingAccess<'_>,
+        user_data: u64,
+        file: FileId,
+        vector: &ReadVector,
+        file_offset: u64,
+    );
 
     /// Fills one write SQE from a leased staging slot. The lease remains in the
     /// completion slab until this op is terminally reaped.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one SQE's fields plus the AD-4 lock witness"
+    )]
     fn push_write(
         &self,
+        access: &mut RingAccess<'_>,
         user_data: u64,
         fd_slot: u32,
         source: *const u8,
@@ -1156,7 +1218,7 @@ pub(crate) trait RingExecutor: Executor {
     );
 
     /// Fills one fsync SQE, tagged with `user_data`. Called under the AD-4 mutex.
-    fn push_fsync(&self, user_data: u64, fd_slot: u32, mode: SyncMode);
+    fn push_fsync(&self, access: &mut RingAccess<'_>, user_data: u64, fd_slot: u32, mode: SyncMode);
 
     /// Submits filled SQEs without blocking on completions (`min_complete = 0`),
     /// so poll never sleeps awaiting events. Runs OUTSIDE the AD-4 mutex.
@@ -1170,11 +1232,16 @@ pub(crate) trait RingExecutor: Executor {
     /// `(user_data, raw_result)` to `sink`. The private wake CQE is excluded
     /// from `backend_completions` and reported only through `rearm_needed`.
     /// Called under the AD-4 mutex and must not enter the kernel.
-    fn reap<F: FnMut(u64, i32) -> bool>(&self, limit: u32, sink: F) -> RingReap;
+    fn reap<F: FnMut(u64, i32) -> bool>(
+        &self,
+        access: &mut RingAccess<'_>,
+        limit: u32,
+        sink: F,
+    ) -> RingReap;
 
     /// Enqueues a fresh private wake poll after reap consumed the prior one.
     /// Called under the AD-4 mutex; the core submits it only after unlocking.
-    fn rearm_after_reap(&self) {}
+    fn rearm_after_reap(&self, _access: &mut RingAccess<'_>) {}
 
     /// Metadata-plane blocking write on the retained file (AD-3): `Ok(bytes)` or
     /// `Err(errno)`. Linux-only — the metadata plane rides only the real ring.
@@ -1367,6 +1434,22 @@ pub(crate) struct Shared {
     deferred: VecDeque<read_vector::DeferredCompletion>,
 }
 
+/// Witness that the owning core's AD-4 mutex is held; every SQ fill and CQ
+/// reap takes it. Only [`DriverCore`] mints one, from the guard of its own lock.
+#[derive(Debug)]
+pub(crate) struct RingAccess<'a> {
+    _guard: PhantomData<&'a mut Shared>,
+}
+
+impl<'a> RingAccess<'a> {
+    fn split(guard: &'a mut MutexGuard<'_, Shared>) -> (Self, &'a mut Shared) {
+        let access = Self {
+            _guard: PhantomData,
+        };
+        (access, &mut **guard)
+    }
+}
+
 impl Shared {
     pub(crate) fn try_new(ready_capacity: u32, file_capacity: u32) -> Option<Self> {
         Some(Self {
@@ -1403,6 +1486,8 @@ pub(crate) struct DriverCore<E> {
     retry_bound: u32,
     queue_capacity: u32,
     pool_wait: OnceLock<Arc<WaitState>>,
+    teardown_budget: Duration,
+    teardown_start: OnceLock<Instant>,
     id: u64,
 }
 
@@ -1445,8 +1530,17 @@ impl<E> DriverCore<E> {
             retry_bound,
             queue_capacity,
             pool_wait: OnceLock::new(),
+            teardown_budget: DEFAULT_TEARDOWN_BUDGET,
+            teardown_start: OnceLock::new(),
             id,
         })
+    }
+
+    /// The drain time left before teardown gives up, measured from the first
+    /// drain to ask so Pool shutdown and driver drop share one budget.
+    pub(crate) fn teardown_remaining(&self) -> Duration {
+        let start = *self.teardown_start.get_or_init(Instant::now);
+        self.teardown_budget.saturating_sub(start.elapsed())
     }
 
     fn inflight_total(&self) -> u32 {
@@ -2335,7 +2429,8 @@ impl<E: RingExecutor> DriverCore<E> {
     /// Prepare (locked): drain ready slots into SQEs, tagging each with its full
     /// generational token as `user_data`. Slots stay occupied — reclaimed only in reap.
     fn fill_ring(&self, cap: u32) -> u32 {
-        let mut shared = self.lock();
+        let mut guard = self.lock();
+        let (mut access, shared) = RingAccess::split(&mut guard);
         let mut filled = 0u32;
         while filled < cap {
             let Some(slot) = shared.ready.pop_front() else {
@@ -2349,6 +2444,7 @@ impl<E: RingExecutor> DriverCore<E> {
             match entry.kind {
                 OpKind::Read => match entry.frame.as_ref().expect("queued read destination") {
                     ReadDestination::Point(frame) => self.executor.push_read(
+                        &mut access,
                         user_data,
                         fd_slot,
                         frame,
@@ -2357,15 +2453,17 @@ impl<E: RingExecutor> DriverCore<E> {
                         entry.requested_len,
                     ),
                     ReadDestination::Vector(vector) => self.executor.push_read_vector(
+                        &mut access,
                         user_data,
                         entry.fd,
                         vector,
                         entry.file_offset,
                     ),
                 },
-                OpKind::Fsync => self
-                    .executor
-                    .push_fsync(user_data, fd_slot, entry.sync_mode),
+                OpKind::Fsync => {
+                    self.executor
+                        .push_fsync(&mut access, user_data, fd_slot, entry.sync_mode);
+                }
                 OpKind::Write => {
                     let write_slot = entry
                         .write_slot
@@ -2376,6 +2474,7 @@ impl<E: RingExecutor> DriverCore<E> {
                         entry.requested_len,
                     );
                     self.executor.push_write(
+                        &mut access,
                         user_data,
                         fd_slot,
                         source,
@@ -2415,7 +2514,7 @@ impl<E: RingExecutor> DriverCore<E> {
 
     fn reap_ring_locked<F>(
         &self,
-        shared: &mut Shared,
+        guard: &mut MutexGuard<'_, Shared>,
         out: &mut CompletionBatch,
         limit: u32,
         retry_bound: u32,
@@ -2425,7 +2524,8 @@ impl<E: RingExecutor> DriverCore<E> {
     where
         F: FnMut(FileId) -> bool,
     {
-        self.executor.reap(limit, |user_data, raw| {
+        let (mut access, shared) = RingAccess::split(guard);
+        let reap = self.executor.reap(&mut access, limit, |user_data, raw| {
             let echoed = OpToken(user_data);
             assert!(
                 shared.slab.contains(echoed),
@@ -2458,7 +2558,11 @@ impl<E: RingExecutor> DriverCore<E> {
             let keep_reaping = retiring.is_none_or(&mut retire_due);
             *caller_completions += 1;
             keep_reaping
-        })
+        });
+        if reap.rearm_needed {
+            self.executor.rearm_after_reap(&mut access);
+        }
+        reap
     }
 
     fn reap_ring_record_retire(scratch: &mut Vec<FileId>, file: FileId) {
@@ -2482,9 +2586,9 @@ impl<E: RingExecutor> DriverCore<E> {
         let mut first_retire = None;
         let first_reap;
         {
-            let mut shared = self.lock();
+            let mut guard = self.lock();
             first_reap = self.reap_ring_locked(
-                &mut shared,
+                &mut guard,
                 out,
                 limit,
                 self.retry_bound,
@@ -2494,9 +2598,6 @@ impl<E: RingExecutor> DriverCore<E> {
                     false
                 },
             );
-            if first_reap.rearm_needed {
-                self.executor.rearm_after_reap();
-            }
         }
         let mut backend_completions = first_reap.backend_completions;
         let mut rearm_needed = first_reap.rearm_needed;
@@ -2511,9 +2612,9 @@ impl<E: RingExecutor> DriverCore<E> {
                 .checked_sub(backend_completions)
                 .expect("the first reap respects its limit");
             if remaining > 0 {
-                let mut shared = self.lock();
+                let mut guard = self.lock();
                 let additional = self.reap_ring_locked(
-                    &mut shared,
+                    &mut guard,
                     out,
                     remaining,
                     self.retry_bound,
@@ -2523,9 +2624,6 @@ impl<E: RingExecutor> DriverCore<E> {
                         true
                     },
                 );
-                if additional.rearm_needed {
-                    self.executor.rearm_after_reap();
-                }
                 backend_completions += additional.backend_completions;
                 rearm_needed |= additional.rearm_needed;
             }
@@ -2548,29 +2646,28 @@ impl<E: RingExecutor> DriverCore<E> {
     }
 
     /// Drains every in-flight op before teardown so no kernel-visible op is
-    /// abandoned (INV-8). Bounded: each poll that makes no progress counts against
-    /// a fixed cap.
-    pub(crate) fn quiesce_ring(&self) {
+    /// abandoned (INV-8), parking in the kernel until the init-set teardown
+    /// deadline. Reports exhaustion instead of panicking so the caller can leak
+    /// what the kernel may still write.
+    pub(crate) fn quiesce_ring(&self) -> Teardown {
         self.abandon_held_continuations();
         if self.inflight_total() == 0 {
-            return;
+            return Teardown::Drained;
         }
         let mut out = self
             .shutdown_batch
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let mut idle = 0u32;
         while self.inflight_total() > 0 {
-            let progress = self.poll_ring_progress(&mut out);
+            let remaining = self.teardown_remaining();
+            if remaining.is_zero() {
+                return Teardown::BudgetExhausted;
+            }
+            let _ = self.poll_wait_ring_progress(&mut out, remaining);
             self.quiesce_continue_vectors(&mut out);
             self.abandon_held_continuations();
-            if progress.backend_completions > 0 || progress.caller_completions > 0 {
-                idle = 0;
-            } else {
-                idle += 1;
-                assert!(idle < QUIESCE_IDLE_MAX, "drop quiesce made no progress");
-            }
         }
+        Teardown::Drained
     }
 }
 
@@ -2928,6 +3025,16 @@ mod tests {
             || panic!("only the shared-limit refusal downgrades"),
         );
         assert_eq!(policy, RegistrationPolicy::Auto);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "building the driver locks its arena with mlock")]
+    fn a_teardown_budget_past_the_clock_range_drains_without_panicking() {
+        let driver = Driver::builder()
+            .teardown_budget(Duration::MAX)
+            .build()
+            .expect("the driver initializes");
+        assert!(driver.teardown_remaining_for_pool() > Duration::ZERO);
     }
 
     #[test]

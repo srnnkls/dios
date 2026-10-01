@@ -6,14 +6,13 @@
 #[cfg(all(target_os = "linux", not(miri)))]
 use core::ffi::{c_int, c_void};
 use std::alloc::{Layout, handle_alloc_error};
-use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::num::NonZeroU32;
 use std::ptr::NonNull;
 
 use crate::pool::epoch::{FrameGuard, PinBegun, PinCommit};
 use crate::pool::{Control, PageId, SECTOR_BYTES};
-use crate::sync::{AtomicU64, Ordering};
+use crate::sync::{AtomicU64, Ordering, UnsafeCell};
 
 #[cfg(all(test, target_os = "linux", not(miri)))]
 const SECTOR: usize = SECTOR_BYTES as usize;
@@ -46,18 +45,22 @@ impl ExactPageCells {
     }
 
     fn write(&self, token: &mut InFlightFrame, page: PageId) {
-        // SAFETY: the unique token holds the frame unpublished, so no reader
-        // has validated this frame's Resident word and none can until publish.
-        unsafe { (*self.cells[token.index()].get()).write(page) };
+        self.cells[token.index()].with_mut(|cell| {
+            // SAFETY: the unique token holds the frame unpublished, so no reader
+            // has validated this frame's Resident word and none can until publish.
+            unsafe { (*cell).write(page) };
+        });
     }
 
     fn read(&self, index: usize) -> PageId {
-        // SAFETY: every caller holds a witness (validated pin, live guard, or the
-        // control lock over a mapped frame) that a publish preceded this read and
-        // that no token can exist until the witness is gone.
-        let page = unsafe { &*self.cells[index].get() };
-        // SAFETY: `page` was initialized under the token before publish.
-        unsafe { page.assume_init_read() }
+        self.cells[index].with(|page| {
+            // SAFETY: every caller holds a witness (validated pin, live guard, or
+            // the control lock over a mapped frame) that a publish preceded this
+            // read and that no token can exist until the witness is gone.
+            let page = unsafe { &*page };
+            // SAFETY: `page` was initialized under the token before publish.
+            unsafe { page.assume_init_read() }
+        })
     }
 }
 
@@ -450,16 +453,23 @@ impl Frames {
         token.frame()
     }
 
-    /// The `granule`-byte region backing `frame`, readable under a committed
-    /// pin: the pin's published epoch keeps EBR from freeing the frame, so no
-    /// token can be minted for it while the borrow lives.
+    /// The `granule`-byte region backing the frame `pin` validated: the pin's
+    /// published epoch keeps EBR from freeing the frame, so no token can be
+    /// minted for it while the borrow lives.
     ///
     /// # Panics
     ///
-    /// If `frame` is out of range for the configured count.
+    /// If the pinned frame is out of range for the configured count.
     #[must_use]
-    pub(crate) fn frame_bytes(&self, frame: ReadFrameIdx, _pin: &PinCommit) -> &[u8] {
-        let index = self.checked_index(frame);
+    pub(crate) fn frame_bytes(&self, pin: &PinCommit) -> &[u8] {
+        let index = self.checked_index(pin.frame());
+        debug_assert!(
+            matches!(
+                FrameState::from_word(self.states[index].load(Ordering::Acquire)),
+                FrameState::Resident | FrameState::Evicting
+            ),
+            "a pinned frame is Resident or Evicting while its bytes are borrowed"
+        );
         // SAFETY: the committed pin proves a validated Resident/Evicting frame
         // whose reuse EBR defers past this borrow, so no token writes it.
         unsafe { self.granule_slice(index) }
@@ -995,5 +1005,43 @@ mod token_tests {
         assert!(frames.claim_unidentified(frame).is_none());
         assert_eq!(frames.abort(token), frame);
         assert_eq!(frames.state(frame), FrameState::Free);
+    }
+
+    fn published(frames: &Frames, frame: ReadFrameIdx, byte: u8) {
+        let mut token = frames.claim(frame, page(frame.get())).expect("claim");
+        frames.fill(&mut token, byte);
+        frames.publish(token);
+    }
+
+    #[test]
+    fn a_committed_pin_borrows_exactly_the_frame_it_validated() {
+        let frames = Frames::preallocated(2, SECTOR_BYTES);
+        published(&frames, ReadFrameIdx::new(0), 0xAA);
+        published(&frames, ReadFrameIdx::new(1), 0xBB);
+        let slot = crate::pool::epoch::ReaderSlot::vacant(1);
+        let validated = ReadFrameIdx::new(1);
+        let begun = slot.begin_pin(0);
+        let pin = slot.commit_pin(begun, validated);
+        assert_eq!(pin.frame(), validated);
+        let bytes = frames.frame_bytes(&pin);
+        assert_eq!(bytes.len(), SECTOR_BYTES as usize);
+        assert!(
+            bytes.iter().all(|&byte| byte == 0xBB),
+            "the borrow covers the validated frame, not a neighbour"
+        );
+        slot.release_guard();
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "a pinned frame is Resident or Evicting")]
+    fn borrowing_a_frame_a_token_is_writing_is_a_programmer_error() {
+        let frames = Frames::preallocated(1, SECTOR_BYTES);
+        let frame = ReadFrameIdx::new(0);
+        let _writing = frames.claim(frame, page(0)).expect("claim");
+        let slot = crate::pool::epoch::ReaderSlot::vacant(1);
+        let begun = slot.begin_pin(0);
+        let pin = slot.commit_pin(begun, frame);
+        let _ = frames.frame_bytes(&pin);
     }
 }

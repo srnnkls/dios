@@ -129,6 +129,9 @@ pub(crate) trait PoolBackend: sealed::Sealed {
     /// drains ready completions into `out`.
     fn poll_wait_progress(&self, out: &mut CompletionBatch, timeout: Duration) -> BackendProgress;
 
+    /// The drain time left before teardown stops draining in-flight operations.
+    fn teardown_remaining(&self) -> Duration;
+
     fn write_arena_state(&self) -> &ArenaState;
 
     fn submit_write<'arena>(

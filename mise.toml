@@ -39,6 +39,11 @@ rustup component add --toolchain "$toolchain" miri >/dev/null 2>&1 || {
 exec cargo "+$toolchain" miri test --lib --features mock
 '''
 
+[tasks.loom]
+description = "loom interleaving proofs over the pool's lock-free machinery"
+env = { RUSTFLAGS = "--cfg loom" }
+run = "cargo test --release --test loom_pool"
+
 [tasks.asan]
 description = "AddressSanitizer over the syscall-touching integration tests"
 run = '''
@@ -55,17 +60,19 @@ target=$(rustc "+$toolchain" -vV | sed -n 's/^host: //p')
 orchestration="drp001_plan drp005_probe_gate drp009_gate_contract guard_compile_fail
   mmap_workload_contract pinned_frame_retention_plan public_api r7_source_manifest
   workload_suite_contract arena_registration"
+leaks_on_exhausted_teardown="ring_teardown_budget"
 selected=""
 for source in tests/*.rs; do
   name=$(basename "$source" .rs)
-  case " $(echo $orchestration) " in *" $name "*) continue ;; esac
+  case " $(echo $orchestration) $leaks_on_exhausted_teardown " in *" $name "*) continue ;; esac
   selected="$selected --test $name"
 done
 [ -n "$selected" ] || { echo "no integration suites selected for asan" >&2; exit 1; }
 # An explicit target keeps the instrumentation off build scripts and proc macros.
 export CARGO_BUILD_TARGET="$target"
 export RUSTFLAGS="-Zsanitizer=address"
-exec cargo "+$toolchain" test --features mock $selected
+cargo "+$toolchain" test --features mock $selected
+ASAN_OPTIONS=detect_leaks=0 exec cargo "+$toolchain" test --features mock --test $leaks_on_exhausted_teardown
 '''
 
 [tasks.check]

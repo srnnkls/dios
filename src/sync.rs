@@ -25,3 +25,24 @@ pub(crate) use loom::hint::spin_loop;
 pub(crate) use loom::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, fence};
 #[cfg(loom)]
 pub(crate) use loom::sync::{Arc, Condvar, Mutex, MutexGuard};
+
+#[cfg(not(loom))]
+#[derive(Debug)]
+#[repr(transparent)]
+pub(crate) struct UnsafeCell<T>(std::cell::UnsafeCell<T>);
+
+#[cfg(not(loom))]
+impl<T> UnsafeCell<T> {
+    #[inline]
+    pub(crate) fn with<R>(&self, f: impl FnOnce(*const T) -> R) -> R {
+        f(self.0.get())
+    }
+
+    #[inline]
+    pub(crate) fn with_mut<R>(&self, f: impl FnOnce(*mut T) -> R) -> R {
+        f(self.0.get())
+    }
+}
+
+#[cfg(loom)]
+pub(crate) use loom::cell::UnsafeCell;

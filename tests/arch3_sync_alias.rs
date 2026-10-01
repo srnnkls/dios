@@ -22,11 +22,36 @@ fn pool_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn bypasses_the_alias(line: &str) -> bool {
-    let code = line.split("//").next().unwrap_or_default();
+fn comment_stripped_items(source: &str) -> Vec<(usize, String)> {
+    let code = source
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut line = 1;
+    let mut items = Vec::new();
+    for item in code.split(';') {
+        let leading = &item[..item.len() - item.trim_start().len()];
+        items.push((line + leading.matches('\n').count(), item.to_owned()));
+        line += item.matches('\n').count();
+    }
+    items
+}
+
+fn bypasses_the_alias(item: &str) -> bool {
+    let code = item.split("//").next().unwrap_or_default();
     let dense: String = code.chars().filter(|c| !c.is_whitespace()).collect();
-    if dense.contains("std::sync::atomic") || dense.contains("std::sync::Mutex") {
+    if dense.contains("std::sync::atomic")
+        || dense.contains("std::sync::Mutex")
+        || dense.contains("std::cell::UnsafeCell")
+    {
         return true;
+    }
+    if let Some((_, after)) = dense.split_once("std::cell::{") {
+        let group = after.split('}').next().unwrap_or_default();
+        if group.contains("UnsafeCell") {
+            return true;
+        }
     }
     let Some((_, after)) = dense.split_once("std::sync::{") else {
         return false;
@@ -56,9 +81,9 @@ fn pool_concurrency_primitives_route_through_the_sync_alias() {
             continue;
         }
         let source = fs::read_to_string(&path).expect("read pool source");
-        for (offset, line) in source.lines().enumerate() {
-            if bypasses_the_alias(line) {
-                offenders.push(format!("{name}:{}: {}", offset + 1, line.trim()));
+        for (line, item) in comment_stripped_items(&source) {
+            if bypasses_the_alias(&item) {
+                offenders.push(format!("{name}:{line}: {}", item.trim()));
             }
         }
     }
@@ -80,6 +105,11 @@ fn the_guard_catches_a_brace_group_bypass_and_spares_prose() {
         "    let x: std::sync::atomic::AtomicU64;"
     ));
     assert!(bypasses_the_alias("use std::sync::atomic as a;"));
+    assert!(bypasses_the_alias("use std::cell::UnsafeCell;"));
+    assert!(bypasses_the_alias("use std::cell::{Cell, UnsafeCell};"));
+    assert!(bypasses_the_alias(
+        "    cells: MappedSlice<std::cell::UnsafeCell<MaybeUninit<PageId>>>,"
+    ));
 
     assert!(!bypasses_the_alias(
         "// never reach for std::sync::atomic here"
@@ -88,7 +118,23 @@ fn the_guard_catches_a_brace_group_bypass_and_spares_prose() {
         "/// See `std::sync::Mutex` for the shipping type."
     ));
     assert!(!bypasses_the_alias("use std::sync::Arc;"));
+    assert!(!bypasses_the_alias("use std::cell::Cell;"));
+    assert!(!bypasses_the_alias("    visits: std::cell::Cell<u64>,"));
+    assert!(!bypasses_the_alias("use crate::sync::UnsafeCell;"));
     assert!(!bypasses_the_alias(
         "use crate::sync::{AtomicU64, Ordering};"
     ));
+}
+
+#[test]
+fn the_guard_catches_a_rustfmt_wrapped_use_group() {
+    let source = "use std::cell::{\n    Cell,\n    UnsafeCell,\n};\n\
+                  use std::sync::{\n    Arc,\n    Mutex, // shared\n};\n\
+                  use std::sync::{\n    Arc,\n    OnceLock,\n};\n";
+    let offending: Vec<usize> = comment_stripped_items(source)
+        .into_iter()
+        .filter(|(_, item)| bypasses_the_alias(item))
+        .map(|(line, _)| line)
+        .collect();
+    assert_eq!(offending, vec![1, 5]);
 }

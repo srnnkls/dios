@@ -180,8 +180,17 @@ impl ReadVector {
     }
 }
 
+impl ReadVector {
+    fn kernel_may_write(&self) -> bool {
+        self.operation.is_some() && self.descriptors.is_some()
+    }
+}
+
 impl Drop for ReadVector {
     fn drop(&mut self) {
+        if self.kernel_may_write() {
+            return;
+        }
         for frame in &mut self.frames[..self.count as usize] {
             if let Some(frame) = frame.take() {
                 self.arena.abort(frame);
@@ -594,5 +603,52 @@ impl<E: Executor> DriverCore<E> {
         }
         drop(shared);
         self.flush_deferred();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pool::FrameState;
+
+    const GRANULE: u32 = 4096;
+
+    fn claimed_vector(frames: &Arc<Frames>, indexes: [u32; 2]) -> ReadVector {
+        let mut vector = ReadVector::new(frames);
+        for index in indexes {
+            vector.push(
+                frames
+                    .claim_unidentified(ReadFrameIdx::new(index))
+                    .expect("a fresh arena frame is free"),
+            );
+        }
+        vector
+    }
+
+    #[test]
+    fn dropping_a_submitted_vector_leaves_its_frames_in_flight() {
+        let frames = Arc::new(Frames::preallocated(4, GRANULE));
+        let storage = VectorStorage::try_new(1).expect("descriptor storage maps");
+
+        drop(claimed_vector(&frames, [0, 1]));
+        for index in [0, 1] {
+            assert_eq!(
+                frames.state(ReadFrameIdx::new(index)),
+                FrameState::Free,
+                "an unsubmitted vector returns its frames to the pool"
+            );
+        }
+
+        let mut submitted = claimed_vector(&frames, [2, 3]);
+        storage.prepare(0, &mut submitted);
+        submitted.bind(OpToken::new(0, 1));
+        drop(submitted);
+        for index in [2, 3] {
+            assert_eq!(
+                frames.state(ReadFrameIdx::new(index)),
+                FrameState::InFlight,
+                "a submitted vector's frames await their completion, not the drop"
+            );
+        }
     }
 }

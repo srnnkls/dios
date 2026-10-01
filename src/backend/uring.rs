@@ -169,7 +169,7 @@ impl Uring {
         }
         let posture = select_posture(&ring, &frames, &write_arena, registration_policy)?;
 
-        let backend = Self {
+        let mut backend = Self {
             ring,
             frames,
             _write_arena: write_arena,
@@ -187,12 +187,20 @@ impl Uring {
         self.files.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn push_sqe(&self, entry: &squeue::Entry) {
-        // SAFETY: SQ userspace access is serialised by the caller holding the AD-4
-        // mutex; no second submission handle exists concurrently.
+    fn push_sqe(&self, _access: &mut crate::driver::RingAccess<'_>, entry: &squeue::Entry) {
+        // SAFETY: only the core that owns this ring mints a `RingAccess`, from
+        // its own AD-4 guard, and it is borrowed exclusively here, so no second
+        // submission handle exists.
         let mut sq = unsafe { self.ring.submission_shared() };
-        // SAFETY: the SQE addresses the registered slab buffer and a fixed fd, both
-        // valid for the whole in-flight op; fill is bounded so the SQ has room.
+        Self::push_entry(&mut sq, entry);
+    }
+
+    fn push_entry(sq: &mut squeue::SubmissionQueue<'_>, entry: &squeue::Entry) {
+        // SAFETY: every resource the SQE names outlives the op: a read or write
+        // buffer is the posture's registered index or fixed-address arena, a
+        // READV descriptor array is the vector storage the slab retains until
+        // reap, the wake poll's eventfd is owned by this executor, fsync names no
+        // buffer, and data-plane fds are fixed-file slots retired only after reap.
         let pushed = unsafe { sq.push(entry) };
         pushed.expect("ring SQ has room: fill is bounded by queue_capacity == SQ depth");
     }
@@ -209,11 +217,15 @@ impl Uring {
         );
     }
 
-    fn arm_wake(&self) {
-        let entry = opcode::PollAdd::new(types::Fd(self.platform_wake.raw_fd()), POLLIN)
+    fn wake_entry(&self) -> squeue::Entry {
+        opcode::PollAdd::new(types::Fd(self.platform_wake.raw_fd()), POLLIN)
             .build()
-            .user_data(WAKE_USER_DATA);
-        self.push_sqe(&entry);
+            .user_data(WAKE_USER_DATA)
+    }
+
+    fn arm_wake(&mut self) {
+        let entry = self.wake_entry();
+        Self::push_entry(&mut self.ring.submission(), &entry);
     }
 }
 
@@ -278,6 +290,7 @@ impl Executor for Uring {
 impl RingExecutor for Uring {
     fn push_read_vector(
         &self,
+        access: &mut crate::driver::RingAccess<'_>,
         user_data: u64,
         file: crate::driver::FileId,
         vector: &crate::driver::read_vector::ReadVector,
@@ -296,11 +309,12 @@ impl RingExecutor for Uring {
         .offset(file_offset)
         .build()
         .user_data(user_data);
-        self.push_sqe(&entry);
+        self.push_sqe(access, &entry);
     }
 
     fn push_read(
         &self,
+        access: &mut crate::driver::RingAccess<'_>,
         user_data: u64,
         fd_slot: u32,
         token: &InFlightFrame,
@@ -320,11 +334,12 @@ impl RingExecutor for Uring {
             .posture
             .read_entry(fd_slot, destination, requested_len, file_offset)
             .user_data(user_data);
-        self.push_sqe(&entry);
+        self.push_sqe(access, &entry);
     }
 
     fn push_write(
         &self,
+        access: &mut crate::driver::RingAccess<'_>,
         user_data: u64,
         fd_slot: u32,
         source: *const u8,
@@ -350,10 +365,16 @@ impl RingExecutor for Uring {
             .posture
             .write_entry(fd_slot, source, requested_len, file_offset)
             .user_data(user_data);
-        self.push_sqe(&entry);
+        self.push_sqe(access, &entry);
     }
 
-    fn push_fsync(&self, user_data: u64, fd_slot: u32, mode: crate::driver::SyncMode) {
+    fn push_fsync(
+        &self,
+        access: &mut crate::driver::RingAccess<'_>,
+        user_data: u64,
+        fd_slot: u32,
+        mode: crate::driver::SyncMode,
+    ) {
         assert!(fd_slot < self.file_capacity, "fsync targets a table slot");
         let flags = match mode {
             crate::driver::SyncMode::Data => types::FsyncFlags::DATASYNC,
@@ -363,7 +384,7 @@ impl RingExecutor for Uring {
             .flags(flags)
             .build()
             .user_data(user_data);
-        self.push_sqe(&entry);
+        self.push_sqe(access, &entry);
     }
 
     fn submit(&self) {
@@ -376,10 +397,16 @@ impl RingExecutor for Uring {
         Self::check_enter(self.ring.submitter().submit_with_args(want as usize, &args));
     }
 
-    fn reap<F: FnMut(u64, i32) -> bool>(&self, limit: u32, mut sink: F) -> RingReap {
+    fn reap<F: FnMut(u64, i32) -> bool>(
+        &self,
+        _access: &mut crate::driver::RingAccess<'_>,
+        limit: u32,
+        mut sink: F,
+    ) -> RingReap {
         assert!(limit > 0, "a reap drains into a non-empty batch");
-        // SAFETY: CQ userspace access is serialised by the caller holding the AD-4
-        // mutex; no second completion handle exists concurrently.
+        // SAFETY: only the core that owns this ring mints a `RingAccess`, from
+        // its own AD-4 guard, and it is borrowed exclusively here, so no second
+        // completion handle exists.
         let mut cq = unsafe { self.ring.completion_shared() };
         let mut reaped = 0u32;
         let mut woke = false;
@@ -405,8 +432,9 @@ impl RingExecutor for Uring {
         }
     }
 
-    fn rearm_after_reap(&self) {
-        self.arm_wake();
+    fn rearm_after_reap(&self, access: &mut crate::driver::RingAccess<'_>) {
+        let entry = self.wake_entry();
+        self.push_sqe(access, &entry);
     }
 
     fn blocking_write(&self, fd_slot: u32, buf: &[u8], offset: u64) -> Result<u32, i32> {
@@ -545,5 +573,35 @@ mod tests {
             7,
             "the slab slot routes the CQE"
         );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "io_uring and mlock are foreign syscalls")]
+    fn fsync_pushed_and_reaped_through_the_core_completes_its_token() {
+        let driver = crate::driver::Driver::builder()
+            .build()
+            .expect("the io_uring driver initializes");
+        let path = std::env::temp_dir().join(format!(
+            "dios_uring_lock_witness_{}.bin",
+            std::process::id()
+        ));
+        File::create(&path).expect("temp file");
+        let fd = driver
+            .open(&path, crate::DirectIo::Disabled)
+            .expect("the driver opens the temp file");
+        std::fs::remove_file(&path).expect("unlink temp file");
+        let token = driver
+            .submit_fsync(&fd, crate::driver::SyncMode::Data)
+            .expect("submit within capacity");
+
+        let mut out = crate::driver::CompletionBatch::with_capacity(1);
+        assert_eq!(driver.poll_wait(&mut out, Duration::from_secs(5)), 1);
+        let completion = out.iter().next().expect("one completion");
+        assert_eq!(
+            completion.token(),
+            token,
+            "the fsync CQE routes back to its submitted token"
+        );
+        assert_eq!(completion.result().ok(), Some(0));
     }
 }
