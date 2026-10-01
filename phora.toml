@@ -1,0 +1,37 @@
+[sources.compio]
+host = "github"
+repo = "compio-rs/compio"
+
+[sources.mio]
+host = "github"
+repo = "tokio-rs/mio"
+
+[sources.monoio]
+host = "github"
+repo = "monoio-rs/monoio"
+
+[sources.seastar]
+host = "github"
+repo = "scylladb/seastar"
+exclude = [".claude"]
+
+[sources.tigerbeetle]
+host = "github"
+repo = "tigerbeetle/tigerbeetle"
+
+[sources.sans-io]
+url = "https://fasterthanli.me/articles/the-case-for-sans-io"
+
+[sources.p2530r3]
+url = "https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2023/p2530r3.pdf"
+
+[sources.folly-hazptr]
+host = "github"
+repo = "facebook/folly"
+root = "folly/synchronization"
+include = ["Hazptr*", "detail/HazptrUtils.h", "example/Hazptr*", "test/Hazptr*"]
+
+[targets.resources]
+path = "resources"
+layout = "by-source"
+sources = ["compio", "mio", "monoio", "seastar", "tigerbeetle", "sans-io", "p2530r3", "folly-hazptr"]
