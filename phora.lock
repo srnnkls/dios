@@ -1,0 +1,65 @@
+version = 1
+
+[[sources]]
+name = "p2530r3"
+git = "https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2023/p2530r3.pdf"
+resolved = "url"
+commit = "4b6066d7416809aa74a5902d3ffd41ae1d183679"
+digest = "blake3:cc1932faec32d1a57609202e96f4aea7e768c934533d6c5a569d0be252bc4a7b"
+config_digest = "blake3:7b7015bb92cf0b318037702a6cdd81dee41224f734684c2c122cd6359cb1ee63"
+
+[[sources]]
+name = "monoio"
+git = "https://github.com/monoio-rs/monoio.git"
+resolved = "default"
+commit = "f0931e48e13bbeb1bcc3a1dc881dbe5c9385aa6c"
+digest = "blake3:9710fbc234757fca48324b50ad9249cf7a20f929162c1797c984af19dbae0695"
+config_digest = "blake3:7b7015bb92cf0b318037702a6cdd81dee41224f734684c2c122cd6359cb1ee63"
+
+[[sources]]
+name = "tigerbeetle"
+git = "https://github.com/tigerbeetle/tigerbeetle.git"
+resolved = "default"
+commit = "6f8e6b58d1811bb21cd6ea4fb93cb2e9d77abd81"
+digest = "blake3:08c76c3b54f69d825919b6db8f8f4fde72242f339af1579a4c5c17cd175006c2"
+config_digest = "blake3:7b7015bb92cf0b318037702a6cdd81dee41224f734684c2c122cd6359cb1ee63"
+
+[[sources]]
+name = "compio"
+git = "https://github.com/compio-rs/compio.git"
+resolved = "default"
+commit = "fcd85db7ad5e162e91086a541ca047b216d15085"
+digest = "blake3:6e368f8e727f0e5449209a0aa2d79bd07d8d452b3fe47edc7e2c5dcdc1dd766d"
+config_digest = "blake3:7b7015bb92cf0b318037702a6cdd81dee41224f734684c2c122cd6359cb1ee63"
+
+[[sources]]
+name = "sans-io"
+git = "https://fasterthanli.me/articles/the-case-for-sans-io"
+resolved = "url"
+commit = "ddc48bbc63cb31508dd7af58cd68001a1c70c91b"
+digest = "blake3:66c8962f09ca208d485169a2e2efba3f7ac3157edd375b3242ced683387351e9"
+config_digest = "blake3:7b7015bb92cf0b318037702a6cdd81dee41224f734684c2c122cd6359cb1ee63"
+
+[[sources]]
+name = "seastar"
+git = "https://github.com/scylladb/seastar.git"
+resolved = "default"
+commit = "e417c0c0ebeb1f0578b1dd5b3dd4f65decff0a4b"
+digest = "blake3:b48582572bf8da90acc7f6e15692c50d796ff17b005ba156e964e09fc9db8eaf"
+config_digest = "blake3:f3e6f57661a343daf5819fdd98a31eabb303e5ee07f17a32bd2a9f1a5181d40b"
+
+[[sources]]
+name = "mio"
+git = "https://github.com/tokio-rs/mio.git"
+resolved = "default"
+commit = "52097880b257aab42b10f9231a97b4a0da725587"
+digest = "blake3:8de61e2e6d1ccb8163e8a7854b628ac744c114a854ebfe0529097ebc755cd6de"
+config_digest = "blake3:7b7015bb92cf0b318037702a6cdd81dee41224f734684c2c122cd6359cb1ee63"
+
+[[sources]]
+name = "folly-hazptr"
+git = "https://github.com/facebook/folly.git"
+resolved = "default"
+commit = "b8239f44fe6c835a43327f6a90bf8b654fc19d20"
+digest = "blake3:7c08305a76158c9bb76f587915476b95728d0603f05e893d4ea2937ef5b66c23"
+config_digest = "blake3:20aed2e25a164f02b94f9468314ee791732a5fc2b5d462dee7ced6cc506fad20"

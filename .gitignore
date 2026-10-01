@@ -7,3 +7,5 @@
 /.worktreeinclude
 .peer
 __pycache__/
+/phora.local.toml
+/phora.local.lock
