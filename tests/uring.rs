@@ -423,3 +423,38 @@ fn a_misaligned_read_on_a_direct_handle_panics_before_an_op_issues() {
 
     let _ = drv.submit_read(&fd, ReadFrameIdx::new(0), misaligned);
 }
+
+/// `io_uring` refuses a registered buffer longer than one GiB (`EFAULT`), so an
+/// arena past that size must register in chunks and address its far frames
+/// through the right buffer index. The last frame of a one-GiB-plus-one-frame
+/// arena lies in the second chunk. Where the host refuses registration
+/// outright (`RLIMIT_MEMLOCK` without `CAP_IPC_LOCK`) `Auto` degrades and the
+/// same read runs unregistered.
+#[test]
+fn an_arena_beyond_one_gibibyte_builds_and_reads_into_its_last_frame() {
+    const FRAMES: u32 = (1 << 30) / FRAME_BYTES + 1;
+    let path = temp_path("beyond-one-gib");
+    let content: Vec<u8> = (0..FRAME_BYTES).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&path, &content).expect("seed one frame");
+    let drv = Driver::builder()
+        .queue_capacity(1)
+        .frames(FRAMES)
+        .frame_bytes(FRAME_BYTES)
+        .write_slots(1)
+        .retry_bound(3)
+        .build()
+        .expect("an arena past one GiB builds under the Auto posture");
+    let fd = open_existing(&drv, &path, DirectIo::Disabled);
+    let last = ReadFrameIdx::new(FRAMES - 1);
+    drv.submit_read(&fd, last, 0)
+        .expect("submit within capacity");
+    assert_eq!(drain_one(&drv), Ok(FRAME_BYTES), "a whole-frame read");
+    let mut landed = vec![0u8; FRAME_BYTES as usize];
+    assert_eq!(drv.copy_frame(last, &mut landed), FRAME_BYTES as usize);
+    assert_eq!(
+        landed, content,
+        "the bytes land in the frame past the first GiB"
+    );
+    drv.close(fd);
+    std::fs::remove_file(&path).expect("unlink");
+}

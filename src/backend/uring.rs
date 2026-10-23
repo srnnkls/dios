@@ -39,17 +39,57 @@ const EIO: i32 = 5;
 const ETIME: i32 = 62;
 const POLLIN: u32 = 0x0001;
 const WAKE_USER_DATA: u64 = u64::MAX;
-const FRAMES_BUF_INDEX: u16 = 0;
-const WRITE_ARENA_BUF_INDEX: u16 = 1;
+/// `io_uring` refuses a registered buffer longer than one GiB (`EFAULT`), so
+/// each arena registers as consecutive chunks of at most this size. A chunk
+/// boundary never splits a frame or staging slot: both sizes are powers of two
+/// no larger than a chunk.
+const REGISTERED_CHUNK_BYTES: usize = 1 << 30;
+/// The kernel's registered-buffer table limit (`IORING_MAX_REG_BUFFERS`).
+const REGISTERED_BUFFERS_MAX: usize = 1 << 14;
+
+/// Where each arena's chunks sit in the registered-buffer table: the frame
+/// arena from index 0, the write arena right after its last chunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BufferTable {
+    frames_base: usize,
+    write_base: usize,
+    write_first_index: u16,
+}
+
+impl BufferTable {
+    fn chunks(len: usize) -> usize {
+        len.div_ceil(REGISTERED_CHUNK_BYTES)
+    }
+
+    fn index(base: usize, first: u16, address: *const u8) -> u16 {
+        let offset = address
+            .addr()
+            .checked_sub(base)
+            .expect("a fixed-buffer address lies inside its registered arena");
+        let chunk = u16::try_from(offset / REGISTERED_CHUNK_BYTES)
+            .expect("the chunk count was bounded at registration");
+        first
+            .checked_add(chunk)
+            .expect("the chunk index was bounded at registration")
+    }
+
+    fn frame_index(self, destination: *const u8) -> u16 {
+        Self::index(self.frames_base, 0, destination)
+    }
+
+    fn write_index(self, source: *const u8) -> u16 {
+        Self::index(self.write_base, self.write_first_index, source)
+    }
+}
 
 /// The posture table: which SQE shape each data-plane op takes. Under
-/// `Registered` the SAFETY contract is the buffer table (indexes 0 and 1 stay
-/// valid while the ring lives); under `Unregistered` it is the arenas' fixed
-/// addresses, which the ring outlives-in-reverse exactly as before (the
+/// `Registered` the SAFETY contract is the buffer table (every chunk index
+/// stays valid while the ring lives); under `Unregistered` it is the arenas'
+/// fixed addresses, which the ring outlives-in-reverse exactly as before (the
 /// executor drops before the `Arc`s it holds).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Posture {
-    Registered,
+    Registered(BufferTable),
     Unregistered,
 }
 
@@ -62,11 +102,11 @@ impl Posture {
         file_offset: u64,
     ) -> squeue::Entry {
         match self {
-            Self::Registered => opcode::ReadFixed::new(
+            Self::Registered(table) => opcode::ReadFixed::new(
                 types::Fixed(fd_slot),
                 destination,
                 requested_len,
-                FRAMES_BUF_INDEX,
+                table.frame_index(destination),
             )
             .offset(file_offset)
             .build(),
@@ -86,11 +126,11 @@ impl Posture {
         file_offset: u64,
     ) -> squeue::Entry {
         match self {
-            Self::Registered => opcode::WriteFixed::new(
+            Self::Registered(table) => opcode::WriteFixed::new(
                 types::Fixed(fd_slot),
                 source,
                 requested_len,
-                WRITE_ARENA_BUF_INDEX,
+                table.write_index(source),
             )
             .offset(file_offset)
             .build(),
@@ -102,7 +142,7 @@ impl Posture {
 
     fn readback(self) -> RegistrationPosture {
         match self {
-            Self::Registered => RegistrationPosture::Registered,
+            Self::Registered(_) => RegistrationPosture::Registered,
             Self::Unregistered => RegistrationPosture::Unregistered,
         }
     }
@@ -481,8 +521,9 @@ fn select_posture(
     if registration_policy == RegistrationPolicy::Unregistered {
         return Ok(Posture::Unregistered);
     }
-    let Err(error) = register_arenas(ring, frames, write_arena) else {
-        return Ok(Posture::Registered);
+    let error = match register_arenas(ring, frames, write_arena) {
+        Ok(table) => return Ok(Posture::Registered(table)),
+        Err(error) => error,
     };
     if error.raw_os_error() != Some(crate::memlock::ENOMEM) {
         return Err(DriverBuildError::Driver(IoError::from(error)));
@@ -505,37 +546,54 @@ fn select_posture(
     Ok(Posture::Unregistered)
 }
 
+/// Registers both arenas as consecutive chunks of at most
+/// [`REGISTERED_CHUNK_BYTES`]. An arena larger than the kernel's buffer table
+/// can describe is refused like an over-limit charge (`ENOMEM`), so `Auto`
+/// degrades to unregistered I/O and an explicit `Registered` is refused typed.
 fn register_arenas(
     ring: &IoUring,
     frames: &Frames,
     write_arena: &ArenaState,
-) -> std::io::Result<()> {
-    let iov = [
-        Iovec {
-            iov_base: frames.base_ptr().cast(),
-            iov_len: frames.span_len(),
-        },
-        Iovec {
-            iov_base: write_arena.base_ptr().cast(),
-            iov_len: write_arena.span_len(),
-        },
-    ];
+) -> std::io::Result<BufferTable> {
+    let frame_chunks = BufferTable::chunks(frames.span_len());
+    let write_chunks = BufferTable::chunks(write_arena.span_len());
+    assert!(frame_chunks > 0, "the frame arena is non-empty");
+    assert!(write_chunks > 0, "the write arena is non-empty");
+    if frame_chunks + write_chunks > REGISTERED_BUFFERS_MAX {
+        return Err(std::io::Error::from_raw_os_error(crate::memlock::ENOMEM));
+    }
+    let mut iov = Vec::new();
+    iov.try_reserve_exact(frame_chunks + write_chunks)
+        .map_err(|_| std::io::Error::from_raw_os_error(crate::memlock::ENOMEM))?;
+    for (base, len) in [
+        (frames.base_ptr(), frames.span_len()),
+        (write_arena.base_ptr(), write_arena.span_len()),
+    ] {
+        for start in (0..len).step_by(REGISTERED_CHUNK_BYTES) {
+            iov.push(Iovec {
+                // SAFETY: `start < len`, so the chunk base stays inside the arena.
+                iov_base: unsafe { base.add(start) }.cast(),
+                iov_len: (len - start).min(REGISTERED_CHUNK_BYTES),
+            });
+        }
+    }
     assert_eq!(
-        usize::from(FRAMES_BUF_INDEX),
-        0,
-        "the frame slab registers first"
+        iov.len(),
+        frame_chunks + write_chunks,
+        "one iovec per chunk"
     );
-    assert_eq!(
-        usize::from(WRITE_ARENA_BUF_INDEX),
-        1,
-        "the write arena registers second"
-    );
-    // SAFETY: `Iovec` is layout-compatible with `libc::iovec` and the array
+    // SAFETY: `Iovec` is layout-compatible with `libc::iovec` and the vector
     // is live for this slice borrow.
     let bufs = unsafe { std::slice::from_raw_parts(iov.as_ptr().cast(), iov.len()) };
     // SAFETY: both arenas keep fixed addresses and the ring drops before
-    // them, so registered buffer indexes 0 and 1 remain valid for every op.
-    unsafe { ring.submitter().register_buffers(bufs) }
+    // them, so every registered chunk index remains valid for every op.
+    unsafe { ring.submitter().register_buffers(bufs) }?;
+    Ok(BufferTable {
+        frames_base: frames.base_ptr().addr(),
+        write_base: write_arena.base_ptr().addr(),
+        write_first_index: u16::try_from(frame_chunks)
+            .expect("bounded by the registered-buffer limit"),
+    })
 }
 
 #[cfg(test)]
@@ -547,8 +605,13 @@ mod tests {
     #[test]
     fn registered_posture_issues_fixed_buffer_opcodes() {
         let source = NonNull::<u8>::dangling().as_ptr();
-        let write = Posture::Registered.write_entry(3, source, 4_096, 8_192);
-        let read = Posture::Registered.read_entry(3, source, 4_096, 8_192);
+        let table = BufferTable {
+            frames_base: source.addr(),
+            write_base: source.addr(),
+            write_first_index: 1,
+        };
+        let write = Posture::Registered(table).write_entry(3, source, 4_096, 8_192);
+        let read = Posture::Registered(table).read_entry(3, source, 4_096, 8_192);
 
         assert_eq!(
             write.get_opcode(),
@@ -556,6 +619,33 @@ mod tests {
             "ordinary WRITE does not prove the registered staging arena is used"
         );
         assert_eq!(read.get_opcode(), u32::from(opcode::ReadFixed::CODE));
+    }
+
+    #[test]
+    fn chunk_indexes_follow_the_one_gibibyte_registration_boundary() {
+        let table = BufferTable {
+            frames_base: 1 << 40,
+            write_base: 1 << 41,
+            write_first_index: 3,
+        };
+        let frame = |offset: usize| std::ptr::without_provenance::<u8>((1 << 40) + offset);
+        let slot = |offset: usize| std::ptr::without_provenance::<u8>((1 << 41) + offset);
+        assert_eq!(BufferTable::chunks(4_096), 1);
+        assert_eq!(BufferTable::chunks(REGISTERED_CHUNK_BYTES), 1);
+        assert_eq!(BufferTable::chunks(REGISTERED_CHUNK_BYTES + 4_096), 2);
+        assert_eq!(table.frame_index(frame(0)), 0);
+        assert_eq!(table.frame_index(frame(REGISTERED_CHUNK_BYTES - 4_096)), 0);
+        assert_eq!(table.frame_index(frame(REGISTERED_CHUNK_BYTES)), 1);
+        assert_eq!(
+            table.frame_index(frame(2 * REGISTERED_CHUNK_BYTES + 4_096)),
+            2
+        );
+        assert_eq!(
+            table.write_index(slot(0)),
+            3,
+            "the write arena follows the frame chunks"
+        );
+        assert_eq!(table.write_index(slot(REGISTERED_CHUNK_BYTES)), 4);
     }
 
     #[test]
