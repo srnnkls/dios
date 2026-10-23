@@ -591,6 +591,21 @@ the first-touch bit store rides in the DIO-G1 parity bench.
   run only under that lock; delete backward-shifts, so there are no
   tombstones and probe chains never degrade; 2× capacity bounds negative
   probes.
+- Residency translation (`benches/plans/residency_map.md`): the leading
+  `direct_map_file_bytes` (default 16 GiB) of each registered file slot
+  translate through one `AtomicU32` (frame + 1) per granule, reserved
+  with `MAP_NORESERVE`, committed as touched and discarded at slot
+  retirement; later granules keep the seqlock PageTable above. Entries
+  are keyed by slot, not generation, so a hit re-reads the slot's
+  liveness word after the load (loom:
+  `mirror_get_racing_retire_and_slot_reuse_never_admits_reused_bytes`).
+  It was taken instead of per-worker last-frame memoization as the first
+  lever; its locally failed gates await the scope owner's decision,
+  recorded in the plan.
+- Asymmetric epoch barrier (`membarrier` on the poller, compiler fence
+  on the reader) was measured and rejected (`benches/plans/epoch_barrier.md`):
+  the poll-boundary advance makes the poller's half a system call per
+  spin of a polling consumer; the `SeqCst` fence pair stays.
 - True vmcache-style optimistic version reads were considered and set
   aside: revalidate-after-read over concurrently-evictable bytes is UB
   as a safe `&[u8]`; epoch grace periods deliver the same no-RMW warm
