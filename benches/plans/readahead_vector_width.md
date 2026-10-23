@@ -29,3 +29,29 @@ slot.
 
 Local, advisory; `vda` reports `max_segments` 254, so a 64-iovec READV is one
 request here, while a device with fewer segments splits it in the block layer.
+
+## Results (local, advisory)
+
+200 alternating fresh-process pairs per budget, base `mw-q-diag`
+(`b1b17ee6…aaaa`) against candidate `mw-v64-diag` (`badac3fa…530a`); both
+differ from `c49c01c` and its 64-page variant only by a stall diagnostic in
+the scan request loop's error path. Samples in
+`benches/evidence/readahead_vector_width/`.
+
+| Budget | Ratio geomean | One-sided 95% upper | Bound | Result |
+|---|---:|---:|---:|---|
+| 512 KiB (default) | 1.0236 | 1.0408 | 0.95 | FAIL |
+| 1 MiB | 0.9076 | 0.9244 | 0.95 | PASS |
+
+Medians: 57.9 → 59.7 ms at the default budget, 49.8 → 45.7 ms at 1 MiB. Wider
+vectors do not pass at each budget, so under the rule above the 32-page cap
+stands. At the default budget two 256 KiB requests in flight lose to four
+128 KiB ones; at 1 MiB four 256 KiB requests beat eight 128 KiB ones. The
+evidence supports wider vectors only where the budget still keeps at least four
+in flight, which would pair them with the owner's 1 MiB default decision.
+
+An earlier attempt with the non-diagnostic candidate stopped once on "scan
+request exceeded bounded progress limit". The bound counts polls, about a
+second of busy polling on this guest, so a device stall and a hang look alike
+there. 600 dedicated reproduction runs (300 per build) and the 800 samples
+above found no further stall; the cause is unexplained.
