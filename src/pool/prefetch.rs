@@ -80,13 +80,26 @@ pub(super) enum Admission {
     Obsolete,
 }
 
+/// The owner-selected default speculative budget (`readahead_coalescing.md`).
+pub(super) const READAHEAD_BUDGET_BYTES_DEFAULT: u32 = 524_288;
+
 impl PoolBuilder {
     /// Sets speculative credits, covering both in-flight and unconsumed pages.
-    /// Zero disables all speculative admission. The default is 524288 bytes,
-    /// rounded down to pages and bounded by spare frames and read capacity minus one.
+    /// Zero disables all speculative admission. An explicit count overrides
+    /// [`Self::readahead_budget_bytes`] and must fit the spare frames.
     #[must_use]
     pub fn prefetch_headroom(mut self, credits: u32) -> Self {
         self.prefetch_headroom = Some(credits);
+        self
+    }
+
+    /// Sets the speculative budget the default credits derive from: `bytes`
+    /// rounded down to whole pages, then bounded by spare frames and read
+    /// capacity minus one. The default is 524288 bytes; a budget below one page
+    /// disables speculative admission.
+    #[must_use]
+    pub fn readahead_budget_bytes(mut self, bytes: u32) -> Self {
+        self.readahead_budget_bytes = bytes;
         self
     }
 
@@ -107,7 +120,7 @@ impl PoolBuilder {
         let credits = self.prefetch_headroom.unwrap_or(
             spare
                 .min(self.max_inflight_reads.saturating_sub(1))
-                .min(524_288 / self.granule),
+                .min(self.readahead_budget_bytes / self.granule),
         );
         if credits > spare {
             return Err(PoolConfigError::PrefetchHeadroomTooLarge {

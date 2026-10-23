@@ -710,6 +710,7 @@ pub struct PoolBuilder {
     registration_policy: RegistrationPolicy,
     arena_lock: ArenaLockPolicy,
     prefetch_headroom: Option<u32>,
+    readahead_budget_bytes: u32,
     readahead: Readahead,
     direct_map_file_bytes: u64,
     #[cfg(feature = "bench")]
@@ -732,6 +733,7 @@ impl Default for PoolBuilder {
             registration_policy: RegistrationPolicy::Auto,
             arena_lock: ArenaLockPolicy::BestEffort,
             prefetch_headroom: None,
+            readahead_budget_bytes: prefetch::READAHEAD_BUDGET_BYTES_DEFAULT,
             readahead: Readahead::Automatic,
             direct_map_file_bytes: residency::DIRECT_MAP_FILE_BYTES_DEFAULT,
             #[cfg(feature = "bench")]

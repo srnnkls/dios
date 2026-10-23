@@ -80,6 +80,71 @@ fn read_ranges(pool: &Pool<MockDriver>) -> Vec<(u64, u32)> {
         .collect()
 }
 
+fn default_credits(frames: u32, reads: u32, budget_bytes: Option<u32>, pages: Option<u32>) -> u32 {
+    let mock = MockDriver::builder()
+        .seed(91)
+        .frames(frames)
+        .frame_bytes(4096)
+        .queue_capacity(1024)
+        .build();
+    let mut builder = Pool::builder()
+        .frame_count(frames)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(reads)
+        .miss_headroom(3 * reads);
+    if let Some(bytes) = budget_bytes {
+        builder = builder.readahead_budget_bytes(bytes);
+    }
+    if let Some(pages) = pages {
+        builder = builder.prefetch_headroom(pages);
+    }
+    builder
+        .build_on(mock)
+        .expect("bounded pool")
+        .prefetch_stats()
+        .capacity
+}
+
+#[test]
+fn the_byte_budget_sets_default_credits_within_spare_frames_and_read_capacity() {
+    assert_eq!(
+        default_credits(4096, 512, None, None),
+        128,
+        "the default stays 512 KiB"
+    );
+    assert_eq!(
+        default_credits(4096, 512, Some(1 << 20), None),
+        256,
+        "1 MiB of 4 KiB pages"
+    );
+    assert_eq!(
+        default_credits(4096, 512, Some((1 << 20) + 4095), None),
+        256,
+        "the budget rounds down to whole pages"
+    );
+    assert_eq!(
+        default_credits(4096, 64, Some(1 << 20), None),
+        63,
+        "read capacity minus one bounds the budget"
+    );
+    assert_eq!(
+        default_credits(1600, 512, Some(1 << 20), None),
+        63,
+        "spare frames bound the budget"
+    );
+    assert_eq!(
+        default_credits(4096, 512, Some(4095), None),
+        0,
+        "a budget below one page disables speculation"
+    );
+    assert_eq!(
+        default_credits(4096, 512, Some(1 << 20), Some(16)),
+        16,
+        "an explicit page count overrides the budget"
+    );
+}
+
 #[test]
 fn explicit_prefetch_is_queued_and_coalesces_with_demand() {
     let (pool, file) = fixture(Some(Readahead::Disabled), 8);

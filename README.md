@@ -105,11 +105,12 @@ extending a window one page at a time can therefore produce point reads.
 Automatic forward-sequential detection is enabled by default. Set
 `.readahead(dios::Readahead::Disabled)` on the builder to use explicit hints
 alone. `.prefetch_headroom(16)` sets an explicit page-credit ceiling;
-`.prefetch_headroom(0)` disables all speculation. The default ceiling derives
-from a 512 KiB (524,288-byte) budget, rounded down to whole pool granules:
-128 pages at 4 KiB. Spare frames and the configured in-flight read limit minus
-one further cap those credits. A pool configured for only one in-flight read
-therefore has no default speculative capacity.
+`.prefetch_headroom(0)` disables all speculation. Otherwise the ceiling derives
+from `.readahead_budget_bytes(...)`, 512 KiB (524,288 bytes) by default, rounded
+down to whole pool granules: 128 pages at 4 KiB. Spare frames and the
+configured in-flight read limit minus one further cap those credits, so a
+1 MiB budget at 4 KiB needs at least 257 in-flight reads to reach 256 pages. A
+pool configured for only one in-flight read has no default speculative capacity.
 
 Credits cover reads in flight and unconsumed resident pages. Per-reader
 training starts with consecutive cold demands and extends through confirmed
