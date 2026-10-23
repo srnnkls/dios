@@ -43,10 +43,27 @@ ms; mmap 57.4 against 512 KiB 64.0 ms. The escalation lever ran on the
 driver probe (`probe-sample`, 768 MiB in 128 KiB groups, two rounds): READV
 over scattered frames, one contiguous READ and READV over adjacent buffers
 each read 1.0–1.4 GiB/s at depth 4 and at depth 8, with no consistent order.
-This disk saturates at depth 4, so a 64 MiB scan bottoms out near 50–58 ms for
-dios and mmap alike; the probe did not reproduce the earlier fio row of
-1,662 MiB/s at depth 8. The default stays 512 KiB. The budget is now a builder knob,
+The probe samples carry the same drift as the scans, so they do not establish
+a depth-4 ceiling; the confirmation below supersedes that reading. The budget is now a builder knob,
 `PoolBuilder::readahead_budget_bytes`, so a host whose storage does keep gaining
 past depth 4 can select 1 MiB without the explicit page-count override; that
 knob changes no path at its default, and its gate is the pinned regression
 benches staying green.
+
+## High-repetition confirmation (pre-registered)
+
+Recorded before running: the qualification sample's per-pair log-ratio SD is
+0.245 (single scans range 40.7–87.5 ms as the guest's disk drifts), so 30 pairs
+resolve only about ±8%, while one matched traced pair read 45.5 ms at 1 MiB
+(8 requests in flight) against 61.6 ms at 512 KiB (4). Confirmation: 200
+further alternating pairs of the same two configurations, same executable and
+the same 0.95 bound, adopted whichever way it goes and not pooled with the
+qualification sample.
+
+Confirmation, 200 pairs: geomean **0.8764**, one-sided 95% upper **0.8963**
+against 0.95 → **PASS**, adopted under the rule above. Medians 58.191 ms at
+512 KiB against 49.488 ms at 1 MiB. The qualification FAIL was noise-limited:
+on this guest a doubled budget keeps eight 128 KiB vectors in flight and the
+disk delivers them about 12% faster. Changing the default remains the owner's
+decision; `readahead_budget_bytes(1 << 20)` with at least 257 in-flight reads
+selects it.
