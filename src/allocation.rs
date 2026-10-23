@@ -85,6 +85,21 @@ const MAP_ANONYMOUS: c_int = 0x20;
 const MAP_ANONYMOUS: c_int = 0x1000;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("MAP_ANONYMOUS is target-specific; add this target's value from sys/mman.h");
+#[cfg(target_os = "linux")]
+const MAP_NORESERVE: c_int = 0x4000;
+#[cfg(not(target_os = "linux"))]
+const MAP_NORESERVE: c_int = 0;
+
+#[cfg(all(target_os = "linux", not(miri), not(loom)))]
+unsafe extern "C" {
+    fn madvise(addr: *mut c_void, len: usize, advice: c_int) -> c_int;
+}
+
+// asm-generic/mman-common.h values, uniform across the linux build targets.
+#[cfg(all(target_os = "linux", not(miri), not(loom)))]
+const MADV_DONTNEED: c_int = 4;
+#[cfg(all(target_os = "linux", not(miri), not(loom)))]
+const MADV_NOHUGEPAGE: c_int = 15;
 
 /// One anonymous private mapping whose pages the kernel materialises on first
 /// touch, so mapping a span costs no more than its page tables until a read
@@ -104,6 +119,26 @@ impl MappedArena {
     /// Maps `len` bytes (rounded up to whole pages) at an address that is a
     /// multiple of `align`.
     pub(crate) fn try_map(len: usize, align: usize) -> Option<Self> {
+        Self::try_map_with_flags(len, align, 0)
+    }
+
+    /// Maps a large span that is touched sparsely. Commit accounting is not
+    /// reserved up front, so a span far beyond physical memory still maps, and
+    /// transparent hugepages are refused so one touched entry commits one base
+    /// page rather than two megabytes.
+    pub(crate) fn try_map_sparse(len: usize) -> Option<Self> {
+        let arena = Self::try_map_with_flags(len, page_size(), MAP_NORESERVE)?;
+        #[cfg(all(target_os = "linux", not(miri), not(loom)))]
+        {
+            // SAFETY: the span is the live private mapping just created and
+            // owned solely here; the advice only sets a VMA flag. A refusal
+            // (a kernel without THP) leaves base pages, which is the intent.
+            let _ = unsafe { madvise(arena.raw, arena.total, MADV_NOHUGEPAGE) };
+        }
+        Some(arena)
+    }
+
+    fn try_map_with_flags(len: usize, align: usize, flags: c_int) -> Option<Self> {
         assert!(len > 0, "fixed arena mappings are non-empty");
         assert!(align.is_power_of_two(), "arena alignment is a power of two");
         let page = page_size();
@@ -117,7 +152,7 @@ impl MappedArena {
                 std::ptr::null_mut(),
                 total,
                 PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS,
+                MAP_PRIVATE | MAP_ANONYMOUS | flags,
                 -1,
                 0,
             )
@@ -147,6 +182,38 @@ impl MappedArena {
     #[cfg(any(test, feature = "bench"))]
     pub(crate) fn mapped_len(&self) -> usize {
         self.total
+    }
+
+    /// Returns the whole pages inside `offset..offset + len` to the kernel; the
+    /// next touch reads zeros again. Callers discard only ranges whose bytes
+    /// are already all zero, so a concurrent reader observes the same value
+    /// before, during and after.
+    pub(crate) fn discard_zeroed(&self, offset: usize, len: usize) {
+        assert!(
+            offset.checked_add(len).is_some_and(|end| end <= self.len),
+            "a discarded range lies within the mapping"
+        );
+        let page = page_size();
+        let start = (self.base.as_ptr().addr() + offset).next_multiple_of(page);
+        let end = (self.base.as_ptr().addr() + offset + len) / page * page;
+        if end <= start {
+            return;
+        }
+        #[cfg(all(target_os = "linux", not(miri), not(loom)))]
+        {
+            // SAFETY: `start..end` is whole pages inside this live private
+            // mapping, and every byte there is already zero (caller contract),
+            // so replacing the pages with zero-fill changes no value any
+            // reader can observe. The result is ignored: a refusal only keeps
+            // memory committed.
+            let _ = unsafe {
+                madvise(
+                    self.base.as_ptr().with_addr(start).cast(),
+                    end - start,
+                    MADV_DONTNEED,
+                )
+            };
+        }
     }
 }
 
@@ -302,6 +369,54 @@ impl<T: ZeroVacant> MappedSlice<T> {
             len: 0,
             _elements: PhantomData,
         }
+    }
+
+    /// A table of `len` vacant elements that is reserved without commit
+    /// accounting and touched sparsely (see [`MappedArena::try_map_sparse`]).
+    pub(crate) fn try_vacant_sparse(len: usize) -> Option<Self> {
+        let layout = Layout::array::<T>(len).ok()?;
+        if layout.size() == 0 {
+            return Some(Self {
+                mapping: None,
+                len,
+                _elements: PhantomData,
+            });
+        }
+        assert!(
+            layout.align() <= page_size(),
+            "a sparse table's elements align within one page"
+        );
+        let mapping = MappedArena::try_map_sparse(layout.size())?;
+        #[cfg(loom)]
+        {
+            let base = mapping.base().cast::<T>();
+            for index in 0..len {
+                // SAFETY: `base` is aligned for `T` and spans `len` elements.
+                unsafe { base.as_ptr().wrapping_add(index).write(T::vacant()) };
+            }
+        }
+        Some(Self {
+            mapping: Some(mapping),
+            len,
+            _elements: PhantomData,
+        })
+    }
+}
+
+impl<T> MappedSlice<T> {
+    /// Returns the whole pages covered by elements `start..start + count` to
+    /// the kernel. Every element in the range must already hold its all-zero
+    /// vacant value, so readers observe vacant elements throughout.
+    pub(crate) fn discard_vacant(&self, start: usize, count: usize) {
+        let Some(mapping) = self.mapping.as_ref() else {
+            return;
+        };
+        assert!(
+            start.checked_add(count).is_some_and(|end| end <= self.len),
+            "a discarded element range lies within the table"
+        );
+        let element = size_of::<T>();
+        mapping.discard_zeroed(start * element, count * element);
     }
 }
 

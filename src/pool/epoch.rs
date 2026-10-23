@@ -51,6 +51,7 @@ pub(crate) struct PinCommit {
 }
 
 impl PinCommit {
+    #[inline]
     pub(crate) fn frame(&self) -> ReadFrameIdx {
         self.frame
     }
@@ -167,6 +168,7 @@ impl ReaderSlot {
         self.occupied.store(false, Ordering::Release);
     }
 
+    #[inline]
     fn guard_count(&self) -> u64 {
         self.guard_count.load(Ordering::Relaxed)
     }
@@ -175,6 +177,7 @@ impl ReaderSlot {
     /// on its FIRST live guard — a nested pin finds a non-zero count and keeps the
     /// epoch already published by the outer guard. The returned witness must be
     /// committed or aborted on this slot.
+    #[inline]
     pub(crate) fn begin_pin(&self, global_epoch: u64) -> PinBegun {
         assert!(
             global_epoch != QUIESCENT,
@@ -203,6 +206,7 @@ impl ReaderSlot {
         clippy::needless_pass_by_value,
         reason = "the begun witness is linear: committing consumes it so it cannot also be aborted"
     )]
+    #[inline]
     pub(crate) fn commit_pin(&self, begun: PinBegun, frame: ReadFrameIdx) -> PinCommit {
         let taken = self
             .guard_count()
@@ -228,6 +232,7 @@ impl ReaderSlot {
         clippy::needless_pass_by_value,
         reason = "the begun witness is linear: aborting consumes it so it cannot also be committed"
     )]
+    #[inline]
     pub(crate) fn abort_pin(&self, begun: PinBegun) {
         let PinBegun { first, .. } = begun;
         if first {
@@ -238,6 +243,7 @@ impl ReaderSlot {
 
     /// Drops one live guard; the reader goes quiescent on its last guard so a
     /// published epoch never outlives the guards that justified it.
+    #[inline]
     pub(crate) fn release_guard(&self) {
         let count = self.guard_count();
         assert!(count > 0, "a released guard was previously committed");
@@ -389,10 +395,12 @@ impl ReaderCtx {
         }
     }
 
+    #[inline]
     pub(crate) fn slot(&self) -> &ReaderSlot {
         &self.registry.slots[self.slot as usize]
     }
 
+    #[inline]
     pub(crate) fn belongs_to(&self, registry: &Arc<ReaderRegistry>) -> bool {
         Arc::ptr_eq(&self.registry, registry)
     }
@@ -497,6 +505,7 @@ pub struct FrameGuard<'pool> {
 }
 
 impl<'pool> FrameGuard<'pool> {
+    #[inline]
     pub(crate) fn new(
         bytes: &'pool [u8],
         slot: &'pool ReaderSlot,
@@ -518,12 +527,14 @@ impl<'pool> FrameGuard<'pool> {
 impl Deref for FrameGuard<'_> {
     type Target = [u8];
 
+    #[inline]
     fn deref(&self) -> &[u8] {
         self.bytes
     }
 }
 
 impl Drop for FrameGuard<'_> {
+    #[inline]
     fn drop(&mut self) {
         self.slot.release_guard();
     }

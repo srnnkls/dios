@@ -72,10 +72,12 @@ pub struct ReadFrameIdx(u32);
 
 impl ReadFrameIdx {
     #[must_use]
+    #[inline]
     pub fn new(frame: u32) -> Self {
         Self(frame)
     }
 
+    #[inline]
     pub(crate) fn get(self) -> u32 {
         self.0
     }
@@ -461,6 +463,7 @@ impl Frames {
     ///
     /// If the pinned frame is out of range for the configured count.
     #[must_use]
+    #[inline]
     pub(crate) fn frame_bytes(&self, pin: &PinCommit) -> &[u8] {
         let index = self.checked_index(pin.frame());
         debug_assert!(
@@ -637,6 +640,7 @@ impl Frames {
         }
     }
 
+    #[inline]
     fn granule_ptr(&self, index: usize) -> *mut u8 {
         debug_assert!(index < self.count as usize, "granule index in range");
         // SAFETY: `index * granule + granule <= span` because `index < count`.
@@ -648,6 +652,7 @@ impl Frames {
     /// No token may write frame `index` while the returned borrow lives: the
     /// caller holds a committed pin, the exclusive arena, or the not-`InFlight`
     /// observation under the driver lock.
+    #[inline]
     unsafe fn granule_slice(&self, index: usize) -> &[u8] {
         // SAFETY: the pointer lies within the arena and the mapping is zeroed
         // at construction, so every byte is initialized; the caller contract
@@ -655,6 +660,7 @@ impl Frames {
         unsafe { std::slice::from_raw_parts(self.granule_ptr(index), self.granule as usize) }
     }
 
+    #[inline]
     fn checked_index(&self, frame: ReadFrameIdx) -> usize {
         let index = frame.get() as usize;
         assert!(index < self.states.len(), "frame index out of range");

@@ -3,10 +3,12 @@
 //! the `Pool` that composes a driver behind `&self` entry points.
 //!
 //! The pool owns the driver it composes ([`PoolBackend`]) and unifies the read
-//! target with its own frames. The warm-hit `pin` probes the lock-free
-//! packed-atomic [`PageTable`]; every mutation — miss admission, completion
-//! routing, eviction, epoch advance/reclaim — runs under the AD-4 control-plane
-//! [`Mutex`]. The miss singleflight and the backend seam live in [`miss`].
+//! target with its own frames. The warm-hit `pin` translates through the
+//! lock-free residency map (one direct entry per granule of each file slot's
+//! leading span, the packed-atomic [`PageTable`] beyond it); every mutation —
+//! miss admission, completion routing, eviction, epoch advance/reclaim — runs
+//! under the AD-4 control-plane [`Mutex`]. The miss singleflight and the backend
+//! seam live in [`miss`].
 
 use std::cell::Cell;
 use std::mem::size_of;
@@ -42,6 +44,7 @@ pub mod loom_model;
 mod miss;
 mod prefetch;
 mod read_spans;
+mod residency;
 mod retention;
 mod table;
 pub(crate) mod write_arena;
@@ -214,18 +217,21 @@ pub struct PageId {
 impl PageId {
     /// Creates an extent identity from a file and granule index.
     #[must_use]
+    #[inline]
     pub fn new(file: FileId, granule_idx: u32) -> Self {
         Self { file, granule_idx }
     }
 
     /// Returns the opened file identity.
     #[must_use]
+    #[inline]
     pub fn file(self) -> FileId {
         self.file
     }
 
     /// Returns the zero-based granule index within the file.
     #[must_use]
+    #[inline]
     pub fn granule_idx(self) -> u32 {
         self.granule_idx
     }
@@ -702,6 +708,7 @@ pub struct PoolBuilder {
     arena_lock: ArenaLockPolicy,
     prefetch_headroom: Option<u32>,
     readahead: Readahead,
+    direct_map_file_bytes: u64,
     #[cfg(feature = "bench")]
     read_observation: Option<crate::driver::observation::ReadObservationConfig>,
 }
@@ -723,6 +730,7 @@ impl Default for PoolBuilder {
             arena_lock: ArenaLockPolicy::BestEffort,
             prefetch_headroom: None,
             readahead: Readahead::Automatic,
+            direct_map_file_bytes: residency::DIRECT_MAP_FILE_BYTES_DEFAULT,
             #[cfg(feature = "bench")]
             read_observation: None,
         }
@@ -820,6 +828,19 @@ impl PoolBuilder {
     #[must_use]
     pub fn require_locked(mut self) -> Self {
         self.arena_lock = ArenaLockPolicy::Required;
+        self
+    }
+
+    /// Sets the leading byte span of every registered file whose pages
+    /// translate through a direct per-file map: one load per warm lookup, no
+    /// hashing or probing. Pages beyond it use the bounded hash table. The
+    /// span is reserved as address space for each file slot (four bytes per
+    /// granule) and committed only as touched; a retired file releases its
+    /// pages. Zero routes every page through the hash table. The default is
+    /// 16 GiB.
+    #[must_use]
+    pub fn direct_map_file_bytes(mut self, bytes: u64) -> Self {
+        self.direct_map_file_bytes = bytes;
         self
     }
 
@@ -1104,7 +1125,7 @@ impl ProductOp {
 #[derive(Debug)]
 pub struct Pool<D = Driver> {
     frames: Arc<Frames>,
-    table: PageTable,
+    table: residency::ResidencyMap,
     clock: Clock,
     global_epoch: AtomicU64,
     readers: Arc<ReaderRegistry>,
@@ -1286,8 +1307,13 @@ impl<D: PoolBackend> Pool<D> {
         let backend_capacity = driver.operation_capacity();
         assert!(backend_capacity > 0, "the backend has operation slots");
         let control = Self::try_preallocated_control(&config, backend_capacity)?;
-        let table = PageTable::try_with_frame_count(config.frame_count)
-            .ok_or(PoolBuildError::Allocation)?;
+        let table = residency::ResidencyMap::try_new(
+            config.frame_count,
+            config.registered_file_capacity,
+            config.granule,
+            config.direct_map_file_bytes,
+        )
+        .ok_or(PoolBuildError::Allocation)?;
         let clock =
             Clock::try_with_frame_count(config.frame_count).ok_or(PoolBuildError::Allocation)?;
         #[cfg(feature = "bench")]
@@ -1662,27 +1688,70 @@ impl<D: PoolBackend> Pool<D> {
     /// # Panics
     ///
     /// If `reader` or the page's file identity belongs to another pool.
+    #[inline]
     pub fn get<'pool>(
         &'pool self,
         reader: &'pool ReaderCtx,
         page: PageId,
     ) -> Result<Get<'pool>, GetError> {
         self.assert_reader_owner(reader);
-        let reader_slot = reader.slot();
         assert_eq!(
             page.file().driver(),
             self.identity,
             "file identity used with a foreign pool"
         );
-        if !file_generation_is_live(
-            &self.file_live_generations[page.file().slot() as usize],
-            page.file(),
-        ) {
+        let live = &self.file_live_generations[page.file().slot() as usize];
+        if !file_generation_is_live(live, page.file()) {
             return Err(GetError::StaleFile { page });
         }
-        if let Some(guard) = self.pin_internal_borrowed(reader_slot, &page) {
+        if let Some(guard) = self.pin_live(reader.slot(), page, live) {
             return Ok(Get::Hit(guard));
         }
+        self.get_locked(reader, page)
+    }
+
+    /// The warm hit: publish the reader epoch, load the mapping, then re-read
+    /// the slot's liveness word. A direct entry is keyed by slot, not
+    /// generation, so the re-read is what rejects an entry a reused slot
+    /// inserted for a newer generation while this reader was between its
+    /// first liveness check and the load; the locked path then reports the
+    /// stale file.
+    #[inline]
+    fn pin_live<'pool>(
+        &'pool self,
+        slot: &'pool epoch::ReaderSlot,
+        page: PageId,
+        live: &AtomicU64,
+    ) -> Option<FrameGuard<'pool>> {
+        let begun = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
+        let Some(frame) = self.table.lookup(page) else {
+            slot.abort_pin(begun);
+            return None;
+        };
+        if !file_generation_is_live(live, page.file()) {
+            slot.abort_pin(begun);
+            return None;
+        }
+        let _ = self.clock.reference_from(frame, slot);
+        let pin = slot.commit_pin(begun, frame);
+        Some(FrameGuard::new(
+            self.frames.frame_bytes(&pin),
+            slot,
+            pin.frame(),
+            page.file().slot(),
+            &self.retention,
+        ))
+    }
+
+    /// Everything that is not a lock-free warm hit: the authoritative locked
+    /// re-check, then singleflight miss admission.
+    #[cold]
+    #[inline(never)]
+    fn get_locked<'pool>(
+        &'pool self,
+        reader: &'pool ReaderCtx,
+        page: PageId,
+    ) -> Result<Get<'pool>, GetError> {
         #[cfg(all(feature = "mock", not(loom)))]
         self.pause_cold_get_if_armed();
         let mut control = self.control();
@@ -1694,11 +1763,11 @@ impl<D: PoolBackend> Pool<D> {
             .lookup(page)
             .is_some_and(|frame| self.frames.state(frame) == FrameState::Resident)
         {
+            // Pinned under the control lock: neither eviction nor retirement
+            // can move the mapping before the pin validates it.
+            let guard = self.pin_internal_borrowed(reader.slot(), &page);
             drop(control);
-            return Ok(match self.pin_internal_borrowed(reader_slot, &page) {
-                Some(guard) => Get::Hit(guard),
-                None => Get::Busy,
-            });
+            return Ok(guard.map_or(Get::Busy, Get::Hit));
         }
         control.prefetch.reconcile(&self.clock);
         let result = self.get_cold(page, reader.index(), &mut control);
@@ -2269,6 +2338,7 @@ impl<D: PoolBackend> Pool<D> {
                 }
                 if self.driver.is_closed(file) {
                     entry.state = PoolFileState::Retired;
+                    self.table.release_slot(file.slot());
                 }
             }
         }
@@ -2389,6 +2459,7 @@ impl<D: PoolBackend> Pool<D> {
         Some((self.frames.frame_bytes(&pin), pin.frame()))
     }
 
+    #[inline]
     fn assert_reader_owner(&self, reader: &ReaderCtx) {
         assert!(
             reader.belongs_to(&self.readers),
@@ -3016,6 +3087,7 @@ pub(crate) fn acquire_resident_file_lease(
     ResidentLeaseState::acquire(state, file)
 }
 
+#[inline]
 fn file_live_word(file: FileId) -> u64 {
     (u64::from(file.generation()) << 1) | 1
 }
@@ -3038,6 +3110,7 @@ fn publish_live_file(
     live_generation.store(file_live_word(id), Ordering::Release);
 }
 
+#[inline]
 fn file_generation_is_live(live_generation: &AtomicU64, file: FileId) -> bool {
     live_generation.load(Ordering::Acquire) == file_live_word(file)
 }

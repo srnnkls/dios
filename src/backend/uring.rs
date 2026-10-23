@@ -26,8 +26,10 @@ use crate::driver::{
     RingExecutor, RingReap,
 };
 use crate::error::IoError;
+#[cfg(any(feature = "mock", feature = "bench"))]
+use crate::pool::ReadFrameIdx;
 use crate::pool::write_arena::ArenaState;
-use crate::pool::{Frames, InFlightFrame, PoolConfigError, ReadFrameIdx};
+use crate::pool::{Frames, InFlightFrame, PoolConfigError};
 use crate::product::{PlatformWake, WaitState};
 
 const EINTR: i32 = 4;

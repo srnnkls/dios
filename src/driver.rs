@@ -935,6 +935,7 @@ pub struct FileId {
 }
 
 impl FileId {
+    #[inline]
     pub(crate) fn new(driver: u64, slot: u32, generation: u32) -> Self {
         Self {
             driver,
@@ -943,14 +944,17 @@ impl FileId {
         }
     }
 
+    #[inline]
     pub(crate) fn driver(self) -> u64 {
         self.driver
     }
 
+    #[inline]
     pub(crate) fn slot(self) -> u32 {
         self.slot
     }
 
+    #[inline]
     pub(crate) fn generation(self) -> u32 {
         self.generation
     }
