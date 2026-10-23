@@ -5,6 +5,7 @@
 //! The limit-lowering cases serialise on one gate because `setrlimit` is
 //! process-wide and the harness runs tests on threads.
 
+use std::cell::Cell;
 use std::ffi::c_int;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -54,6 +55,93 @@ unsafe extern "C" {
     fn setrlimit(resource: c_int, rlim: *const Rlimit) -> c_int;
 }
 
+/// `CAP_IPC_LOCK` exempts a thread from `RLIMIT_MEMLOCK`, so a test thread
+/// holding it (root) never meets the floor. Capabilities are per thread: the
+/// floor clears the bit from this thread's effective set, keeps it permitted,
+/// and the limit guard raises it again.
+#[cfg(target_os = "linux")]
+mod ipc_lock {
+    use std::ffi::c_int;
+
+    const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+    const CAP_IPC_LOCK: u32 = 14;
+
+    #[repr(C)]
+    struct Header {
+        version: u32,
+        pid: c_int,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub(super) struct Data {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
+
+    // capget(2)/capset(2) as glibc and musl export them; version 3 takes two
+    // `Data` words, the first covering capabilities 0..32.
+    unsafe extern "C" {
+        fn capget(header: *mut Header, data: *mut Data) -> c_int;
+        fn capset(header: *mut Header, data: *const Data) -> c_int;
+    }
+
+    fn header() -> Header {
+        Header {
+            version: LINUX_CAPABILITY_VERSION_3,
+            pid: 0,
+        }
+    }
+
+    fn get() -> [Data; 2] {
+        let mut data = [Data {
+            effective: 0,
+            permitted: 0,
+            inheritable: 0,
+        }; 2];
+        let mut header = header();
+        // SAFETY: `header` and the two-word `data` array are live and writable
+        // for the call, the layout capget(2) fills for version 3; pid 0 names
+        // the calling thread.
+        let rc = unsafe { capget(&raw mut header, data.as_mut_ptr()) };
+        assert_eq!(rc, 0, "capget(2) reads this thread's capabilities");
+        data
+    }
+
+    fn set(data: &[Data; 2]) {
+        let mut header = header();
+        // SAFETY: `header` and the two-word `data` array are live for the call
+        // and capset(2) only reads them; pid 0 names the calling thread.
+        let rc = unsafe { capset(&raw mut header, data.as_ptr()) };
+        assert_eq!(rc, 0, "capset(2) changes this thread's effective set");
+    }
+
+    fn holds(data: &[Data; 2]) -> bool {
+        data[0].effective & (1 << CAP_IPC_LOCK) != 0
+    }
+
+    /// Clears `CAP_IPC_LOCK` from the calling thread's effective set, returning
+    /// the prior sets when it was effective.
+    pub(super) fn drop_effective() -> Option<[Data; 2]> {
+        let saved = get();
+        if !holds(&saved) {
+            return None;
+        }
+        let mut cleared = saved;
+        cleared[0].effective &= !(1 << CAP_IPC_LOCK);
+        set(&cleared);
+        assert!(!holds(&get()), "CAP_IPC_LOCK left the effective set");
+        Some(saved)
+    }
+
+    pub(super) fn restore(saved: &[Data; 2]) {
+        assert!(holds(saved), "only an effective CAP_IPC_LOCK is restored");
+        set(saved);
+        assert!(holds(&get()), "CAP_IPC_LOCK is effective again");
+    }
+}
+
 static LIMIT_GATE: Mutex<()> = Mutex::new(());
 static UNIQUE: AtomicU32 = AtomicU32::new(0);
 
@@ -73,6 +161,8 @@ fn memlock_limit() -> Rlimit {
 struct MemlockLimitGuard {
     _gate: MutexGuard<'static, ()>,
     ambient: Rlimit,
+    #[cfg(target_os = "linux")]
+    ipc_lock: Cell<Option<[ipc_lock::Data; 2]>>,
 }
 
 impl MemlockLimitGuard {
@@ -81,6 +171,8 @@ impl MemlockLimitGuard {
         Self {
             _gate: gate,
             ambient: memlock_limit(),
+            #[cfg(target_os = "linux")]
+            ipc_lock: Cell::new(None),
         }
     }
 
@@ -97,6 +189,11 @@ impl MemlockLimitGuard {
         // SAFETY: `lowered` is a live `Rlimit` for the call's duration.
         let rc = unsafe { setrlimit(RLIMIT_MEMLOCK, &raw const lowered) };
         assert_eq!(rc, 0, "lowering the soft RLIMIT_MEMLOCK succeeds");
+        assert!(
+            self.ipc_lock.get().is_none(),
+            "the floor lowers once per guard"
+        );
+        self.ipc_lock.set(ipc_lock::drop_effective());
         assert_eq!(
             memlock_limit().rlim_cur,
             bytes,
@@ -107,6 +204,10 @@ impl MemlockLimitGuard {
 
 impl Drop for MemlockLimitGuard {
     fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        if let Some(saved) = self.ipc_lock.take() {
+            ipc_lock::restore(&saved);
+        }
         // SAFETY: `self.ambient` is a live `Rlimit` for the call's duration.
         let rc = unsafe { setrlimit(RLIMIT_MEMLOCK, &raw const self.ambient) };
         assert_eq!(rc, 0, "restoring the ambient RLIMIT_MEMLOCK succeeds");
