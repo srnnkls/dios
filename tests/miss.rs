@@ -94,7 +94,8 @@ use dios::testing::{
     ReadFrameIdx,
 };
 use dios::{
-    DirectIo, FrameGuard, Get, GetError, PageId, PendingToken, Pool, ReaderCtx, ReadyResult,
+    DirectIo, FrameGuard, Get, GetError, PageId, PendingToken, Pool, Readahead, ReaderCtx,
+    ReadyResult,
 };
 
 const GRANULE: u32 = 4096;
@@ -771,6 +772,104 @@ fn a_successful_unconsumed_token_protects_its_exact_frame_until_drop() {
         ),
         "after the last token drops, the successful frame returns to normal CLOCK eviction"
     );
+}
+
+#[test]
+fn a_scan_past_a_full_pool_reclaims_its_victim_within_the_miss_when_no_guard_pins_it() {
+    let frames = 8u32;
+    let pages = frames * 4;
+    let fill_of = |granule_idx: u32| u8::try_from(0x10 + granule_idx).expect("small fixture fill");
+    let mock = a_mock(0x5CA7_F011, frames, frames);
+    let file = mock
+        .open(Path::new("miss-full-pool-scan"), DirectIo::Disabled)
+        .expect("mock open");
+    let file_id = file.file_id();
+    for granule_idx in 0..pages {
+        mock.seed_page(&file, granule_idx, fill_of(granule_idx));
+    }
+    let pool = Pool::builder()
+        .frame_count(frames)
+        .granule(GRANULE)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .readahead(Readahead::Disabled)
+        .build_on(mock)
+        .expect("a watermark-satisfying pool composes over the mock driver");
+    pool.register_file(file);
+    let reader = pool.register_reader().expect("a reader slot");
+
+    for granule_idx in 0..pages {
+        let page = PageId::new(file_id, granule_idx);
+        let token = match expect_live(pool.get(&reader, page), "scan get") {
+            Get::Pending(token) => token,
+            Get::Hit(_) => panic!("page {granule_idx}: a forward scan never revisits a page"),
+            Get::Busy => panic!(
+                "page {granule_idx}: no guard pins the evicted victim, so the bounded reclaim frees it"
+            ),
+        };
+        let guard = drive_ready(&pool, &reader, token);
+        assert_page_bytes(&guard, fill_of(granule_idx));
+    }
+    assert_eq!(
+        pool.driver().read_attempts_in_order().len(),
+        pages as usize,
+        "every page cost exactly one read: no admission was refused and retried"
+    );
+    assert_eq!(
+        frames_in_state(&pool, frames, FrameState::Resident),
+        frames,
+        "the scan ends with every frame resident"
+    );
+}
+
+#[test]
+fn a_guard_held_across_a_full_pool_miss_keeps_the_victim_in_its_grace_period() {
+    let frames = 8u32;
+    let fill_of = |granule_idx: u32| u8::try_from(0x40 + granule_idx).expect("small fixture fill");
+    let mock = a_mock(0x6EA2_D0FF, frames, frames);
+    let file = mock
+        .open(Path::new("miss-full-pool-pinned"), DirectIo::Disabled)
+        .expect("mock open");
+    let file_id = file.file_id();
+    for granule_idx in 0..=frames {
+        mock.seed_page(&file, granule_idx, fill_of(granule_idx));
+    }
+    let pool = Pool::builder()
+        .frame_count(frames)
+        .granule(GRANULE)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .readahead(Readahead::Disabled)
+        .build_on(mock)
+        .expect("a watermark-satisfying pool composes over the mock driver");
+    pool.register_file(file);
+    let reader = pool.register_reader().expect("a reader slot");
+    for granule_idx in 0..frames {
+        let token = expect_pending(pool.get(&reader, PageId::new(file_id, granule_idx)), "fill");
+        drop(drive_ready(&pool, &reader, token));
+    }
+
+    let held = match expect_live(pool.get(&reader, PageId::new(file_id, 0)), "held get") {
+        Get::Hit(guard) => guard,
+        Get::Pending(_) | Get::Busy => panic!("a filled page is resident"),
+    };
+    let surplus = PageId::new(file_id, frames);
+    assert!(
+        matches!(
+            expect_live(pool.get(&reader, surplus), "pinned miss"),
+            Get::Busy
+        ),
+        "a reader pinned across the miss blocks its victim's second grace advance"
+    );
+    assert_page_bytes(&held, fill_of(0));
+    drop(held);
+
+    let token = expect_pending(pool.get(&reader, surplus), "retry after the guard drops");
+    assert_page_bytes(&drive_ready(&pool, &reader, token), fill_of(frames));
 }
 
 #[test]

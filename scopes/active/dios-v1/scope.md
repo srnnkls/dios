@@ -467,9 +467,10 @@ DIO-G10 n=256/4,096 trace shows a material win over independent gets.
   capacity fails at registration. Within the watermark, `Busy` is
   bounded, retriable backpressure — never deadlock: `get()` runs one
   bounded reclaim attempt (drain completions, advance the epoch if
-  possible, reclaim expired Evicting frames, one more CLOCK sweep)
-  before returning `Busy`, so it is reachable only under reclamation
-  lag or a stalled reader, always retriable via `poll()`; recovery is
+  possible, reclaim expired Evicting frames, one more CLOCK sweep and the
+  two advances its victim needs) before returning `Busy`, so it is
+  reachable only under reclamation lag or a stalled reader, always
+  retriable via `poll()`; recovery is
   pinned by DIO-G7 and a Busy-rate counter keeps frequency observable.
   `miss_headroom ≥ 3 × max_inflight_reads`: one InFlight frame per
   outstanding miss plus up to two grace periods of Evicting limbo, since

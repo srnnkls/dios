@@ -1,0 +1,13 @@
+diff --git a/benches/mmap_workloads/mod.rs b/benches/mmap_workloads/mod.rs
+index e4727e6..0b50bcb 100644
+--- a/benches/mmap_workloads/mod.rs
++++ b/benches/mmap_workloads/mod.rs
+@@ -259,7 +259,7 @@ fn sample_check_workers(workers: &[engine::WorkerResult], expected: u64) -> Resu
+ }
+ 
+ fn sample_check_limit(lane: Lane, before: &serde_json::Value) -> Result<(), String> {
+-    if lane.cache() == Cache::Pressure {
++    if lane.cache() == Cache::Pressure && std::env::var_os("SCRATCH_NO_CGROUP").is_none() {
+         if before["memory.max"] != "134217728" {
+             return Err("pressure lane requires MemoryMax=128M".to_owned());
+         }

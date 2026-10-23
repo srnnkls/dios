@@ -11,7 +11,10 @@ use crate::product::WaitState;
 use crate::sync::Mutex;
 use crate::sync::{AtomicBool, AtomicU32, Ordering};
 
-use super::{FrameGuard, ReadFrameIdx, epoch::FrameOutcome};
+use super::{
+    FrameGuard, ReadFrameIdx,
+    epoch::{EVICTION_GRACE_EPOCHS, FrameOutcome},
+};
 
 const HELD: u32 = 1 << 16;
 const COUNT_MASK: u32 = u16::MAX as u32;
@@ -417,7 +420,7 @@ impl Retention {
             let frame = ReadFrameIdx::new(frame);
             let tag = self.tag(frame).load(Ordering::Relaxed);
             assert!(
-                tag.saturating_add(2) <= pass_start_epoch,
+                tag.saturating_add(EVICTION_GRACE_EPOCHS) <= pass_start_epoch,
                 "a release-ring tag matured before this reclaim pass"
             );
             let word = self.word(frame).load(Ordering::Acquire);

@@ -11,6 +11,7 @@ use std::thread;
 use std::time::Instant;
 
 use dios::PoolCompletionBatch;
+use dios::testing::{FrameState, PoolTestingExt as _, ReadFrameIdx};
 use dios::{DirectIo, Get, PageId, PendingToken, Pool, ReaderCtx, ReadyResult};
 #[cfg(dios_resident_hint)]
 use dios::{ResidentFileLease, ResidentHint};
@@ -132,6 +133,8 @@ struct CyclingProof {
 #[derive(Clone, Copy, Debug)]
 struct ReuseCycle {
     page: u32,
+    busy_before_admission: u32,
+    admission_census: FrameCensus,
     reclaimed_frames: u32,
     backend_completions: u32,
     reused_frame: u64,
@@ -139,10 +142,29 @@ struct ReuseCycle {
 
 const EMPTY_REUSE_CYCLE: ReuseCycle = ReuseCycle {
     page: 0,
+    busy_before_admission: 0,
+    admission_census: FrameCensus::EMPTY,
     reclaimed_frames: 0,
     backend_completions: 0,
     reused_frame: 0,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FrameCensus {
+    free: u32,
+    in_flight: u32,
+    resident: u32,
+    evicting: u32,
+}
+
+impl FrameCensus {
+    const EMPTY: Self = Self {
+        free: 0,
+        in_flight: 0,
+        resident: 0,
+        evicting: 0,
+    };
+}
 
 #[repr(align(128))]
 struct ThreadAccumulator(AtomicU64);
@@ -535,20 +557,28 @@ fn cycling_reuse(
     counters: &mut CyclingProof,
     checksum: &mut u64,
 ) -> Result<ReuseCycle, String> {
-    match pool.get(reader, page).map_err(|error| error.to_string())? {
-        Get::Busy => {}
-        Get::Hit(_) | Get::Pending(_) => {
-            return Err("new cycling page did not produce controlled Busy".to_owned());
-        }
-    }
-    counters.evicted_frames += 1;
-    let reclaimed_frames = cycling_observe_reclaim(pool, counters)?;
-    let token = match pool.get(reader, page).map_err(|error| error.to_string())? {
-        Get::Pending(token) => token,
-        Get::Busy | Get::Hit(_) => {
-            return Err("reclaimed cycling page did not transition to Pending".to_owned());
-        }
+    let full = FrameCensus {
+        resident: CYCLING_FRAME_COUNT,
+        ..FrameCensus::EMPTY
     };
+    if cycling_census(pool) != full {
+        return Err("a cycling miss did not start from a full resident pool".to_owned());
+    }
+    let (token, busy_before_admission) = cycling_admit(pool, reader, page)?;
+    let admission_census = cycling_census(pool);
+    let admitted = FrameCensus {
+        in_flight: 1,
+        resident: CYCLING_FRAME_COUNT - 1,
+        ..FrameCensus::EMPTY
+    };
+    if admission_census != admitted {
+        return Err("admission did not move one evicted, reclaimed frame to InFlight".to_owned());
+    }
+    // With no frame Free or Evicting on either side, the InFlight frame left
+    // Resident, finished its grace period and was reclaimed inside admission.
+    let reclaimed_frames = full.resident - admission_census.resident - admission_census.evicting;
+    counters.evicted_frames += 1;
+    counters.reclaimed_frames += u64::from(reclaimed_frames);
     counters.actual_reads += 1;
     let (guard, backend_completions) = cycling_complete(pool, reader, token, counters)?;
     let reused_frame = u64::try_from(guard.as_ptr() as usize).map_err(display_error)?;
@@ -564,27 +594,50 @@ fn cycling_reuse(
     counters.reused_frames += 1;
     Ok(ReuseCycle {
         page: page.granule_idx(),
+        busy_before_admission,
+        admission_census,
         reclaimed_frames,
         backend_completions,
         reused_frame,
     })
 }
 
-fn cycling_observe_reclaim(pool: &Pool, counters: &mut CyclingProof) -> Result<u32, String> {
+/// Admits a new page into the full pool, counting the `Busy` answers before it.
+/// The harness links this runner against base and candidate libraries alike: a
+/// pool that reclaims its evicted victim within the miss admits at once, an
+/// earlier one concedes `Busy` until a poll matures the victim. Neither may
+/// complete a backend read before admission.
+fn cycling_admit(
+    pool: &Pool,
+    reader: &ReaderCtx,
+    page: PageId,
+) -> Result<(PendingToken, u32), String> {
     let mut completions = PoolCompletionBatch::with_capacity(0);
-    let mut reclaimed_frames = 0_u32;
-    for _ in 0..POLLS_MAX {
-        let report = pool.poll_report(&mut completions);
-        if report.backend_completions() != 0 {
-            return Err("Busy cycling miss had an admitted backend read".to_owned());
-        }
-        reclaimed_frames += report.reclaimed_frames();
-        counters.reclaimed_frames += u64::from(report.reclaimed_frames());
-        if reclaimed_frames > 0 {
-            return Ok(reclaimed_frames);
+    for busy_before_admission in 0..POLLS_MAX {
+        match pool.get(reader, page).map_err(|error| error.to_string())? {
+            Get::Pending(token) => return Ok((token, busy_before_admission)),
+            Get::Hit(_) => return Err("new cycling page was already resident".to_owned()),
+            Get::Busy => {
+                if pool.poll_report(&mut completions).backend_completions() != 0 {
+                    return Err("Busy cycling miss had an admitted backend read".to_owned());
+                }
+            }
         }
     }
-    Err("Busy cycling miss did not produce observed reclamation".to_owned())
+    Err("cycling admission exceeded the fixed poll bound".to_owned())
+}
+
+fn cycling_census(pool: &Pool) -> FrameCensus {
+    let mut census = FrameCensus::EMPTY;
+    for index in 0..CYCLING_FRAME_COUNT {
+        match pool.frame_state(ReadFrameIdx::new(index)) {
+            FrameState::Free => census.free += 1,
+            FrameState::InFlight => census.in_flight += 1,
+            FrameState::Resident => census.resident += 1,
+            FrameState::Evicting => census.evicting += 1,
+        }
+    }
+    census
 }
 
 fn cycling_complete<'pool>(
@@ -1064,16 +1117,22 @@ fn write_cycling_proof(
         .map(|cycle| {
             json!({
                 "page": cycle.page,
-                "busy_without_pending": true,
+                "busy_before_admission": cycle.busy_before_admission,
+                "admission": "pending",
+                "admission_census": {
+                    "free": cycle.admission_census.free,
+                    "in_flight": cycle.admission_census.in_flight,
+                    "resident": cycle.admission_census.resident,
+                    "evicting": cycle.admission_census.evicting,
+                },
                 "reclaimed_frames": cycle.reclaimed_frames,
-                "post_reclaim_get": "pending",
                 "backend_completions": cycle.backend_completions,
                 "reused_frame": cycle.reused_frame,
             })
         })
         .collect::<Vec<_>>();
     let value = json!({
-        "schema": "dios-drp009-cycling-proof-v1",
+        "schema": "dios-drp009-cycling-proof-v2",
         "manifest_sha256": sha256_path(&request.manifest)?,
         "process_csv_sha256": sha256_path(&request.output)?,
         "dimensions": {

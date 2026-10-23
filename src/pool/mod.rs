@@ -49,7 +49,9 @@ mod retention;
 mod table;
 pub(crate) mod write_arena;
 
-use epoch::{EvictQueue, FrameOutcome, PinCommit, ReaderRegistry, advance_epoch};
+use epoch::{
+    EVICTION_GRACE_EPOCHS, EvictQueue, FrameOutcome, PinCommit, ReaderRegistry, advance_epoch,
+};
 use miss::{MissEntry, MissInterests, MissOutcome, MissSlot, MissTable};
 use retention::Retention;
 
@@ -2578,7 +2580,8 @@ impl<D: PoolBackend> Pool<D> {
     }
 
     /// Finds a `Free` frame, or runs one bounded reclaim attempt (drain, advance,
-    /// reclaim, one CLOCK eviction) before conceding `Busy` (design.md Busy path).
+    /// reclaim, one CLOCK eviction, then the advances that eviction's grace period
+    /// needs) before conceding `Busy` (design.md Busy path).
     fn claim_frame(&self, control: &mut Control) -> Option<ReadFrameIdx> {
         let claimed = self.claim_frame_bounded(control);
         debug_assert!(
@@ -2598,7 +2601,12 @@ impl<D: PoolBackend> Pool<D> {
             return Some(frame);
         }
         self.evict_one_victim(control);
-        self.advance_and_reclaim(control);
+        // Back-to-back advances are as strict as advances at separate polls: a
+        // reader pinned across the first blocks the second, so a miss that no
+        // pinned reader overlaps reclaims its own victim instead of conceding `Busy`.
+        for _ in 0..EVICTION_GRACE_EPOCHS {
+            self.advance_and_reclaim(control);
+        }
         self.claim_free_frame(control)
     }
 

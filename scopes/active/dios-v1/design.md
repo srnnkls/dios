@@ -447,8 +447,8 @@ State per pool: `global_epoch: AtomicU64`; per registered reader thread a
   — the scan this design already has.
 - Busy path: `get()` finding no evictable frame runs one bounded reclaim
   attempt — drain completions, advance the epoch if every reader
-  permits, reclaim expired Evicting frames, one more CLOCK sweep — then
-  returns `Busy`. Within the watermark this makes `Busy` reachable only
+  permits, reclaim expired Evicting frames, one more CLOCK sweep and the
+  two advances its victim's grace period needs — then returns `Busy`. Within the watermark this makes `Busy` reachable only
   under reclamation lag or a stalled reader (INV-9); a Busy-rate counter
   keeps the frequency observable, and `miss_headroom ≥ 3 ×
   max_inflight_reads` covers InFlight frames plus two grace periods of

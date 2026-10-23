@@ -295,6 +295,11 @@ pub(crate) fn advance_epoch(global_epoch: &AtomicU64, slots: &[ReaderSlot]) -> u
     advanced
 }
 
+/// Global-epoch advances an evicted frame waits out before reuse. A reader that
+/// loaded the unmapped entry published an epoch no later than the eviction tag;
+/// the second advance requires every pinned reader to sit past that tag.
+pub(crate) const EVICTION_GRACE_EPOCHS: u64 = 2;
+
 /// The fixed-capacity ring of frames awaiting reclamation, each tagged with the
 /// global epoch at eviction. Capacity is the frame count — the most frames that
 /// can be `Evicting` at once — so it never grows after construction.
@@ -357,11 +362,11 @@ impl EvictQueue {
     ) -> usize {
         let mut reclaimed = 0usize;
         while let Some(&(frame, tagged_epoch)) = self.entries.front() {
-            if tagged_epoch.saturating_add(2) > global_epoch {
+            if tagged_epoch.saturating_add(EVICTION_GRACE_EPOCHS) > global_epoch {
                 break;
             }
             assert!(
-                tagged_epoch.saturating_add(2) <= global_epoch,
+                tagged_epoch.saturating_add(EVICTION_GRACE_EPOCHS) <= global_epoch,
                 "a reclaimed frame has aged two full epochs past its evict tag"
             );
             self.entries.pop_front();

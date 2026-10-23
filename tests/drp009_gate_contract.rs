@@ -489,14 +489,22 @@ fn assert_causal_reuse_proof(value: &Value) {
     );
     for (ordinal, cycle) in cycles.iter().enumerate() {
         assert_eq!(cycle["page"], 64 + ordinal);
-        assert_eq!(cycle["busy_without_pending"], true);
+        assert_eq!(
+            cycle["busy_before_admission"], 0,
+            "cycle {ordinal} reclaims its evicted victim within the miss"
+        );
+        assert_eq!(cycle["admission"], "pending");
+        assert_eq!(
+            cycle["admission_census"],
+            json!({"free": 0, "in_flight": 1, "resident": 63, "evicting": 0}),
+            "cycle {ordinal} admits through exactly one evicted and reclaimed frame"
+        );
         assert!(
             cycle["reclaimed_frames"]
                 .as_u64()
                 .is_some_and(|count| count > 0),
             "cycle {ordinal} observes reclamation before reuse"
         );
-        assert_eq!(cycle["post_reclaim_get"], "pending");
         assert_eq!(cycle["backend_completions"], 1);
         assert!(
             cycle["reused_frame"].as_u64().is_some(),
