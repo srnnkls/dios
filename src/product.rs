@@ -249,6 +249,8 @@ pub(crate) struct WaitState {
     generation: Mutex<WaitGeneration>,
     #[cfg(test)]
     generation_lock_acquisitions: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    signals: std::sync::atomic::AtomicU64,
     ring_pending_hint: AtomicBool,
     changed: Condvar,
     counters: WaitCounters,
@@ -271,10 +273,29 @@ impl WaitState {
         self.generation_lock_acquisitions.load(Ordering::Relaxed)
     }
 
+    #[cfg(test)]
+    fn signals(&self) -> u64 {
+        self.signals.load(Ordering::Relaxed)
+    }
+
+    /// Advances the generation, signalling only an entered park. Both park
+    /// paths raise `parks_in_progress` under the generation lock before they
+    /// block and re-read the generation first, so a wake that finds no parker
+    /// is still observed by the next park; signalling it would only cost a
+    /// futex wake, an eventfd write and the reap's drain and re-arm.
     pub(crate) fn wake(&self) {
         let mut generation = self.lock();
         generation.current = generation.current.wrapping_add(1);
+        let parked = self.counters.parks_in_progress.load(Ordering::Acquire) != 0;
         drop(generation);
+        if parked {
+            self.signal();
+        }
+    }
+
+    fn signal(&self) {
+        #[cfg(test)]
+        self.signals.fetch_add(1, Ordering::Relaxed);
         self.changed.notify_all();
         #[cfg(target_os = "linux")]
         if let Some(platform) = self.platform.get() {
@@ -290,11 +311,7 @@ impl WaitState {
             return;
         }
         generation.current = generation.current.wrapping_add(1);
-        self.changed.notify_all();
-        #[cfg(target_os = "linux")]
-        if let Some(platform) = self.platform.get() {
-            platform.notify();
-        }
+        self.signal();
         drop(generation);
     }
 
@@ -693,6 +710,50 @@ mod ring_pending_tests {
         assert!(
             observation.wait_until_parked(Duration::from_millis(1)),
             "entered park state is observable"
+        );
+    }
+
+    #[test]
+    fn wake_without_a_parker_advances_the_generation_without_signalling() {
+        let wait = Arc::new(WaitState::default());
+        let observation = observation(&wait);
+
+        wait.wake();
+        wait.wait(Duration::from_secs(5));
+
+        assert_eq!(wait.signals(), 0, "nobody was parked, so nobody is woken");
+        assert_never_parked(&observation);
+    }
+
+    #[test]
+    fn wake_during_an_entered_park_signals_once() {
+        let wait = Arc::new(WaitState::default());
+        let observation = observation(&wait);
+
+        std::thread::scope(|scope| {
+            let waiter_wait = Arc::clone(&wait);
+            let waiter = scope.spawn(move || waiter_wait.wait(Duration::from_secs(5)));
+            assert!(
+                observation.wait_until_parked(Duration::from_secs(1)),
+                "WaitState::wait enters its parked path"
+            );
+            wait.wake();
+            waiter.join().expect("the wake releases the parked waiter");
+        });
+
+        assert_eq!(
+            wait.signals(),
+            1,
+            "one entered park takes exactly one signal"
+        );
+        assert_eq!(
+            (
+                observation.parks_entered(),
+                observation.parks_exited(),
+                observation.wake_exits(),
+                observation.timeout_exits(),
+            ),
+            (1, 1, 1, 0)
         );
     }
 
