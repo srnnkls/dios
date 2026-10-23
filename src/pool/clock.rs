@@ -20,6 +20,17 @@ pub struct Clock {
     visits: super::diagnostics::DiagnosticCounter,
 }
 
+/// What a reader's touch did to its frame's replacement and speculation state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Touch {
+    /// The reference bit was already set; the touch stored nothing.
+    Repeat,
+    /// The touch set the reference bit.
+    Referenced,
+    /// The touch set the reference bit and consumed the frame's speculative read.
+    ConsumedSpeculation,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SpeculationOutcome {
     Absent,
@@ -64,7 +75,7 @@ impl Clock {
     #[must_use]
     #[inline]
     pub fn reference(&self, frame: ReadFrameIdx) -> bool {
-        self.reference_observed(frame, || None)
+        self.reference_observed(frame, || None) != Touch::Repeat
     }
 
     #[inline]
@@ -72,7 +83,7 @@ impl Clock {
         &self,
         frame: ReadFrameIdx,
         reader: &super::epoch::ReaderSlot,
-    ) -> bool {
+    ) -> Touch {
         self.reference_observed(frame, || reader.index())
     }
 
@@ -81,33 +92,44 @@ impl Clock {
         &self,
         frame: ReadFrameIdx,
         reader: impl FnOnce() -> Option<u32>,
-    ) -> bool {
+    ) -> Touch {
         let bit = &self.reference_bits[self.checked_index(frame)];
         if bit.load(Ordering::Relaxed) {
-            false
+            Touch::Repeat
         } else {
-            self.consume_speculation(frame, reader);
+            let consumed = self.consume_speculation(frame, reader);
             bit.store(true, Ordering::Relaxed);
             self.reference_stores.increment();
-            true
+            if consumed {
+                Touch::ConsumedSpeculation
+            } else {
+                Touch::Referenced
+            }
         }
     }
 
-    fn consume_speculation(&self, frame: ReadFrameIdx, reader: impl FnOnce() -> Option<u32>) {
+    /// Returns whether this touch consumed the frame's speculative read.
+    fn consume_speculation(
+        &self,
+        frame: ReadFrameIdx,
+        reader: impl FnOnce() -> Option<u32>,
+    ) -> bool {
         // This marker only arbitrates credit accounting. The page table and
         // EBR publish bytes and prevent frame reuse until this pin quiesces.
         let marker = &self.speculation[self.checked_index(frame)];
-        if marker.load(Ordering::Relaxed) == 1 {
-            let consumed = reader().map_or(u64::MAX, |reader| u64::from(reader) + 2);
-            // Release orders this reader's earlier speculative observations for
-            // bounded, ordered feedback reconciliation; EBR still owns bytes.
-            if marker
-                .compare_exchange(1, consumed, Ordering::Release, Ordering::Relaxed)
-                .is_ok()
-            {
-                self.consumed.notify(frame);
-            }
+        if marker.load(Ordering::Relaxed) != 1 {
+            return false;
         }
+        let consumed = reader().map_or(u64::MAX, |reader| u64::from(reader) + 2);
+        // Release orders this reader's earlier speculative observations for
+        // bounded, ordered feedback reconciliation; EBR still owns bytes.
+        let won = marker
+            .compare_exchange(1, consumed, Ordering::Release, Ordering::Relaxed)
+            .is_ok();
+        if won {
+            self.consumed.notify(frame);
+        }
+        won
     }
 
     pub(super) fn begin_speculation(&self, frame: ReadFrameIdx) {

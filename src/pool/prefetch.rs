@@ -558,6 +558,34 @@ impl<D: PoolBackend> Pool<D> {
         }
     }
 
+    /// A lock-free hit consumed a speculative read. Readahead extends and reaches
+    /// the kernel only during a progress pass, and a consumer that keeps up
+    /// polls only once it blocks, so every refill interval of consumptions the
+    /// consuming reader runs the pass itself rather than let the device drain.
+    #[cold]
+    #[inline(never)]
+    pub(super) fn readahead_consumed(&self) {
+        let interval = self.readahead_refill_pages;
+        assert!(
+            interval > 0,
+            "only a pool with speculative credits admits speculative reads"
+        );
+        let consumed = self
+            .speculative_consumptions
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        if !consumed.is_multiple_of(interval) {
+            return;
+        }
+        let Some(mut control) = self.try_control() else {
+            return;
+        };
+        // Admission precedes the drain, so this pass hands the admitted vectors
+        // to the kernel; `poll` drains first and admits after.
+        self.progress_prefetch(&mut control);
+        let _ = self.drain_completions(&mut control);
+    }
+
     fn prefetch_automatic_window(
         &self,
         control: &mut Control,

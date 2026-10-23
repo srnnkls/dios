@@ -198,6 +198,16 @@ poll cadence and consumption determine actual accepted I/O overlap. Record
 refill-with-pending and outstanding-request witnesses. Do not introduce a
 new polling policy only into the candidate to manufacture a comparison win.
 
+Amendment after closure, awaiting the scope owner's review
+(`benches/plans/readahead_refill.md`): consumers poll when they block, so a
+consumer that kept up hit through the window, the device drained, and every
+window ended in a one-page demand read (41 read SQEs per steady interval on a
+virtio guest). The first touch that consumes a speculative read now also
+counts, and every refill interval (one vector width, or half the credits below
+two vectors) the consuming reader try-locks control and runs one pass:
+reconcile and admit first, then drain so the admitted vectors reach the kernel.
+A held lock skips the pass; a repeated warm hit still does no new work.
+
 ## Bookkeeping proportional to changed runs
 
 Replace capacity scans in `reconcile`, obsolete eviction and marker harvest

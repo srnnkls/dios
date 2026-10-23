@@ -35,6 +35,7 @@ impl Feedback {
 mod loom_tests {
     use super::*;
     use crate::driver::FileId;
+    use crate::pool::clock::Touch;
     use crate::sync::{Arc, Mutex};
 
     #[test]
@@ -67,8 +68,14 @@ mod loom_tests {
             let consumer_clock = Arc::clone(&clock);
             let reader = loom::thread::spawn(move || {
                 let reader = registry.register().expect("reader");
-                assert!(consumer_clock.reference_from(ReadFrameIdx::new(1), reader.slot()));
-                assert!(consumer_clock.reference_from(ReadFrameIdx::new(0), reader.slot()));
+                assert_eq!(
+                    consumer_clock.reference_from(ReadFrameIdx::new(1), reader.slot()),
+                    Touch::ConsumedSpeculation
+                );
+                assert_eq!(
+                    consumer_clock.reference_from(ReadFrameIdx::new(0), reader.slot()),
+                    Touch::ConsumedSpeculation
+                );
             });
             let poll_clock = Arc::clone(&clock);
             let poll_ledger = Arc::clone(&ledger);
@@ -330,6 +337,22 @@ impl Prefetch {
         self.capacity
             .checked_sub(self.stats.occupied)
             .expect("bounded speculation")
+    }
+
+    /// Speculative consumptions between hit-driven readahead passes: one vector
+    /// width, or half the credits when fewer than two vectors fit, so a pass
+    /// frees credits before a consumer that keeps up drains the window. Zero
+    /// without speculative credits.
+    pub(in crate::pool) fn refill_interval(&self) -> u32 {
+        if self.capacity == 0 {
+            return 0;
+        }
+        let interval = self.vector_width.min((self.capacity / 2).max(1));
+        assert!(
+            (1..=self.capacity).contains(&interval),
+            "a refill lands within one window of consumption"
+        );
+        interval
     }
 
     pub(super) fn fill_reserve(&mut self, free: &mut FreeFrames) {

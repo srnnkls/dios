@@ -56,6 +56,7 @@ use miss::{MissEntry, MissInterests, MissOutcome, MissSlot, MissTable};
 use retention::Retention;
 
 pub use clock::Clock;
+use clock::Touch;
 pub use epoch::{FrameGuard, ReaderCtx};
 use frames::FreeFrames;
 pub use frames::{FrameState, ReadFrameIdx};
@@ -1136,6 +1137,8 @@ pub struct Pool<D = Driver> {
     wake: Arc<WaitState>,
     wait_batch: Mutex<CompletionBatch>,
     control: Mutex<Control>,
+    readahead_refill_pages: u32,
+    speculative_consumptions: AtomicU32,
     file_live_generations: Box<[AtomicU64]>,
     resident_lease_states: Box<[Arc<ResidentLeaseState>]>,
     retention: Retention,
@@ -1334,6 +1337,7 @@ impl<D: PoolBackend> Pool<D> {
         );
         let (file_live_generations, resident_lease_states, retention) =
             Self::try_preallocated_file_state(&config, pool_identity, &wake)?;
+        let readahead_refill_pages = control.prefetch.refill_interval();
         Ok(Self {
             frames,
             table,
@@ -1345,6 +1349,8 @@ impl<D: PoolBackend> Pool<D> {
             wake,
             wait_batch,
             control: Mutex::new(control),
+            readahead_refill_pages,
+            speculative_consumptions: AtomicU32::new(0),
             file_live_generations,
             resident_lease_states,
             retention,
@@ -1532,6 +1538,28 @@ impl<D: PoolBackend> Pool<D> {
         #[cfg(feature = "mock")]
         self.control_acquisitions.increment();
         control
+    }
+
+    /// The control lock unless another thread holds it, for progress a holder
+    /// is already making.
+    #[cfg(not(loom))]
+    fn try_control(&self) -> Option<MutexGuard<'_, Control>> {
+        let control = match self.control.try_lock() {
+            Ok(control) => control,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        #[cfg(feature = "mock")]
+        self.control_acquisitions.increment();
+        Some(control)
+    }
+
+    #[cfg(loom)]
+    fn try_control(&self) -> Option<MutexGuard<'_, Control>> {
+        let control = self.control.try_lock().ok()?;
+        #[cfg(feature = "mock")]
+        self.control_acquisitions.increment();
+        Some(control)
     }
 
     #[cfg(not(loom))]
@@ -1734,8 +1762,12 @@ impl<D: PoolBackend> Pool<D> {
             slot.abort_pin(begun);
             return None;
         }
-        let _ = self.clock.reference_from(frame, slot);
+        let touch = self.clock.reference_from(frame, slot);
         let pin = slot.commit_pin(begun, frame);
+        // Branching before the guard exists lets the warm hit build it in place.
+        if touch == Touch::ConsumedSpeculation {
+            self.readahead_consumed();
+        }
         Some(FrameGuard::new(
             self.frames.frame_bytes(&pin),
             slot,

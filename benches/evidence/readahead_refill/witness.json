@@ -1,0 +1,25 @@
+{
+  "executables": {
+    "base": "mw-final",
+    "candidate": "mw-refill2"
+  },
+  "base": {
+    "steady_interval_pages": 1024,
+    "steady_interval_reads": {
+      "speculative": 33,
+      "demand": 8
+    },
+    "demand_read_sqes": 126,
+    "speculative_read_sqes": 512,
+    "pending_requests_max": 5
+  },
+  "candidate": {
+    "steady_interval_pages": 1024,
+    "steady_interval_reads": {
+      "speculative": 33
+    },
+    "demand_read_sqes": 4,
+    "speculative_read_sqes": 516,
+    "pending_requests_max": 4
+  }
+}
