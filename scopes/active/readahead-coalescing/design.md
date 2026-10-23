@@ -206,7 +206,10 @@ virtio guest). The first touch that consumes a speculative read now also
 counts, and every refill interval (one vector width, or half the credits below
 two vectors) the consuming reader try-locks control and runs one pass:
 reconcile and admit first, then drain so the admitted vectors reach the kernel.
-A held lock skips the pass; a repeated warm hit still does no new work.
+A held lock skips the pass. The pass runs at that reader's next `get`, before
+it pins: victims evicted while it is pinned mature one pass later, which a
+two-vector window cannot absorb. A repeated warm hit adds one test of a
+thread-bound flag, measured within noise.
 
 ## Bookkeeping proportional to changed runs
 

@@ -8,6 +8,7 @@
 //! have aged two full epochs — two advances guarantee every guard that could have
 //! observed the old contents has dropped.
 
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::ops::Deref;
@@ -384,6 +385,10 @@ impl EvictQueue {
 pub struct ReaderCtx {
     registry: Arc<ReaderRegistry>,
     slot: u32,
+    /// A hit that completes a readahead refill interval is pinned, and victims a
+    /// pass evicts mature only once this reader moves past their epoch, so the
+    /// pass waits for this reader's next `get`, which runs it before pinning.
+    readahead_refill_due: Cell<bool>,
     _thread_bound: PhantomData<*const ()>,
 }
 
@@ -396,8 +401,25 @@ impl ReaderCtx {
         Self {
             registry,
             slot,
+            readahead_refill_due: Cell::new(false),
             _thread_bound: PhantomData,
         }
+    }
+
+    #[inline]
+    pub(super) fn readahead_refill_due(&self) -> bool {
+        self.readahead_refill_due.get()
+    }
+
+    pub(super) fn readahead_refill_schedule(&self) {
+        self.readahead_refill_due.set(true);
+    }
+
+    pub(super) fn readahead_refill_take(&self) {
+        assert!(
+            self.readahead_refill_due.replace(false),
+            "a refill pass runs only once a hit scheduled it"
+        );
     }
 
     #[inline]

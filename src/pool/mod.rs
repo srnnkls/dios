@@ -1736,7 +1736,10 @@ impl<D: PoolBackend> Pool<D> {
         if !file_generation_is_live(live, page.file()) {
             return Err(GetError::StaleFile { page });
         }
-        if let Some(guard) = self.pin_live(reader.slot(), page, live) {
+        if reader.readahead_refill_due() {
+            self.readahead_refill(reader);
+        }
+        if let Some(guard) = self.pin_live(reader, page, live) {
             return Ok(Get::Hit(guard));
         }
         self.get_locked(reader, page)
@@ -1751,10 +1754,11 @@ impl<D: PoolBackend> Pool<D> {
     #[inline]
     fn pin_live<'pool>(
         &'pool self,
-        slot: &'pool epoch::ReaderSlot,
+        reader: &'pool ReaderCtx,
         page: PageId,
         live: &AtomicU64,
     ) -> Option<FrameGuard<'pool>> {
+        let slot = reader.slot();
         let begun = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
         let Some(frame) = self.table.lookup(page) else {
             slot.abort_pin(begun);
@@ -1768,7 +1772,7 @@ impl<D: PoolBackend> Pool<D> {
         let pin = slot.commit_pin(begun, frame);
         // Branching before the guard exists lets the warm hit build it in place.
         if touch == Touch::ConsumedSpeculation {
-            self.readahead_consumed();
+            self.readahead_consumed(reader);
         }
         Some(FrameGuard::new(
             self.frames.frame_bytes(&pin),

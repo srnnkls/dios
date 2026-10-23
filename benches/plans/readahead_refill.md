@@ -103,3 +103,50 @@ these failed gates are waived; the binding run on `nix` can decide them.
 Characterization (no bound), 12 alternating samples on the candidate:
 mmap SEQUENTIAL median 59.2 ms (46.2–104.0), the default budget 61.9 ms
 (53.8–74.0), the retained 1 MiB alternative (C=256/R=512) 55.2 ms (43.9–65.5).
+
+## Escalation record (two-vector budget)
+
+A refill pass that runs inside the consuming hit runs while that reader is
+pinned, so the victims it evicts mature only at a later pass. The default
+four-vector window absorbs that lag. A two-vector window does not:
+`readahead_budget_bytes(256 * 1024)` (C=64) through the 8 MiB arena deferred
+admission 214 times, each time on the speculative reserve with 32 victims still
+queued, and issued 209 one-page demand reads (default budget: 4). The
+pre-registered lever ran: the hit that completes a refill interval now schedules
+the pass, and that reader's next `get` runs it before pinning. A Linux test
+scanning a page-cache-resident file through a pool a quarter of its size
+reproduces the defect (86 steady pending pages at C=64) and passes after the
+change.
+
+Pre-registered before timing, base `mw-head` (`3b3c757`), candidate this change:
+
+| Check | Workload | Reps | Bound |
+|---|---|---|---|
+| Witness | one traced candidate sample, `scan-sample geometry:automatic:4:64:128` | 1 | steady interval ≤ 33 read SQEs, no one-page demand read, ≤ 8 demand reads in the scan |
+| Two-vector scan | `scan-sample geometry:automatic:4:64:128` | 30 alternating pairs | upper ≤ 0.90 |
+| Default scan | `scan-default-sample geometry:automatic:4:128:256` | 30 alternating pairs | upper ≤ 1.05 |
+| Warm hit | in-process hit loop over 64 and over 1,024 resident pages, 64 B fold, 2^20 gets × 5 reps per process (median), picoseconds per get | 30 alternating process pairs per set | upper ≤ 1.02 per set |
+
+The default-scan bound is wider than the controls' 1.02 because this guest
+resolves about ±8% in 30 scan pairs (see the A/A controls above). Escalation: a
+failed warm-hit bound moves the due bit into the word `begin_pin` already
+loads; a failed two-vector bound traces whether passes still defer on the
+reserve; a failed default-scan bound goes to the owner with an A/A pair set.
+
+Results, base `mw-head` (`686f0e2c…5982`) and `hot-head` (`88a71d8f…b155`)
+against `mw-quiescent` (`0f24d422…0ef7`) and `hot-quiescent`
+(`4af279cd…186fd`), 30 alternating fresh-process pairs each; samples in
+`benches/evidence/readahead_refill/two_vector/`:
+
+| Check | Ratio geomean | One-sided 95% upper | Bound | Result |
+|---|---:|---:|---:|---|
+| Witness at C=64 | — | — | ≤ 33 SQEs, no singleton, ≤ 8 demand | 33 vectors, no singleton, 4 demand: PASS |
+| Two-vector scan | 0.8452 | 0.8773 | 0.90 | PASS |
+| Default scan | 0.9960 | 1.0419 | 1.05 | PASS |
+| Warm hit, 64 pages | 0.9698 | 0.9980 | 1.02 | PASS |
+| Warm hit, 1,024 pages | 0.9807 | 1.0009 | 1.02 | PASS |
+
+Medians: two-vector scan 84.9 → 73.2 ms, default scan 58.6 → 56.9 ms, warm hit
+20.06 → 19.99 ns (64 pages) and 27.35 → 27.26 ns (1,024 pages). The traced
+1 MiB configuration (C=256) holds eight requests in flight with 4 demand reads,
+as before.

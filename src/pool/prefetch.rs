@@ -8,7 +8,7 @@ mod tests;
 
 use super::{
     Control, FrameState, PageId, Pool, PoolBackend, PoolBuilder, PoolConfigError, ReadFrameIdx,
-    file_is_live,
+    ReaderCtx, file_is_live,
 };
 use crate::sync::Ordering;
 pub(super) use state::Prefetch;
@@ -577,7 +577,7 @@ impl<D: PoolBackend> Pool<D> {
     /// consuming reader runs the pass itself rather than let the device drain.
     #[cold]
     #[inline(never)]
-    pub(super) fn readahead_consumed(&self) {
+    pub(super) fn readahead_consumed(&self, reader: &ReaderCtx) {
         let interval = self.readahead_refill_pages;
         assert!(
             interval > 0,
@@ -587,9 +587,17 @@ impl<D: PoolBackend> Pool<D> {
             .speculative_consumptions
             .fetch_add(1, Ordering::Relaxed)
             .wrapping_add(1);
-        if !consumed.is_multiple_of(interval) {
-            return;
+        if consumed.is_multiple_of(interval) {
+            reader.readahead_refill_schedule();
         }
+    }
+
+    /// The pass a completed refill interval scheduled, run by that reader before
+    /// it pins its next page.
+    #[cold]
+    #[inline(never)]
+    pub(super) fn readahead_refill(&self, reader: &ReaderCtx) {
+        reader.readahead_refill_take();
         let Some(mut control) = self.try_control() else {
             return;
         };
