@@ -149,19 +149,19 @@ span-slab completion responsibility identified by AM2, byte-exact
 short-read progress, per-frame publication and credit accounting. A READV
 result changes destination representation, so AM2's contiguous first-frame
 representation cannot be copied unchanged. The new
-[readahead-coalescing scope](../../scopes/draft/readahead-coalescing/scope.md)
+[readahead-coalescing scope](../../scopes/active/readahead-coalescing/scope.md)
 owns the bounded vector/route design, automatic range admission and safety
 review. **Product implementation remains blocked on scope review/approval.**
 No AM2 implementation is authorized by this decision.
 
 Evidence update, 2026-09-14: the corrected
-[pipelined probe](../evidence/readv_pipelined/README.md) passes the Unregistered
+pipelined probe passes the Unregistered
 depth-8 b/c gate (1.003389, upper 1.004666); depth 16 is 1.002260, upper
 1.004455. The corrected serial gate still fails (1.101803, upper 1.105391).
 The older serial/pipeline samples used an invalid pointer-construction pattern
 and remain retained unqualified; the corrected datasets supersede them.
 
-The separately observer-qualified [clock split](../evidence/readv_pipelined/clock-split.md)
+The separately observer-qualified clock split
 localizes 4.70 us/group of the diagnostic's 7.48 us gap to submission, 0.05 us
 to post-submit completion observation and 2.72 us to remaining work. Repeated
 per-iovec pinning is source-supported, but no isolated pinning coefficient or

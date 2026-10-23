@@ -174,9 +174,9 @@ runs require direct I/O; smoke runs are buffered and advisory. The suite's
 [bench plan](benches/plans/workload_suite.md) specifies workload boundaries and
 the [cost model](benches/plans/workload_cost_model.md) documents how CPU samples,
 traces, and resource limits can be combined.
-The [collection report](benches/evidence/workload_suite/README.md) includes
-Linux measurements, 14 workload flamegraphs, observer costs, fresh regression
-gates, and the separate advisory macOS results.
+A collection's report, written into its artifact directory and not checked in,
+carries Linux measurements, workload flamegraphs, observer costs, fresh
+regression gates, and the separate advisory macOS results.
 
 Use an explicit `DIOS_REGISTRATION_POLICY=registered` or `unregistered` consistently
 across modes, on an idle benchmark host. Runs reject changes in the resolved
@@ -200,8 +200,9 @@ The Linux mmap suite adds actual file-mapping baselines: resident accesses,
 minor faults, cold point/gather/dependent reads, advice controls, shared readers,
 and scans/random reads under a private memory limit. Five resident API controls
 compare ordinary guards, reused hints, epoch batches, retained sessions and
-multiple fields per guard. [Results and fault/profile evidence](benches/evidence/mmap_workloads/README.md)
-include favorable and unfavorable results, setup costs and observer overhead.
+multiple fields per guard. Each campaign's output directory keeps its results
+and fault/profile evidence, favorable and unfavorable, with setup costs and
+observer overhead; the plans record the adopted numbers.
 
 ```sh
 mise run bench-mmap-workloads NEW_OUTPUT
@@ -216,15 +217,15 @@ the same retained executable for its timing, trace and profile replays.
 
 The [prefetch plan](benches/plans/prefetch_admission.md) adds explicit-window,
 automatic/disabled, memory-pressure and wrong-hint controls.
-The [prefetch results](benches/evidence/mmap_workloads/prefetch.md) retain its
-frozen comparisons, CPU costs and regression gates. To compare against
+Its campaign output retains the frozen comparisons, CPU costs and regression
+gates. To compare against
 the retained pre-prefetch scan executable, preserving both runner identities:
 
 ```sh
 uv run benches/mmap_workloads/frozen.py NEW_OUTPUT --baseline OLD_PRIMARY --candidate NEW_PRIMARY
 ```
 
-The [scan geometry study](benches/evidence/scan_geometry/README.md) separates
+The scan geometry study separates
 matched lookahead from larger cache/read granules and confirms selected
 configurations against mmap. Its [plan](benches/plans/scan_geometry.md) also
 defines trace-overhead controls, CPU attribution and storage-path fio calibration.
@@ -234,9 +235,8 @@ mise run bench-scan-geometry NEW_OUTPUT --input EXISTING_FIXTURE --experiment lo
 mise run bench-scan-geometry NEW_OUTPUT --input EXISTING_FIXTURE --experiment geometry
 ```
 
-The [pipelined READ/READV probe](benches/evidence/readv_pipelined/README.md)
-compares four submission mechanisms at eight and sixteen outstanding 128 KiB
-groups. Its [plan](benches/plans/readv_pipelined.md) separates throughput parity
+The pipelined READ/READV probe compares four submission mechanisms at eight
+and sixteen outstanding 128 KiB groups. Its [plan](benches/plans/readv_pipelined.md) separates throughput parity
 under overlap from the earlier serial probe's cost.
 
 ## Profiling

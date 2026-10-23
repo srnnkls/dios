@@ -49,7 +49,7 @@ The previous cold evidence used 4 MiB; collect fresh baselines rather than
 reuse those timings. Pressure stays at 64 MiB within its private 128 MiB cap.
 Descriptor, route and notification metadata are additional and reported.
 
-The [budget probe](../evidence/readv_pipelined/budget-depths/README.md) gives
+The budget probe gives
 READV 1,244.97 ns/page at depth 2 and 1,183.67 at depth 4, against historical
 mmap 1,552.23; depth 8 is 1,164.53. Depth 4 is past the knee (1.6% from 1 MiB)
 and leaves 368 ns/page of headroom for pool-layer cost, which motivated the

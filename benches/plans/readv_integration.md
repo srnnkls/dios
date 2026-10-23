@@ -2,7 +2,7 @@
 
 **Superseded, 2026-09-14:** the owner selected READV and supplied the exact
 cross-backend boundary and headline gates. The canonical draft is
-[readahead-coalescing](../../scopes/draft/readahead-coalescing/scope.md), with
+[readahead-coalescing](../../scopes/active/readahead-coalescing/scope.md), with
 [readahead_coalescing.md](readahead_coalescing.md) as its bench plan. The
 earlier proposal below is retained as context; its narrower posture/platform
 boundary and proposed thresholds do not govern implementation.

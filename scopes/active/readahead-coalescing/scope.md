@@ -10,7 +10,7 @@ revision: 3
 Coalesce consecutive readahead misses into ordinary READV operations while
 preserving independent cache-page ownership and ordinary `get`/`ready`
 consumption. Sören selected this mechanism after the
-[corrected driver measurements](../../../benches/evidence/readv_pipelined/README.md).
+corrected driver measurements.
 The [owner decision](../../../benches/plans/scan_geometry.md#owner-decision-coalescing-mechanism)
 is closed. Revision 3 incorporates the owner feedback in
 `/private/tmp/dios-steering-scope-feedback.md` and has passed a fresh
@@ -27,7 +27,7 @@ The residual 2.72 us/group is noted probe-local work and is not pursued here.
 Physical/DMA segment counts and individual kernel cost coefficients remain
 unmeasured; the mechanism decision does not depend on asserting them.
 
-The [depth-2/4 budget probe](../../../benches/evidence/readv_pipelined/budget-depths/README.md)
+The depth-2/4 budget probe
 measures READV at 1,244.97 / 1,183.67 ns per useful 4 KiB with 256 / 512 KiB
 pending-byte ceilings. The historical mmap reference is 1,552.23 ns; depth 8
 READV is 1,164.53 ns. These separate workloads motivate a budget choice;
