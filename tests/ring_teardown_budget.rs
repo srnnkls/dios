@@ -1,4 +1,5 @@
 #![cfg(target_os = "linux")]
+#![cfg(any(feature = "mock", feature = "bench"))]
 
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;

@@ -13,6 +13,7 @@
 //! instead of hanging.
 
 #![cfg(target_os = "linux")]
+#![cfg(any(feature = "mock", feature = "bench"))]
 
 use std::path::PathBuf;
 use std::sync::Arc;

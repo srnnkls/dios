@@ -20,6 +20,8 @@
 //! overflow gates additionally run on `Pool<MockDriver>` under `feature =
 //! "mock"`.
 
+#![cfg(any(feature = "mock", feature = "bench"))]
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::path::{Path, PathBuf};

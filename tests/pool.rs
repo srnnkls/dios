@@ -27,6 +27,8 @@
 //!   `WriteSlot: DerefMut<Target = [u8]>`; `ReaderCounters::new()` with
 //!     `record_hit(&self)`/`record_eviction(&self)`/`hits()`/`evictions()`.
 
+#![cfg(any(feature = "mock", feature = "bench"))]
+
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 

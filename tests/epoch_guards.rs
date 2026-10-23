@@ -28,6 +28,8 @@
 //! also T009 — here we pin only the observable shape (nested guards share one epoch,
 //! release on the last drop; the epoch advances at poll boundaries, not per pin).
 
+#![cfg(any(feature = "mock", feature = "bench"))]
+
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU32, Ordering};
 

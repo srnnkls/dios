@@ -12,6 +12,7 @@
 //! `FileId` (or a `duplicate_handle` is added). Linux-only — the ring is there.
 
 #![cfg(target_os = "linux")]
+#![cfg(any(feature = "mock", feature = "bench"))]
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};

@@ -7,6 +7,7 @@
 //! once T004 forwards them, so the ring-level pins for them follow that.
 
 #![cfg(target_os = "linux")]
+#![cfg(any(feature = "mock", feature = "bench"))]
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
