@@ -85,9 +85,11 @@ const MAP_ANONYMOUS: c_int = 0x20;
 const MAP_ANONYMOUS: c_int = 0x1000;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("MAP_ANONYMOUS is target-specific; add this target's value from sys/mman.h");
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(miri)))]
 const MAP_NORESERVE: c_int = 0x4000;
-#[cfg(not(target_os = "linux"))]
+// Miri models only `MAP_PRIVATE | MAP_ANONYMOUS`; skipping the swap reservation
+// changes nothing it checks.
+#[cfg(any(not(target_os = "linux"), miri))]
 const MAP_NORESERVE: c_int = 0;
 
 #[cfg(all(target_os = "linux", not(miri), not(loom)))]
