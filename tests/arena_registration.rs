@@ -5,6 +5,7 @@
 //! The limit-lowering cases serialise on one gate because `setrlimit` is
 //! process-wide and the harness runs tests on threads.
 
+#[cfg(target_os = "linux")]
 use std::cell::Cell;
 use std::ffi::c_int;
 use std::path::{Path, PathBuf};

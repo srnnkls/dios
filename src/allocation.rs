@@ -198,23 +198,22 @@ impl MappedArena {
         let page = page_size();
         let start = (self.base.as_ptr().addr() + offset).next_multiple_of(page);
         let end = (self.base.as_ptr().addr() + offset + len) / page * page;
-        if end <= start {
-            return;
-        }
-        #[cfg(all(target_os = "linux", not(miri), not(loom)))]
-        {
-            // SAFETY: `start..end` is whole pages inside this live private
-            // mapping, and every byte there is already zero (caller contract),
-            // so replacing the pages with zero-fill changes no value any
-            // reader can observe. The result is ignored: a refusal only keeps
-            // memory committed.
-            let _ = unsafe {
-                madvise(
-                    self.base.as_ptr().with_addr(start).cast(),
-                    end - start,
-                    MADV_DONTNEED,
-                )
-            };
+        if start < end {
+            #[cfg(all(target_os = "linux", not(miri), not(loom)))]
+            {
+                // SAFETY: `start..end` is whole pages inside this live private
+                // mapping, and every byte there is already zero (caller
+                // contract), so replacing the pages with zero-fill changes no
+                // value any reader can observe. The result is ignored: a
+                // refusal only keeps memory committed.
+                let _ = unsafe {
+                    madvise(
+                        self.base.as_ptr().with_addr(start).cast(),
+                        end - start,
+                        MADV_DONTNEED,
+                    )
+                };
+            }
         }
     }
 }
