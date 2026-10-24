@@ -2102,8 +2102,10 @@ impl<D: PoolBackend> Pool<D> {
 
     /// Admits a positional product write whose completion also covers its
     /// durability under `mode`: one operation where [`Pool::submit_write`] then
-    /// [`Pool::submit_fsync`] take two. It covers its own range only, so writes
-    /// still in flight when it completes are not covered.
+    /// [`Pool::submit_fsync`] take two. It covers only its own range: on a
+    /// device with FUA the kernel writes it through without flushing the
+    /// volatile cache, so no other write to the file, completed or not, becomes
+    /// durable with it.
     ///
     /// # Errors
     ///

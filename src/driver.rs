@@ -690,8 +690,9 @@ impl Driver {
 
     /// Enqueues a write whose completion also covers its durability under `mode`:
     /// one operation where [`Driver::submit_write`] and [`Driver::submit_fsync`]
-    /// take two. It covers only its own range; writes still in flight when it
-    /// completes are not covered.
+    /// take two. It covers only its own range: on a device with FUA the kernel
+    /// writes it through without flushing the volatile cache, so no other write
+    /// to the file, completed or not, becomes durable with it.
     ///
     /// # Errors
     ///

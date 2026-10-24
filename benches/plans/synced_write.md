@@ -23,10 +23,14 @@ FUA) sustains 4,056 durable writes per second as write then `fdatasync` and
 preallocated by zero-filling, so its writes are pure overwrites, the case this
 plan measures.
 
-A synced write covers only its own range; writes completed earlier are covered
-because their data reached the device before its flush, but writes still in
-flight are not. Callers with more than one page per durability point keep the
-write-then-fsync form or order their writes first.
+A synced write covers only its own range. On a device without FUA the kernel
+follows it with a cache flush, which happens to cover earlier completed writes
+too, but on a device with FUA it is written through and nothing else is
+flushed, so no other write to the file, completed or not, becomes durable with
+it. Callers with more than one page per durability point, or with earlier
+writes not yet durable, keep the write-then-fsync form. (Corrected after the
+results below: the first text claimed earlier completed writes were covered,
+which holds only without FUA; the measurement is unaffected.)
 
 ## Correctness
 
