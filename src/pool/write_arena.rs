@@ -349,6 +349,32 @@ impl WriteSlot<'_> {
         claimed
     }
 
+    /// Splits this lease at `at`: it keeps its first `at` granules and the
+    /// returned lease holds the rest, so the two parts can be written to
+    /// different offsets.
+    ///
+    /// # Panics
+    ///
+    /// If `at` is zero or not shorter than the lease.
+    #[must_use]
+    pub fn split_off(&mut self, at: u32) -> Self {
+        assert!(
+            at >= 1 && at < self.run.count,
+            "a lease of {} granules cannot split at {at}",
+            self.run.count
+        );
+        let tail = Self {
+            state: self.state,
+            run: SlotRun {
+                first: self.run.first + at,
+                count: self.run.count - at,
+            },
+            consumed: false,
+        };
+        self.run.count = at;
+        tail
+    }
+
     /// Keeps the first `count` granules and releases the rest, so a run that
     /// filled only a prefix writes only that prefix.
     ///
@@ -547,6 +573,35 @@ mod tests {
             !lease.try_extend_within(3, 5),
             "the limit bounds the growth"
         );
+    }
+
+    #[test]
+    fn splitting_a_run_hands_its_tail_to_a_second_lease() {
+        let arena = arena(8);
+        let mut head = arena.alloc_run_within(8, 5).expect("five free slots");
+        head[2 * GRANULE as usize] = 0x2c;
+        let tail = head.split_off(2);
+        assert_eq!(head.run, SlotRun { first: 0, count: 2 });
+        assert_eq!(tail.run, SlotRun { first: 2, count: 3 });
+        assert_eq!(tail[0], 0x2c, "the tail keeps its granules' bytes");
+        assert_eq!(tail.len(), 3 * GRANULE as usize);
+        drop(tail);
+        let reused = arena
+            .alloc_run_within(8, 6)
+            .expect("the tail's slots and the free rest");
+        assert_eq!(reused.run, SlotRun { first: 2, count: 6 });
+        assert!(
+            arena.alloc().is_none(),
+            "the head still holds its two slots"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot split at")]
+    fn splitting_at_the_end_is_a_programmer_error() {
+        let arena = arena(4);
+        let mut run = arena.alloc_run_within(4, 2).expect("two free slots");
+        let _ = run.split_off(2);
     }
 
     #[test]

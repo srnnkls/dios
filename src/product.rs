@@ -221,6 +221,22 @@ impl PoolWriteSlot<'_> {
     pub fn truncate(&mut self, count: u32) {
         self.slot.truncate(count);
     }
+
+    /// Splits this lease at `at`: it keeps its first `at` granules and the
+    /// returned lease holds the rest, so the two parts can be written to
+    /// different offsets.
+    ///
+    /// # Panics
+    ///
+    /// If `at` is zero or not shorter than the lease.
+    #[must_use]
+    pub fn split_off(&mut self, at: u32) -> Self {
+        Self {
+            slot: self.slot.split_off(at),
+            pool_identity: self.pool_identity,
+            enabled_slots: self.enabled_slots,
+        }
+    }
 }
 
 impl Deref for PoolWriteSlot<'_> {
