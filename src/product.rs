@@ -190,6 +190,24 @@ pub struct PoolWriteSlot<'pool> {
     pub(crate) pool_identity: u64,
 }
 
+impl PoolWriteSlot<'_> {
+    /// The adjacent granules this lease spans.
+    #[must_use]
+    pub fn slot_count(&self) -> u32 {
+        self.slot.slot_count()
+    }
+
+    /// Keeps the first `count` granules and releases the rest, so a run that
+    /// filled only a prefix writes only that prefix.
+    ///
+    /// # Panics
+    ///
+    /// If `count` is zero or longer than the lease.
+    pub fn truncate(&mut self, count: u32) {
+        self.slot.truncate(count);
+    }
+}
+
 impl Deref for PoolWriteSlot<'_> {
     type Target = [u8];
 

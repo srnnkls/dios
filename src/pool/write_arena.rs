@@ -301,6 +301,31 @@ impl WriteSlot<'_> {
         self.run
     }
 
+    /// The adjacent granules this lease spans.
+    #[must_use]
+    pub fn slot_count(&self) -> u32 {
+        self.run.count
+    }
+
+    /// Keeps the first `count` granules and releases the rest, so a run that
+    /// filled only a prefix writes only that prefix.
+    ///
+    /// # Panics
+    ///
+    /// If `count` is zero or longer than the lease.
+    pub fn truncate(&mut self, count: u32) {
+        assert!(count >= 1, "a lease keeps at least one granule");
+        assert!(
+            count <= self.run.count,
+            "a lease of {} granules cannot keep {count}",
+            self.run.count
+        );
+        for slot in self.run.first + count..self.run.first + self.run.count {
+            self.state.release(slot);
+        }
+        self.run.count = count;
+    }
+
     fn region_offset(&self) -> usize {
         let slot = self.run.first as usize;
         debug_assert!(
@@ -432,6 +457,34 @@ mod tests {
             "slots 6..10 straddle the boundary at 8"
         );
         assert!(!run_within_one_chunk(7, 2, 8));
+    }
+
+    #[test]
+    fn truncating_a_run_releases_its_tail_and_shortens_the_lease() {
+        let arena = arena(8);
+        let mut run = arena.alloc_run_within(8, 6).expect("six free slots");
+        run.truncate(2);
+        assert_eq!(run.slot_count(), 2);
+        assert_eq!(
+            run.len(),
+            2 * GRANULE as usize,
+            "the lease covers the kept prefix"
+        );
+        let tail = arena
+            .alloc_run_within(8, 6)
+            .expect("the released tail and the free rest");
+        assert_eq!(tail.run, SlotRun { first: 2, count: 6 });
+        drop(run);
+        let head = arena.alloc_run_within(8, 2).expect("the dropped prefix");
+        assert_eq!(head.run, SlotRun { first: 0, count: 2 });
+    }
+
+    #[test]
+    #[should_panic(expected = "keeps at least one granule")]
+    fn truncating_to_nothing_is_a_programmer_error() {
+        let arena = arena(4);
+        let mut run = arena.alloc_run_within(4, 2).expect("two free slots");
+        run.truncate(0);
     }
 
     #[test]

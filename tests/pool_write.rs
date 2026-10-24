@@ -839,3 +839,43 @@ fn a_run_writes_its_slots_as_one_attempt_and_releases_them_all() {
         "the completion released all four slots"
     );
 }
+
+#[test]
+fn a_truncated_run_writes_only_its_kept_prefix() {
+    let (pool, file) = pool_with_limits("truncated-run", 0x0A12, 2, 4);
+    let mut run = pool.write_arena().alloc_run(4).expect("four enabled slots");
+    run.truncate(2);
+    assert_eq!(run.slot_count(), 2);
+    assert_eq!(run.len(), (2 * GRANULE) as usize);
+    let freed = pool
+        .write_arena()
+        .alloc_run(2)
+        .expect("truncation released the tail");
+    drop(freed);
+    run.fill(0x5c);
+    let write = pool.submit_write(file, run, 0).expect("prefix admitted");
+    let mut completions = PoolCompletionBatch::with_capacity(1);
+    let mut written = false;
+    for _ in 0..POLL_BOUND {
+        pool.poll_report(&mut completions);
+        if completions.iter().next().is_some() {
+            assert_write_success(&completions, write, 2 * GRANULE);
+            written = true;
+            break;
+        }
+    }
+    assert!(written, "the prefix completes within the bound");
+    assert_eq!(
+        pool.driver().write_attempts_in_order(),
+        vec![WriteAttempt {
+            file_offset: 0,
+            source_offset: 0,
+            requested_len: 2 * GRANULE,
+            sync: None,
+        }]
+    );
+    assert!(
+        pool.write_arena().alloc_run(4).is_some(),
+        "every slot is free again"
+    );
+}
