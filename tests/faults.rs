@@ -326,6 +326,58 @@ fn a_short_synced_write_resubmits_its_tail_with_the_same_durability() {
 }
 
 #[test]
+fn a_short_run_write_resubmits_the_exact_tail_of_the_run() {
+    let m = MockRingDriver::builder()
+        .seed(1)
+        .queue_capacity(4)
+        .frames(4)
+        .frame_bytes(FRAME_BYTES)
+        .write_slots(3)
+        .retry_bound(RETRY_BOUND)
+        .build();
+    let fd = open(&m);
+    let arena = m.write_arena();
+    let run = arena.alloc_run(3).expect("three adjacent slots");
+    let short = FRAME_BYTES + 512;
+    m.inject_for_next_submit(&[Injected::Short(short)]);
+    let token = m
+        .submit_write(&fd, run, 0)
+        .expect("write submits within capacity");
+    let mut out = CompletionBatch::with_capacity(1);
+
+    assert_eq!(m.poll(&mut out), 0, "the short head is internal progress");
+    assert!(
+        arena.alloc().is_none(),
+        "every slot of the run stays held across the tail resubmit"
+    );
+    assert_eq!(m.poll(&mut out), 1, "the clean tail completes the run");
+    let completion = out.iter().next().expect("one logical completion");
+    assert_eq!(completion.token(), token);
+    assert_eq!(result_of(completion), Ok(3 * FRAME_BYTES));
+    assert_eq!(
+        m.write_attempts_in_order(),
+        vec![
+            WriteAttempt {
+                file_offset: 0,
+                source_offset: 0,
+                requested_len: 3 * FRAME_BYTES,
+                sync: None,
+            },
+            WriteAttempt {
+                file_offset: u64::from(short),
+                source_offset: short,
+                requested_len: 3 * FRAME_BYTES - short,
+                sync: None,
+            },
+        ]
+    );
+    assert!(
+        arena.alloc_run(3).is_some(),
+        "the terminal reap releases the whole run exactly once"
+    );
+}
+
+#[test]
 fn zero_progress_write_cqes_stop_at_the_ring_retry_bound() {
     let m = ring(1, 4, 4);
     let fd = open(&m);

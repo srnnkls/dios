@@ -229,6 +229,12 @@ impl Drop for MappedArena {
 
 const MAP_FAILED: *mut c_void = usize::MAX as *mut c_void;
 
+/// `io_uring` refuses a registered buffer longer than one GiB (`EFAULT`), so
+/// each arena registers as consecutive chunks of at most this size. A chunk
+/// boundary never splits a frame or staging slot, both powers of two no larger
+/// than a chunk, and a write run never crosses one.
+pub(crate) const REGISTERED_CHUNK_BYTES: usize = 1 << 30;
+
 /// Element types whose vacant value is the all-zero bit pattern, so a table of
 /// them can live in zero pages the kernel materialises on first touch.
 ///

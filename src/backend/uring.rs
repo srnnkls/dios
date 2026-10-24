@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use io_uring::{IoUring, opcode, squeue, types};
 
+use crate::allocation::REGISTERED_CHUNK_BYTES;
 use crate::driver::{
     Backend, DriverBuildError, Executor, OpKind, RegistrationPolicy, RegistrationPosture,
     RingExecutor, RingReap, SyncMode,
@@ -43,11 +44,6 @@ const WAKE_USER_DATA: u64 = u64::MAX;
 /// `O_SYNC`, so the write's completion covers its durability.
 const RWF_DSYNC: i32 = 0x2;
 const RWF_SYNC: i32 = 0x4;
-/// `io_uring` refuses a registered buffer longer than one GiB (`EFAULT`), so
-/// each arena registers as consecutive chunks of at most this size. A chunk
-/// boundary never splits a frame or staging slot: both sizes are powers of two
-/// no larger than a chunk.
-const REGISTERED_CHUNK_BYTES: usize = 1 << 30;
 /// The kernel's registered-buffer table limit (`IORING_MAX_REG_BUFFERS`).
 const REGISTERED_BUFFERS_MAX: usize = 1 << 14;
 
@@ -408,13 +404,14 @@ impl RingExecutor for Uring {
             "a leased staging slot has a live pointer"
         );
         assert!(requested_len > 0, "a write transfers a non-empty slot");
+        let run_bytes_max = crate::driver::WRITE_RUN_SLOTS_MAX * self.frame_bytes;
         assert!(
-            source_offset < self.frame_bytes,
-            "a write source starts within one staging granule"
+            source_offset < run_bytes_max,
+            "a write source starts within one bounded run"
         );
         assert!(
-            requested_len <= self.frame_bytes - source_offset,
-            "a write source tail stays within its registered granule"
+            requested_len <= run_bytes_max - source_offset,
+            "a write source tail stays within its bounded run"
         );
         let entry = self
             .posture

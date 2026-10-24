@@ -159,8 +159,22 @@ pub struct PoolWriteArena<'pool> {
 impl<'pool> PoolWriteArena<'pool> {
     #[must_use]
     pub fn alloc(&self) -> Option<PoolWriteSlot<'pool>> {
+        self.alloc_run(1)
+    }
+
+    /// Leases `count` adjacent staging slots that one [`Pool::submit_write`]
+    /// carries as a single operation, or returns `None` when no such window of
+    /// the enabled slots is free.
+    ///
+    /// # Panics
+    ///
+    /// If `count` is zero or above [`WRITE_RUN_SLOTS_MAX`](crate::driver::WRITE_RUN_SLOTS_MAX).
+    ///
+    /// [`Pool::submit_write`]: crate::Pool::submit_write
+    #[must_use]
+    pub fn alloc_run(&self, count: u32) -> Option<PoolWriteSlot<'pool>> {
         self.state
-            .alloc_within(self.enabled_slots)
+            .alloc_run_within(self.enabled_slots, count)
             .map(|slot| PoolWriteSlot {
                 slot,
                 pool_identity: self.pool_identity,
@@ -168,7 +182,8 @@ impl<'pool> PoolWriteArena<'pool> {
     }
 }
 
-/// Exclusive mutable lease of one product staging granule.
+/// Exclusive mutable lease of one product staging granule, or of a run of
+/// adjacent granules that one write carries.
 #[derive(Debug)]
 pub struct PoolWriteSlot<'pool> {
     pub(crate) slot: WriteSlot<'pool>,

@@ -45,8 +45,8 @@ pub use crate::completion::{Completion, CompletionBatch};
 use crate::error::FileRegistrationError;
 pub use crate::error::{IoError, SubmitError};
 use crate::open::DirectIo;
-use crate::pool::write_arena::{ArenaState, try_shared as try_shared_write_arena};
-pub use crate::pool::write_arena::{WriteArena, WriteSlot};
+use crate::pool::write_arena::{ArenaState, SlotRun, try_shared as try_shared_write_arena};
+pub use crate::pool::write_arena::{WRITE_RUN_SLOTS_MAX, WriteArena, WriteSlot};
 use crate::pool::{Frames, InFlightFrame, PoolConfigError, ReadFrameIdx};
 #[cfg(target_os = "linux")]
 use crate::product::PlatformWaitOutcome;
@@ -478,6 +478,10 @@ impl Driver {
 
     pub(crate) fn alloc_write_slot(&self) -> Option<WriteSlot<'_>> {
         self.0.write_arena.alloc()
+    }
+
+    pub(crate) fn alloc_write_run(&self, count: u32) -> Option<WriteSlot<'_>> {
+        self.0.write_arena.alloc_run_within(u32::MAX, count)
     }
 
     pub(crate) fn identity(&self) -> u64 {
@@ -1364,7 +1368,7 @@ pub(crate) struct OpEntry {
     destination_offset: u32,
     requested_len: u32,
     frame_lease: FrameLease,
-    write_slot: Option<u32>,
+    write_slot: Option<SlotRun>,
     retries: u32,
     io_mode: IoMode,
     state: OpState,
@@ -1929,7 +1933,7 @@ impl<E: Executor> DriverCore<E> {
                     destination_offset: 0,
                     requested_len,
                     frame_lease: FrameLease::Absent,
-                    write_slot: Some(buf.into_index()),
+                    write_slot: Some(buf.into_run()),
                     retries: 0,
                     io_mode: fd.io_mode(),
                     state: OpState::Queued,
@@ -2752,8 +2756,8 @@ impl<E> DriverCore<E> {
     }
 
     fn release_write_slot(&self, entry: &OpEntry) {
-        if let Some(slot) = entry.write_slot {
-            self.write_arena.release(slot);
+        if let Some(run) = entry.write_slot {
+            self.write_arena.release_run(run);
         }
     }
 

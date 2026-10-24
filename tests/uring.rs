@@ -288,6 +288,34 @@ fn a_synced_write_lands_its_bytes_through_the_ring_in_either_mode() {
 }
 
 #[test]
+fn a_run_write_lands_every_slot_in_order_through_one_registered_write() {
+    let path = temp_path("run-write");
+    std::fs::File::create(&path).expect("pre-create the target file");
+    let drv = driver(1, FRAME_BYTES, 4);
+    let fd = open_existing(&drv, &path, DirectIo::Preferred);
+    let mut run = drv.write_arena().alloc_run(4).expect("four adjacent slots");
+    for (granule, chunk) in (0u8..).zip(run.chunks_mut(FRAME_BYTES as usize)) {
+        chunk.fill(0x40 + granule);
+    }
+
+    drv.submit_write(&fd, run, 0)
+        .expect("submit within capacity");
+    assert_eq!(
+        drain_one(&drv),
+        Ok(4 * FRAME_BYTES),
+        "one completion covers the whole run"
+    );
+    let written = std::fs::read(&path).expect("read the written file");
+    assert_eq!(written.len(), 4 * FRAME_BYTES as usize);
+    for (granule, chunk) in (0u8..).zip(written.chunks(FRAME_BYTES as usize)) {
+        assert!(
+            chunk.iter().all(|&byte| byte == 0x40 + granule),
+            "granule {granule} landed at its offset"
+        );
+    }
+}
+
+#[test]
 fn an_async_fsync_completes_with_a_zero_byte_transfer() {
     let path = temp_path("async-fsync");
     std::fs::write(&path, [0u8; 64]).expect("seed a file");

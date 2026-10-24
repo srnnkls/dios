@@ -1,0 +1,3 @@
+write_run: pairs 30, ratio geomean 0.1980, ci95 upper 0.2049, samples target/bench-samples/write_run.csv
+$ cargo bench --features bench --bench compare -- target/bench-samples/write_run.csv 0.60
+gate write_run: pairs 30, ratio geomean 0.1980, ci95 upper 0.2049, threshold 0.6000 -> PASS

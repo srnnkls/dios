@@ -556,6 +556,17 @@ impl MockWriteArena<'_> {
     pub fn alloc(&self) -> Option<WriteSlot<'_>> {
         self.state.alloc()
     }
+
+    /// Leases `count` adjacent mock staging slots that one write carries, or
+    /// `None` when no such window is free.
+    ///
+    /// # Panics
+    ///
+    /// If `count` is zero or above [`crate::driver::WRITE_RUN_SLOTS_MAX`].
+    #[must_use]
+    pub fn alloc_run(&self, count: u32) -> Option<WriteSlot<'_>> {
+        self.state.alloc_run_within(u32::MAX, count)
+    }
 }
 
 impl PoolBackend for MockDriver {

@@ -427,6 +427,7 @@ fn drain_product_write(
     pool: &Pool<Driver>,
     out: &mut PoolCompletionBatch,
     write: PoolToken,
+    bytes_expected: u32,
 ) -> u32 {
     let mut backend_completions = 0u32;
     for _ in 0..DRAIN_POLLS_MAX {
@@ -440,12 +441,12 @@ fn drain_product_write(
                     result: Ok(bytes),
                 } => {
                     assert_eq!(*token, write);
-                    assert_eq!(*bytes, FRAME_BYTES);
+                    assert_eq!(*bytes, bytes_expected);
                     return backend_completions;
                 }
                 PoolCompletion::Write {
                     result: Err(error), ..
-                } => panic!("the real synced write failed: {error}"),
+                } => panic!("the real product write failed: {error}"),
                 PoolCompletion::Fsync { .. } => panic!("no barrier was admitted"),
             }
         }
@@ -468,7 +469,10 @@ fn a_warmed_real_pool_synced_write_and_bounded_report_drain_allocate_nothing() {
     let warm_write = pool
         .submit_write_synced(file, warm_slot, 0, SyncMode::Data)
         .expect("the warmup synced write admits");
-    assert_eq!(drain_product_write(&pool, &mut completions, warm_write), 1);
+    assert_eq!(
+        drain_product_write(&pool, &mut completions, warm_write, FRAME_BYTES),
+        1
+    );
 
     let mut measured_backend_completions = 0u32;
     let allocations = armed_allocations(|| {
@@ -479,13 +483,65 @@ fn a_warmed_real_pool_synced_write_and_bounded_report_drain_allocate_nothing() {
         let write = pool
             .submit_write_synced(file, slot, 0, SyncMode::Data)
             .expect("the measured synced write admits");
-        measured_backend_completions = drain_product_write(&pool, &mut completions, write);
+        measured_backend_completions =
+            drain_product_write(&pool, &mut completions, write, FRAME_BYTES);
     });
 
     assert_eq!(measured_backend_completions, 1);
     assert_eq!(
         allocations, 0,
         "the warmed shipping PoolWriteArena + submit_write_synced + bounded poll_report path allocates nothing"
+    );
+}
+
+#[test]
+fn a_warmed_real_pool_run_write_and_bounded_report_drain_allocate_nothing() {
+    const RUN_SLOTS: u32 = 4;
+    let path = temp_frame("real-pool-run-write");
+    let pool = Pool::builder()
+        .frame_count(4)
+        .granule(FRAME_BYTES)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .write_slots(RUN_SLOTS)
+        .max_inflight_product_ops(2)
+        .build()
+        .expect("the cfg-selected shipping pool initializes with a run of staging");
+    let file = pool
+        .open(&path, DirectIo::Disabled)
+        .expect("the real product pool opens the fixture");
+    let arena: PoolWriteArena<'_> = pool.write_arena();
+    let mut completions = PoolCompletionBatch::with_capacity(1);
+
+    let mut warm_run = arena.alloc_run(RUN_SLOTS).expect("one warmup run");
+    warm_run.fill(0x51);
+    let warm_write = pool
+        .submit_write(file, warm_run, 0)
+        .expect("the warmup run admits");
+    assert_eq!(
+        drain_product_write(&pool, &mut completions, warm_write, RUN_SLOTS * FRAME_BYTES),
+        1
+    );
+
+    let mut measured_backend_completions = 0u32;
+    let allocations = armed_allocations(|| {
+        let mut run = arena
+            .alloc_run(RUN_SLOTS)
+            .expect("the warmed PoolWriteArena reuses its run");
+        run.fill(0xA3);
+        let write = pool
+            .submit_write(file, run, 0)
+            .expect("the measured run admits");
+        measured_backend_completions =
+            drain_product_write(&pool, &mut completions, write, RUN_SLOTS * FRAME_BYTES);
+    });
+
+    assert_eq!(measured_backend_completions, 1);
+    assert_eq!(
+        allocations, 0,
+        "the warmed shipping PoolWriteArena::alloc_run + submit_write + bounded poll_report path allocates nothing"
     );
 }
 
