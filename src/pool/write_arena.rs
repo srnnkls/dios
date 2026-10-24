@@ -114,8 +114,7 @@ impl ArenaState {
             "a run of {count} slots exceeds the run bound {WRITE_RUN_SLOTS_MAX}"
         );
         let limit = limit.min(self.slot_count());
-        let slots_per_chunk = u32::try_from(REGISTERED_CHUNK_BYTES / self.granule as usize)
-            .expect("a chunk holds at most u32::MAX granules");
+        let slots_per_chunk = self.slots_per_chunk();
         let mut first = 0u32;
         while first.checked_add(count).is_some_and(|end| end <= limit) {
             if !run_within_one_chunk(first, count, slots_per_chunk) {
@@ -134,6 +133,11 @@ impl ArenaState {
             }
         }
         None
+    }
+
+    fn slots_per_chunk(&self) -> u32 {
+        u32::try_from(REGISTERED_CHUNK_BYTES / self.granule as usize)
+            .expect("a chunk holds at most u32::MAX granules")
     }
 
     /// Claims every slot of `first..first + count`, or releases the ones it
@@ -307,6 +311,44 @@ impl WriteSlot<'_> {
         self.run.count
     }
 
+    /// Grows this lease in place to `count` adjacent granules, below `limit`,
+    /// by claiming the slots after it; its bytes stay where they are. Returns
+    /// `false` and leaves the lease unchanged when one of those slots is taken
+    /// or the run would leave its registered chunk or the limit.
+    ///
+    /// # Panics
+    ///
+    /// If `count` is shorter than the lease or above [`WRITE_RUN_SLOTS_MAX`].
+    pub(crate) fn try_extend_within(&mut self, limit: u32, count: u32) -> bool {
+        assert!(
+            count >= self.run.count,
+            "a lease of {} granules cannot grow to {count}",
+            self.run.count
+        );
+        assert!(
+            count <= WRITE_RUN_SLOTS_MAX,
+            "a run of {count} slots exceeds the run bound {WRITE_RUN_SLOTS_MAX}"
+        );
+        let first = self.run.first;
+        let limit = limit.min(self.state.slot_count());
+        let fits = first.checked_add(count).is_some_and(|end| end <= limit)
+            && run_within_one_chunk(first, count, self.state.slots_per_chunk());
+        if !fits {
+            return false;
+        }
+        if count == self.run.count {
+            return true;
+        }
+        let claimed = self
+            .state
+            .claim_run(first + self.run.count, count - self.run.count)
+            .is_ok();
+        if claimed {
+            self.run.count = count;
+        }
+        claimed
+    }
+
     /// Keeps the first `count` granules and releases the rest, so a run that
     /// filled only a prefix writes only that prefix.
     ///
@@ -477,6 +519,34 @@ mod tests {
         drop(run);
         let head = arena.alloc_run_within(8, 2).expect("the dropped prefix");
         assert_eq!(head.run, SlotRun { first: 0, count: 2 });
+    }
+
+    #[test]
+    fn extending_a_lease_claims_the_slots_after_it_or_nothing() {
+        let arena = arena(8);
+        let mut lease = arena.alloc().expect("slot 0");
+        lease[0] = 0x7e;
+        assert!(lease.try_extend_within(8, 4), "slots 1..4 are free");
+        assert_eq!(lease.run, SlotRun { first: 0, count: 4 });
+        assert_eq!(lease[0], 0x7e, "the leased bytes stay in place");
+        let blocker = arena.alloc_run_within(8, 1).expect("slot 4");
+        assert_eq!(first_of(&blocker), 4);
+        assert!(!lease.try_extend_within(8, 6), "slot 4 is taken");
+        assert_eq!(
+            lease.run,
+            SlotRun { first: 0, count: 4 },
+            "a refused growth changes nothing"
+        );
+        assert!(
+            arena
+                .alloc_run_within(8, 3)
+                .is_some_and(|tail| tail.run == SlotRun { first: 5, count: 3 }),
+            "the refused growth released what it claimed"
+        );
+        assert!(
+            !lease.try_extend_within(3, 5),
+            "the limit bounds the growth"
+        );
     }
 
     #[test]

@@ -2150,6 +2150,7 @@ impl<D: PoolBackend> Pool<D> {
         let PoolWriteSlot {
             slot,
             pool_identity,
+            enabled_slots,
         } = slot;
         let submitted = match write_sync {
             None => self.driver.submit_write(handle, slot, offset),
@@ -2163,6 +2164,7 @@ impl<D: PoolBackend> Pool<D> {
                     PoolWriteSlot {
                         slot,
                         pool_identity,
+                        enabled_slots,
                     },
                 ));
             }
@@ -2172,6 +2174,7 @@ impl<D: PoolBackend> Pool<D> {
                     PoolWriteSlot {
                         slot,
                         pool_identity,
+                        enabled_slots,
                     },
                 ));
             }

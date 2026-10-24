@@ -879,3 +879,43 @@ fn a_truncated_run_writes_only_its_kept_prefix() {
         "every slot is free again"
     );
 }
+
+#[test]
+fn a_lease_grown_in_place_writes_its_first_bytes_and_the_slots_after_them() {
+    let (pool, file) = pool_with_limits("grown-run", 0x0A13, 2, 4);
+    let mut lease = pool.write_arena().alloc().expect("one enabled slot");
+    lease.fill(0x61);
+    assert!(
+        !lease.try_extend(5),
+        "growth stays within the four enabled slots"
+    );
+    assert!(lease.try_extend(3), "the next two slots are free");
+    assert_eq!(lease.slot_count(), 3);
+    assert!(
+        lease[..GRANULE as usize].iter().all(|&byte| byte == 0x61),
+        "the first granule keeps the bytes written before the growth"
+    );
+    let write = pool
+        .submit_write(file, lease, 0)
+        .expect("grown run admitted");
+    let mut completions = PoolCompletionBatch::with_capacity(1);
+    let mut written = false;
+    for _ in 0..POLL_BOUND {
+        pool.poll_report(&mut completions);
+        if completions.iter().next().is_some() {
+            assert_write_success(&completions, write, 3 * GRANULE);
+            written = true;
+            break;
+        }
+    }
+    assert!(written, "the grown run completes within the bound");
+    assert_eq!(
+        pool.driver().write_attempts_in_order(),
+        vec![WriteAttempt {
+            file_offset: 0,
+            source_offset: 0,
+            requested_len: 3 * GRANULE,
+            sync: None,
+        }]
+    );
+}

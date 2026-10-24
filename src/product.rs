@@ -178,6 +178,7 @@ impl<'pool> PoolWriteArena<'pool> {
             .map(|slot| PoolWriteSlot {
                 slot,
                 pool_identity: self.pool_identity,
+                enabled_slots: self.enabled_slots,
             })
     }
 }
@@ -188,6 +189,7 @@ impl<'pool> PoolWriteArena<'pool> {
 pub struct PoolWriteSlot<'pool> {
     pub(crate) slot: WriteSlot<'pool>,
     pub(crate) pool_identity: u64,
+    pub(crate) enabled_slots: u32,
 }
 
 impl PoolWriteSlot<'_> {
@@ -195,6 +197,19 @@ impl PoolWriteSlot<'_> {
     #[must_use]
     pub fn slot_count(&self) -> u32 {
         self.slot.slot_count()
+    }
+
+    /// Grows this lease in place to `count` adjacent granules of the enabled
+    /// slots by claiming the ones after it, keeping its bytes where they are.
+    /// Returns `false` and leaves the lease unchanged when one of them is taken
+    /// or the run would leave its registered chunk.
+    ///
+    /// # Panics
+    ///
+    /// If `count` is shorter than the lease or above
+    /// [`WRITE_RUN_SLOTS_MAX`](crate::driver::WRITE_RUN_SLOTS_MAX).
+    pub fn try_extend(&mut self, count: u32) -> bool {
+        self.slot.try_extend_within(self.enabled_slots, count)
     }
 
     /// Keeps the first `count` granules and releases the rest, so a run that
