@@ -109,10 +109,20 @@ impl EagerExecutor for Eager {
                 );
                 let requested =
                     u32::try_from(context.write_buf.len()).expect("write length within u32 bound");
-                attempt_map_transfer(
+                let attempt = attempt_map_transfer(
                     file.write_at(context.write_buf, context.file_offset),
                     requested,
-                )
+                );
+                // A short write leaves its tail to a continuation, which syncs once whole.
+                match (attempt, context.write_sync) {
+                    (Attempt::Done(bytes), Some(mode)) if bytes == requested => {
+                        match crate::open::sync_file(file, mode) {
+                            Ok(()) => Attempt::Done(bytes),
+                            Err(error) => classify(&error),
+                        }
+                    }
+                    (attempt, _) => attempt,
+                }
             }
             OpKind::Fsync => match crate::open::sync_file(file, context.sync_mode) {
                 Ok(()) => Attempt::Done(0),

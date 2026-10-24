@@ -141,6 +141,14 @@ pub(crate) trait PoolBackend: sealed::Sealed {
         offset: u64,
     ) -> Result<OpToken, (SubmitError, WriteSlot<'arena>)>;
 
+    fn submit_write_synced<'arena>(
+        &self,
+        fd: &FileHandle,
+        slot: WriteSlot<'arena>,
+        offset: u64,
+        mode: SyncMode,
+    ) -> Result<OpToken, (SubmitError, WriteSlot<'arena>)>;
+
     fn submit_fsync(&self, fd: &FileHandle, mode: SyncMode) -> Result<OpToken, SubmitError>;
 
     fn close(&self, fd: FileHandle);

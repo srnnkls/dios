@@ -397,6 +397,31 @@ fn fsync_full_barrier_succeeds_through_both_paths() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn a_synced_write_lands_its_bytes_and_completes_once_in_either_mode() {
+    for (mode, fill) in [(SyncMode::Data, 0x5D), (SyncMode::Full, 0x5F)] {
+        let path = temp_path("synced-write");
+        std::fs::File::create(&path).expect("pre-create the target file");
+        let drv = driver(1, FRAME_BYTES, 1);
+        let fd = open_existing(&drv, &path, DirectIo::Disabled);
+        let mut slot = drv.write_arena().alloc().expect("one staging slot");
+        slot.fill(fill);
+
+        drv.submit_write_synced(&fd, slot, 0, mode)
+            .expect("submit within capacity");
+        assert_eq!(
+            drain_one(&drv),
+            Ok(FRAME_BYTES),
+            "the write and its sync complete as one write of the whole granule"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("read the written file"),
+            vec![fill; FRAME_BYTES as usize]
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn direct_open_reports_nocache_direct_mode() {
     let path = temp_path("direct");
     std::fs::write(&path, [0u8; FRAME_BYTES as usize]).expect("seed a full frame");

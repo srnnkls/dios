@@ -1,0 +1,4 @@
+synced_write: flushes per durable write on /sys/devices/pci0000:00/0000:00:02.0/virtio1/block/vda: base 1.00, candidate 1.00 (write_cache write back, fua 0)
+synced_write: pairs 40, ratio geomean 0.6693, ci95 upper 0.7018, samples target/bench-samples/synced_write.csv
+$ cargo bench --features bench --bench compare -- target/bench-samples/synced_write.csv 0.85
+gate synced_write: pairs 40, ratio geomean 0.6693, ci95 upper 0.7018, threshold 0.8500 -> PASS

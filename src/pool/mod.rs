@@ -2097,6 +2097,39 @@ impl<D: PoolBackend> Pool<D> {
         slot: PoolWriteSlot<'pool>,
         offset: u64,
     ) -> Result<PoolToken, (PoolSubmitError, PoolWriteSlot<'pool>)> {
+        self.submit_write_with(file, slot, offset, None)
+    }
+
+    /// Admits a positional product write whose completion also covers its
+    /// durability under `mode`: one operation where [`Pool::submit_write`] then
+    /// [`Pool::submit_fsync`] take two. It covers its own range only, so writes
+    /// still in flight when it completes are not covered.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged slot with [`PoolSubmitError`] on fixed-capacity,
+    /// stale-file, or foreign-slot refusal.
+    ///
+    /// # Panics
+    ///
+    /// If `file` belongs to another pool, or the operation generation exhausts.
+    pub fn submit_write_synced<'pool>(
+        &'pool self,
+        file: FileId,
+        slot: PoolWriteSlot<'pool>,
+        offset: u64,
+        mode: crate::driver::SyncMode,
+    ) -> Result<PoolToken, (PoolSubmitError, PoolWriteSlot<'pool>)> {
+        self.submit_write_with(file, slot, offset, Some(mode))
+    }
+
+    fn submit_write_with<'pool>(
+        &'pool self,
+        file: FileId,
+        slot: PoolWriteSlot<'pool>,
+        offset: u64,
+        write_sync: Option<crate::driver::SyncMode>,
+    ) -> Result<PoolToken, (PoolSubmitError, PoolWriteSlot<'pool>)> {
         if slot.pool_identity != self.identity {
             return Err((PoolSubmitError::ForeignPool, slot));
         }
@@ -2116,7 +2149,11 @@ impl<D: PoolBackend> Pool<D> {
             slot,
             pool_identity,
         } = slot;
-        let driver_token = match self.driver.submit_write(handle, slot, offset) {
+        let submitted = match write_sync {
+            None => self.driver.submit_write(handle, slot, offset),
+            Some(mode) => self.driver.submit_write_synced(handle, slot, offset, mode),
+        };
+        let driver_token = match submitted {
             Ok(token) => token,
             Err((SubmitError::Full, slot)) => {
                 return Err((
@@ -3294,6 +3331,16 @@ impl PoolBackend for Driver {
         offset: u64,
     ) -> Result<OpToken, (SubmitError, write_arena::WriteSlot<'arena>)> {
         Driver::submit_write(self, fd, slot, offset)
+    }
+
+    fn submit_write_synced<'arena>(
+        &self,
+        fd: &FileHandle,
+        slot: write_arena::WriteSlot<'arena>,
+        offset: u64,
+        mode: crate::driver::SyncMode,
+    ) -> Result<OpToken, (SubmitError, write_arena::WriteSlot<'arena>)> {
+        Driver::submit_write_synced(self, fd, slot, offset, mode)
     }
 
     fn submit_fsync(

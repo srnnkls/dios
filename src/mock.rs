@@ -51,6 +51,7 @@ pub struct WriteAttempt {
     pub file_offset: u64,
     pub source_offset: u32,
     pub requested_len: u32,
+    pub sync: Option<SyncMode>,
 }
 
 /// Sole chronological deterministic I/O recorder.
@@ -67,6 +68,7 @@ pub enum MockIoEvent {
         file_offset: u64,
         source_offset: u32,
         requested_len: u32,
+        sync: Option<SyncMode>,
     },
     FsyncAttempt {
         file: FileId,
@@ -395,6 +397,23 @@ impl MockDriver {
         self.0.submit_write(fd, buf, offset)
     }
 
+    /// Enqueues a write whose completion also covers its durability under `mode`.
+    ///
+    /// # Errors
+    ///
+    /// The tuple hands the unconsumed [`WriteSlot`] back on rejection:
+    /// [`SubmitError::StaleHandle`] for a stale fd, [`SubmitError::Full`] at
+    /// capacity.
+    pub fn submit_write_synced<'arena>(
+        &self,
+        fd: &FileHandle,
+        buf: WriteSlot<'arena>,
+        offset: u64,
+        mode: SyncMode,
+    ) -> Result<OpToken, (SubmitError, WriteSlot<'arena>)> {
+        self.0.submit_write_synced(fd, buf, offset, mode)
+    }
+
     /// # Errors
     ///
     /// [`SubmitError::StaleHandle`] for a stale fd, [`SubmitError::Full`] at
@@ -670,6 +689,16 @@ impl PoolBackend for MockDriver {
         self.submit_write(fd, slot, offset)
     }
 
+    fn submit_write_synced<'arena>(
+        &self,
+        fd: &FileHandle,
+        slot: WriteSlot<'arena>,
+        offset: u64,
+        mode: SyncMode,
+    ) -> Result<OpToken, (SubmitError, WriteSlot<'arena>)> {
+        self.submit_write_synced(fd, slot, offset, mode)
+    }
+
     fn submit_fsync(&self, fd: &FileHandle, mode: SyncMode) -> Result<OpToken, SubmitError> {
         self.submit_fsync(fd, mode)
     }
@@ -804,6 +833,16 @@ impl PoolBackend for MockRingDriver {
         offset: u64,
     ) -> Result<OpToken, (SubmitError, WriteSlot<'arena>)> {
         self.submit_write(fd, slot, offset)
+    }
+
+    fn submit_write_synced<'arena>(
+        &self,
+        fd: &FileHandle,
+        slot: WriteSlot<'arena>,
+        offset: u64,
+        mode: SyncMode,
+    ) -> Result<OpToken, (SubmitError, WriteSlot<'arena>)> {
+        self.submit_write_synced(fd, slot, offset, mode)
     }
 
     fn submit_fsync(&self, fd: &FileHandle, mode: SyncMode) -> Result<OpToken, SubmitError> {
@@ -967,11 +1006,13 @@ impl MockExecutor {
                     file_offset,
                     source_offset,
                     requested_len,
+                    sync,
                     ..
                 } => Some(WriteAttempt {
                     file_offset: *file_offset,
                     source_offset: *source_offset,
                     requested_len: *requested_len,
+                    sync: *sync,
                 }),
                 _ => None,
             })
@@ -1101,6 +1142,7 @@ impl EagerExecutor for MockExecutor {
                     file_offset: context.file_offset,
                     source_offset: context.destination_offset,
                     requested_len: context.requested_len,
+                    sync: context.write_sync,
                 }),
                 OpKind::Fsync => {
                     self.push_event(MockIoEvent::FsyncAttempt {
@@ -1499,6 +1541,24 @@ impl MockRingDriver {
         Ok(token)
     }
 
+    /// Enqueues a synced write through the real ring reap path, binding any
+    /// pending injected CQE sequence to its slab slot.
+    ///
+    /// # Errors
+    ///
+    /// The tuple hands the unconsumed [`WriteSlot`] back on rejection.
+    pub fn submit_write_synced<'arena>(
+        &self,
+        fd: &FileHandle,
+        buf: WriteSlot<'arena>,
+        offset: u64,
+        mode: SyncMode,
+    ) -> Result<OpToken, (SubmitError, WriteSlot<'arena>)> {
+        let token = self.0.submit_write_synced(fd, buf, offset, mode)?;
+        self.0.executor().bind_pending(token.user_data());
+        Ok(token)
+    }
+
     /// Enqueues an fsync barrier.
     ///
     /// # Errors
@@ -1765,6 +1825,7 @@ impl RingExecutor for MockRingExecutor {
         source_offset: u32,
         file_offset: u64,
         requested_len: u32,
+        write_sync: Option<SyncMode>,
     ) {
         assert!(fd_slot < self.file_capacity, "write targets a table slot");
         assert!(
@@ -1776,6 +1837,7 @@ impl RingExecutor for MockRingExecutor {
             file_offset,
             source_offset,
             requested_len,
+            sync: write_sync,
         });
         let raw = Self::next_raw(&mut state, user_data, requested_len);
         state.cqes.push_back((user_data, raw));

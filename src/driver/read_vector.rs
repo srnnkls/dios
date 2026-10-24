@@ -476,6 +476,7 @@ impl<E: Executor> DriverCore<E> {
             read_purpose: super::ReadPurpose::Speculative,
             kind: OpKind::Read,
             sync_mode: SyncMode::Full,
+            write_sync: None,
             fd: fd.file_id(),
             file_offset: offset,
             frame: Some(ReadDestination::Vector(vector)),

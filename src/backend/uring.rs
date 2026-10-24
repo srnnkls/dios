@@ -23,7 +23,7 @@ use io_uring::{IoUring, opcode, squeue, types};
 
 use crate::driver::{
     Backend, DriverBuildError, Executor, OpKind, RegistrationPolicy, RegistrationPosture,
-    RingExecutor, RingReap,
+    RingExecutor, RingReap, SyncMode,
 };
 use crate::error::IoError;
 #[cfg(any(feature = "mock", feature = "bench"))]
@@ -39,6 +39,10 @@ const EIO: i32 = 5;
 const ETIME: i32 = 62;
 const POLLIN: u32 = 0x0001;
 const WAKE_USER_DATA: u64 = u64::MAX;
+/// `RWF_DSYNC` and `RWF_SYNC` from `linux/fs.h`: per-write `O_DSYNC` and
+/// `O_SYNC`, so the write's completion covers its durability.
+const RWF_DSYNC: i32 = 0x2;
+const RWF_SYNC: i32 = 0x4;
 /// `io_uring` refuses a registered buffer longer than one GiB (`EFAULT`), so
 /// each arena registers as consecutive chunks of at most this size. A chunk
 /// boundary never splits a frame or staging slot: both sizes are powers of two
@@ -124,7 +128,13 @@ impl Posture {
         source: *const u8,
         requested_len: u32,
         file_offset: u64,
+        write_sync: Option<SyncMode>,
     ) -> squeue::Entry {
+        let rw_flags = match write_sync {
+            None => 0,
+            Some(SyncMode::Data) => RWF_DSYNC,
+            Some(SyncMode::Full) => RWF_SYNC,
+        };
         match self {
             Self::Registered(table) => opcode::WriteFixed::new(
                 types::Fixed(fd_slot),
@@ -133,9 +143,11 @@ impl Posture {
                 table.write_index(source),
             )
             .offset(file_offset)
+            .rw_flags(rw_flags)
             .build(),
             Self::Unregistered => opcode::Write::new(types::Fixed(fd_slot), source, requested_len)
                 .offset(file_offset)
+                .rw_flags(rw_flags)
                 .build(),
         }
     }
@@ -388,6 +400,7 @@ impl RingExecutor for Uring {
         source_offset: u32,
         file_offset: u64,
         requested_len: u32,
+        write_sync: Option<SyncMode>,
     ) {
         assert!(fd_slot < self.file_capacity, "write targets a table slot");
         assert!(
@@ -405,7 +418,7 @@ impl RingExecutor for Uring {
         );
         let entry = self
             .posture
-            .write_entry(fd_slot, source, requested_len, file_offset)
+            .write_entry(fd_slot, source, requested_len, file_offset, write_sync)
             .user_data(user_data);
         self.push_sqe(access, &entry);
     }
@@ -415,12 +428,12 @@ impl RingExecutor for Uring {
         access: &mut crate::driver::RingAccess<'_>,
         user_data: u64,
         fd_slot: u32,
-        mode: crate::driver::SyncMode,
+        mode: SyncMode,
     ) {
         assert!(fd_slot < self.file_capacity, "fsync targets a table slot");
         let flags = match mode {
-            crate::driver::SyncMode::Data => types::FsyncFlags::DATASYNC,
-            crate::driver::SyncMode::Full => types::FsyncFlags::empty(),
+            SyncMode::Data => types::FsyncFlags::DATASYNC,
+            SyncMode::Full => types::FsyncFlags::empty(),
         };
         let entry = opcode::Fsync::new(types::Fixed(fd_slot))
             .flags(flags)
@@ -496,7 +509,7 @@ impl RingExecutor for Uring {
         }
     }
 
-    fn blocking_fsync(&self, fd_slot: u32, mode: crate::driver::SyncMode) -> Result<(), i32> {
+    fn blocking_fsync(&self, fd_slot: u32, mode: SyncMode) -> Result<(), i32> {
         let files = self.lock_files();
         let Some(file) = files.get(fd_slot as usize).and_then(Option::as_ref) else {
             return Err(EBADF);
@@ -610,7 +623,7 @@ mod tests {
             write_base: source.addr(),
             write_first_index: 1,
         };
-        let write = Posture::Registered(table).write_entry(3, source, 4_096, 8_192);
+        let write = Posture::Registered(table).write_entry(3, source, 4_096, 8_192, None);
         let read = Posture::Registered(table).read_entry(3, source, 4_096, 8_192);
 
         assert_eq!(
@@ -619,6 +632,38 @@ mod tests {
             "ordinary WRITE does not prove the registered staging arena is used"
         );
         assert_eq!(read.get_opcode(), u32::from(opcode::ReadFixed::CODE));
+        assert_eq!(rw_flags(&write), 0, "a plain write asks for no durability");
+    }
+
+    /// The `rw_flags` word of a built SQE, at offset 28 of the kernel's
+    /// 64-byte `io_uring_sqe`, which the crate exposes no getter for.
+    fn rw_flags(entry: &squeue::Entry) -> u32 {
+        const RW_FLAGS_OFFSET: usize = 28;
+        assert_eq!(size_of::<squeue::Entry>(), 64, "the SQE is the kernel's");
+        // SAFETY: `squeue::Entry` is `#[repr(C)]` over the 64-byte kernel SQE,
+        // so the cast views exactly `entry`'s bytes at alignment one, and every
+        // opcode builder starts from a zeroed SQE, so each byte is initialized.
+        let bytes = unsafe { &*std::ptr::from_ref(entry).cast::<[u8; 64]>() };
+        let word = bytes[RW_FLAGS_OFFSET..RW_FLAGS_OFFSET + 4]
+            .try_into()
+            .expect("a four-byte range converts to a four-byte array");
+        u32::from_ne_bytes(word)
+    }
+
+    #[test]
+    fn a_synced_write_carries_its_durability_in_the_sqe_under_either_posture() {
+        let source = NonNull::<u8>::dangling().as_ptr();
+        let table = BufferTable {
+            frames_base: source.addr(),
+            write_base: source.addr(),
+            write_first_index: 1,
+        };
+        for posture in [Posture::Registered(table), Posture::Unregistered] {
+            let data = posture.write_entry(3, source, 4_096, 8_192, Some(SyncMode::Data));
+            let full = posture.write_entry(3, source, 4_096, 8_192, Some(SyncMode::Full));
+            assert_eq!(rw_flags(&data), 0x2, "linux/fs.h RWF_DSYNC");
+            assert_eq!(rw_flags(&full), 0x4, "linux/fs.h RWF_SYNC");
+        }
     }
 
     #[test]
@@ -651,7 +696,7 @@ mod tests {
     #[test]
     fn unregistered_posture_issues_plain_opcodes() {
         let source = NonNull::<u8>::dangling().as_ptr();
-        let write = Posture::Unregistered.write_entry(3, source, 4_096, 8_192);
+        let write = Posture::Unregistered.write_entry(3, source, 4_096, 8_192, None);
         let read = Posture::Unregistered.read_entry(3, source, 4_096, 8_192);
 
         assert_eq!(
@@ -659,6 +704,7 @@ mod tests {
             u32::from(opcode::Write::CODE),
             "an unregistered arena must never name a buffer index"
         );
+        assert_eq!(rw_flags(&write), 0, "a plain write asks for no durability");
         assert_eq!(read.get_opcode(), u32::from(opcode::Read::CODE));
         assert_eq!(
             read.user_data(7).get_user_data(),
@@ -683,7 +729,7 @@ mod tests {
             .expect("the driver opens the temp file");
         std::fs::remove_file(&path).expect("unlink temp file");
         let token = driver
-            .submit_fsync(&fd, crate::driver::SyncMode::Data)
+            .submit_fsync(&fd, SyncMode::Data)
             .expect("submit within capacity");
 
         let mut out = crate::driver::CompletionBatch::with_capacity(1);

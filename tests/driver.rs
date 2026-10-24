@@ -556,11 +556,13 @@ fn a_positive_short_write_resubmits_the_exact_unwritten_tail() {
                 file_offset: offset,
                 source_offset: 0,
                 requested_len: FRAME_BYTES,
+                sync: None,
             },
             WriteAttempt {
                 file_offset: offset + u64::from(short),
                 source_offset: short,
                 requested_len: FRAME_BYTES - short,
+                sync: None,
             },
         ],
         "the second pwrite sees only the exact file/source tail"
@@ -594,6 +596,7 @@ fn a_zero_progress_write_stops_at_the_retry_bound() {
                 file_offset: 0,
                 source_offset: 0,
                 requested_len: FRAME_BYTES,
+                sync: None,
             };
             4
         ],

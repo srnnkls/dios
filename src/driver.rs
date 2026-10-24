@@ -688,6 +688,25 @@ impl Driver {
         self.0.submit_write(fd, buf, offset)
     }
 
+    /// Enqueues a write whose completion also covers its durability under `mode`:
+    /// one operation where [`Driver::submit_write`] and [`Driver::submit_fsync`]
+    /// take two. It covers only its own range; writes still in flight when it
+    /// completes are not covered.
+    ///
+    /// # Errors
+    ///
+    /// Returns the refusal and the unchanged slot when the handle is stale or
+    /// the bounded submission queue is full.
+    pub fn submit_write_synced<'arena>(
+        &self,
+        fd: &FileHandle,
+        buf: WriteSlot<'arena>,
+        offset: u64,
+        mode: SyncMode,
+    ) -> Result<OpToken, (SubmitError, WriteSlot<'arena>)> {
+        self.0.submit_write_synced(fd, buf, offset, mode)
+    }
+
     /// Enqueues an fsync barrier; the eager backend runs it inline at
     /// [`Driver::poll`].
     ///
@@ -1204,7 +1223,8 @@ pub(crate) trait RingExecutor: Executor {
         file_offset: u64,
     );
 
-    /// Fills one write SQE from a leased staging slot. The lease remains in the
+    /// Fills one write SQE from a leased staging slot; a `write_sync` mode makes
+    /// the write's own completion cover its durability. The lease remains in the
     /// completion slab until this op is terminally reaped.
     #[expect(
         clippy::too_many_arguments,
@@ -1219,6 +1239,7 @@ pub(crate) trait RingExecutor: Executor {
         source_offset: u32,
         file_offset: u64,
         requested_len: u32,
+        write_sync: Option<SyncMode>,
     );
 
     /// Fills one fsync SQE, tagged with `user_data`. Called under the AD-4 mutex.
@@ -1333,6 +1354,9 @@ pub(crate) struct OpEntry {
     read_purpose: ReadPurpose,
     kind: OpKind,
     sync_mode: SyncMode,
+    /// The durability a write's own completion covers; `None` on every other kind
+    /// and on writes a later fsync makes durable.
+    write_sync: Option<SyncMode>,
     fd: FileId,
     file_offset: u64,
     frame: Option<ReadDestination>,
@@ -1366,6 +1390,7 @@ pub(crate) struct OpContext<'buf> {
     pub(crate) requested_len: u32,
     pub(crate) write_buf: &'buf [u8],
     pub(crate) sync_mode: SyncMode,
+    pub(crate) write_sync: Option<SyncMode>,
 }
 
 impl<'buf> OpContext<'buf> {
@@ -1384,10 +1409,17 @@ impl<'buf> OpContext<'buf> {
             requested_len,
             write_buf: &[],
             sync_mode: SyncMode::Full,
+            write_sync: None,
         }
     }
 
-    fn write(fd: FileId, file_offset: u64, source_offset: u32, write_buf: &'buf [u8]) -> Self {
+    fn write(
+        fd: FileId,
+        file_offset: u64,
+        source_offset: u32,
+        write_buf: &'buf [u8],
+        write_sync: Option<SyncMode>,
+    ) -> Self {
         let requested_len =
             u32::try_from(write_buf.len()).expect("write length fits the driver bound");
         Self {
@@ -1398,6 +1430,7 @@ impl<'buf> OpContext<'buf> {
             requested_len,
             write_buf,
             sync_mode: SyncMode::Full,
+            write_sync,
         }
     }
 
@@ -1410,6 +1443,7 @@ impl<'buf> OpContext<'buf> {
             requested_len: 0,
             write_buf: &[],
             sync_mode: mode,
+            write_sync: None,
         }
     }
 
@@ -1422,6 +1456,7 @@ impl<'buf> OpContext<'buf> {
             self.file_offset + u64::from(bytes),
             self.destination_offset + bytes,
             &self.write_buf[start..],
+            self.write_sync,
         )
     }
 }
@@ -1826,6 +1861,7 @@ impl<E: Executor> DriverCore<E> {
             read_purpose: purpose,
             kind: OpKind::Read,
             sync_mode: SyncMode::Full,
+            write_sync: None,
             fd: fd.file_id(),
             file_offset,
             frame: Some(ReadDestination::Point(token)),
@@ -1846,6 +1882,26 @@ impl<E: Executor> DriverCore<E> {
         buf: WriteSlot<'arena>,
         offset: u64,
     ) -> Result<OpToken, (SubmitError, WriteSlot<'arena>)> {
+        self.submit_write_with(fd, buf, offset, None)
+    }
+
+    pub(crate) fn submit_write_synced<'arena>(
+        &self,
+        fd: &FileHandle,
+        buf: WriteSlot<'arena>,
+        offset: u64,
+        mode: SyncMode,
+    ) -> Result<OpToken, (SubmitError, WriteSlot<'arena>)> {
+        self.submit_write_with(fd, buf, offset, Some(mode))
+    }
+
+    fn submit_write_with<'arena>(
+        &self,
+        fd: &FileHandle,
+        buf: WriteSlot<'arena>,
+        offset: u64,
+        write_sync: Option<SyncMode>,
+    ) -> Result<OpToken, (SubmitError, WriteSlot<'arena>)> {
         self.flush_deferred();
         buf.assert_owner(self.id);
         if let IoMode::Direct(alignment) = fd.io_mode() {
@@ -1865,6 +1921,7 @@ impl<E: Executor> DriverCore<E> {
                     read_purpose: ReadPurpose::Demand,
                     kind: OpKind::Write,
                     sync_mode: SyncMode::Full,
+                    write_sync,
                     fd: fd.file_id(),
                     file_offset: offset,
                     frame: None,
@@ -1895,6 +1952,7 @@ impl<E: Executor> DriverCore<E> {
             read_purpose: ReadPurpose::Demand,
             kind: OpKind::Fsync,
             sync_mode: mode,
+            write_sync: None,
             fd: fd.file_id(),
             file_offset: 0,
             frame: None,
@@ -2080,6 +2138,7 @@ impl<E: EagerExecutor> DriverCore<E> {
                     entry.file_offset,
                     entry.destination_offset,
                     write_buf,
+                    entry.write_sync,
                 )
             }
         };
@@ -2259,6 +2318,7 @@ impl<E: EagerExecutor> DriverCore<E> {
                 offset + u64::from(written),
                 written,
                 &buf[written as usize..],
+                None,
             );
             match self.execute(None, OpKind::Write, context).0 {
                 Ok(bytes) => {
@@ -2485,6 +2545,7 @@ impl<E: RingExecutor> DriverCore<E> {
                         entry.destination_offset,
                         entry.file_offset,
                         entry.requested_len,
+                        entry.write_sync,
                     );
                 }
             }

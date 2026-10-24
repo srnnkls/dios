@@ -171,6 +171,7 @@ fn dropping_pool_drains_a_write_and_its_held_fsync_before_close() {
                 file_offset: 0,
                 source_offset: 0,
                 requested_len: GRANULE,
+                sync: None,
             },
             MockIoEvent::WriteCompletion {
                 file,
@@ -266,10 +267,12 @@ fn writes_precede_their_fsync_barrier_under_adversarial_mock_schedules() {
                     file_offset,
                     source_offset,
                     requested_len,
+                    sync,
                 } if *attempted_file == file => Some(WriteAttempt {
                     file_offset: *file_offset,
                     source_offset: *source_offset,
                     requested_len: *requested_len,
+                    sync: *sync,
                 }),
                 _ => None,
             })
@@ -750,6 +753,51 @@ fn held_data_sync_preserves_its_mode_after_prior_write_completion() {
             observed,
             [mode],
             "pool admission must not strengthen or weaken the requested syscall"
+        );
+    }
+}
+
+#[test]
+fn a_synced_write_carries_its_mode_to_the_backend_attempt_without_a_barrier() {
+    for mode in [SyncMode::Data, SyncMode::Full] {
+        let (pool, file) = pool_with_file("synced-write", 0x5EED);
+        let mut slot = pool.write_arena().alloc().expect("reserved staging");
+        slot.fill(0x3c);
+        let write = pool
+            .submit_write_synced(file, slot, 0, mode)
+            .expect("synced write admitted");
+        let mut completions = PoolCompletionBatch::with_capacity(1);
+        let mut written = false;
+        for _ in 0..POLL_BOUND {
+            pool.poll_report(&mut completions);
+            if completions.iter().next().is_some() {
+                assert_write_success(&completions, write, GRANULE);
+                written = true;
+                break;
+            }
+        }
+        assert!(written, "the synced write completes within the bound");
+        let events = pool.driver().io_events_in_order();
+        let requested: Vec<_> = events
+            .iter()
+            .filter_map(|event| {
+                if let MockIoEvent::WriteAttempt { sync, .. } = event {
+                    Some(*sync)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            requested,
+            [Some(mode)],
+            "pool admission must not strengthen, weaken or drop the requested durability"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, MockIoEvent::FsyncAttempt { .. })),
+            "a synced write covers itself and issues no separate barrier"
         );
     }
 }

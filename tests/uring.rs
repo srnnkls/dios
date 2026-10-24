@@ -264,6 +264,30 @@ fn an_async_write_uses_the_registered_write_arena() {
 }
 
 #[test]
+fn a_synced_write_lands_its_bytes_through_the_ring_in_either_mode() {
+    for (mode, fill) in [(SyncMode::Data, 0x5D), (SyncMode::Full, 0x5F)] {
+        let path = temp_path("synced-write");
+        std::fs::File::create(&path).expect("pre-create the target file");
+        let drv = driver(1, FRAME_BYTES, 1);
+        let fd = open_existing(&drv, &path, DirectIo::Preferred);
+        let mut slot = drv.write_arena().alloc().expect("one staging slot");
+        slot.fill(fill);
+
+        drv.submit_write_synced(&fd, slot, 0, mode)
+            .expect("submit within capacity");
+        assert_eq!(
+            drain_one(&drv),
+            Ok(FRAME_BYTES),
+            "the kernel accepts the durability flag and writes one granule"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("read the written file"),
+            vec![fill; FRAME_BYTES as usize]
+        );
+    }
+}
+
+#[test]
 fn an_async_fsync_completes_with_a_zero_byte_transfer() {
     let path = temp_path("async-fsync");
     std::fs::write(&path, [0u8; 64]).expect("seed a file");
