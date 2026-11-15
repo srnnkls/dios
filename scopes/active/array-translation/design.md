@@ -259,7 +259,7 @@ validate liveness once per file and delay slot reuse by a reclamation grace peri
 |------|-----------|----------|
 | Loom: publish racing a session read | INV-2 | A hit returns only fully published bytes |
 | Loom: evict, reclaim and reuse racing a session read | INV-2, INV-3 | No borrowed slice names a reclaimed frame |
-| Loom: retirement of an empty file and reuse of its slot, paused between entry load and mirror load, for `get`, a session read and an optimistic copy | INV-7 | `StaleFile` or fallback; never the new file's bytes |
+| Loom: retirement of an empty file and reuse of its slot, landing after the epoch pin and before the entry load, for `get`, a session read and an optimistic copy | INV-7 | `StaleFile` or fallback; never the new file's bytes |
 | Retire one of two files whose slots share an OS page | INV-2 | The other file's resident pages still hit |
 | Readahead window and explicit prefetch at the bound, for a middle slot and the last slot | INV-8 | Window ends below the bound; explicit page counted rejected before any lookup; no other slot's entry or frame is touched |
 | Loom: reuse of the same frame for another page and for the same page during a copy | INV-2, INV-4 | The copy is rejected or holds one publication of the requested page |

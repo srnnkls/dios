@@ -273,6 +273,8 @@ pub mod testing {
         ) -> Option<crate::pool::FrameGuard<'ctx>>;
         fn insert_resident_frame(&self, page: PageId, fill: u8) -> ReadFrameIdx;
         fn evict_frame(&self, page: PageId) -> ReadFrameIdx;
+        /// Reads the translation entry of `page`.
+        fn translation_lookup(&self, page: PageId) -> Option<ReadFrameIdx>;
         fn clock_reference_stores(&self) -> u64;
         #[cfg(feature = "bench")]
         fn global_epoch_observed(&self) -> u64;
@@ -316,6 +318,10 @@ pub mod testing {
 
                 fn evict_frame(&self, page: PageId) -> ReadFrameIdx {
                     self.evict_frame_internal(page)
+                }
+
+                fn translation_lookup(&self, page: PageId) -> Option<ReadFrameIdx> {
+                    self.translation_lookup_internal(page)
                 }
 
                 fn clock_reference_stores(&self) -> u64 {
@@ -367,6 +373,8 @@ pub mod testing {
         ) -> MockResidentLeaseCountObservation;
         #[cfg(not(loom))]
         fn pause_next_cold_get(&self) -> ColdGetPauseObservation;
+        #[cfg(not(loom))]
+        fn pause_next_get_between_pin_and_entry(&self) -> PinEntryPauseObservation;
     }
 
     #[cfg(feature = "mock")]
@@ -403,6 +411,13 @@ pub mod testing {
                 state: self.pause_next_cold_get_internal(),
             }
         }
+
+        #[cfg(not(loom))]
+        fn pause_next_get_between_pin_and_entry(&self) -> PinEntryPauseObservation {
+            PinEntryPauseObservation {
+                state: self.pause_next_get_between_pin_and_entry_internal(),
+            }
+        }
     }
 
     /// Arc-backed observation of one exact preallocated file-slot lease count.
@@ -437,6 +452,29 @@ pub mod testing {
         }
 
         /// Releases the paused get to continue into cold admission.
+        pub fn release(&self) {
+            self.state.release();
+        }
+    }
+
+    /// One-shot mock-only control for a get paused after its epoch pin and
+    /// before its translation entry load.
+    #[cfg(all(feature = "mock", not(loom)))]
+    #[derive(Debug, Clone)]
+    pub struct PinEntryPauseObservation {
+        state: Arc<crate::pool::ColdGetPauseState>,
+    }
+
+    #[cfg(all(feature = "mock", not(loom)))]
+    impl PinEntryPauseObservation {
+        /// Waits until the get holds its epoch pin and is paused before
+        /// loading its translation entry.
+        #[must_use]
+        pub fn wait_until_parked(&self, timeout: std::time::Duration) -> bool {
+            self.state.wait_until_parked(timeout)
+        }
+
+        /// Releases the paused get to load its translation entry.
         pub fn release(&self) {
             self.state.release();
         }
@@ -624,7 +662,7 @@ pub mod testing {
     #[cfg(feature = "bench")]
     pub use crate::pool::ControlTables;
     #[cfg(any(feature = "mock", feature = "bench"))]
-    pub use crate::pool::{Clock, FrameState, PageTable, ReaderCounters};
+    pub use crate::pool::{Clock, FrameState, PageTable, ReaderCounters, Translation};
 
     /// Calls the shipping four-round page hash for bench evidence generation.
     #[cfg(feature = "bench")]

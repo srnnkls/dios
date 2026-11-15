@@ -307,6 +307,13 @@ def collect_comparison(
     return index
 
 
+def base_build_schedule(qualification_pairs: int, measured_pairs: int) -> list[dict]:
+    """One process per build and pair, in AB/BA order, each naming its own row."""
+    if qualification_pairs < 0 or measured_pairs < 0:
+        raise ValueError("pair counts are non-negative")
+    return []
+
+
 def write_comparison(binary: Path, output: Path, timings: list) -> dict:
     path = output / "paired.csv"
     with path.open("w", newline="") as stream:
@@ -378,6 +385,11 @@ def arguments() -> argparse.Namespace:
         "--mode", choices=("run", "smoke", "trace", "observe"), default="run"
     )
     parser.add_argument("--lanes", help="comma-separated catalog names; default all")
+    parser.add_argument(
+        "--base-build",
+        type=Path,
+        help="base-build tree whose runner pairs with this tree's runner",
+    )
     return parser.parse_args()
 
 

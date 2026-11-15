@@ -925,3 +925,67 @@ fn a_short_read_at_eof_is_terminal_and_fans_err_to_all_waiters_and_frees_the_fra
         "a terminal short-read-at-EOF frees its frame like an IO error"
     );
 }
+
+#[test]
+fn a_granule_at_file_granules_max_is_refused_before_lookup_or_admission() {
+    const GRANULES_MAX: u32 = 16;
+    let frames = 8u32;
+    let mock = a_mock(0x00B0_0DED, frames, frames);
+    let files: Vec<_> = (0..4)
+        .map(|index| {
+            mock.open(Path::new(&format!("bound-{index}")), DirectIo::Disabled)
+                .expect("mock open")
+        })
+        .collect();
+    for (fill, file) in (0xA0u8..).zip(&files) {
+        mock.seed_page(file, 0, fill);
+        mock.seed_page(file, GRANULES_MAX, fill);
+    }
+    let ids: Vec<_> = files
+        .iter()
+        .map(dios::driver::FileHandle::file_id)
+        .collect();
+    let pool = Pool::builder()
+        .frame_count(frames)
+        .granule(GRANULE)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .registered_file_capacity(4)
+        .file_granules_max(GRANULES_MAX)
+        .build_on(mock)
+        .expect("a watermark-satisfying pool with a translation bound");
+    for file in files {
+        pool.register_file(file);
+    }
+    let reader = pool.register_reader().expect("a reader slot");
+    for (fill, &id) in (0xA0u8..).zip(&ids) {
+        let token = expect_pending(pool.get(&reader, PageId::new(id, 0)), "first granule");
+        drop(drive_ready(&pool, &reader, token));
+        match expect_live(pool.get(&reader, PageId::new(id, 0)), "warm first granule") {
+            Get::Hit(guard) => assert_page_bytes(&guard, fill),
+            Get::Pending(_) | Get::Busy => panic!("a warmed page hits"),
+        }
+    }
+    let reads_before = pool.driver().read_attempts_in_order().len();
+
+    for &id in &ids {
+        let page = PageId::new(id, GRANULES_MAX);
+        assert_eq!(
+            pool.get(&reader, page)
+                .expect_err("a granule at the bound is an operating error, never a neighbor's hit"),
+            GetError::BeyondFileBound { page },
+        );
+    }
+    assert_eq!(
+        pool.driver().read_attempts_in_order().len(),
+        reads_before,
+        "an out-of-bound get submits no read"
+    );
+    assert_eq!(
+        frames_in_state(&pool, frames, FrameState::Resident),
+        4,
+        "an out-of-bound get leaves every resident frame in place"
+    );
+}

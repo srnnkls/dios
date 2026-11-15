@@ -964,3 +964,101 @@ fn held_file_release_refills_only_the_new_generation() {
         );
     });
 }
+
+#[test]
+fn a_publish_racing_a_translation_lookup_sets_the_entry_after_the_frame_is_resident() {
+    const PUBLISHED_FRAME: u32 = 1;
+
+    loom::model(|| {
+        let pool = PoolModel::new(2);
+        assert_eq!(pool.translation_entry(HELD_PAGE), None);
+
+        let writer_pool = pool.clone();
+        let writer = thread::spawn(move || writer_pool.remap(HELD_PAGE, HELD_GEN));
+
+        if let Some(guard) = pool.pin(HELD_PAGE) {
+            assert_eq!(
+                guard.generation(),
+                HELD_GEN,
+                "a set entry names a frame whose publication is complete"
+            );
+        }
+        writer.join().expect("writer thread");
+
+        assert_eq!(
+            pool.translation_entry(HELD_PAGE),
+            Some(PUBLISHED_FRAME),
+            "publish sets the page's entry to the published frame"
+        );
+    });
+}
+
+#[test]
+fn an_eviction_racing_a_translation_lookup_clears_the_entry_before_reclaim() {
+    const HELD_FRAME: u32 = 0;
+
+    loom::model(|| {
+        let pool = PoolModel::new(1);
+        pool.make_resident(HELD_PAGE, HELD_GEN);
+        assert_eq!(pool.translation_entry(HELD_PAGE), Some(HELD_FRAME));
+
+        let reader_pool = pool.clone();
+        let reader = thread::spawn(move || {
+            if let Some(guard) = reader_pool.pin(HELD_PAGE) {
+                assert_eq!(
+                    guard.generation(),
+                    HELD_GEN,
+                    "a lookup that found the entry reads the page's own bytes until its guard drops"
+                );
+            }
+        });
+
+        pool.evict(HELD_PAGE);
+        assert_eq!(
+            pool.translation_entry(HELD_PAGE),
+            None,
+            "eviction clears the entry before the frame leaves Resident"
+        );
+        pool.poll_pass(INTRUDER_PAGE, INTRUDER_GEN);
+        pool.poll_pass(INTRUDER_PAGE, INTRUDER_GEN);
+        reader.join().expect("reader thread");
+    });
+}
+
+#[test]
+fn a_get_racing_empty_file_retirement_and_slot_reuse_never_admits_the_successor() {
+    const OLD_FILE_GENERATION: u32 = 1;
+    const NEW_FILE_GENERATION: u32 = 2;
+    const PAGE: u32 = 7;
+    const NEW_CONTENT: u8 = 0x72;
+    const NEW_FRAME: u32 = 0;
+
+    loom::model(|| {
+        let pool = PoolModel::new(1);
+        pool.make_file_live(OLD_FILE_GENERATION);
+
+        let reader_pool = pool.clone();
+        let reader = thread::spawn(move || {
+            assert!(
+                reader_pool.get_file(OLD_FILE_GENERATION, PAGE).is_none(),
+                "the retired file held no page, so any hit is the successor's bytes"
+            );
+        });
+
+        pool.retire_empty_file(OLD_FILE_GENERATION);
+        pool.make_file_resident(NEW_FILE_GENERATION, PAGE, NEW_CONTENT);
+        reader.join().expect("reader thread");
+
+        assert_eq!(
+            pool.translation_entry(PAGE),
+            Some(NEW_FRAME),
+            "the successor's page is published through the reused slot's entry"
+        );
+        assert_eq!(
+            pool.get_file(NEW_FILE_GENERATION, PAGE)
+                .expect("the successor's page is resident")
+                .generation(),
+            NEW_CONTENT
+        );
+    });
+}

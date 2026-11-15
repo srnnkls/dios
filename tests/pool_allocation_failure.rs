@@ -2,6 +2,8 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::ptr;
 
+#[cfg(feature = "mock")]
+use dios::testing::{MockDriver, PoolBuilderTestingExt};
 use dios::{Pool, PoolBuildError};
 
 const GRANULE: u32 = 4096;
@@ -120,4 +122,105 @@ fn file_table_allocation_failure_is_typed() {
     });
 
     assert!(matches!(result, Err(PoolBuildError::Allocation)));
+}
+
+#[cfg(any(target_os = "linux", feature = "mock"))]
+fn translation_pool(
+    registered_file_capacity: u32,
+    file_granules_max: u32,
+) -> Result<Pool, PoolBuildError> {
+    Pool::builder()
+        .frame_count(64)
+        .granule(GRANULE)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .registered_file_capacity(registered_file_capacity)
+        .file_granules_max(file_granules_max)
+        .build()
+}
+
+#[cfg(feature = "mock")]
+fn translation_pool_on_mock(
+    registered_file_capacity: u32,
+    file_granules_max: u32,
+) -> Result<Pool<MockDriver>, PoolBuildError> {
+    let mock = MockDriver::builder()
+        .queue_capacity(4)
+        .frames(64)
+        .frame_bytes(GRANULE)
+        .build();
+    Pool::builder()
+        .frame_count(64)
+        .granule(GRANULE)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .registered_file_capacity(registered_file_capacity)
+        .file_granules_max(file_granules_max)
+        .build_on(mock)
+}
+
+#[cfg(target_os = "linux")]
+fn meminfo_kib(field: &str) -> u64 {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").expect("procfs meminfo is readable");
+    meminfo
+        .lines()
+        .find_map(|line| line.strip_prefix(field))
+        .and_then(|rest| rest.trim().trim_end_matches("kB").trim().parse().ok())
+        .unwrap_or_else(|| panic!("meminfo carries {field}"))
+}
+
+#[cfg(any(target_os = "linux", feature = "mock"))]
+const TRANSLATION_ENTRY_BYTES: u64 = 4;
+#[cfg(any(target_os = "linux", feature = "mock"))]
+const TRANSLATION_FILE_GRANULES_MAX: u32 = 1 << 31;
+
+#[cfg(target_os = "linux")]
+#[test]
+fn translation_reservation_above_ram_plus_swap_builds() {
+    let overcommit = std::fs::read_to_string("/proc/sys/vm/overcommit_memory")
+        .expect("overcommit policy is readable");
+    assert_eq!(
+        overcommit.trim(),
+        "0",
+        "the case needs heuristic overcommit"
+    );
+    let commit_bytes = (meminfo_kib("MemTotal:") + meminfo_kib("SwapTotal:")) * 1024;
+    let slots = commit_bytes
+        .div_ceil(u64::from(TRANSLATION_FILE_GRANULES_MAX) * TRANSLATION_ENTRY_BYTES)
+        .next_power_of_two()
+        * 2;
+    let slots = u32::try_from(slots).expect("the host's RAM plus swap needs few 8 GiB slots");
+    let reservation = translation_pool(slots, TRANSLATION_FILE_GRANULES_MAX);
+    assert!(
+        reservation.is_ok(),
+        "{slots} slots of 8 GiB exceed {commit_bytes} bytes of RAM plus swap and still build: {:?}",
+        reservation.err()
+    );
+}
+
+#[cfg(feature = "mock")]
+#[test]
+fn translation_reservation_is_refused_only_beyond_the_address_space() {
+    let beyond_address_space = 1u32 << 16;
+    assert!(
+        u64::from(beyond_address_space)
+            * u64::from(TRANSLATION_FILE_GRANULES_MAX)
+            * TRANSLATION_ENTRY_BYTES
+            > 1 << 48,
+        "the reservation exceeds a 48-bit address space"
+    );
+    let refused = translation_pool_on_mock(beyond_address_space, TRANSLATION_FILE_GRANULES_MAX);
+    assert!(
+        matches!(refused, Err(PoolBuildError::Allocation)),
+        "a reservation the host refuses is a typed build error: {:?}",
+        refused.err()
+    );
+    assert!(
+        translation_pool(4, 16).is_ok(),
+        "a refused reservation leaves the process able to build the next pool"
+    );
 }

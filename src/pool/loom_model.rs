@@ -31,8 +31,8 @@ use super::retention::{RetainRefused, RetainedFrame, Retention};
 use super::{
     Clock, FrameState, Frames, InFlightFrame, PageId, PageTable, PoolFile, PoolFileState,
     ResidentFileLease, ResidentHint, ResidentLeaseError, ResidentLeaseState, SECTOR_BYTES,
-    acquire_resident_file_lease, begin_file_retirement, file_generation_is_live, file_is_live,
-    pin_with_resident_hint, publish_live_file,
+    Translation, acquire_resident_file_lease, begin_file_retirement, file_generation_is_live,
+    file_is_live, pin_with_resident_hint, publish_live_file,
 };
 
 struct Control {
@@ -115,11 +115,15 @@ pub struct DrainReport {
     pub first: Option<DrainSource>,
 }
 
+/// Granule bound of the model's single file slot, above every modeled page.
+const MODEL_FILE_GRANULES_MAX: u32 = 32;
+
 /// One shared control plane, `N` frames, and two reader slots — the bounded
 /// entry the Loom models drive.
 pub struct PoolModel {
     frames: std::sync::Arc<Frames>,
     table: PageTable,
+    translation: Translation,
     clock: Clock,
     global_epoch: AtomicU64,
     readers: std::sync::Arc<ReaderRegistry>,
@@ -173,6 +177,11 @@ impl PoolModel {
         Arc::new(Self {
             frames: std::sync::Arc::new(Frames::preallocated(frames, SECTOR_BYTES)),
             table: PageTable::with_frame_count(frames),
+            translation: Translation::try_reserve(
+                registered_file_capacity,
+                MODEL_FILE_GRANULES_MAX,
+            )
+            .expect("loom translation reservation succeeds"),
             clock: Clock::with_frame_count(frames),
             global_epoch: AtomicU64::new(0),
             readers: std::sync::Arc::new(
@@ -1270,6 +1279,49 @@ impl PoolModel {
     pub fn remap(&self, page: u32, generation: u8) {
         let _control = self.control();
         self.install(ReadFrameIdx::new(1), Self::page_id(page), generation);
+    }
+
+    /// Observes the translation entry of `page` in the model's file slot.
+    #[must_use]
+    pub fn translation_entry(&self, page: u32) -> Option<u32> {
+        self.translation
+            .lookup(Self::page_id(page))
+            .map(ReadFrameIdx::get)
+    }
+
+    /// Setup: publishes `file_generation` live in the model's file slot with
+    /// no resident page.
+    pub fn make_file_live(&self, file_generation: u32) {
+        let mut control = self.control();
+        publish_live_file(
+            &mut control.files,
+            &self.file_live_generations[0],
+            &self.resident_lease_states[0],
+            FileId::new(0, 0, file_generation),
+            None,
+        );
+    }
+
+    /// Retires the live `file_generation`, which holds no resident page, so
+    /// its slot is immediately free for reuse.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless the named generation is registered and live.
+    pub fn retire_empty_file(&self, file_generation: u32) {
+        let mut control = self.control();
+        let file = control.files[0]
+            .as_mut()
+            .expect("the modeled file is registered");
+        assert!(
+            begin_file_retirement(
+                file,
+                &self.file_live_generations[0],
+                FileId::new(0, 0, file_generation),
+            ),
+            "the modeled live file begins retirement"
+        );
+        file.state = PoolFileState::Retired;
     }
 
     /// Reader: a lock-free seqlock read of `page`'s cell coupled with the frame's

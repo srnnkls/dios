@@ -624,3 +624,151 @@ fn retirement_drains_preaccepted_writes_rejects_new_io_and_preserves_generation_
         "the stale-rejected payload survives and persists through slot reuse"
     );
 }
+
+const SHARED_PAGE_GRANULES_MAX: u32 = 16;
+
+fn translation_pool(names: [&str; 2]) -> (Pool<MockDriver>, [FileId; 2]) {
+    let mock = MockDriver::builder()
+        .queue_capacity(4)
+        .frames(FRAMES)
+        .frame_bytes(GRANULE)
+        .write_slots(2)
+        .build();
+    let files = names.map(|name| {
+        mock.open(Path::new(name), DirectIo::Disabled)
+            .expect("mock open")
+    });
+    let ids = [files[0].file_id(), files[1].file_id()];
+    for (fill, file) in [0xA1u8, 0xB1].into_iter().zip(&files) {
+        mock.seed_page(file, 0, fill);
+        mock.seed_page(file, 1, fill + 1);
+    }
+    let pool = Pool::builder()
+        .frame_count(FRAMES)
+        .granule(GRANULE)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .write_slots(2)
+        .max_inflight_product_ops(2)
+        .file_granules_max(SHARED_PAGE_GRANULES_MAX)
+        .build_on(mock)
+        .expect("valid translation pool");
+    for file in files {
+        pool.register_file(file);
+    }
+    (pool, ids)
+}
+
+fn resolve(pool: &Pool<MockDriver>, reader: &dios::ReaderCtx, page: PageId) {
+    for _ in 0..POLL_BOUND {
+        match pool.get(reader, page).expect("the file is live") {
+            Get::Hit(_) => return,
+            Get::Pending(_) | Get::Busy => {
+                pool.poll();
+            }
+        }
+    }
+    panic!("the page did not become resident within the bounded progress budget");
+}
+
+#[test]
+fn retirement_clears_its_slot_and_keeps_a_page_sharing_neighbor_resident() {
+    let (pool, [retired, neighbor]) = translation_pool(["retire-shared-a", "retire-shared-b"]);
+    let reader = pool.register_reader().expect("one reader slot");
+    for file in [retired, neighbor] {
+        for granule in 0..2 {
+            resolve(&pool, &reader, PageId::new(file, granule));
+        }
+    }
+    let neighbor_frames = [0, 1].map(|granule| {
+        pool.translation_lookup(PageId::new(neighbor, granule))
+            .expect("a resident neighbor page has a set entry")
+    });
+
+    assert_eq!(pool.retire_file(retired), RetireStatus::Retiring);
+    poll_until_closed(&pool, retired);
+    assert_eq!(pool.retire_file(retired), RetireStatus::Retired);
+    for granule in 0..SHARED_PAGE_GRANULES_MAX {
+        assert_eq!(
+            pool.translation_lookup(PageId::new(retired, granule)),
+            None,
+            "retirement leaves every entry of the slot absent"
+        );
+    }
+    for (granule, frame) in (0..).zip(neighbor_frames) {
+        let page = PageId::new(neighbor, granule);
+        assert_eq!(
+            pool.translation_lookup(page),
+            Some(frame),
+            "the neighbor's entries in the shared OS page survive the release"
+        );
+        match pool.get(&reader, page).expect("the neighbor is live") {
+            Get::Hit(guard) => assert_eq!(guard[0], 0xB1 + u8::try_from(granule).expect("granule")),
+            Get::Pending(_) | Get::Busy => panic!("the neighbor's resident page still hits"),
+        }
+    }
+
+    let reused = pool
+        .open(Path::new("retire-shared-a"), DirectIo::Disabled)
+        .expect("the retired slot can be reused");
+    assert!(reused.aliases_slot(&retired));
+    for granule in 0..SHARED_PAGE_GRANULES_MAX {
+        assert_eq!(
+            pool.translation_lookup(PageId::new(reused, granule)),
+            None,
+            "the reused slot's entries all read absent before its first read"
+        );
+    }
+    assert!(
+        matches!(
+            pool.get(&reader, PageId::new(reused, 0))
+                .expect("the new file is live"),
+            Get::Pending(_)
+        ),
+        "no page of the retired file is observable through the reused slot"
+    );
+}
+
+#[cfg(not(loom))]
+#[test]
+fn a_get_paused_between_pin_and_entry_load_rejects_a_reused_empty_slot() {
+    let (pool, retired, _observation) = pool_with_file("pool-retire-empty-reuse", 0xE1);
+    let pool = Arc::new(pool);
+    let page = PageId::new(retired, 0);
+    let pause = pool.pause_next_get_between_pin_and_entry();
+    let getter_pool = Arc::clone(&pool);
+    let getter = thread::spawn(move || {
+        let reader = getter_pool.register_reader().expect("one reader slot");
+        match getter_pool.get(&reader, page) {
+            Ok(Get::Hit(guard)) => Ok(Some(guard[0])),
+            Ok(Get::Pending(_) | Get::Busy) => Ok(None),
+            Err(error) => Err(error),
+        }
+    });
+    assert!(
+        pause.wait_until_parked(Duration::from_secs(1)),
+        "the get parks after its epoch pin and before its translation entry load"
+    );
+
+    let _ = pool.retire_file(retired);
+    poll_until_closed(&pool, retired);
+    assert_eq!(
+        pool.retire_file(retired),
+        RetireStatus::Retired,
+        "a file with no resident frames retires without waiting for the paused reader"
+    );
+    let successor = pool
+        .open(Path::new("pool-retire-empty-successor"), DirectIo::Disabled)
+        .expect("the retired slot can be reused");
+    assert!(successor.aliases_slot(&retired));
+    pool.insert_resident_frame(PageId::new(successor, 0), 0x5C);
+    pause.release();
+
+    assert_eq!(
+        getter.join().expect("the paused get must not panic"),
+        Err(GetError::StaleFile { page }),
+        "the mirror load after the entry load of the successor's frame rejects it under the retired identity"
+    );
+}

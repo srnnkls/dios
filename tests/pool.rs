@@ -488,6 +488,66 @@ fn pool_accepts_a_valid_granule() {
     );
 }
 
+fn translation_pool(
+    frame_count: u32,
+    registered_file_capacity: u32,
+    file_granules_max: u32,
+) -> Result<Pool, dios::PoolBuildError> {
+    Pool::builder()
+        .frame_count(frame_count)
+        .granule(4096)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .registered_file_capacity(registered_file_capacity)
+        .file_granules_max(file_granules_max)
+        .build()
+}
+
+fn configuration_error(result: Result<Pool, dios::PoolBuildError>) -> PoolConfigError {
+    match result {
+        Err(dios::PoolBuildError::Configuration(error)) => error,
+        Err(other) => panic!("expected a configuration error, got {other:?}"),
+        Ok(_) => panic!("expected a configuration error, the pool built"),
+    }
+}
+
+#[test]
+fn translation_geometry_is_validated_before_any_reservation() {
+    for requested in [0u32, 3, 6, (1 << 22) + 1, u32::MAX] {
+        assert_eq!(
+            configuration_error(translation_pool(64, 4, requested)),
+            PoolConfigError::FileGranulesMaxNotPowerOfTwo { requested },
+            "file_granules_max {requested}"
+        );
+    }
+
+    let limit = 1u32 << 30;
+    assert_eq!(
+        configuration_error(translation_pool(limit + 1, 4, 16)),
+        PoolConfigError::FrameCountAboveTranslationLimit {
+            requested: limit + 1,
+            limit,
+        },
+        "a frame index must leave the zero entry free in 32 bits"
+    );
+
+    assert_eq!(
+        configuration_error(translation_pool(64, 1 << 31, 1 << 31)),
+        PoolConfigError::TranslationUnrepresentable {
+            registered_file_capacity: 1 << 31,
+            file_granules_max: 1 << 31,
+        },
+        "2^62 four-byte entries overflow a u64 byte length"
+    );
+
+    assert!(
+        translation_pool(64, 4, 16).is_ok(),
+        "a power-of-two bound with a representable reservation builds"
+    );
+}
+
 #[test]
 fn write_arena_allocs_to_capacity_then_exhausts_then_frees_on_drop() {
     let driver = Driver::builder()

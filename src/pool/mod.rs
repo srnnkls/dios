@@ -44,6 +44,7 @@ mod prefetch;
 mod read_spans;
 mod retention;
 mod table;
+mod translation;
 pub(crate) mod write_arena;
 
 use epoch::{EvictQueue, FrameOutcome, PinCommit, ReaderRegistry, advance_epoch};
@@ -62,6 +63,7 @@ pub use retention::{RetainRefused, RetainRefusedReason, RetainedFrame, Retention
 pub use table::PageTable;
 #[cfg(feature = "bench")]
 pub(crate) use table::page_hash;
+pub use translation::Translation;
 
 /// The frame-scaled control tables a build maps: the page table, the miss
 /// table and the frame page index. The population bench constructs them and
@@ -117,6 +119,8 @@ impl ControlTables {
 /// block-size target justify 4096 as the default. T011/T014 re-validate this
 /// against real encoded segments, and a per-store override remains available.
 pub const GRANULE_DEFAULT: u32 = 4096;
+
+const FILE_GRANULES_MAX_DEFAULT: u32 = 1 << 22;
 
 /// The `O_DIRECT` sector floor: every frame and staging slot is aligned to this,
 /// and no granule may fall below it.
@@ -248,12 +252,17 @@ pub enum Get<'pool> {
 pub enum GetError {
     /// The file generation is retired or has been replaced.
     StaleFile { page: PageId },
+    /// The granule index is at or above the pool's `file_granules_max`.
+    BeyondFileBound { page: PageId },
 }
 
 impl std::fmt::Display for GetError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::StaleFile { page } => write!(f, "stale file for page {page:?}"),
+            Self::BeyondFileBound { page } => {
+                write!(f, "page {page:?} lies at or above the file granule bound")
+            }
         }
     }
 }
@@ -517,6 +526,25 @@ pub enum PoolConfigError {
         /// Granule the backend's arena carries.
         backend_granule: u32,
     },
+    /// `file_granules_max` is zero or not a power of two.
+    FileGranulesMaxNotPowerOfTwo {
+        /// Rejected per-file granule bound.
+        requested: u32,
+    },
+    /// `frame_count` exceeds what a translation entry can name.
+    FrameCountAboveTranslationLimit {
+        /// Configured frame count.
+        requested: u32,
+        /// Largest frame count a translation entry represents.
+        limit: u32,
+    },
+    /// The translation entry count overflows a `u64` byte length.
+    TranslationUnrepresentable {
+        /// Configured registered file slots.
+        registered_file_capacity: u32,
+        /// Configured per-file granule bound.
+        file_granules_max: u32,
+    },
 }
 
 impl std::fmt::Display for PoolConfigError {
@@ -585,6 +613,20 @@ impl std::fmt::Display for PoolConfigError {
             } => write!(
                 f,
                 "backend arena of {backend_frame_count} × {backend_granule} bytes does not match the configured {frame_count} × {granule} bytes"
+            ),
+            Self::FileGranulesMaxNotPowerOfTwo { requested } => {
+                write!(f, "file granule bound {requested} is not a power of two")
+            }
+            Self::FrameCountAboveTranslationLimit { requested, limit } => write!(
+                f,
+                "frame count {requested} exceeds the translation limit {limit}"
+            ),
+            Self::TranslationUnrepresentable {
+                registered_file_capacity,
+                file_granules_max,
+            } => write!(
+                f,
+                "{registered_file_capacity} file slots of {file_granules_max} granules overflow the translation mapping"
             ),
         }
     }
@@ -698,6 +740,7 @@ pub struct PoolBuilder {
     write_slots: u32,
     max_inflight_product_ops: u32,
     registered_file_capacity: u32,
+    file_granules_max: u32,
     registration_policy: RegistrationPolicy,
     arena_lock: ArenaLockPolicy,
     prefetch_headroom: Option<u32>,
@@ -719,6 +762,7 @@ impl Default for PoolBuilder {
             write_slots: 0,
             max_inflight_product_ops: 0,
             registered_file_capacity: crate::driver::DEFAULT_REGISTERED_FILE_CAPACITY,
+            file_granules_max: FILE_GRANULES_MAX_DEFAULT,
             registration_policy: RegistrationPolicy::Auto,
             arena_lock: ArenaLockPolicy::BestEffort,
             prefetch_headroom: None,
@@ -804,6 +848,13 @@ impl PoolBuilder {
     #[must_use]
     pub fn registered_file_capacity(mut self, registered_file_capacity: u32) -> Self {
         self.registered_file_capacity = registered_file_capacity;
+        self
+    }
+
+    /// Sets the per-file granule bound shared by every file slot.
+    #[must_use]
+    pub fn file_granules_max(mut self, file_granules_max: u32) -> Self {
+        self.file_granules_max = file_granules_max;
         self
     }
 
@@ -1105,6 +1156,7 @@ impl ProductOp {
 pub struct Pool<D = Driver> {
     frames: Arc<Frames>,
     table: PageTable,
+    translation: Translation,
     clock: Clock,
     global_epoch: AtomicU64,
     readers: Arc<ReaderRegistry>,
@@ -1127,6 +1179,8 @@ pub struct Pool<D = Driver> {
     identity: u64,
     #[cfg(all(feature = "mock", not(loom)))]
     cold_get_pause: Mutex<Option<Arc<ColdGetPauseState>>>,
+    #[cfg(all(feature = "mock", not(loom)))]
+    pin_entry_pause: Mutex<Option<Arc<ColdGetPauseState>>>,
     drop_hook: fn(&mut Pool<D>),
 }
 
@@ -1288,6 +1342,9 @@ impl<D: PoolBackend> Pool<D> {
         let control = Self::try_preallocated_control(&config, backend_capacity)?;
         let table = PageTable::try_with_frame_count(config.frame_count)
             .ok_or(PoolBuildError::Allocation)?;
+        let translation =
+            Translation::try_reserve(config.registered_file_capacity, config.file_granules_max)
+                .ok_or(PoolBuildError::Allocation)?;
         let clock =
             Clock::try_with_frame_count(config.frame_count).ok_or(PoolBuildError::Allocation)?;
         #[cfg(feature = "bench")]
@@ -1309,6 +1366,7 @@ impl<D: PoolBackend> Pool<D> {
         Ok(Self {
             frames,
             table,
+            translation,
             clock,
             global_epoch: AtomicU64::new(0),
             readers,
@@ -1331,6 +1389,8 @@ impl<D: PoolBackend> Pool<D> {
             identity: pool_identity,
             #[cfg(all(feature = "mock", not(loom)))]
             cold_get_pause: Mutex::new(None),
+            #[cfg(all(feature = "mock", not(loom)))]
+            pin_entry_pause: Mutex::new(None),
             drop_hook: Self::shutdown_for_drop,
         })
     }
@@ -1534,6 +1594,27 @@ impl<D: PoolBackend> Pool<D> {
         let replaced = self.cold_get_pause().replace(Arc::clone(&pause));
         assert!(replaced.is_none(), "only one cold-get pause may be armed");
         pause
+    }
+
+    /// Arms a one-shot pause for the next get after its epoch pin and before
+    /// its translation entry load.
+    #[cfg(all(feature = "mock", not(loom)))]
+    pub(crate) fn pause_next_get_between_pin_and_entry_internal(&self) -> Arc<ColdGetPauseState> {
+        let pause = Arc::new(ColdGetPauseState::armed());
+        let replaced = self
+            .pin_entry_pause
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(Arc::clone(&pause));
+        assert!(
+            replaced.is_none(),
+            "only one pin-to-entry pause may be armed"
+        );
+        pause
+    }
+
+    pub(crate) fn translation_lookup_internal(&self, page: PageId) -> Option<ReadFrameIdx> {
+        self.translation.lookup(page)
     }
 
     #[cfg(loom)]

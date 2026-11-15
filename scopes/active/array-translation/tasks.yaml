@@ -5,7 +5,7 @@ next_id: 9
 meta:
   created: '2026-11-15'
   last_updated: '2026-11-15'
-  progress: 1/8
+  progress: 2/8
 phases:
 - name: Contracts
   tasks: [AT1]
@@ -43,13 +43,23 @@ tasks:
     successor. No product source changes.
 - id: AT2
   title: Pin translation behavior with failing tests
-  status: pending
+  status: done
+  completed_at: '2026-11-15T17:29:42Z'
+  evidence:
+    tester: .tropos/peer/array-translation/20261115T161731Z-fba2be/b2-tester-AT2/native.yaml
+    tester_attempt2: .tropos/peer/array-translation/20261115T161731Z-fba2be/b2-tester-AT2-attempt2/native.yaml
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b2-implementer-AT2/native.yaml
+    fix: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b2-fix1-rust/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b2-fix1-python/native.yaml]
+    gate: .tropos/peer/array-translation/20261115T161731Z-fba2be/b2-fix1-rust/gate-after-fix.txt
+    review: scopes/active/array-translation/review.yaml#implementation_batches
   domain: pool
   depends_on:
   - AT1
   files:
   - tests/translation.rs
   - src/pool/translation.rs
+  - src/pool/mod.rs
+  - src/lib.rs
   - tests/pool.rs
   - tests/miss.rs
   - tests/pool_retire.rs
@@ -96,13 +106,16 @@ tasks:
   - benches/plans/table_population.md
   - benches/mmap_workloads/collect.py
   - benches/mmap_workloads/validate.py
+  - benches/mmap_workloads/analyze.py
   - mise.toml
   - Cargo.toml
   acceptance: AT2 is GREEN. Every verb resolves residency through Translation under
     INV-1 and INV-2; PageTable, page_hash, the DRP-G1 probe binary and the
     table_population bench are gone with their evidence untouched. The collector's
     base-build option and the warm-prepare validator capture AT-G4 as rich rows
-    (AT-D5). AT-G4 and AT-G7 pass on nix. Lint, Loom, Miri and ASAN are clean.
+    (AT-D5). Both reuse the existing owners, with the pairing and CSV header of
+    analyze.read_comparison shared with warm-prepare and one AB/BA schedule iterated by
+    collect_comparison and the base-build capture. AT-G4 and AT-G7 pass on nix. Lint, Loom, Miri and ASAN are clean.
 - id: AT4
   title: Pin the session read with failing tests and bench arms
   status: pending

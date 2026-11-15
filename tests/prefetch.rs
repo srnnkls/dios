@@ -535,3 +535,141 @@ fn abandoned_wrong_hints_preserve_a_hot_set_that_leaves_the_credit_budget_free()
     assert_eq!(pool.prefetch_stats().occupied, 4);
     assert_eq!(pool.prefetch_stats().evicted_unused, 96);
 }
+
+const BOUND_GRANULES_MAX: u32 = 16;
+const BOUND_FILES: u32 = 4;
+
+fn bounded_fixture(mode: Readahead) -> (Pool<MockDriver>, Vec<FileId>) {
+    let mock = MockDriver::builder()
+        .seed(97)
+        .frames(FRAMES)
+        .frame_bytes(4096)
+        .queue_capacity(1024)
+        .retry_bound(0)
+        .build();
+    let files: Vec<_> = (0..BOUND_FILES)
+        .map(|index| {
+            mock.open(Path::new(&format!("bounded-{index}")), DirectIo::Disabled)
+                .expect("mock file")
+        })
+        .collect();
+    for file in &files {
+        for page in 0..2 * BOUND_GRANULES_MAX {
+            mock.seed_page(file, page, u8::try_from(page).expect("fill byte"));
+        }
+    }
+    let ids = files
+        .iter()
+        .map(dios::driver::FileHandle::file_id)
+        .collect();
+    let pool = Pool::builder()
+        .frame_count(FRAMES)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(2)
+        .max_inflight_reads(16)
+        .miss_headroom(48)
+        .prefetch_headroom(8)
+        .readahead(mode)
+        .registered_file_capacity(BOUND_FILES)
+        .file_granules_max(BOUND_GRANULES_MAX)
+        .build_on(mock)
+        .expect("bounded pool");
+    for file in files {
+        pool.register_file(file);
+    }
+    (pool, ids)
+}
+
+fn read_ends_by_file(pool: &Pool<MockDriver>) -> Vec<(FileId, u64)> {
+    pool.driver()
+        .io_events_in_order()
+        .into_iter()
+        .filter_map(|event| match event {
+            dios::testing::MockIoEvent::ReadAttempt {
+                file,
+                file_offset,
+                requested_len,
+                ..
+            } => Some((file, file_offset + u64::from(requested_len))),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn explicit_prefetch_at_the_bound_is_rejected_for_every_slot_before_any_lookup() {
+    let (pool, files) = bounded_fixture(Readahead::Disabled);
+    let reader = pool.register_reader().expect("reader");
+    for &file in &files {
+        consume(&pool, &reader, PageId::new(file, 0));
+    }
+    let reads_before = read_ends_by_file(&pool).len();
+    let stats_before = pool.prefetch_stats();
+
+    let beyond: Vec<_> = files
+        .iter()
+        .map(|&file| PageId::new(file, BOUND_GRANULES_MAX))
+        .collect();
+    let report = pool.prefetch(&beyond);
+    assert_eq!(
+        (
+            report.requested,
+            report.rejected,
+            report.resident,
+            report.admitted
+        ),
+        (u64::from(BOUND_FILES), u64::from(BOUND_FILES), 0, 0),
+        "every slot, the middle and the last included, rejects its first out-of-bound granule instead of resolving a neighbor's entry"
+    );
+    assert_eq!(
+        read_ends_by_file(&pool).len(),
+        reads_before,
+        "nothing is read for a rejected page"
+    );
+    assert_eq!(pool.prefetch_stats(), stats_before);
+    for &file in &files {
+        consume(&pool, &reader, PageId::new(file, 0));
+    }
+    assert_eq!(
+        read_ends_by_file(&pool).len(),
+        reads_before,
+        "every other file's resident first granule still hits"
+    );
+}
+
+#[test]
+fn an_automatic_readahead_window_ends_below_the_bound() {
+    let (pool, files) = bounded_fixture(Readahead::Automatic);
+    let reader = pool.register_reader().expect("reader");
+    let (scanned, neighbors) = files.split_first().expect("bounded files");
+    for &neighbor in neighbors {
+        consume(&pool, &reader, PageId::new(neighbor, 0));
+    }
+    for page in 0..BOUND_GRANULES_MAX {
+        consume(&pool, &reader, PageId::new(*scanned, page));
+        pool.poll();
+    }
+    for _ in 0..POLLS_MAX {
+        pool.poll();
+    }
+    assert!(
+        pool.prefetch_stats().automatic_admitted > 0,
+        "the sequential scan trains a readahead stream"
+    );
+    let bound_bytes = u64::from(BOUND_GRANULES_MAX) * 4096;
+    for (file, end) in read_ends_by_file(&pool) {
+        assert!(
+            end <= bound_bytes,
+            "a read of {file:?} ends at byte {end}, past the {bound_bytes}-byte bound"
+        );
+    }
+    let reads_before = read_ends_by_file(&pool).len();
+    for &neighbor in neighbors {
+        consume(&pool, &reader, PageId::new(neighbor, 0));
+    }
+    assert_eq!(
+        read_ends_by_file(&pool).len(),
+        reads_before,
+        "the window left every other slot's resident entry in place"
+    );
+}

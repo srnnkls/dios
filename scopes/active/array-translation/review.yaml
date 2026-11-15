@@ -188,3 +188,104 @@ implementation_batches:
     report: .tropos/peer/array-translation/20261115T161731Z-fba2be/b1-rereview1/claude-opus.yaml
     resolved: [H1, M1, M2]
     persists: []
+- batch: 2
+  tasks: [AT2]
+  reviewed_at: '2026-11-15T17:29:42Z'
+  status: passed
+  reports: .tropos/peer/array-translation/20261115T161731Z-fba2be/
+  completion_state: "RED by design: 12 Rust tests, 3 Loom cases and 2 Python tests fail by assertion against scaffolds; 387 Rust tests, 17 Loom cases and 12 Python tests pass; clippy and fmt clean."
+  synthesized_report:
+    reviewers:
+    - general-claude-opus
+    - architecture-claude-opus
+    - compliance-claude-opus
+    - abstractions-claude-opus
+    - general-peer-gpt6-astra
+    - architecture-peer-gpt6-astra
+    - compliance-peer-gpt6-astra
+    - abstractions-peer-gpt6-astra
+    gates:
+      correctness: {status: fail, failed_by: [general-claude-opus, general-peer-gpt6-astra]}
+      security: {status: pass, failed_by: []}
+      performance: {status: pass, failed_by: []}
+      architecture: {status: fail, failed_by: [architecture-claude-opus]}
+      style: {status: pass, failed_by: []}
+      abstractions: {status: pass, failed_by: []}
+    issues:
+    - id: H1
+      severity: high
+      gate: correctness
+      area: testing
+      location: tests/pool_retire.rs (INV-7 falsifier for get)
+      trigger: "AT3 keeps the mirror-before-pin order of get and fires the pause after the translation entry load."
+      wrong_outcome: "The paused get has already loaded the retired empty file's absent entry; after release the cold path returns StaleFile under the lock, so the test passes for the order design File liveness rejects."
+      found_by: [general-claude-opus]
+      verified: "Read Pool::get and the test's schedule."
+      disposition: fixed
+      fix: "The hook is pause_next_get_between_pin_and_entry: the get parks after its epoch pin and before the entry load, so the released get loads the successor's entry. design.md's INV-7 test row names the same point."
+    - id: M1
+      severity: medium
+      gate: architecture
+      area: coupling
+      location: src/pool/translation.rs (publish, clear, release_slot)
+      trigger: "AT3 implements the entries as AtomicU32 loaded through &Pool, so the writers take &self."
+      wrong_outcome: "The let mut bindings of tests/translation.rs become unused_mut under -D warnings in a test outside AT3's file list."
+      found_by: [architecture-claude-opus]
+      verified: "Read the scaffold receivers and the test bindings."
+      disposition: fixed
+      fix: "Scaffold writers take &self; the test bindings drop mut."
+    - id: M2
+      severity: medium
+      gate: correctness
+      area: testing
+      location: tests/mmap_workload_validation.py (base-build collection test)
+      trigger: "base_build_schedule returns the right steps while collect() ignores --base-build."
+      wrong_outcome: "The test passes without launching either build or observing a row."
+      found_by: [general-peer-gpt6-astra]
+      verified: "Read the test: it asserted argument parsing and the schedule only."
+      disposition: fixed
+      fix: "The test drives collect() through a faked process boundary and asserts 64 dios_serial samples across both executables in AB/BA order with distinct rows."
+    - id: M3
+      severity: medium
+      gate: correctness
+      area: testing
+      location: tests/pool_allocation_failure.rs (refused reservation)
+      trigger: "On Linux the 65,536-slot build constructs the io_uring driver, whose sparse file table exceeds RLIMIT_NOFILE."
+      wrong_outcome: "The build returns PoolBuildError::Driver, so a conformant AT3 fails the Allocation assertion."
+      found_by: [general-claude-opus]
+      verified: "Read src/backend/uring.rs: register_files_sparse(file_capacity) at ring construction, ahead of the pool's reservation."
+      disposition: fixed
+      fix: "The address-space refusal builds on MockDriver; the above-RAM-plus-swap case is its own Linux-only test on the real backend."
+    residual:
+    - gate: abstractions
+      location: benches/mmap_workloads/validate.py (warm_prepare)
+      note: "Filled to its pinned contract, warm_prepare would duplicate the pairing and CSV header that analyze.read_comparison owns. The scaffold encodes no rule yet; AT3's acceptance and file list now require the shared owner."
+      found_by: [abstractions-claude-opus]
+      owner: AT3
+    - gate: abstractions
+      location: benches/mmap_workloads/collect.py (base_build_schedule)
+      note: "Filled to its pinned contract, the schedule would re-encode the AB/BA order collect_comparison computes inline. AT3's acceptance requires one schedule iterated by both."
+      found_by: [abstractions-claude-opus]
+      owner: AT3
+    - gate: correctness
+      location: tests/public_api.rs
+      note: "PageTable's removal from the public API is not pinned by AT2; AT3 removes the type and regenerates the snapshot for AC-17."
+      found_by: [tester]
+      owner: AT3
+    - gate: correctness
+      location: tests/loom_pool.rs (a_seqlock_read_racing_the_single_writer_never_returns_a_torn_snapshot)
+      note: "The case remaps a resident page and will trip the absent-before-publish writer assertion once the seqlock table is gone; AT3 reworks or retires it with PageTable."
+      found_by: [tester]
+      owner: AT3
+    - gate: correctness
+      location: tests/pool_allocation_failure.rs, tests/translation.rs
+      note: "The Linux-only branches (reservation above RAM plus swap, resident bytes after release) have not run; the bench host is offline."
+      found_by: [tester, general-claude-opus]
+      owner: AT3
+  fix_rounds: 1
+  rereviews:
+  - round: 1
+    reviewer: claude-opus
+    report: .tropos/peer/array-translation/20261115T161731Z-fba2be/b2-rereview1/claude-opus.yaml
+    resolved: [H1, M1, M2, M3]
+    persists: []

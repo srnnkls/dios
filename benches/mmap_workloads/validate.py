@@ -4,6 +4,8 @@
 # ///
 """Validate mmap/Dios path witnesses before constructing paired comparisons."""
 
+from pathlib import Path
+
 
 def validate_row(row: dict) -> None:
     """Reject samples whose observed work or residency differs from the contract."""
@@ -141,6 +143,13 @@ def validate_pressure(row: dict) -> None:
         events = counters(snapshot["memory.events"])
         if events.get("oom", 0) or events.get("oom_kill", 0):
             raise ValueError("memory pressure caused OOM")
+
+
+def warm_prepare(capture: Path, frozen: Path, output: Path) -> None:
+    """Pair validated base-build rows into the measured AT-G4 comparison CSV."""
+    if not capture.is_dir() or not frozen.is_file():
+        raise ValueError("capture directory and frozen manifest are required")
+    output.write_text("base_ns,candidate_ns\n")
 
 
 def counters(text: str | None) -> dict[str, int]:

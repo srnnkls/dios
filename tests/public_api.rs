@@ -171,7 +171,7 @@ fn default_pool_write_slot<'pool>(pool: &'pool Pool) -> Option<PoolWriteSlot<'po
 
 fn inspect_get_error(error: &GetError) {
     match error {
-        GetError::StaleFile { page } => {
+        GetError::StaleFile { page } | GetError::BeyondFileBound { page } => {
             let page: PageId = *page;
             std::hint::black_box(page);
         }
@@ -563,4 +563,45 @@ fn completion_batches_reject_zero_capacity_at_construction() {
 #[test]
 fn zero_capacity_pool_completion_batches_construct_without_panicking() {
     let _batch = PoolCompletionBatch::with_capacity(0);
+}
+
+#[test]
+fn translation_bound_surface_is_root_exported() {
+    let output = compile_api_probe(
+        "translation-bound-surface",
+        r"
+use dios::{GetError, PageId, PoolBuilder, PoolConfigError};
+
+fn inspect_get_error(error: GetError) -> PageId {
+    match error {
+        GetError::StaleFile { page } => page,
+        GetError::BeyondFileBound { page } => page,
+    }
+}
+
+fn translation_config_errors() -> [PoolConfigError; 3] {
+    [
+        PoolConfigError::FileGranulesMaxNotPowerOfTwo { requested: 3 },
+        PoolConfigError::FrameCountAboveTranslationLimit {
+            requested: (1 << 30) + 1,
+            limit: 1 << 30,
+        },
+        PoolConfigError::TranslationUnrepresentable {
+            registered_file_capacity: 1 << 31,
+            file_granules_max: 1 << 31,
+        },
+    ]
+}
+
+fn pin_translation_bound() {
+    let file_granules_max: fn(PoolBuilder, u32) -> PoolBuilder = PoolBuilder::file_granules_max;
+    std::hint::black_box((file_granules_max, inspect_get_error, translation_config_errors));
+}
+",
+    );
+    assert!(
+        output.status.success(),
+        "translation bound surface probe failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

@@ -448,6 +448,52 @@ fn real_pool_warm_get_hit_allocates_nothing() {
 }
 
 #[test]
+fn real_pool_translation_hit_and_bound_refusal_allocate_nothing() {
+    const GRANULES_MAX: u32 = 4;
+    let path = temp_frames("real-pool-translation-hit", GRANULES_MAX, 0xD7);
+    let pool = Pool::builder()
+        .frame_count(4)
+        .granule(FRAME_BYTES)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .file_granules_max(GRANULES_MAX)
+        .build()
+        .expect("the cfg-selected shipping pool initializes with a translation bound");
+    let file = pool
+        .open(&path, DirectIo::Disabled)
+        .expect("the real product pool opens the fixture");
+    let reader = pool
+        .register_reader()
+        .expect("the product pool has one reader slot");
+    let last = PageId::new(file, GRANULES_MAX - 1);
+    let beyond = PageId::new(file, GRANULES_MAX);
+    drop(resolve_product_page(&pool, &reader, last));
+
+    let (allocations, (hit, refusal)) = armed_allocations_result(|| {
+        let hit = match pool
+            .get(&reader, last)
+            .expect("the product file remains live")
+        {
+            Get::Hit(guard) => Some(guard[0]),
+            Get::Pending(_) | Get::Busy => None,
+        };
+        (hit, pool.get(&reader, beyond).err())
+    });
+    assert_eq!(hit, Some(0xD7), "the warmed last granule hits");
+    assert_eq!(
+        refusal,
+        Some(dios::GetError::BeyondFileBound { page: beyond }),
+        "a granule at the bound is refused as a value"
+    );
+    assert_eq!(
+        allocations, 0,
+        "a translation hit and an out-of-bound refusal allocate nothing"
+    );
+}
+
+#[test]
 fn shipping_prefetch_and_automatic_recycling_allocate_nothing() {
     let path = temp_frames("prefetch-recycling", 2304, 0xC4);
     let postures = [
