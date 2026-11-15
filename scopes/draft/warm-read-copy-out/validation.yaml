@@ -1,0 +1,233 @@
+---
+scope: warm-read-copy-out
+revision: 3
+issue_type: Feature
+validation_depth: standard
+classification_basis: Explicit owner roadmap specifies a multi-step API feature, bench
+  plan, design and mandatory review; no new questionnaire is needed for drafting.
+owner_direction:
+  source: "/private/tmp/dios-steering-world-class.md"
+  date: '2026-09-14'
+  authorized: scope draft and review only
+  order: first after RC6 adoption and PR
+  product_code_authorized: false
+  latest_source: "/private/tmp/dios-steering-decisions-2.md"
+provenance:
+  product_ref: origin/main
+  product_commit: c1733cf819efaeb140c0b408178b3db1c47e05d6
+  product_worktree: "/Users/srnnkls/projects/dios"
+  merged_pull_request: https://github.com/srnnkls/dios/pull/17
+review_config:
+  reviewers:
+  - peer-gpt6-astra
+  - peer-opus
+  reasoning_effort: high
+  source: inherited explicit owner selection in this session
+review_gate:
+  status: passed
+  implementation_allowed: false
+  reviewers:
+  - peer-gpt6-astra
+  - peer-opus
+  effort: high
+  reviewed_revision: 3
+  reviewed_at: '2026-09-14T21:02:01Z'
+  report: review.yaml
+  amendment: owner_decisions_2
+  fix_rounds: 2
+  reason: Owner decisions are folded and all three admitted mechanisms are corrected
+    and verified in two bounded targeted rounds. This is a documentation scope pass;
+    planned safety/target audits, benchmark implementation/evidence and separate explicit
+    implement authorization remain required.
+ambiguity_scan:
+  scope:
+    status: clear
+    evidence: Owner roadmap and explicit non-goals
+  behavior:
+    status: clear
+    evidence: Bounded volatile-word copy and one fallback; owner-selected mirror-only
+      liveness.
+  data_model:
+    status: clear
+    evidence: Owner-selected atomic identity and same-width writer exception, bounded
+      table hint and explicit target/Miri audit boundaries are scoped; future proof
+      execution is not claimed.
+  constraints:
+    status: clear
+    evidence: Numeric bounds and owner-only EBR/FrameState decisions retained
+  edge_cases:
+    status: clear
+    evidence: Representative race, tail, identity, fallback and confinement falsifiers
+      are scoped; required implementation qualification remains pending.
+  integration:
+    status: clear
+    evidence: Sira SAB006 remains external after landing; 24 ns is only a budget note.
+      New DRP runner and fresh base are pre-campaign deliverables.
+  terminology:
+    status: clear
+    evidence: Copy success, fallback, exact identity, generation and output validity
+      are defined.
+needs_decision:
+- id: WRC-D1
+  status: decided
+  decided_at: '2026-09-14'
+  owner: Sören
+  blocking: false
+  requirement: 'Audited all-backend copy and exact-identity proof preserving the requested
+    no-pin/no-fence path, or separately approved ownership/storage amendment. Resolve
+    file-capability lifetime: mirror-only check versus ResidentFileLease.'
+  decision: 'Accept an owned, audited exception in the ARCH-3 style. The optimistic
+    copy reads payload with aligned word-width volatile loads, bracketed by Acquire
+    loads of the frame state word and the exact-identity cells before and after the
+    copy and an Acquire load of the file-generation mirror after it. Every in-process
+    writer of frame payload (the mock fill and any test fill) becomes word-atomic
+    relaxed stores of the same width, so Miri can check the only race the abstract
+    machine can see. Kernel writes (io_uring DMA and the eager syscall) are outside
+    the abstract machine and are recorded as such, as for every Rust reader of kernel-written
+    memory. Identity cells are atomics. The exception lives in one audited module
+    with the stated invariant; loom proves the stamp protocol; Miri proves the in-process
+    writer discipline. Mirror-only file liveness is sufficient: nothing outlives the
+    call, so no ResidentFileLease is required. Stamp width and wrap policy unchanged.
+
+'
+- id: WRC-D2
+  status: decided
+  decided_at: '2026-09-14'
+  owner: Sören with sira owner
+  blocking: false
+  requirement: Authentic n=1 integration harness and explicit 24 ns measurement/assertion
+    boundary beside unchanged 1.02 parity.
+  decision: 'No new denominator. The dios lane asserts the 64-byte projection at Dios/mmap
+    upper <= 1.5 and reports the optimistic floor ratio <= 1.2. sira''s SAB006 runner
+    keeps its 1.02 whole-lookup parity gate unchanged and runs after dios lands, owned
+    by sira. The 24 ns figure is recorded as the budget that motivated the target,
+    not as a separate dios assertion.
+
+'
+- id: WRC-D3
+  status: decided
+  decided_at: '2026-09-14'
+  owner: Sören
+  blocking: false
+  requirement: Record DRP-G4 longer-region or eight-physical-core protocol amendment
+    before binding warm-scope campaigns; bounds unchanged.
+  decision: 'Amended in benches/plans/dios_r1_r7_read_performance.md (owner amendment
+    2026-09-14): the eight-thread lane pins to physical CPUs 0-7 with no SMT siblings,
+    the per-process timed region rises to about 200 ms, bounds are unchanged, and
+    a fresh base baseline is collected under the new protocol before the next binding
+    campaign.
+
+'
+readiness:
+  bench_plan_before_code: true
+  baseline_mirror_alignment_and_loom_already_implemented: true
+  product_code_started: false
+  owner_implementation_approval: false
+  safety_proof_complete: false
+  sira_acceptance_boundary_complete: true
+  review_passed: true
+  owner_copy_exception_recorded: true
+  drp_protocol_owner_decision_recorded: true
+  drp_runner_revision_and_fresh_base_delivered: false
+review_dispositions:
+  editorial_fixes:
+  - 4 KiB granule and 4 MiB footprint
+  - floor excludes probe, same fixture bytes/checksum
+  - planning task separated from implementation entry prerequisites
+  - public API scaffold mutation path
+  - named non-gating pressure/CLOCK artifact
+  - file-capability question included in WRC-D1
+  residual:
+  - finding: WRC-G1 1.50 requires owner re-derivation because old guarded arms exceed
+      it
+    reason: design_as_defect
+    evidence: Owner explicitly selected this bound for a different copy-out mechanism.
+      Historical ratios now recorded; failing it blocks adoption, never silently changes
+      the bound.
+review_history:
+- status: failed
+  implementation_allowed: false
+  reviewers:
+  - peer-gpt6-astra
+  - peer-opus
+  effort: high
+  reviewed_at: '2026-09-14T19:44:29Z'
+  report: review.yaml
+  open_decisions:
+  - WRC-D1
+  - WRC-D2
+  - WRC-D3
+  fix_rounds: 0
+  reason: Known safety/acceptance owner decisions remain; editorial clarifications
+    recorded without claiming review clearance.
+  archive: reviews/revision-1.yaml
+verification_boundary:
+  owner_exception: recorded_in_WRC-D1_verbatim
+  portable_Rust_soundness_claim: false
+  Miri_atomic_writers_make_volatile_reads_atomic: false
+  proof_or_required_qualification_failure: record_exact_gap_for_owner_no_silent_primitive_change
+review_dispositions_owner_decisions_2:
+  grouped_fix_round: 1
+  findings:
+  - id: WRC-R2-1
+    reviewers:
+    - peer-gpt6-astra
+    - peer-opus
+    disposition: fixed_and_target_verified
+    correction: Bounded fence-free optimistic table hint probe, no change to ordinary
+      lookup or table representation; WRC2/WRC3 own table.rs and a contended-cell
+      abandonment witness.
+    rejected_suggestion: Narrowing the prohibition to added work would weaken the
+      selected no-spin/no-fence success contract; use the bounded probe instead.
+  - id: WRC-R2-2
+    reviewers:
+    - peer-opus
+    disposition: fixed_and_target_verified
+    correction: Planned warm-prepare mode in existing mmap validator validates rich
+      rows and the pre-run per-arm manifest before producing pairs for the shared
+      ratio harness. Existing DRP prepare-gate-pairs does not support warm lanes and
+      is not falsely claimed usable.
+  - id: WRC-R2-3
+    reviewers:
+    - peer-opus
+    disposition: fixed_and_target_verified
+    correction: Separate exception confinement source rule in tests/arch3_sync_alias.rs,
+      named pointer seam and representative off-module rejection fixtures; existing
+      sync-alias policy unchanged.
+  targeted_reviewer: peer-opus
+  effort: high
+  reason: Opus reported all three grouped mechanisms; one targeted original reviewer
+    checks the complete fix wave and its direct fallout.
+  completed_targeted_rounds: 2
+review_dispositions_owner_decisions_2_fix2:
+  grouped_fix_round: 2
+  finding: WRC-R2-3
+  status: fixed_and_target_verified
+  correction: The volatile-exception rule has its own complete src/**/*.rs walk including
+    driver.rs, mock.rs and in-module tests; a non-pool source-walk fixture pins its
+    reach. The original sync-alias rule retains its pool-only scope and diagnostics
+    owner.
+  targeted_reviewer: peer-opus
+  effort: high
+  prior_closures:
+  - WRC-R2-1
+  - WRC-R2-2
+  residual:
+  - question: How are existing Python validator regression tests invoked by CI?
+    disposition: Nonblocking existing-pattern follow-up from the targeted reviewer;
+      warm-prepare is mandatory before campaign gating. No CI expansion or extra review
+      round is introduced.
+  report: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/scope-warm-read-copy-out/20260914T203006Z-d9efed/owner-decisions2-fix2/peer-opus.yaml"
+product_anchor_update:
+  recorded_at: '2026-09-15'
+  authority: Sören's post-merge direction; documentation only until explicit implement.
+  previous_product_commit: 5edb6a7f64bcd0137cbd75d03821780b38c679f2
+  merge_method: squash
+  parent_commit: 812c812575a7262c4035f10be552a0abb6e00837
+  identical_git_objects:
+    src: 71c3ab33b4a2b81bbf93acf4284c6ec5f7e00a8a
+    Cargo.toml: 3aada5f7d7c97f5abced1536f2056f65f41fdbdf
+    Cargo.lock: 3ab14bdd47e6d6ad616b4bdd4cc85de619873319
+  verification: Previous and merged product have identical src trees and Cargo manifests.
+  review_effect: Existing scope review retained; no new peer review or execution pass claimed.
+  retained_evidence: Original executable identities, review packets and superseded revision records remain historical.

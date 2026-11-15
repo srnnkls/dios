@@ -1,0 +1,244 @@
+---
+metadata:
+  issue_type: Feature
+  created: 2026-11-15
+  questions_used: 7
+  questions_limit: 5
+  approach: "Per-file array translation with a session read and a copy-out read"
+  source: scope
+  validation_depth: standard
+  sections: [design, data_model, api_contract]
+  product_baseline: main@ade5310
+
+ambiguity_scan:
+  scope:
+    status: clear
+    gaps: []
+  behavior:
+    status: clear
+    gaps: []
+  data_model:
+    status: clear
+    gaps: []
+  constraints:
+    status: clear
+    gaps: []
+  edge_cases:
+    status: clear
+    gaps: []
+  integration:
+    status: clear
+    gaps: []
+  terminology:
+    status: clear
+    gaps: []
+  conventions:
+    status: clear
+    gaps: []
+
+clarification_sessions:
+  - id: S001
+    timestamp: 2026-11-14
+    questions:
+      - id: Q001
+        question: "Which read surface does the array-translation scope deliver?"
+        answer: "Swap + session + optimistic copy"
+        area: scope
+        doc_updates:
+          - file: scope.md
+            section: Decisions
+            action: AD-6 recorded; warm-read-copy-out absorbed
+      - id: Q002
+        question: "How is each file's translation array sized?"
+        answer: "Pool-level bound at build"
+        area: data_model
+        doc_updates:
+          - file: scope.md
+            section: Decisions
+            action: AD-3 recorded; FR-2 and FR-3 derived
+      - id: Q003
+        question: "Which hot gates does the scope carry on nix?"
+        answer: "Proposed: session point <= 1.50, session range <= 1.10, 256 MiB whole-page with hugepages <= 1.00, new get / old get <= 0.85, existing DRP and cold bounds unchanged"
+        area: constraints
+        doc_updates:
+          - file: benches/plans/array_translation.md
+            section: Gates
+            action: AT-G1 to AT-G4 and AT-G7 recorded
+      - id: Q004
+        question: "When does the translation array give memory back?"
+        answer: "At retirement + measured"
+        area: edge_cases
+        doc_updates:
+          - file: scope.md
+            section: Decisions
+            action: AD-5 recorded; FR-5 derived
+      - id: Q005
+        question: "Which bracket does the copy-out verb specify?"
+        answer: "Entry bracket: the entry is the witness and identity cells leave the read path; amends WRC-D1's mechanism"
+        area: behavior
+        doc_updates:
+          - file: design.md
+            section: Copy acceptance
+            action: AD-7 recorded with the amendment of A001
+
+  - id: S002
+    timestamp: 2026-11-15
+    source: scope-review
+    questions:
+      - id: Q006
+        question: "How should the 64 GiB default translation reservation be made, given Linux refuses it with commit accounting on smaller hosts?"
+        answer: "shouldn't this be configurable? 64gib reservation unconditionally seems weird, doesn't it?"
+        resolution: "Both factors are builder options. The default bound drops to 2^22 granules (1 GiB of address space at 64 slots) and the mapping is reserved with MAP_NORESERVE."
+        area: constraints
+        doc_updates:
+          - file: scope.md
+            section: Decisions
+            action: AD-12 recorded; AD-3, FR-2, FR-3 and AC-3 updated
+      - id: Q007
+        question: "Are an Acquire fence before the second stamp load and a Release fence after the claim in in-process payload writers approved for the copy path?"
+        answer: "Approve both fences"
+        area: design
+        doc_updates:
+          - file: scope.md
+            section: Decisions
+            action: AD-13 recorded; FR-10 and FR-11 updated
+
+owner_decisions:
+  - id: AT-D1
+    decided_at: 2026-11-14
+    owner: Sören
+    decision: "Translation memory of 8 bytes per file granule is accepted; capacity-at-startup is relaxed for the translation array only."
+  - id: AT-D2
+    decided_at: 2026-11-14
+    owner: Sören
+    decision: "Scope reviewers are astra and opus; the peer-gpt6-astra route was added to the user registry on request."
+  - id: AT-D3
+    decided_at: 2026-11-15
+    owner: Sören
+    decision: "Both copy-path fences are approved; the WRC no-fence rule still bars the SeqCst epoch fence. The translation reservation is configurable, not an unconditional 64 GiB."
+  - id: AT-D4
+    decided_at: 2026-11-15
+    owner: Sören
+    decision: "Implementation routes: tester and implementer claude-opus, reviewers peer-gpt6-astra and claude-opus, efforts inherited. The tester ceiling is raised for AT2, AT4 and AT6 to one test per falsifier their acceptance lists, 60 minutes and two RED attempts; the same task's implementer adds scaffolds and test hooks only, and AT3, AT5 and AT7 reuse that verified RED."
+  - id: AT-D5
+    decided_at: 2026-11-15
+    owner: Sören
+    decision: "AT-G4 is captured as rich rows, not through pair-bench: collect.py gains a base-build option (one uniquely named row per process, AB/BA, 2 qualification and 30 measured pairs) and validate.py warm-prepare checks the rows against manifests/at-g4.json. AT2 pins both, AT3 implements them, AT4 extends warm-prepare to the session arms."
+  - id: WRC-D1
+    inherited_from: scopes/draft/warm-read-copy-out/validation.yaml
+    decision: "Volatile-word exception, same-width atomic writers, one audited module, mirror-only liveness carry over; the bracket is amended by Q005 and A001."
+  - id: WRC-D2
+    inherited_from: scopes/draft/warm-read-copy-out/validation.yaml
+    decision: "Copy bounds 1.50 against the mmap copy and 1.20 against the floor; sira keeps SAB006."
+  - id: WRC-D3
+    inherited_from: scopes/draft/warm-read-copy-out/validation.yaml
+    decision: "DRP-G4 eight-thread protocol amendment of 2026-09-14."
+
+assumptions:
+  - id: A001
+    area: behavior
+    question: "Is an entry-only bracket exact for the optimistic copy?"
+    assumed: "No. Comparing the entry before and after cannot see a page evicted and republished into the same frame unless the entry carries a version, and a version that fits can repeat while a reader is descheduled. The entry is a 4-byte frame reference without a version, and acceptance observes it between two equal frame-stamp loads (62-bit generation). Identity cells leave the read path as selected."
+    load_bearing: true
+    status: confirmed
+    confirmed_at: 2026-11-15
+    source: scope
+  - id: A002
+    area: behavior
+    question: "What does a session read do on a miss?"
+    assumed: "It returns Absent and submits nothing; the caller takes the ordinary get, inside or outside the session."
+    load_bearing: true
+    status: confirmed
+    confirmed_at: 2026-11-15
+    source: scope
+  - id: A003
+    area: integration
+    question: "How do the bound and the swap show in the public API?"
+    assumed: "A granule at or above file_granules_max returns GetError::BeyondFileBound on every read verb; the default bound is 2^22 granules (revised from 2^28 by Q006); the public PageTable type, page_hash, the DRP-G1 probe binary and the table_population bench are removed with their evidence retained."
+    load_bearing: true
+    status: revised
+    confirmed_at: 2026-11-15
+    source: scope
+  - id: A004
+    area: constraints
+    question: "What session length do the gate lanes pin?"
+    assumed: "Sessions of 16 requests, matching resident_access_epoch_batch; a session per read measured 2.48 to 2.56 on M1 and is reported in the sweep, not gated."
+    load_bearing: true
+    status: confirmed
+    confirmed_at: 2026-11-15
+    source: scope
+  - id: A005
+    area: scope
+    question: "Do resident hints, file leases and retained handles change?"
+    assumed: "No. They keep their surface and are re-based on the array; removing hints is a later owner decision."
+    load_bearing: false
+    status: assumed
+    source: scope
+  - id: A006
+    area: integration
+    question: "What happens to the warm-read-copy-out draft?"
+    assumed: "AT1 adds a successor pointer to it; moving it out of draft is the owner's call after this scope's review passes."
+    load_bearing: false
+    status: assumed
+    source: scope
+
+  - id: A007
+    area: edge_cases
+    question: "What do prefetch paths do at the granule bound?"
+    assumed: "Explicit prefetch counts an out-of-bound page in the existing rejected field; automatic readahead windows end below the bound; translation writers assert the bound."
+    load_bearing: false
+    status: assumed
+    source: scope-review
+  - id: A008
+    area: constraints
+    question: "Are session slices thread-confined?"
+    assumed: "No. ReadSession and SessionFile are neither Send nor Sync; a slice is an ordinary reference bound to the session's lifetime, as with FrameGuard."
+    load_bearing: false
+    status: assumed
+    source: scope-review
+  - id: A009
+    area: data_model
+    question: "How is a slot smaller than an OS page released?"
+    assumed: "It is not. Release covers only whole OS pages inside a slot's range and never rounds outward."
+    load_bearing: false
+    status: assumed
+    source: scope-review
+
+review_config:
+  reasoning_effort: high
+  reviewers:
+  - peer-gpt6-astra
+  - peer-opus
+
+review_gate:
+  status: passed
+  reviewers:
+  - peer-gpt6-astra
+  - peer-opus
+  effort: high
+  reviewed_at: '2026-11-15T16:08:38Z'
+  report: review.yaml
+  blocking_resolved: 4
+  fix_rounds: 2
+  targeted_reviewer: peer-opus
+  owner_decisions_from_review: [Q006, Q007]
+  deferred_nits: []
+  reason: One critical and three high findings named concrete scope defects and were
+    folded in; seven medium findings and three re-review residuals were folded as well.
+    Two targeted re-reviews report every admitted finding resolved. No load-bearing
+    assumption remains assumed. This is a documentation pass; no product code, test or
+    benchmark result is claimed.
+
+review_focus:
+- Soundness of the entry, stamp, entry, copy, fence, stamp, mirror order under Acquire and Release with the control lock as the only writer order
+- INV-2 at every writer: publish, eviction, retirement, prefetch eviction, and the Loom model
+- Session borrow soundness against reclamation, retirement and slot reuse
+- Whether per-read liveness is necessary and sufficient for INV-7
+- Translation reservation, the power-of-two bound and release at retirement on both backends
+- Gate definitions, session length, hugepage witness and the AT-G1 margin
+- Task file sets and dependencies for parallel dispatch
+
+notes: |
+  Spike evidence is advisory: branch spike/hot-read-paths in .worktrees/spike-hot-read-paths,
+  benches/hot_read_paths.rs, uncommitted. The bench host nix was offline when this scope was
+  written; no Zen 2 number in the documents is newer than 2026-09-14.

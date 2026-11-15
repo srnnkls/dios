@@ -1,0 +1,205 @@
+---
+scope: array-translation
+code: AT
+next_id: 9
+meta:
+  created: '2026-11-15'
+  last_updated: '2026-11-15'
+  progress: 1/8
+phases:
+- name: Contracts
+  tasks: [AT1]
+- name: Translation swap
+  tasks: [AT2, AT3]
+- name: Session read
+  tasks: [AT4, AT5]
+- name: Copy-out
+  tasks: [AT6, AT7]
+- name: Campaign
+  tasks: [AT8]
+tasks:
+- id: AT1
+  title: Freeze the capture contracts and audits before code
+  status: done
+  completed_at: '2026-11-15T16:39:37Z'
+  evidence:
+    tester: .tropos/peer/array-translation/20261115T161731Z-fba2be/b1-tester-AT1/native.yaml
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b1-implementer-AT1/native.yaml
+    fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b1-fix1/native.yaml
+    review: scopes/active/array-translation/review.yaml#implementation_batches
+  domain: bench
+  depends_on: []
+  files:
+  - scopes/active/array-translation/
+  - scopes/draft/warm-read-copy-out/scope.md
+  - benches/plans/array_translation.md
+  - benches/evidence/array_translation/README.md
+  - tests/array_translation_plan.rs
+  acceptance: Per-gate manifests, capture commands and the hugepage witness are pinned.
+    The inventory of in-process read-frame payload writers, the target and compiler
+    ordering audit for the stamp, entry and volatile loads, and the Miri model limits
+    are recorded. The DRP frozen-runner revision and fresh-base prerequisite is named
+    with its owner. warm-read-copy-out carries a pointer to this scope as its
+    successor. No product source changes.
+- id: AT2
+  title: Pin translation behavior with failing tests
+  status: pending
+  domain: pool
+  depends_on:
+  - AT1
+  files:
+  - tests/translation.rs
+  - src/pool/translation.rs
+  - tests/pool.rs
+  - tests/miss.rs
+  - tests/pool_retire.rs
+  - tests/pool_allocation_failure.rs
+  - tests/public_api.rs
+  - tests/zero_alloc.rs
+  - tests/loom_pool.rs
+  - src/pool/loom_model.rs
+  - tests/prefetch.rs
+  - tests/mmap_workload_validation.py
+  - benches/mmap_workloads/collect.py
+  - benches/mmap_workloads/validate.py
+  acceptance: RED for AC-1 to AC-5, the get half of AC-9, AC-15 for get hits and the
+    get half of AC-17.
+    Map, unmap and lookup of one entry, the bound and power-of-two config errors, a
+    refused reservation, a build whose reservation exceeds the host's RAM plus swap, the
+    out-of-bound error on get, the explicit prefetch rejected before any lookup for a middle slot and the last slot, the readahead window
+    ending below the bound, retirement leaving a slot absent and released while a
+    neighboring slot in the same OS page stays resident, the paused empty-file
+    retire-and-reuse falsifier for get, and the Loom publish, evict and lookup cases
+    run against a scaffolded Translation and fail for the right reason. Existing table tests move to the new
+    structure without losing a case. The AT-G4 capture is pinned as well (AT-D5), where the
+    collector's base-build option writes one uniquely named row per process in AB/BA
+    order, and the warm-prepare validator rejects mixed identity, unequal work,
+    incomplete pairs and manifest drift across the base and candidate builds. Source
+    edits are scaffolds and test hooks only.
+- id: AT3
+  title: Replace the hash page table with array translation
+  status: pending
+  domain: pool
+  depends_on:
+  - AT2
+  files:
+  - src/pool/translation.rs
+  - src/pool/table.rs
+  - src/pool/mod.rs
+  - src/pool/prefetch.rs
+  - src/pool/miss.rs
+  - src/pool/loom_model.rs
+  - src/allocation.rs
+  - src/lib.rs
+  - src/bin/drp_g1_probes.rs
+  - benches/table_population.rs
+  - benches/plans/table_population.md
+  - benches/mmap_workloads/collect.py
+  - benches/mmap_workloads/validate.py
+  - mise.toml
+  - Cargo.toml
+  acceptance: AT2 is GREEN. Every verb resolves residency through Translation under
+    INV-1 and INV-2; PageTable, page_hash, the DRP-G1 probe binary and the
+    table_population bench are gone with their evidence untouched. The collector's
+    base-build option and the warm-prepare validator capture AT-G4 as rich rows
+    (AT-D5). AT-G4 and AT-G7 pass on nix. Lint, Loom, Miri and ASAN are clean.
+- id: AT4
+  title: Pin the session read with failing tests and bench arms
+  status: pending
+  domain: pool
+  depends_on:
+  - AT3
+  files:
+  - tests/read_session.rs
+  - tests/guard_compile_fail.rs
+  - tests/epoch_guards.rs
+  - tests/loom_pool.rs
+  - src/pool/loom_model.rs
+  - src/pool/session.rs
+  - tests/public_api.rs
+  - tests/zero_alloc.rs
+  - benches/mmap_workloads/resident.rs
+  - benches/mmap_workloads/catalog.rs
+  - benches/mmap_workloads/mod.rs
+  - benches/mmap_workloads/collect.py
+  - benches/mmap_workloads/validate.py
+  - tests/mmap_workload_validation.py
+  - tests/mmap_workload_contract.rs
+  - benches/mmap_tlb_pressure.rs
+  acceptance: RED for AC-6 to AC-10 and the session half of AC-15 and AC-17. The
+    session arms for AT-G1, AT-G2 and AT-G3 exist with equal bytes and checksums
+    across arms, the warm-prepare validator rejects mixed identity, unequal work and
+    incomplete pairs, and no performance pass is claimed. Source edits are scaffolds
+    and test hooks only.
+- id: AT5
+  title: Implement the session read
+  status: pending
+  domain: pool
+  depends_on:
+  - AT4
+  files:
+  - src/pool/session.rs
+  - src/pool/epoch.rs
+  - src/pool/clock.rs
+  - src/pool/mod.rs
+  - src/lib.rs
+  acceptance: AT4 is GREEN. Pool::session, ReadSession::file and SessionFile::page
+    meet FR-6 to FR-8 and TR-3, TR-4. AT-G1, AT-G2 and AT-G3 pass on nix with the
+    hugepage witness recorded, or the failing gate's lever is raised with the profile.
+- id: AT6
+  title: Pin the copy-out read with failing tests and bench arms
+  status: pending
+  domain: pool
+  depends_on:
+  - AT3
+  - AT5
+  files:
+  - tests/read_copy.rs
+  - tests/arch3_sync_alias.rs
+  - tests/loom_pool.rs
+  - src/pool/loom_model.rs
+  - src/pool/read_copy.rs
+  - src/pool/frames.rs
+  - src/mock.rs
+  - tests/public_api.rs
+  - tests/zero_alloc.rs
+  - benches/mmap_workloads/resident.rs
+  - benches/mmap_workloads/catalog.rs
+  - benches/mmap_workloads/mod.rs
+  - tests/mmap_workload_validation.py
+  acceptance: RED for AC-11 to AC-14 and the copy half of AC-15 and AC-17. Stable
+    copy, eviction, reuse for another page, reuse for the same page, retirement,
+    range and tail, and fallback falsifiers exist; the confinement rule rejects an
+    off-module volatile read and seam use in a pool file and in src/mock.rs; the
+    copy, floor and mmap-copy arms share bytes and checksum. Model limits stay
+    visible. Source edits are scaffolds, test and mock hooks only.
+- id: AT7
+  title: Implement the copy-out read
+  status: pending
+  domain: pool
+  depends_on:
+  - AT6
+  files:
+  - src/pool/read_copy.rs
+  - src/pool/frames.rs
+  - src/pool/mod.rs
+  - src/mock.rs
+  - src/lib.rs
+  acceptance: AT6 is GREEN. Pool::read_copy meets FR-9 to FR-11 and TR-6 under the
+    AD-7 order. AT-G5 and AT-G6 pass on nix, or the result is retained with the
+    exact-arm profile and returned to the owner.
+- id: AT8
+  title: Run the binding campaign and record the evidence
+  status: pending
+  domain: bench
+  depends_on:
+  - AT5
+  - AT7
+  files:
+  - benches/evidence/array_translation/
+  - benches/plans/array_translation.md
+  - scopes/active/array-translation/validation.yaml
+  acceptance: AC-16. All seven gates run under the frozen manifests on nix with
+    every pair retained. The translation-memory report, session length sweep,
+    liveness pricing, pressure fast and fallback counts and the AT-G1 profile are
+    recorded. sira receives the landed API for its SAB006 gate.

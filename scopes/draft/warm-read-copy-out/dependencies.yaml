@@ -1,0 +1,46 @@
+---
+scope: warm-read-copy-out
+product_baseline:
+  ref: origin/main
+  commit: c1733cf819efaeb140c0b408178b3db1c47e05d6
+  status: merged_on_main
+prerequisites:
+- RC6_adopted
+batches:
+- id: 1
+  tasks:
+  - WRC1
+  depends_on: []
+- id: 2
+  tasks:
+  - WRC2
+  depends_on:
+  - 1
+- id: 3
+  tasks:
+  - WRC3
+  depends_on:
+  - 2
+- id: 4
+  tasks:
+  - WRC4
+  depends_on:
+  - 3
+planning_task: WRC1 materializes the recorded owner contract and pending audits; it
+  does not reopen decided denominators or claim an implementation pass.
+implementation_entry:
+  base_ref: origin/main
+  base_commit: c1733cf819efaeb140c0b408178b3db1c47e05d6
+  branch_from_main: true
+  before: WRC2
+  requires:
+  - WRC_D1_D2_D3_recorded
+  - scope_review_passed
+  - explicit_implementation_approval
+before_binding_campaign:
+- DRP_G4_frozen_runner_protocol_revision
+- DRP_G4_fresh_base_baseline_new_protocol
+external_handoff:
+  after_Dios_lands: sira SAB006 unchanged 1.02 whole-lookup gate; no Dios 24 ns assertion
+parallel_after_owner_implement: shared-pool-io-scaling on frozen RC6 baseline; serialize
+  host campaigns

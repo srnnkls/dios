@@ -1,0 +1,443 @@
+---
+scope: warm-read-copy-out
+revision: 3
+reviewed_at: '2026-09-14T21:02:01Z'
+owner_amendment: decisions_batch_2
+reviewers:
+- peer-gpt6-astra
+- peer-opus
+effort: high
+previous_review: reviews/revision-1.yaml
+initial:
+  reviewed_revision: 2
+  manifest: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/scope-warm-read-copy-out/20260914T203006Z-d9efed/owner-decisions2-review/dispatch.log"
+  document_hashes:
+  - path: "/Users/srnnkls/projects/dios/scopes/draft/warm-read-copy-out/scope.md"
+    sha256: '09ba35e0fa910d67b3af1e8757abd683293f2f92a605acd938d6cdad53c21146'
+  - path: "/Users/srnnkls/projects/dios/scopes/draft/warm-read-copy-out/design.md"
+    sha256: a25fe1c805ee439dfc4c2838c420cace82b97814eeef9036d35fb9ebd3f81b46
+  - path: "/Users/srnnkls/projects/dios/scopes/draft/warm-read-copy-out/tasks.yaml"
+    sha256: 198eb4e2fcdd2622d80305bc9ebe369f872dd499924c11d479a4a2d0fa2137ef
+  - path: "/Users/srnnkls/projects/dios/scopes/draft/warm-read-copy-out/dependencies.yaml"
+    sha256: f9780f9ee7576e6df79e79bfc6e998a89d40d2ca85efa33f7a9c87b5a2590849
+  - path: "/Users/srnnkls/projects/dios/scopes/draft/warm-read-copy-out/validation.yaml"
+    sha256: a8ce124f1eb9332d90b65974860c05d65187bce54d00d2f981ddb7b286cac048
+  - path: "/Users/srnnkls/projects/dios/benches/plans/warm_read_copy_out.md"
+    sha256: 4b2c583fe13980aa3a98127573607b59c1123e2a87dfa34363bf8414c6134458
+  reports:
+  - raw: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/scope-warm-read-copy-out/20260914T203006Z-d9efed/owner-decisions2-review/peer-gpt6-astra.yaml"
+    sha256: 50009de017ca5a04346fdd5a698d5d80ec4175b645fbca54f5ff534fef2d80fb
+    normalized: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/scope-warm-read-copy-out/20260914T203006Z-d9efed/owner-decisions2-review/peer-gpt6-astra.normalized.yaml"
+    report:
+      reviewer: peer-gpt6-astra
+      gates:
+        completeness:
+          status: fail
+          issues:
+          - The optimistic page-table probe does not account for RC6's retrying, fenced
+            lookup.
+        consistency:
+          status: pass
+          issues: []
+        feasibility:
+          status: pass
+          issues: []
+        clarity:
+          status: pass
+          issues: []
+        design_depth:
+          status: pass
+          issues: []
+      issues:
+      - severity: high
+        gate: completeness
+        area: integration
+        description: scope.md's owner-selected contract forbids internal spinning
+          and fences on optimistic success, while design.md starts that path with
+          a page-table probe. In the inspected RC6 baseline, src/pool/table.rs Cell::read
+          executes an Acquire fence even for an uncontended successful lookup. If
+          read_copy encounters a cell while a concurrent insertion or removal holds
+          its odd sequence, that lookup retries up to 1,000,000 times and can panic
+          instead of abandoning the optimistic attempt. The design specifies no alternative
+          probe, and WRC2/WRC3 omit table.rs. Consequently, integrating the documented
+          copy protocol through the existing lookup violates the bounded optimistic-path
+          contract before payload validation begins.
+        suggestion: Specify a fence-free optimistic probe that abandons the attempt
+          on an unstable cell, retaining the existing table representation and ordinary-get
+          behavior. Include src/pool/table.rs in WRC2/WRC3 and pin one representative
+          contended-cell fallback check.
+      clarifying_questions: []
+      strengths:
+      - WRC-D1 remains owner-selected, while the revised design explicitly separates
+        platform qualification, Loom payload abstraction, and actual Miri coverage;
+        approval is not presented as safety evidence.
+      - WRC-D2 correctly leaves unchanged SAB006 acceptance with sira after landing
+        and removes the Dios-side adapter and 24 ns assertion.
+      - WRC-D3 preserves bounds and historical results while requiring the matching
+        runner revision and fresh baseline before binding campaigns.
+      - Validation was limited to the supplied revision-2 documents and read-only
+        inspection of permitted RC6 baseline code. No implementation, test, benchmark,
+        or platform-audit pass is claimed.
+  - raw: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/scope-warm-read-copy-out/20260914T203006Z-d9efed/owner-decisions2-review/peer-opus.yaml"
+    sha256: 6dea5edb5a66271d343c52fd5c330e7c12fbf5e430930d44085d71256d251f69
+    normalized: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/scope-warm-read-copy-out/20260914T203006Z-d9efed/owner-decisions2-review/peer-opus.normalized.yaml"
+    report:
+      reviewer: peer-opus
+      gates:
+        completeness:
+          status: fail
+          issues:
+          - WRC-G1/G2 pin a compare command that bypasses the repository's only pair-identity
+            validator
+          - '"confined to one audited module" is an acceptance condition with no check
+            that can fire'
+        consistency:
+          status: fail
+          issues:
+          - scope.md:35 forbids fence/spin on the success path that design.md step
+            1 mandates
+        feasibility:
+          status: pass
+          issues: []
+        clarity:
+          status: pass
+          issues: []
+        design_depth:
+          status: pass
+          issues: []
+      issues:
+      - severity: high
+        gate: consistency
+        area: constraints
+        description: 'scope.md:35 states the successful optimistic path has "no internal
+          spin, wait, epoch publication, fence, CLOCK touch or allocation", but design.md
+          step 1 mandates the page-table probe, and PageTable::lookup executes fence(Ordering::Acquire)
+          on every successful read (src/pool/table.rs:91) plus a bounded spin_loop
+          retry against a concurrent writer that panics at SEQLOCK_READ_SPINS_MAX
+          (src/pool/table.rs:75-96). Trigger: every Copied return, since the probe
+          precedes the copy. Wrong outcome: WRC3''s acceptance ("approved contract
+          ... pass required focused checks") names a clause no implementation can
+          meet while reusing the mandated probe, and replacing the probe is not authorized
+          (scope.md item 4; design.md requires an owner disposition for "a new fence").
+          A pinning test for the clause would either fail or have to be written to
+          skip step 1, so the check cannot fire either way.'
+        suggestion: 'In scope.md item 1, bound the prohibition to operations the verb
+          adds: the optimistic path introduces no epoch publication, CLOCK reference
+          write, allocation, retry loop or new fence beyond the existing seqlock probe,
+          whose Acquire fence and bounded spin are inherited from Pool::get. One sentence;
+          design.md:106 already carries the narrower "publishes no epoch, fence or
+          CLOCK reference" phrasing.'
+      - severity: high
+        gate: completeness
+        area: integration
+        description: 'benches/plans/warm_read_copy_out.md requires freezing "exact
+          source, build, executable, fixture, seed, work count, CPU map and runner
+          identity" and that "all arms ... consume the same checksum", then pins the
+          comparison to `cargo bench --bench compare -- WRC-G1.csv 1.50`. That binary
+          reads only the two-column `base_ns,candidate_ns` schema (src/bench.rs:20,161)
+          and asserts a ratio; it carries no identity field. Every identity and checksum
+          check in this repository lives in `mise run prepare-gate-pairs` (src/bin/drp_gate_artifacts.rs:283,289,
+          318-328: gate, lane, iterations, checksum, source_commit, executable_sha256,
+          workload, cpu_set), which the warm plan never names — unlike DRP-G2/G4,
+          which name rich rows, validated pairs and a provenance JSON per lane. Trigger:
+          a WRC-G1 campaign where the mmap arm and the candidate arm come from different
+          executables, CPU maps or work counts — likely, since the four arms are separate
+          binaries and the mmap arm instantiates no pool. Wrong outcome: `compare`
+          prints PASS on protocol-mixed pairs and the stated freeze has no enforcing
+          step.'
+        suggestion: Name per-gate rich process CSVs for WRC-G1/G2 and route them through
+          `mise run prepare-gate-pairs <process_csv> <paired_csv> <provenance_json>`
+          before `mise run gate <paired_csv> <bound>`, matching the DRP-G2/G4 artifact
+          rows in benches/plans/dios_r1_r7_read_performance.md.
+      - severity: medium
+        gate: completeness
+        area: constraints
+        description: 'The owner accepted WRC-D1 on the stated condition that the exception
+          "lives in one audited module", and tasks.yaml WRC3 lists "exception is confined
+          to one audited module" as a pass condition, but no document names a mechanism
+          that enforces it. The precedent the design invokes does ship one: ARCH-3
+          is enforced by tests/arch3_sync_alias.rs, a source scan over src/pool/**.rs
+          with a single permitted owner file, and its matcher only looks for `std::sync::atomic`/`Mutex`
+          (tests/arch3_sync_alias.rs:25-35), so a raw volatile payload load or an
+          unguarded arena pointer read anywhere in src/pool is invisible to it. Trigger:
+          WRC3 or any later change adds a second raw payload read in src/pool/frames.rs
+          or src/pool/mod.rs. Wrong outcome: the full suite stays green, and the confinement
+          the owner conditioned the exception on decays with nothing to detect it.'
+        suggestion: 'Add the confinement scan to the verification list in scope.md
+          and WRC2''s files: extend tests/arch3_sync_alias.rs with a second owner
+          file (read_copy.rs) scanning src/pool for raw volatile and arena-pointer
+          payload reads, same shape as the existing bypass scan.'
+      clarifying_questions:
+      - area: behavior
+        question: Must read_copy reuse PageTable::lookup unchanged for its probe?
+          The answer decides whether issue 1 is a one-sentence scope correction or
+          an owner disposition on the probe itself; nothing in the packet authorizes
+          touching the table.
+      strengths:
+      - 'The stamp primitive the design assumes already exists and behaves as specified:
+        Frames::state_word returns the packed word, advance_generation bumps only
+        on Resident publication and expects before exhaustion (src/pool/frames.rs:618-626),
+        pinned by publish_bumps_the_generation_and_abort_keeps_it (src/pool/frames.rs:928).'
+      - CLOCK recency lives in a separate reference_bits array (src/pool/clock.rs:85),
+        so a concurrent ordinary reader touching a hot page cannot perturb the stamp
+        and force spurious fallback — the omission of the CLOCK write in the optimistic
+        path costs no validation fidelity.
+      - 'Baseline claims the contract leans on hold in RC6: the granule is power-of-two
+        and >= SECTOR_BYTES 4096 (src/pool/mod.rs:125,841-848), so the design''s word-rounded
+        covering loads cannot cross a frame boundary; Pool::get''s liveness mirror
+        is already Acquire (src/pool/mod.rs:3047); ExactPageCells is the non-atomic
+        MaybeUninit<PageId> representation the design replaces (src/pool/frames.rs:32-61).'
+      - 'WRC-D3 is carried by reference, not restatement: the amendment section exists
+        in benches/plans/dios_r1_r7_read_performance.md:183 and both scope.md and
+        the bench plan link to it rather than duplicating the protocol.'
+fix_rounds:
+- round: 1
+  reviewed_revision: 3
+  reviewer: peer-opus
+  effort: high
+  assigned_gates:
+  - completeness
+  - consistency
+  findings:
+  - WRC-R2-1
+  - WRC-R2-2
+  - WRC-R2-3
+  manifest: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/scope-warm-read-copy-out/20260914T203006Z-d9efed/owner-decisions2-fix1/dispatch.log"
+  document_hashes:
+    "/Users/srnnkls/projects/dios/scopes/draft/warm-read-copy-out/scope.md": ad671bcac05d3a977a115b37a6c312886b428d8a4099ba68363e196d9936ab06
+    "/Users/srnnkls/projects/dios/scopes/draft/warm-read-copy-out/design.md": c575d7b2304b42266a31420c42347abfef4e84979f8b2a8c47577180467eb92a
+    "/Users/srnnkls/projects/dios/scopes/draft/warm-read-copy-out/tasks.yaml": a3332cf740ce34626edc30dcc2c5a7dd99c15ede52a40a51187f1b814bd86e55
+    "/Users/srnnkls/projects/dios/scopes/draft/warm-read-copy-out/dependencies.yaml": f9780f9ee7576e6df79e79bfc6e998a89d40d2ca85efa33f7a9c87b5a2590849
+    "/Users/srnnkls/projects/dios/scopes/draft/warm-read-copy-out/validation.yaml": 0ccfca25bb7284b283a5741c9fbe2edda8b41ddba0f53d46044ad8fe6c330762
+    "/Users/srnnkls/projects/dios/benches/plans/warm_read_copy_out.md": 2a1f8017e3f1d440daeac670c02f0214d1a8a9897458d78c65f5c9b73263df77
+  report:
+    raw: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/scope-warm-read-copy-out/20260914T203006Z-d9efed/owner-decisions2-fix1/peer-opus.yaml"
+    sha256: 6f534e046bb252fb03b906c45c9b4582090e6f3b20b9dc925bcb294dee804aaa
+    normalized: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/scope-warm-read-copy-out/20260914T203006Z-d9efed/owner-decisions2-fix1/peer-opus.normalized.yaml"
+    report:
+      reviewer: peer-opus
+      gates:
+        completeness:
+          status: fail
+          issues:
+          - The new confinement rule inherits a src/pool-only source walk, so it cannot
+            see the non-pool payload writers WRC3 itself edits
+        consistency:
+          status: pass
+          issues: []
+        feasibility:
+          status: pass
+          issues: []
+        clarity:
+          status: pass
+          issues: []
+        design_depth:
+          status: pass
+          issues: []
+      issues:
+      - severity: medium
+        gate: completeness
+        area: constraints
+        description: 'WRC-R2-3 closes the mechanism gap — design.md now makes confinement
+          "a checked acceptance condition" with a separate volatile-exception rule,
+          a named Frames::optimistic_payload_ptr seam, and pass/fail fixtures, matching
+          the shape of the existing scan. The surviving trigger is its reach. The
+          rule is specified as an extension of tests/arch3_sync_alias.rs, whose only
+          source walk is src/pool (tests/arch3_sync_alias.rs:38-47), while the in-process
+          read-frame payload writers scope.md item 3 requires converting live outside
+          it: src/mock.rs:1031 (transfer_mut fill) and src/driver.rs:1979 (raw payload
+          slice via from_raw_parts). src/mock.rs is in WRC3''s own file list, and
+          optimistic_payload_ptr is a crate-visible seam. Trigger: WRC3''s mandated
+          mock/test-fill rewrite, or any later change, reaches the seam or a raw payload
+          read from src/mock.rs, src/driver.rs or a tests/ fill helper. Wrong outcome:
+          the confinement check the owner conditioned the exception on passes green
+          while the exception is no longer confined — the same decay the correction
+          was written to stop, at a path the walk excludes.'
+        suggestion: Give the volatile-exception rule its own walk over the crate's
+          sources rather than reusing the pool-only one — sole owner src/pool/read_copy.rs,
+          with src/pool/frames.rs permitted only for the raw-address seam definition.
+          One rule, one root; the existing sync-alias rule keeps its pool scope and
+          its diagnostics owner.
+      clarifying_questions:
+      - area: integration
+        question: What runs tests/mmap_workload_validation.py? The DRP precedent I
+          cited in round 1 pins prepare-gate-pairs behavior in Rust suites that `mise
+          run check` and CI execute; neither mise.toml nor .github/workflows/ci.yml
+          references python at all, so the WRC2 rejection cases pinned there fire
+          only when invoked by hand. warm-prepare itself does run at campaign time,
+          so this is about regression pinning, not the gate — and it matches the existing
+          pattern for all four python validators, which is why it is a question rather
+          than a finding.
+      strengths:
+      - 'WRC-R2-1 is closed at the mechanism, not the wording: the probe reads the
+        fields src/pool/table.rs:23-30 already stores as individual atomics, so a
+        single-attempt Acquire/re-Acquire sequence needs no change to Cell::write,
+        insert_shared, remove_shared or the representation, and it avoids both the
+        fence(Acquire) at table.rs:88 and the SEQLOCK_READ_SPINS_MAX loop. Declining
+        to narrow scope.md item 1 keeps the success contract falsifiable.'
+      - The hint is correctly demoted to untrusted. Every way a fence-free snapshot
+        can go wrong under backward-shift deletion — a torn field mix, a transiently
+        duplicated entry mid-shift, an empty gap slot terminating the chain early
+        — yields a false hint or a miss, and both land on the single ordinary get
+        fallback. ReadFrameIdx::new (src/pool/frames.rs:71-74) has no assert, so the
+        capacity check before indexing is sufficient rather than merely prudent.
+      - The full copy state machine holds under the corrected order. Reuse is caught
+        because generation advances only on Resident publication and abort keeps it,
+        so a claim/abort/republish cycle cannot reproduce a stamp; retirement is caught
+        by the Acquire mirror; table invalidation degrades to fallback. No transition
+        accepts successor identity or mixed bytes.
+      - 'WRC-R2-2 routes through machinery that exists and fits: `mise run gate <csv>
+        <bound>` is the established invocation across benches/plans, and src/bench.rs:20
+        reads exactly the base_ns,candidate_ns the plan derives. Declaring prepare-gate-pairs
+        unusable for warm lanes instead of claiming it works is the accurate call
+        — it freezes DRP runner identities. Per-arm executables may differ but must
+        match the frozen manifest, which closes the original mixed-protocol pairing
+        trigger.'
+      - 'The deliverable stays honestly future-tense: "The planned `warm-prepare`
+        mode below does not exist yet", all four tasks pending, product_code_started
+        false, and the rejected narrowing recorded with its reason in validation.yaml
+        rather than dropped.'
+- round: 2
+  reviewed_revision: 3
+  reviewer: peer-opus
+  effort: high
+  assigned_gates:
+  - completeness
+  findings:
+  - WRC-R2-3
+  manifest: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/scope-warm-read-copy-out/20260914T203006Z-d9efed/owner-decisions2-fix2/dispatch.log"
+  document_hashes:
+    "/Users/srnnkls/projects/dios/scopes/draft/warm-read-copy-out/scope.md": a3a28b408745aacd1cdf52653333f5c8708ea71c07557f9fb567715f1e3d0758
+    "/Users/srnnkls/projects/dios/scopes/draft/warm-read-copy-out/design.md": f84baa6def7e82e991351f8d145163bae3a92b528cd16b78cd1213d63a9d8b23
+    "/Users/srnnkls/projects/dios/scopes/draft/warm-read-copy-out/tasks.yaml": a3332cf740ce34626edc30dcc2c5a7dd99c15ede52a40a51187f1b814bd86e55
+    "/Users/srnnkls/projects/dios/scopes/draft/warm-read-copy-out/dependencies.yaml": f9780f9ee7576e6df79e79bfc6e998a89d40d2ca85efa33f7a9c87b5a2590849
+    "/Users/srnnkls/projects/dios/scopes/draft/warm-read-copy-out/validation.yaml": abdd907c78d41859a0911e8a0249a8f69f8c6a17aa3661d61a96f06a9c5627d9
+    "/Users/srnnkls/projects/dios/benches/plans/warm_read_copy_out.md": 2a1f8017e3f1d440daeac670c02f0214d1a8a9897458d78c65f5c9b73263df77
+  report:
+    raw: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/scope-warm-read-copy-out/20260914T203006Z-d9efed/owner-decisions2-fix2/peer-opus.yaml"
+    sha256: a1b71c92cf164dfc3958a662c331e2c828dba6e76d9f9d26bfd4c58946807570
+    normalized: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/scope-warm-read-copy-out/20260914T203006Z-d9efed/owner-decisions2-fix2/peer-opus.normalized.yaml"
+    report:
+      reviewer: peer-opus
+      gates:
+        completeness:
+          status: pass
+          issues: []
+        consistency:
+          status: pass
+          issues: []
+        feasibility:
+          status: pass
+          issues: []
+        clarity:
+          status: pass
+          issues: []
+        design_depth:
+          status: pass
+          issues: []
+      issues: []
+      clarifying_questions: []
+      strengths:
+      - 'WRC-R2-3''s recorded trigger is removed at the reach, not the wording. The
+        volatile-exception rule now declares its own root — "every Rust file under
+        `src/`, including `src/mock.rs`, `src/driver.rs` and in-module test fills;
+        it must not reuse the pool-only walk" — and scope.md carries the same `src/**/*.rs`
+        statement, so the two documents cannot drift into the old pool-only reading.
+        The non-pool payload writers I cited fall inside that root: src/mock.rs:1029-1031
+        (transfer_mut fill) and the in-module fill at src/pool/frames.rs:949.'
+      - The declared root is closed against the seam's actual visibility rather than
+        merely wide. `Frames::optimistic_payload_ptr` is specified as an unguarded
+        crate-visible seam with "No new public raw-pointer API is introduced", so
+        no `tests/` or `benches/` translation unit can reach it or obtain a payload
+        pointer to `read_volatile`; every module that can reach it compiles from `src/`.
+        Naming tests/arch3_sync_alias.rs as the test implementation while giving the
+        rule its own source root is the right split.
+      - 'The source-walk fixture is pinned where it can fail: "both a pool file and
+        a non-pool file such as mock.rs". A fixture that only exercised a pool file
+        would pass identically under the old walk, so the widened root would not be
+        falsifiable — this one is.'
+      - The widened root costs nothing at landing and stays a clean signal. No `read_volatile`/`write_volatile`
+        exists anywhere in src/ today, so the rule starts with zero pre-existing offenders
+        outside the future owner module and the single raw-address-only definition
+        in frames.rs. Scoping the reject to payload `read_volatile` and the one named
+        seam keeps the existing raw uses (frames.rs:319/383/645, driver.rs:1979 write
+        arena) out of its reach without carve-outs.
+      - The original sync-alias rule keeps its pool-only scope and diagnostics owner
+        explicitly, in both documents. One rule, one root, and the widening cannot
+        leak into the ARCH-3 scan's existing OWNER exemption at tests/arch3_sync_alias.rs:12,46-50.
+      - 'validation.yaml records the closure honestly: status `fixed_pending_final_targeted_review`
+        with prior_closures [WRC-R2-1, WRC-R2-2], and my Python-CI question preserved
+        as a nonblocking existing-pattern follow-up with its disposition rather than
+        silently dropped. Tasks stay pending and no product or test pass is claimed.'
+dispositions:
+- id: WRC-R2-1
+  severity: high
+  found_by:
+  - peer-gpt6-astra
+  - peer-opus
+  status: fixed_and_target_verified
+  trigger: Optimistic read uses Cell::read during stable lookup or odd-sequence writer
+    ownership.
+  wrong_outcome: Acquire fence and up to one million spin retries violate successful
+    optimistic-path contract.
+  correction: Single-attempt fence-free untrusted table hint probe, validated frame
+    index, final frame identity/stamp/mirror acceptance; ordinary lookup and table
+    representation unchanged.
+  verification: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/scope-warm-read-copy-out/20260914T203006Z-d9efed/owner-decisions2-fix1/peer-opus.yaml"
+- id: WRC-R2-2
+  severity: high
+  found_by:
+  - peer-opus
+  status: fixed_and_target_verified
+  trigger: Mixed arm identity or work rows reach the two-column ratio harness.
+  wrong_outcome: A numeric PASS could lack the promised frozen-protocol pairing.
+  correction: Future warm-prepare validator binds rich process rows to pre-run per-arm
+    manifests and work witnesses, then derives pairs for the unchanged shared statistics.
+    DRP-only prepare-gate-pairs is not claimed usable.
+  verification: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/scope-warm-read-copy-out/20260914T203006Z-d9efed/owner-decisions2-fix1/peer-opus.yaml"
+- id: WRC-R2-3
+  severity: medium
+  found_by:
+  - peer-opus
+  status: fixed_and_target_verified
+  trigger: An off-module volatile payload read or unguarded pointer-seam use appears,
+    including in a non-pool mock/driver module.
+  wrong_outcome: The exception confinement condition could pass without covering the
+    caller.
+  correction: Separate source guard over all src/**/*.rs, sole exception owner read_copy.rs,
+    raw-address-only seam definition in frames.rs, non-pool source-walk fixture; sync-alias
+    rule remains pool-scoped.
+  verification: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/scope-warm-read-copy-out/20260914T203006Z-d9efed/owner-decisions2-fix2/peer-opus.yaml"
+residual:
+- reason: existing_pattern_nonblocking_followup
+  source: "/Users/srnnkls/projects/dios/.worktrees/feat-readahead-coalescing/.peer/scope-warm-read-copy-out/20260914T203006Z-d9efed/owner-decisions2-fix1/peer-opus.yaml"
+  question: Python validator regression tests are not in the current Rust CI invocation.
+  disposition: Record existing-pattern follow-up; campaign warm-prepare validation
+    is mandatory. No CI expansion or additional review round.
+synthesis:
+  status: passed
+  gates:
+    completeness:
+      status: pass
+    consistency:
+      status: pass
+    feasibility:
+      status: pass
+    clarity:
+      status: pass
+    design_depth:
+      status: pass
+  blocking_findings: []
+  implementation_allowed: false
+  reason: Owner decisions are folded and all three admitted mechanisms are corrected
+    and verified in two bounded targeted rounds. This is a documentation scope pass;
+    planned safety/target audits, benchmark implementation/evidence and separate explicit
+    implement authorization remain required.
+validation_boundary:
+  documentation_only: true
+  product_changes: false
+  tests_or_benchmarks_run: false
+  owner_decisions_preserved:
+  - WRC-D1
+  - WRC-D2
+  - WRC-D3

@@ -1,0 +1,91 @@
+---
+scope: warm-read-copy-out
+code: WRC
+next_id: 5
+meta:
+  created: '2026-09-14'
+  last_updated: '2026-09-14'
+  progress: 0/4
+  authorization: scope draft and review only
+tasks:
+- id: WRC1
+  title: Materialize the owner-selected audit and capture contracts before implementation
+  status: pending
+  depends_on: []
+  files:
+  - scopes/draft/warm-read-copy-out/
+  - benches/plans/warm_read_copy_out.md
+  acceptance: Owner WRC-D1/D2/D3 decisions are folded and reviewed; map all in-process
+    payload writers and exact-identity fields, document target/compiler ordering and
+    Miri model limits, pin capture commands, and record the frozen DRP runner/fresh-base
+    dependency. Sira owns its later SAB006 gate; no separate 24 ns assertion or product
+    mutation here.
+- id: WRC2
+  title: Prepare bounded RED and benchmark controls against the approved contract
+  status: pending
+  depends_on:
+  - WRC1
+  files:
+  - tests/warm_read_copy.rs
+  - tests/loom_pool.rs
+  - src/pool/loom_model.rs
+  - tests/zero_alloc.rs
+  - benches/mmap_workloads/resident.rs
+  - benches/mmap_workloads/catalog.rs
+  - benches/mmap_workloads/mod.rs
+  - benches/mmap_workloads/collect.py
+  - benches/mmap_workloads/validate.py
+  - tests/mmap_workload_validation.py
+  - tests/public_api.rs
+  - src/pool/read_copy.rs
+  - src/pool/frames.rs
+  - src/mock.rs
+  - src/pool/table.rs
+  - tests/arch3_sync_alias.rs
+  acceptance: Representative byte/race/identity/fallback and same-width writer/tail
+    checks establish bounded RED for the approved contract; exact model limits remain
+    visible. Floor/candidate/mmap share bytes and checksum; no table probe in the
+    floor, no performance pass claimed. Source edits at RED are test/mock hooks only;
+    WRC3 owns product behavior. Include contended-cell optimistic abandonment, off-module
+    exception/seam confinement and rich-row manifest/work/pair rejection; source edits
+    remain test/mock hooks only.
+- id: WRC3
+  title: Implement the owner-approved bounded copy-out contract
+  status: pending
+  depends_on:
+  - WRC2
+  files:
+  - src/pool/mod.rs
+  - src/pool/frames.rs
+  - src/lib.rs
+  - src/pool/read_copy.rs
+  - src/mock.rs
+  - src/sync.rs
+  - src/pool/alias_guard.rs
+  - src/pool/table.rs
+  - tests/public_api.rs
+  - benches/mmap_workloads/resident.rs
+  - benches/mmap_workloads/catalog.rs
+  - benches/mmap_workloads/mod.rs
+  - benches/mmap_workloads/collect.py
+  - benches/mmap_workloads/validate.py
+  acceptance: Approved one-attempt volatile-word contract and atomic identity/in-process
+    writer discipline pass required focused checks with zero allocation and one get
+    fallback; exception is confined to one audited module, FrameState/EBR unchanged.
+    Unsupported proof/qualification returns to the owner, not an undocumented replacement
+    primitive. Implement the bounded fence-free table hint probe without altering
+    ordinary lookup or representation; complete the declared benchmark arms and warm
+    pair validator behind WRC2 RED, using the shared statistics unchanged.
+- id: WRC4
+  title: Complete safety and paired adoption evidence
+  status: pending
+  depends_on:
+  - WRC3
+  files:
+  - benches/evidence/warm_read_copy_out/
+  - benches/plans/warm_read_copy_out.md
+  - scopes/draft/warm-read-copy-out/
+  acceptance: Dios WRC-G1/G2/G4, required safety checks and integration review pass
+    with immutable identities and model limits. WRC-G3 is sira-owned after landing
+    and 24 ns is a budget note. Retain failures and the named non-gating pressure/CLOCK
+    artifact; amended DRP runner/fresh base must precede binding collection.

@@ -1,0 +1,9 @@
+version: 1
+epoch:
+  id: 20261115T161731Z-fba2be
+  started_at: '2026-11-15T16:18:26Z'
+  updated_at: '2026-11-15T16:18:26Z'
+routing:
+  tester: {agent: claude-opus, effort: inherit}
+  implementer: {agent: claude-opus, effort: inherit}
+  reviewer: {agents: [peer-gpt6-astra, claude-opus], effort: inherit}
