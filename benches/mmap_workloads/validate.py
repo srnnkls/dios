@@ -4,6 +4,8 @@
 # ///
 """Validate mmap/Dios path witnesses before constructing paired comparisons."""
 
+import argparse
+import json
 from pathlib import Path
 
 
@@ -147,9 +149,41 @@ def validate_pressure(row: dict) -> None:
 
 def warm_prepare(capture: Path, frozen: Path, output: Path) -> None:
     """Pair validated base-build rows into the measured AT-G4 comparison CSV."""
+    # Both modules import this one, so they load on first use.
+    from analyze import paired_csv, read_comparison
+    from collect import base_build_schedule
+
     if not capture.is_dir() or not frozen.is_file():
         raise ValueError("capture directory and frozen manifest are required")
-    output.write_text("base_ns,candidate_ns\n")
+    expected = json.loads(frozen.read_text())
+    manifest = json.loads((capture / "manifest.json").read_text())
+    drift = sorted(
+        key for key, value in expected.items()
+        if key != "gate" and manifest.get(key) != value
+    )
+    if drift or manifest["status"] != "complete":
+        raise ValueError(f"capture manifest differs from the frozen manifest: {drift}")
+    if len(manifest["comparisons"]) != 1:
+        raise ValueError("capture manifest holds other than one comparison")
+    comparison = manifest["comparisons"][0]
+    lanes = comparison.get("lanes", [comparison["lane"]["name"]] * 2)
+    if lanes != [expected["lane"]] * 2 or comparison["arms"] != expected["arms"]:
+        raise ValueError("comparison lane or arms differ from the frozen lane or arms")
+    schedule =base_build_schedule(expected["qualification_pairs"], expected["measured_pairs"])
+    references = comparison["rows"]
+    if [(row["pair"], row["position"]) for row in references] != [
+        (step["pair"], step["position"]) for step in schedule
+    ]:
+        raise ValueError("base-build rows are missing, incomplete or reordered")
+    for reference in references:
+        if reference["executable_sha256"] != expected["executables"][reference["position"]]:
+            raise ValueError("row executable identity differs from its build")
+    pairs = read_comparison(capture, comparison)
+    for pair in pairs:
+        for row in pair:
+            if row["fixture"] != expected["fixture_sha256"]:
+                raise ValueError("row fixture differs from the frozen fixture")
+    output.write_text(paired_csv(pairs))
 
 
 def counters(text: str | None) -> dict[str, int]:
@@ -159,3 +193,18 @@ def counters(text: str | None) -> dict[str, int]:
         key.removesuffix(":"): int(value)
         for key, value in (line.split() for line in text.splitlines())
     }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    prepare = commands.add_parser("warm-prepare", help=warm_prepare.__doc__)
+    prepare.add_argument("capture", type=Path)
+    prepare.add_argument("frozen", type=Path)
+    prepare.add_argument("output", type=Path)
+    options = parser.parse_args()
+    warm_prepare(options.capture, options.frozen, options.output)
+
+
+if __name__ == "__main__":
+    main()

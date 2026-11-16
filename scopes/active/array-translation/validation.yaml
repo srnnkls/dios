@@ -124,6 +124,10 @@ owner_decisions:
     decided_at: 2026-11-15
     owner: Sören
     decision: "AT-G4 is captured as rich rows, not through pair-bench: collect.py gains a base-build option (one uniquely named row per process, AB/BA, 2 qualification and 30 measured pairs) and validate.py warm-prepare checks the rows against manifests/at-g4.json. AT2 pins both, AT3 implements them, AT4 extends warm-prepare to the session arms."
+  - id: AT-D6
+    decided_at: 2026-11-16
+    owner: Sören
+    decision: "The duplicated pin head of pin_live and pin_owned (batch 3 review) is not unified in AT3. AT5 owns it, where the session read is the third resolution path; AT-G4 measures the hit path as AT3 leaves it."
   - id: WRC-D1
     inherited_from: scopes/draft/warm-read-copy-out/validation.yaml
     decision: "Volatile-word exception, same-width atomic writers, one audited module, mirror-only liveness carry over; the bracket is amended by Q005 and A001."

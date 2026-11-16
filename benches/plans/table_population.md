@@ -1,5 +1,8 @@
 # Bench Plan: table_population
 
+Retired by array-translation AD-10: the hash page table and this bench left
+the product, so the plan and its recorded results stand as history only.
+
 | Field | Value |
 |-------|-------|
 | Metric & direction | wall-time ratio of constructing the frame-scaled control tables of a 240,241-frame pool (page table: 524,288 slots, 20 MiB; miss table: 240,241 entries and success links; frame page index: 240,241 cells) alone to constructing them and touching every slot (candidate/base), lower is better; the ratio is the share of the eager table cost a build still pays |

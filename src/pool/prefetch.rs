@@ -248,6 +248,11 @@ impl<D: PoolBackend> Pool<D> {
                 self.identity,
                 "prefetch uses its owning pool"
             );
+            if page.granule_idx() >= self.file_granules_max
+                || !file_is_live(&control.files, page.file(), self.identity)
+            {
+                continue;
+            }
             let frame = self.table.lookup(page).or_else(|| {
                 control
                     .miss
@@ -267,6 +272,9 @@ impl<D: PoolBackend> Pool<D> {
             self.identity,
             "prefetch uses its owning pool"
         );
+        if page.granule_idx() >= self.file_granules_max {
+            return Some(Admission::Rejected);
+        }
         if !file_is_live(&control.files, page.file(), self.identity) {
             return Some(Admission::Rejected);
         }
@@ -818,7 +826,7 @@ impl<D: PoolBackend> Pool<D> {
 
     pub(super) fn evict_resident(&self, control: &mut Control, frame: ReadFrameIdx) {
         let page = self.frames.exact_page_locked(frame, control);
-        assert_eq!(self.table.remove_shared(page), Some(frame));
+        assert_eq!(self.table.clear(page), frame);
         control
             .prefetch
             .finish(&self.clock, frame, Terminal::Evicted);

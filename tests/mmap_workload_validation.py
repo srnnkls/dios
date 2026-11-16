@@ -502,10 +502,34 @@ class MmapEvidenceContract(unittest.TestCase):
         def manifest_drift(root: Path, manifest: dict) -> None:
             manifest["fixture_sha256"] = "e" * 64
 
+        def rewrite_rows(root: Path, manifest: dict, positions: tuple, change) -> None:
+            for reference in manifest["comparisons"][0]["rows"]:
+                if reference["position"] not in positions:
+                    continue
+                path = root / "capture/resident_access_ordinary" / reference["raw"]
+                row = json.loads(path.read_text())
+                change(row)
+                raw = json.dumps(row).encode()
+                path.write_bytes(raw)
+                reference["sha256"] = hashlib.sha256(raw).hexdigest()
+
+        def mmap_candidate(root: Path, manifest: dict) -> None:
+            def measure_mmap(row: dict) -> None:
+                row["arm"] = "mmap_random"
+                row["workers"][0]["hits"] = 0
+
+            manifest["comparisons"][0]["arms"] = ["dios_serial", "mmap_random"]
+            rewrite_rows(root, manifest, (1,), measure_mmap)
+
+        def unfrozen_fixture(root: Path, manifest: dict) -> None:
+            rewrite_rows(root, manifest, (0, 1), lambda row: row.update(fixture="e" * 64))
+
         rejects("identity", mixed_identity)
         rejects("work", unequal_work)
         rejects("missing|incomplete", incomplete_pair)
         rejects("manifest", manifest_drift)
+        rejects("frozen lane or arms", mmap_candidate)
+        rejects("frozen fixture", unfrozen_fixture)
 
     def test_minor_fault_regime_rejects_storage_faults(self) -> None:
         row = sample()

@@ -2,14 +2,15 @@ checkpoint:
   scope_name: array-translation
   scope_path: scopes/active/array-translation
   branch: feat/array-translation
-  last_commit: 5ab5b09
-  updated_at: '2026-11-15T17:29:42Z'
+  last_commit: 8c4a8b4
+  updated_at: '2026-11-16T10:19:54Z'
 
   batch:
-    number: 2
-    tasks: [AT2]
-    phase: complete
-    status: completed
+    number: 3
+    tasks: [AT3]
+    phase: integration
+    status: pending
+    waiting_on: "nix host gates and Linux-only suites for AT3; review and local gates are clear"
 
   routing_snapshot:
     epoch_id: 20261115T161731Z-fba2be
@@ -21,14 +22,15 @@ checkpoint:
         - {agent: claude-opus, effort: inherit, class: native}
 
   reports:
-    tester: {AT2: .tropos/peer/array-translation/20261115T161731Z-fba2be/b2-tester-AT2}
-    tester_attempt2: {AT2: .tropos/peer/array-translation/20261115T161731Z-fba2be/b2-tester-AT2-attempt2}
-    implementer: {AT2: .tropos/peer/array-translation/20261115T161731Z-fba2be/b2-implementer-AT2}
+    tester: {AT3: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-tester-AT3}
+    tester_attempt2: {AT3: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-tester-AT3-attempt2}
+    implementer: {AT3: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-implementer-AT3-resume}
+    implementer_failed_wave: {AT3: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-implementer-AT3}
     review:
-      general: .tropos/peer/array-translation/20261115T161731Z-fba2be/b2-review-general
-      architecture: .tropos/peer/array-translation/20261115T161731Z-fba2be/b2-review-architecture
-      compliance: .tropos/peer/array-translation/20261115T161731Z-fba2be/b2-review-compliance
-      abstractions: .tropos/peer/array-translation/20261115T161731Z-fba2be/b2-review-abstractions
-    fix: {round1_rust: .tropos/peer/array-translation/20261115T161731Z-fba2be/b2-fix1-rust, round1_python: .tropos/peer/array-translation/20261115T161731Z-fba2be/b2-fix1-python}
+      general: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-review-general
+      architecture: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-review-architecture
+      compliance: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-review-compliance
+      abstractions: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-review-abstractions
+    fix: {round1_rust: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix1-rust, round1_python: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix1-python}
 
-    rereview: {round1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b2-rereview1}
+    rereview: {round1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-rereview1}

@@ -12,7 +12,7 @@
 //! proofs drive a bounded, purpose-built entry the implementer exposes over the
 //! REAL lock-free machinery (frame-state atomic, EBR epoch slots incl.
 //! `begin_pin`'s `SeqCst` fence, the AD-4 Control lock, the single-writer
-//! `PageTable` seqlock) routed through the crate's `cfg(loom)` sync alias.
+//! `Translation` entries) routed through the crate's `cfg(loom)` sync alias.
 //!
 //! CONTRACT (RED until it exists — every error must be missing-surface on this
 //! seam; and each op MUST delegate to the production atomics/lock — a bespoke
@@ -22,7 +22,6 @@
 //! #[cfg(loom)] #[doc(hidden)] pub mod loom_model {
 //!   pub struct PoolModel;               // one shared control plane, N frames, 1 reader slot
 //!   pub struct Guard;                   // a live epoch pin; unpins on Drop (last-guard -> quiescent)
-//!   pub struct Snapshot;                // one committed seqlock read of a page->(frame,gen) cell
 //!   impl PoolModel {
 //!     pub fn new(frames: u32) -> loom::sync::Arc<Self>;
 //!     // setup, single-threaded, before threads spawn: map `page` Resident in frame 0, granule filled `gen`
@@ -40,20 +39,15 @@
 //!     // reclaim two-advance-expired Evicting frames (Evicting -> Free), and refill any frame
 //!     // it frees by mapping `refill_page` Resident with content-generation `refill_gen`.
 //!     pub fn poll_pass(&self, refill_page: u32, refill_gen: u8) -> DrainReport;
-//!     // writer under the Control lock: remap `page` to a FRESH frame (frame 1) carrying `gen`,
-//!     // committed as ONE seqlock transaction (version bump around the multi-field cell write).
+//!     // writer under the Control lock: publish absent `page` in a FRESH frame (frame 1) carrying `gen`.
 //!     pub fn remap(&self, page: u32, gen: u8);
-//!     // reader: a lock-free advisory seqlock read; None = empty/retry, Some = a non-torn snapshot.
-//!     pub fn probe(&self, page: u32) -> Option<Snapshot>;
 //!   }
 //!   impl Guard    { pub fn generation(&self) -> u8; }   // re-reads the LIVE frame content, not a pin-time copy
-//!   impl Snapshot { pub fn frame(&self) -> u32; pub fn generation(&self) -> u8; }
 //! }
 //! ```
 //!
 //! Frame convention the proofs rely on: `make_resident` installs in frame 0,
-//! `remap` installs in frame 1, so a coupled (frame, gen) pair makes a torn
-//! seqlock read directly observable.
+//! `remap` installs in frame 1.
 //!
 //! Deferred boundary: dead-thread reader-slot deregistration racing epoch advance
 //! (design.md:124-125) is unmodeled — the bounded one-slot seam has no dereg
@@ -93,7 +87,7 @@ where
 }
 
 // RC5's bounded entry must compose production ReadSpans, MissTable, Frames,
-// PageTable, Clock and Prefetch through crate::sync. with_readahead provides one
+// Translation, Clock and Prefetch through crate::sync. with_readahead provides one
 // driver slot and 4096-byte granules; complete_span applies a byte-count CQE to
 // that retained operation.
 // A join retains the actual miss interest or resident identity; joined_span_bytes
@@ -296,38 +290,6 @@ fn an_inner_nested_guard_drop_does_not_release_the_frame_under_the_outer_guard()
         pool.poll_pass(INTRUDER_PAGE, INTRUDER_GEN);
 
         reader.join().expect("reader thread");
-    });
-}
-
-/// `PageTable` single-writer seqlock: a torn read pairs one write's frame with the
-/// other's generation. The two committed writes are (frame 0, gen A) and
-/// (frame 1, gen B), so (0, B) and (1, A) are the torn outcomes the seqlock
-/// version discipline must exclude.
-#[test]
-fn a_seqlock_read_racing_the_single_writer_never_returns_a_torn_snapshot() {
-    const FRAME_A: u32 = 0;
-    const FRAME_B: u32 = 1;
-    const GEN_A: u8 = 0xA;
-    const GEN_B: u8 = 0xB;
-
-    loom::model(|| {
-        let pool = PoolModel::new(2);
-        pool.make_resident(HELD_PAGE, GEN_A);
-
-        let writer_pool = pool.clone();
-        let writer = thread::spawn(move || {
-            writer_pool.remap(HELD_PAGE, GEN_B);
-        });
-
-        if let Some(snapshot) = pool.probe(HELD_PAGE) {
-            let pair = (snapshot.frame(), snapshot.generation());
-            assert!(
-                pair == (FRAME_A, GEN_A) || pair == (FRAME_B, GEN_B),
-                "a seqlock read returns one committed write's (frame, gen), never a torn mix: got {pair:?}"
-            );
-        }
-
-        writer.join().expect("writer thread");
     });
 }
 

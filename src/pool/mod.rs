@@ -3,8 +3,8 @@
 //! the `Pool` that composes a driver behind `&self` entry points.
 //!
 //! The pool owns the driver it composes ([`PoolBackend`]) and unifies the read
-//! target with its own frames. The warm-hit `pin` probes the lock-free
-//! packed-atomic [`PageTable`]; every mutation — miss admission, completion
+//! target with its own frames. The warm-hit `pin` loads one entry of the
+//! per-file array [`Translation`]; every mutation — miss admission, completion
 //! routing, eviction, epoch advance/reclaim — runs under the AD-4 control-plane
 //! [`Mutex`]. The miss singleflight and the backend seam live in [`miss`].
 
@@ -43,7 +43,6 @@ mod miss;
 mod prefetch;
 mod read_spans;
 mod retention;
-mod table;
 mod translation;
 pub(crate) mod write_arena;
 
@@ -60,57 +59,7 @@ pub(crate) use miss::PoolBackend;
 pub(crate) use miss::sealed::Sealed as PoolBackendSealed;
 pub use prefetch::{PrefetchReport, PrefetchStats, Readahead};
 pub use retention::{RetainRefused, RetainRefusedReason, RetainedFrame, RetentionStats};
-pub use table::PageTable;
-#[cfg(feature = "bench")]
-pub(crate) use table::page_hash;
 pub use translation::Translation;
-
-/// The frame-scaled control tables a build maps: the page table, the miss
-/// table and the frame page index. The population bench constructs them and
-/// measures touching every slot against constructing them alone.
-#[cfg(feature = "bench")]
-#[derive(Debug)]
-pub struct ControlTables {
-    table: PageTable,
-    miss: MissTable,
-    frame_pages: FramePages,
-}
-
-#[cfg(feature = "bench")]
-impl ControlTables {
-    /// Maps the tables of a `frame_count`-frame pool.
-    ///
-    /// # Panics
-    ///
-    /// If any table allocation fails.
-    #[must_use]
-    pub fn with_frame_count(frame_count: u32) -> Self {
-        Self {
-            table: PageTable::with_frame_count(frame_count),
-            miss: MissTable::try_with_capacity(
-                frame_count,
-                1,
-                crate::driver::DEFAULT_REGISTERED_FILE_CAPACITY,
-            )
-            .unwrap_or_else(|| panic!("miss table allocation failed for {frame_count} frames")),
-            frame_pages: FramePages::try_new(
-                frame_count,
-                crate::driver::DEFAULT_REGISTERED_FILE_CAPACITY,
-            )
-            .unwrap_or_else(|| {
-                panic!("frame page index allocation failed for {frame_count} frames")
-            }),
-        }
-    }
-
-    /// Writes every slot of every table once, the fault per page the eager
-    /// constructor loops used to pay.
-    pub fn populate(&mut self) {
-        self.table.populate();
-        self.miss.populate();
-        self.frame_pages.populate();
-    }
-}
 
 /// Default frame granule, fixed per store at open and never below the `O_DIRECT`
 /// sector floor. AD-6 bounds the encoded BLOCK size (keys plus headers), not raw
@@ -205,6 +154,13 @@ impl ColdGetPauseState {
         drop(phase);
         self.changed.notify_all();
     }
+}
+
+/// The outcome of one lock-free `get` resolution.
+enum LivePin<'pool> {
+    Hit(FrameGuard<'pool>),
+    Absent,
+    StaleFile,
 }
 
 /// Stable address of an aligned file extent: a generational file id and the
@@ -922,6 +878,28 @@ impl PoolBuilder {
             });
         }
         self.prefetch_capacity()?;
+        self.validate_translation()
+    }
+
+    fn validate_translation(&self) -> Result<(), PoolConfigError> {
+        if !self.file_granules_max.is_power_of_two() {
+            return Err(PoolConfigError::FileGranulesMaxNotPowerOfTwo {
+                requested: self.file_granules_max,
+            });
+        }
+        if self.frame_count > translation::FRAME_COUNT_MAX {
+            return Err(PoolConfigError::FrameCountAboveTranslationLimit {
+                requested: self.frame_count,
+                limit: translation::FRAME_COUNT_MAX,
+            });
+        }
+        if translation::entry_bytes(self.registered_file_capacity, self.file_granules_max).is_none()
+        {
+            return Err(PoolConfigError::TranslationUnrepresentable {
+                registered_file_capacity: self.registered_file_capacity,
+                file_granules_max: self.file_granules_max,
+            });
+        }
         Ok(())
     }
 
@@ -1134,7 +1112,7 @@ impl ProductOp {
 }
 
 /// The userspace frame pool: preallocated frames shared with the composed driver,
-/// the lock-free packed page table, CLOCK eviction, epoch reclamation, and
+/// the lock-free per-file translation array, CLOCK eviction, epoch reclamation, and
 /// per-`PageId` singleflight, with reader registration capped at
 /// `max_concurrent_readers`. The CLOCK reference bits sit outside the control
 /// mutex so a warm hit sets them lock-free; the sweep hand advances only under
@@ -1155,8 +1133,7 @@ impl ProductOp {
 #[derive(Debug)]
 pub struct Pool<D = Driver> {
     frames: Arc<Frames>,
-    table: PageTable,
-    translation: Translation,
+    table: Translation,
     clock: Clock,
     global_epoch: AtomicU64,
     readers: Arc<ReaderRegistry>,
@@ -1172,6 +1149,7 @@ pub struct Pool<D = Driver> {
     control_acquisitions: diagnostics::DiagnosticCounter,
     driver: D,
     granule: u32,
+    file_granules_max: u32,
     frame_count: u32,
     max_concurrent_readers: u32,
     max_inflight_reads: u32,
@@ -1181,6 +1159,8 @@ pub struct Pool<D = Driver> {
     cold_get_pause: Mutex<Option<Arc<ColdGetPauseState>>>,
     #[cfg(all(feature = "mock", not(loom)))]
     pin_entry_pause: Mutex<Option<Arc<ColdGetPauseState>>>,
+    #[cfg(all(feature = "mock", not(loom)))]
+    pin_entry_pause_armed: crate::sync::AtomicBool,
     drop_hook: fn(&mut Pool<D>),
 }
 
@@ -1340,9 +1320,7 @@ impl<D: PoolBackend> Pool<D> {
         let backend_capacity = driver.operation_capacity();
         assert!(backend_capacity > 0, "the backend has operation slots");
         let control = Self::try_preallocated_control(&config, backend_capacity)?;
-        let table = PageTable::try_with_frame_count(config.frame_count)
-            .ok_or(PoolBuildError::Allocation)?;
-        let translation =
+        let table =
             Translation::try_reserve(config.registered_file_capacity, config.file_granules_max)
                 .ok_or(PoolBuildError::Allocation)?;
         let clock =
@@ -1366,7 +1344,6 @@ impl<D: PoolBackend> Pool<D> {
         Ok(Self {
             frames,
             table,
-            translation,
             clock,
             global_epoch: AtomicU64::new(0),
             readers,
@@ -1382,6 +1359,7 @@ impl<D: PoolBackend> Pool<D> {
             control_acquisitions: diagnostics::DiagnosticCounter::new(),
             driver,
             granule: config.granule,
+            file_granules_max: config.file_granules_max,
             frame_count: config.frame_count,
             max_concurrent_readers: config.max_concurrent_readers,
             max_inflight_reads: config.max_inflight_reads,
@@ -1391,6 +1369,8 @@ impl<D: PoolBackend> Pool<D> {
             cold_get_pause: Mutex::new(None),
             #[cfg(all(feature = "mock", not(loom)))]
             pin_entry_pause: Mutex::new(None),
+            #[cfg(all(feature = "mock", not(loom)))]
+            pin_entry_pause_armed: crate::sync::AtomicBool::new(false),
             drop_hook: Self::shutdown_for_drop,
         })
     }
@@ -1610,11 +1590,27 @@ impl<D: PoolBackend> Pool<D> {
             replaced.is_none(),
             "only one pin-to-entry pause may be armed"
         );
+        self.pin_entry_pause_armed.store(true, Ordering::Release);
         pause
     }
 
     pub(crate) fn translation_lookup_internal(&self, page: PageId) -> Option<ReadFrameIdx> {
-        self.translation.lookup(page)
+        self.table.lookup(page)
+    }
+
+    #[cfg(all(feature = "mock", not(loom)))]
+    fn pause_get_between_pin_and_entry_if_armed(&self) {
+        if !self.pin_entry_pause_armed.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        let pause = self
+            .pin_entry_pause
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(pause) = pause {
+            pause.pause();
+        }
     }
 
     #[cfg(loom)]
@@ -1738,7 +1734,9 @@ impl<D: PoolBackend> Pool<D> {
     ///
     /// # Errors
     ///
-    /// Returns [`GetError::StaleFile`] for a retired or reused file generation.
+    /// Returns [`GetError::StaleFile`] for a retired or reused file generation
+    /// and [`GetError::BeyondFileBound`] for a granule at or above
+    /// `file_granules_max`.
     ///
     /// # Panics
     ///
@@ -1755,14 +1753,13 @@ impl<D: PoolBackend> Pool<D> {
             self.identity,
             "file identity used with a foreign pool"
         );
-        if !file_generation_is_live(
-            &self.file_live_generations[page.file().slot() as usize],
-            page.file(),
-        ) {
-            return Err(GetError::StaleFile { page });
+        if page.granule_idx() >= self.file_granules_max {
+            return Err(GetError::BeyondFileBound { page });
         }
-        if let Some(guard) = self.pin_internal_borrowed(reader_slot, &page) {
-            return Ok(Get::Hit(guard));
+        match self.pin_live(reader_slot, page) {
+            LivePin::Hit(guard) => return Ok(Get::Hit(guard)),
+            LivePin::StaleFile => return Err(GetError::StaleFile { page }),
+            LivePin::Absent => {}
         }
         #[cfg(all(feature = "mock", not(loom)))]
         self.pause_cold_get_if_armed();
@@ -1776,10 +1773,11 @@ impl<D: PoolBackend> Pool<D> {
             .is_some_and(|frame| self.frames.state(frame) == FrameState::Resident)
         {
             drop(control);
-            return Ok(match self.pin_internal_borrowed(reader_slot, &page) {
-                Some(guard) => Get::Hit(guard),
-                None => Get::Busy,
-            });
+            return match self.pin_live(reader_slot, page) {
+                LivePin::Hit(guard) => Ok(Get::Hit(guard)),
+                LivePin::StaleFile => Err(GetError::StaleFile { page }),
+                LivePin::Absent => Ok(Get::Busy),
+            };
         }
         control.prefetch.reconcile(&self.clock);
         let result = self.get_cold(page, reader.index(), &mut control);
@@ -1878,6 +1876,9 @@ impl<D: PoolBackend> Pool<D> {
     #[must_use]
     pub fn resident_hint(&self, lease: &ResidentFileLease, page: PageId) -> Option<ResidentHint> {
         self.assert_lease_owner(lease, page);
+        if page.granule_idx() >= self.file_granules_max {
+            return None;
+        }
         let frame = self.table.lookup(page)?;
         let stamp = self.frames.state_word(frame);
         if !Frames::word_is_resident(stamp) {
@@ -1953,6 +1954,9 @@ impl<D: PoolBackend> Pool<D> {
     ) -> Result<Get<'pool>, GetError> {
         self.assert_reader_owner(reader);
         self.assert_lease_owner(lease, page);
+        if page.granule_idx() >= self.file_granules_max {
+            return Err(GetError::BeyondFileBound { page });
+        }
         if !file_generation_is_live(
             &self.file_live_generations[page.file().slot() as usize],
             page.file(),
@@ -2349,6 +2353,7 @@ impl<D: PoolBackend> Pool<D> {
                     self.driver.close(handle);
                 }
                 if self.driver.is_closed(file) {
+                    self.table.release_slot(file);
                     entry.state = PoolFileState::Retired;
                 }
             }
@@ -2373,7 +2378,11 @@ impl<D: PoolBackend> Pool<D> {
             if !control.miss.prepare_eviction(frame, &self.miss_interests) {
                 continue;
             }
-            let _ = self.table.remove_shared(page);
+            assert_eq!(
+                self.table.clear(page),
+                frame,
+                "a resident frame's page names it in the translation"
+            );
             control
                 .prefetch
                 .finish(&self.clock, frame, prefetch::state::Terminal::Evicted);
@@ -2465,9 +2474,51 @@ impl<D: PoolBackend> Pool<D> {
             slot.abort_pin(begun);
             return None;
         };
+        Some(self.pin_owned_commit(begun, frame, slot))
+    }
+
+    fn pin_owned_commit<'pool>(
+        &'pool self,
+        begun: epoch::PinBegun,
+        frame: ReadFrameIdx,
+        slot: &epoch::ReaderSlot,
+    ) -> (&'pool [u8], ReadFrameIdx) {
         let _ = self.clock.reference_from(frame, slot);
         let pin = slot.commit_pin(begun, frame);
-        Some((self.frames.frame_bytes(&pin), pin.frame()))
+        (self.frames.frame_bytes(&pin), pin.frame())
+    }
+
+    /// The lock-free resolution of `get`: pins the epoch, loads the entry and
+    /// only then the file-generation mirror (INV-7), so an entry a reused slot's
+    /// successor published is never admitted under the retired identity.
+    #[inline(never)]
+    fn pin_live<'pool>(
+        &'pool self,
+        slot: &'pool epoch::ReaderSlot,
+        page: PageId,
+    ) -> LivePin<'pool> {
+        let begun = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
+        #[cfg(all(feature = "mock", not(loom)))]
+        self.pause_get_between_pin_and_entry_if_armed();
+        let Some(frame) = self.table.lookup(page) else {
+            slot.abort_pin(begun);
+            return LivePin::Absent;
+        };
+        if !file_generation_is_live(
+            &self.file_live_generations[page.file().slot() as usize],
+            page.file(),
+        ) {
+            slot.abort_pin(begun);
+            return LivePin::StaleFile;
+        }
+        let (bytes, frame) = self.pin_owned_commit(begun, frame, slot);
+        LivePin::Hit(FrameGuard::new(
+            bytes,
+            slot,
+            frame,
+            page.file().slot(),
+            &self.retention,
+        ))
     }
 
     fn assert_reader_owner(&self, reader: &ReaderCtx) {
@@ -2522,7 +2573,7 @@ impl<D: PoolBackend> Pool<D> {
             .expect("the free stack holds only Free frames");
         self.frames.fill(&mut write, fill);
         self.frames.publish(write);
-        self.table.insert_shared(page, frame);
+        self.table.publish(page, frame);
         control
             .frame_pages
             .insert(frame.get() as usize, FrameFileSlot::for_page(page));
@@ -2548,8 +2599,8 @@ impl<D: PoolBackend> Pool<D> {
             "a testing eviction cannot bypass live pending-token protection"
         );
         assert_eq!(
-            self.table.remove_shared(page),
-            Some(frame),
+            self.table.clear(page),
+            frame,
             "the control lock keeps the eviction mapping stable"
         );
         control
@@ -2873,7 +2924,7 @@ impl<D: PoolBackend> Pool<D> {
             observation.terminal(entry.frame(), entry.page(), Ok(()));
         }
         self.frames.publish(write);
-        self.table.insert_shared(entry.page(), entry.frame());
+        self.table.publish(entry.page(), entry.frame());
         frame_pages.insert(
             entry.frame().get() as usize,
             FrameFileSlot::for_page(entry.page()),

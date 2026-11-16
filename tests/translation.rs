@@ -222,6 +222,8 @@ fn releasing_a_slot_leaves_it_absent_and_keeps_page_sharing_neighbors() {
         let _ = wide.clear(PageId::new(retired, granule));
     }
     wide.release_slot(retired);
+    #[cfg(target_os = "linux")]
+    let resident_after = wide.resident_bytes();
     for granule in (0..WIDE_GRANULES_MAX).step_by(STRIDE as usize) {
         assert_eq!(
             wide.lookup(PageId::new(retired, granule)),
@@ -236,8 +238,7 @@ fn releasing_a_slot_leaves_it_absent_and_keeps_page_sharing_neighbors() {
     );
     #[cfg(target_os = "linux")]
     assert!(
-        wide.resident_bytes() + WIDE_SLOT_BYTES <= resident_before,
-        "the release returned the slot's whole OS pages: {} of {resident_before} bytes still resident",
-        wide.resident_bytes()
+        resident_after + WIDE_SLOT_BYTES <= resident_before,
+        "the release returned the slot's whole OS pages: {resident_after} of {resident_before} bytes still resident"
     );
 }

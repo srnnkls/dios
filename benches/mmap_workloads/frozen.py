@@ -10,6 +10,7 @@ from pathlib import Path
 
 from analyze import read_comparison
 from collect import (
+    base_build_schedule,
     collect_one,
     digest,
     execute,
@@ -41,11 +42,13 @@ def compare(
     directory.mkdir()
     arms = ["dios_batch", "dios_prefetch"]
     rows, timings = [], []
-    for pair in range(-2, 30):
+    schedule = base_build_schedule(2, 30)
+    for steps in zip(schedule[::2], schedule[1::2]):
+        pair = steps[0]["pair"]
         seed = pair if pair >= 0 else 1_000_000 + pair
         measured = [0, 0]
-        for position in (0, 1) if pair % 2 == 0 else (1, 0):
-            target = directory / f"{pair:04d}-{position}.json"
+        for step in steps:
+            position = step["position"]
             row = collect_one(
                 binaries[position],
                 fixture,
@@ -53,7 +56,7 @@ def compare(
                 arms[position],
                 seed,
                 "plain",
-                target,
+                directory / step["row"],
                 "run",
             )
             row.update(pair=pair, position=position)

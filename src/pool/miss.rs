@@ -370,16 +370,6 @@ impl MissTable {
         })
     }
 
-    /// Writes every frame-scaled slot once, the fault per page the eager
-    /// constructor loop used to pay, so a bench can measure a build against it.
-    #[cfg(feature = "bench")]
-    pub(crate) fn populate(&mut self) {
-        self.slots.populate();
-        for frame in self.success_frames.iter_mut() {
-            frame.clear();
-        }
-    }
-
     fn pending_live(&self) -> &[Option<PendingMiss>] {
         &self.pending[..self.pending_len as usize]
     }

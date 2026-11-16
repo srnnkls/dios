@@ -57,8 +57,10 @@ def digest(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def execute(command: list[str], log: Path | None = None, timeout: int = 190) -> str:
-    result = subprocess.run(command, text=True, capture_output=True, timeout=timeout)
+def execute(
+    command: list[str], log: Path | None = None, timeout: int = 190, cwd: Path | None = None
+) -> str:
+    result = subprocess.run(command, text=True, capture_output=True, timeout=timeout, cwd=cwd)
     if log is not None:
         log.write_text(result.stdout + result.stderr)
     if result.returncode:
@@ -68,7 +70,7 @@ def execute(command: list[str], log: Path | None = None, timeout: int = 190) -> 
     return result.stdout
 
 
-def build_binary(output: Path) -> Path:
+def build_binary(output: Path, tree: Path | None = None) -> Path:
     text = execute(
         [
             "cargo",
@@ -83,6 +85,7 @@ def build_binary(output: Path) -> Path:
         ],
         output / "build.log",
         timeout=300,
+        cwd=tree,
     )
     binaries = [
         entry["executable"]
@@ -140,19 +143,29 @@ def host_snapshot(output: Path, name: str) -> dict:
     return snapshot
 
 
+def runner_identity(binary: Path, tree: Path) -> str:
+    compiled = json.loads(execute([str(binary), "identity"]))
+    runner_hash = hashlib.sha256(
+        b"".join((tree / path).read_bytes() for path in RUNNER_SOURCES)
+    ).hexdigest()
+    if compiled["runner_sha256"] != runner_hash or compiled["debug_assertions"]:
+        raise ValueError("retained executable does not match current release harness")
+    return runner_hash
+
+
+def retain_binary(binary: Path, output: Path) -> tuple[Path, str]:
+    identity = digest(binary)
+    saved = output / f"mmap_workloads-{identity}"
+    shutil.copy2(binary, saved)
+    return saved, identity
+
+
 def prepare(options: argparse.Namespace) -> tuple[Path, Path, dict]:
     output = options.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     binary = options.binary.resolve() if options.binary else build_binary(output)
-    compiled = json.loads(execute([str(binary), "identity"]))
-    runner_hash = hashlib.sha256(
-        b"".join(Path(path).read_bytes() for path in RUNNER_SOURCES)
-    ).hexdigest()
-    if compiled["runner_sha256"] != runner_hash or compiled["debug_assertions"]:
-        raise ValueError("retained executable does not match current release harness")
-    identity = digest(binary)
-    saved = output / f"mmap_workloads-{identity}"
-    shutil.copy2(binary, saved)
+    runner_identity(binary, Path())
+    saved, identity = retain_binary(binary, output)
     fixture = options.input.resolve() if options.input else output / "input"
     if not options.input:
         execute([str(saved), "create", str(fixture)], output / "fixture.log")
@@ -263,37 +276,47 @@ def collect_one(
     }
 
 
+def comparison_pairs(mode: str) -> tuple[int, int]:
+    """Qualification and measured pair counts of one comparison."""
+    pairs = 30 if mode in ("run", "observe") else 1
+    return (2 if pairs == 30 else 0), pairs
+
+
 def collect_comparison(
     options: argparse.Namespace,
-    binary: Path,
+    binaries: list[Path],
     fixture: Path,
     lane: dict,
     arms: list[str],
     modes: list[str],
     name: str,
+    runners: list[str] | None = None,
 ) -> dict:
     output = options.output.resolve() / name
     output.mkdir()
-    pairs = 30 if options.mode in ("run", "observe") else 1
-    warmups = 2 if pairs == 30 else 0
+    warmups, pairs = comparison_pairs(options.mode)
+    identities = [digest(binary) for binary in binaries]
+    schedule = base_build_schedule(warmups, pairs)
     rows, timings = [], []
-    for pair in range(-warmups, pairs):
+    for steps in zip(schedule[::2], schedule[1::2]):
+        pair = steps[0]["pair"]
         seed = pair if pair >= 0 else 1_000_000 + pair
-        order = (0, 1) if pair % 2 == 0 else (1, 0)
         measured = [0, 0]
-        for position in order:
-            target = output / f"{pair:04d}-{position}.json"
+        for step in steps:
+            position = step["position"]
             row = collect_one(
-                binary,
+                binaries[position],
                 fixture,
                 lane,
                 arms[position],
                 seed,
                 modes[position],
-                target,
+                output / step["row"],
                 options.mode,
             )
-            row.update(pair=pair, position=position)
+            row.update(
+                pair=pair, position=position, executable_sha256=identities[position]
+            )
             rows.append(row)
             measured[position] = row["elapsed_ns"]
         if pair >= 0:
@@ -301,8 +324,10 @@ def collect_comparison(
         if pair >= 0 and (pair + 1) % 10 == 0:
             print(f"{name}: {pair + 1}/{pairs} pairs", flush=True)
     index = {"lane": lane, "name": name, "arms": arms, "modes": modes, "rows": rows}
+    if runners is not None:
+        index["runners"] = runners
     if pairs >= 30:
-        index.update(write_comparison(binary, output, timings))
+        index.update(write_comparison(binaries[1], output, timings))
     (output / "index.json").write_text(json.dumps(index, indent=2) + "\n")
     return index
 
@@ -311,7 +336,47 @@ def base_build_schedule(qualification_pairs: int, measured_pairs: int) -> list[d
     """One process per build and pair, in AB/BA order, each naming its own row."""
     if qualification_pairs < 0 or measured_pairs < 0:
         raise ValueError("pair counts are non-negative")
-    return []
+    builds = ("base", "candidate")
+    schedule = []
+    for pair in range(-qualification_pairs, measured_pairs):
+        order = (0, 1) if pair % 2 == 0 else (1, 0)
+        for position in order:
+            schedule.append(
+                {
+                    "pair": pair,
+                    "position": position,
+                    "build": builds[position],
+                    "row": f"{pair:04d}-{position}.json",
+                }
+            )
+    return schedule
+
+
+def collect_base_build(
+    options: argparse.Namespace, binary: Path, fixture: Path, lane: dict, manifest: dict
+) -> dict:
+    """Pair the lane's candidate arm in the base-build executable against this one."""
+    output = options.output.resolve()
+    tree = options.base_build.resolve()
+    base_output = output / "base-build"
+    base_output.mkdir()
+    built = build_binary(base_output, tree)
+    runners = [runner_identity(built, tree), runner_identity(binary, Path())]
+    base, identity = retain_binary(built, base_output)
+    arms = [lane["arms"][1]] * 2
+    qualification_pairs, measured_pairs = comparison_pairs(options.mode)
+    manifest.update(
+        base_build=str(tree),
+        lane=lane["name"],
+        arms=arms,
+        executables=[identity, manifest["executable_sha256"]],
+        fixture_sha256=manifest["fixture"]["sha256"],
+        qualification_pairs=qualification_pairs,
+        measured_pairs=measured_pairs,
+    )
+    return collect_comparison(
+        options, [base, binary], fixture, lane, arms, ["plain", "plain"], lane["name"], runners
+    )
 
 
 def write_comparison(binary: Path, output: Path, timings: list) -> dict:
@@ -337,14 +402,19 @@ def collect(options: argparse.Namespace) -> None:
         )
         if set(selected) - {lane["name"] for lane in lanes}:
             raise ValueError("unknown lane selection")
+        if options.base_build and (len(selected) != 1 or options.mode != "run"):
+            raise ValueError("a base-build capture runs one lane in run mode")
         for lane in lanes:
             if lane["name"] not in selected:
                 continue
-            if options.mode == "observe":
+            if options.base_build:
+                result = collect_base_build(options, binary, fixture, lane, manifest)
+                manifest["comparisons"].append(result)
+            elif options.mode == "observe":
                 for arm in lane["arms"]:
                     result = collect_comparison(
                         options,
-                        binary,
+                        [binary, binary],
                         fixture,
                         lane,
                         [arm, arm],
@@ -359,7 +429,7 @@ def collect(options: argparse.Namespace) -> None:
                     else ["plain", "plain"]
                 )
                 result = collect_comparison(
-                    options, binary, fixture, lane, lane["arms"], modes, lane["name"]
+                    options, [binary, binary], fixture, lane, lane["arms"], modes, lane["name"]
                 )
                 manifest["comparisons"].append(result)
             (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

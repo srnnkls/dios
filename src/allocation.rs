@@ -63,6 +63,10 @@ unsafe extern "C" {
     ) -> *mut c_void;
     fn munmap(addr: *mut c_void, len: usize) -> c_int;
     fn sysconf(name: c_int) -> i64;
+    #[cfg(not(any(loom, miri)))]
+    fn madvise(addr: *mut c_void, len: usize, advice: c_int) -> c_int;
+    #[cfg(any(feature = "mock", feature = "bench"))]
+    fn mincore(addr: *mut c_void, len: usize, residency: *mut u8) -> c_int;
 }
 
 #[cfg(target_os = "linux")]
@@ -85,6 +89,19 @@ const MAP_ANONYMOUS: c_int = 0x20;
 const MAP_ANONYMOUS: c_int = 0x1000;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("MAP_ANONYMOUS is target-specific; add this target's value from sys/mman.h");
+#[cfg(all(target_os = "linux", not(miri)))]
+const MAP_NORESERVE: c_int = 0x4000;
+#[cfg(all(target_os = "macos", not(miri)))]
+const MAP_NORESERVE: c_int = 0x40;
+#[cfg(not(any(loom, miri)))]
+const MADV_DONTNEED: c_int = 4;
+
+/// Whether a mapping is charged against the commit limit when it is made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommitAccounting {
+    Charged,
+    Reserved,
+}
 
 /// One anonymous private mapping whose pages the kernel materialises on first
 /// touch, so mapping a span costs no more than its page tables until a read
@@ -104,12 +121,25 @@ impl MappedArena {
     /// Maps `len` bytes (rounded up to whole pages) at an address that is a
     /// multiple of `align`.
     pub(crate) fn try_map(len: usize, align: usize) -> Option<Self> {
+        Self::try_map_accounted(len, align, CommitAccounting::Charged)
+    }
+
+    fn try_map_accounted(len: usize, align: usize, accounting: CommitAccounting) -> Option<Self> {
         assert!(len > 0, "fixed arena mappings are non-empty");
         assert!(align.is_power_of_two(), "arena alignment is a power of two");
         let page = page_size();
         let mapped_len = len.checked_next_multiple_of(page)?;
         let slack = if align > page { align } else { 0 };
         let total = mapped_len.checked_add(slack)?;
+        let flags = match accounting {
+            CommitAccounting::Charged => MAP_PRIVATE | MAP_ANONYMOUS,
+            #[cfg(not(miri))]
+            CommitAccounting::Reserved => MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+            // Miri's mmap shim accepts only private anonymous flags and keeps no
+            // commit limit to opt out of.
+            #[cfg(miri)]
+            CommitAccounting::Reserved => MAP_PRIVATE | MAP_ANONYMOUS,
+        };
         // SAFETY: an anonymous private mapping takes no file and no address hint;
         // the kernel picks a free range or returns `MAP_FAILED`.
         let raw = unsafe {
@@ -117,7 +147,7 @@ impl MappedArena {
                 std::ptr::null_mut(),
                 total,
                 PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS,
+                flags,
                 -1,
                 0,
             )
@@ -271,7 +301,17 @@ pub(crate) struct MappedSlice<T> {
 
 impl<T: ZeroVacant> MappedSlice<T> {
     pub(crate) fn try_vacant(capacity: u32) -> Option<Self> {
-        let len = capacity as usize;
+        Self::try_vacant_accounted(capacity as usize, CommitAccounting::Charged)
+    }
+
+    /// Reserves `len` vacant elements without charging the commit limit, so
+    /// the address space can exceed RAM plus swap and only touched pages are
+    /// ever backed.
+    pub(crate) fn try_reserved(len: u64) -> Option<Self> {
+        Self::try_vacant_accounted(usize::try_from(len).ok()?, CommitAccounting::Reserved)
+    }
+
+    fn try_vacant_accounted(len: usize, accounting: CommitAccounting) -> Option<Self> {
         let layout = Layout::array::<T>(len).ok()?;
         if layout.size() == 0 {
             return Some(Self {
@@ -280,7 +320,7 @@ impl<T: ZeroVacant> MappedSlice<T> {
                 _elements: PhantomData,
             });
         }
-        let mapping = MappedArena::try_map(layout.size(), layout.align())?;
+        let mapping = MappedArena::try_map_accounted(layout.size(), layout.align(), accounting)?;
         #[cfg(loom)]
         {
             let base = mapping.base().cast::<T>();
@@ -310,6 +350,100 @@ impl<T> MappedSlice<T> {
         self.mapping
             .as_ref()
             .map_or(NonNull::dangling(), |mapping| mapping.base().cast::<T>())
+    }
+
+    /// Borrows one element without forming a reference to the whole table, so
+    /// a sparse reservation is never retagged or touched beyond `index`.
+    ///
+    /// # Panics
+    ///
+    /// If `index` lies outside the slice.
+    pub(crate) fn element(&self, index: usize) -> &T {
+        assert!(index < self.len, "an element index lies inside the slice");
+        // SAFETY: `index < len`, so the offset stays inside the mapping's
+        // `len` elements.
+        let element = unsafe { self.base().add(index) };
+        // SAFETY: the element is initialised and aligned for `T` and owned by
+        // this value for its lifetime, as for `deref`.
+        unsafe { element.as_ref() }
+    }
+
+    /// Returns to the kernel the whole OS pages inside elements
+    /// `start..end`; pages shared with elements outside the range stay backed.
+    ///
+    /// # Safety
+    ///
+    /// Every element in `start..end` holds the all-zero vacant value and is
+    /// interior-mutable, so a page the kernel discards reads back unchanged.
+    ///
+    /// # Panics
+    ///
+    /// If the range is empty or exceeds the slice.
+    pub(crate) unsafe fn release_vacant(&self, start: u64, end: u64) {
+        assert!(start < end, "a released element range is non-empty");
+        assert!(
+            end <= self.len as u64,
+            "a released element range lies inside the slice"
+        );
+        let Some(mapping) = self.mapping.as_ref() else {
+            return;
+        };
+        let element_bytes = size_of::<T>() as u64;
+        let page = page_size() as u64;
+        let first_byte = (start * element_bytes).next_multiple_of(page);
+        let end_byte = (end * element_bytes) / page * page;
+        if first_byte >= end_byte {
+            return;
+        }
+        let offset = usize::try_from(first_byte).expect("an element offset fits usize");
+        let len = usize::try_from(end_byte - first_byte).expect("a released span fits usize");
+        #[cfg(not(any(loom, miri)))]
+        {
+            let address = mapping
+                .base()
+                .as_ptr()
+                .wrapping_add(offset)
+                .cast::<c_void>();
+            // SAFETY: `address..address + len` is whole pages inside this
+            // mapping; by the caller's contract every element there is already
+            // zero, which is what a discarded private anonymous page reads as.
+            // The advice is a give-back only, so its result is not needed.
+            let _ = unsafe { madvise(address, len, MADV_DONTNEED) };
+        }
+        #[cfg(any(loom, miri))]
+        let _ = (mapping, offset, len);
+    }
+
+    /// Bytes of the mapping currently backed by resident pages.
+    #[cfg(any(feature = "mock", feature = "bench"))]
+    pub(crate) fn resident_bytes(&self) -> u64 {
+        const PAGES_PER_QUERY: usize = 512;
+        let Some(mapping) = self.mapping.as_ref() else {
+            return 0;
+        };
+        let page = page_size();
+        let pages = mapping.total.div_ceil(page);
+        let mut resident_pages = 0u64;
+        let mut residency = [0u8; PAGES_PER_QUERY];
+        for first in (0..pages).step_by(PAGES_PER_QUERY) {
+            let count = PAGES_PER_QUERY.min(pages - first);
+            let address = mapping.raw.cast::<u8>().wrapping_add(first * page);
+            // SAFETY: `count` pages from `address` lie inside the mapping, and
+            // `residency` holds one byte per page queried.
+            let result = unsafe {
+                mincore(
+                    address.cast::<c_void>(),
+                    count * page,
+                    residency.as_mut_ptr(),
+                )
+            };
+            assert_eq!(result, 0, "mincore succeeds over a live mapping");
+            resident_pages += residency[..count]
+                .iter()
+                .filter(|&&state| state & 1 != 0)
+                .count() as u64;
+        }
+        resident_pages * page as u64
     }
 }
 

@@ -659,19 +659,8 @@ pub mod testing {
         DirectIoSupport, Injected, MockDriver, MockDriverBuilder, MockIoEvent, MockRingDriver,
         MockRingDriverBuilder, MockRingObservation, MockWriteArena, ReadAttempt, WriteAttempt,
     };
-    #[cfg(feature = "bench")]
-    pub use crate::pool::ControlTables;
     #[cfg(any(feature = "mock", feature = "bench"))]
-    pub use crate::pool::{Clock, FrameState, PageTable, ReaderCounters, Translation};
-
-    /// Calls the shipping four-round page hash for bench evidence generation.
-    #[cfg(feature = "bench")]
-    #[must_use]
-    pub fn current_page_hash(driver: u64, slot: u32, generation: u32, granule: u32) -> u64 {
-        let file = crate::FileId::new(driver, slot, generation);
-        let page = PageId::new(file, granule);
-        crate::pool::page_hash(page)
-    }
+    pub use crate::pool::{Clock, FrameState, ReaderCounters, Translation};
 }
 
 #[cfg(feature = "bench")]

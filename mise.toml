@@ -57,7 +57,7 @@ target=$(rustc "+$toolchain" -vV | sed -n 's/^host: //p')
 # bench; this syscall suite enables only mock. arena_registration drives
 # real setrlimit(RLIMIT_MEMLOCK) and asserts mlock is refused at the floor, which
 # the sanitizer's own mappings move. Everything else is in by default.
-orchestration="drp001_plan drp005_probe_gate drp009_gate_contract guard_compile_fail
+orchestration="drp001_plan drp009_gate_contract guard_compile_fail
   mmap_workload_contract pinned_frame_retention_plan public_api r7_source_manifest
   workload_suite_contract arena_registration"
 leaks_on_exhausted_teardown="ring_teardown_budget"
@@ -150,19 +150,6 @@ arg "<threshold>"
 arg "<resamples>"
 '''
 run = 'cargo bench --features bench --bench pinned_frame_retention -- refusal-gate "$usage_process_csv" "$usage_threshold" "$usage_resamples"'
-
-[tasks.generate-drp-g1-probes]
-description = "Generate the frozen DRP-G1 calibration and holdout matrix"
-usage = 'arg "<csv>"'
-run = 'cargo run --quiet --features bench --bin drp_g1_probes -- generate "$usage_csv"'
-
-[tasks.validate-drp-g1-probes]
-description = "Validate the complete frozen DRP-G1 probe-quality artifact"
-usage = '''
-flag "--structure-only"
-arg "<csv>"
-'''
-run = 'cargo run --quiet --features bench --bin drp_g1_probes -- validate ${usage_structure_only:+--structure-only} "$usage_csv"'
 
 [tasks.prepare-gate-pairs]
 description = "Validate rich process rows and prepare paired gate samples"

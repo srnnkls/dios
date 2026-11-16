@@ -34,13 +34,17 @@ use dios::{
 const GRANULE: u32 = 4096;
 
 fn compile_api_probe(name: &str, source: &str) -> Output {
+    compile_api_probe_with_features(name, &[], source)
+}
+
+fn compile_api_probe_with_features(name: &str, features: &[&str], source: &str) -> Output {
     let probe = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
     fs::create_dir_all(probe.join("src")).expect("create the isolated API probe");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     fs::write(
         probe.join("Cargo.toml"),
         format!(
-            "[package]\nname = \"dios-{name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\ndios = {{ path = \"{manifest_dir}\" }}\n"
+            "[package]\nname = \"dios-{name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\ndios = {{ path = \"{manifest_dir}\", features = {features:?} }}\n"
         ),
     )
     .expect("write the API probe manifest");
@@ -603,5 +607,46 @@ fn pin_translation_bound() {
         output.status.success(),
         "translation bound surface probe failed:\n{}",
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn hash_page_table_and_page_hash_are_unreachable_through_testing() {
+    let output = compile_api_probe_with_features(
+        "hash-page-table-removed",
+        &["mock", "bench"],
+        r"
+pub fn translation_stays_reachable() -> &'static str {
+    std::any::type_name::<dios::testing::Translation>()
+}
+
+pub fn page_table_reachable() -> &'static str {
+    std::any::type_name::<dios::testing::PageTable>()
+}
+
+pub fn page_hash_reachable() -> u64 {
+    dios::testing::current_page_hash(0, 0, 0, 0)
+}
+",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let errors: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.starts_with("error["))
+        .collect();
+    assert!(
+        errors.iter().any(|line| line.contains("`PageTable`")),
+        "dios::testing::PageTable must not resolve:\n{stderr}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|line| line.contains("`current_page_hash`")),
+        "dios::testing::current_page_hash must not resolve:\n{stderr}"
+    );
+    assert_eq!(
+        errors.len(),
+        2,
+        "only the two removed items fail; the testing module and Translation stay reachable:\n{stderr}"
     );
 }

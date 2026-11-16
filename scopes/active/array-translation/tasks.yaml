@@ -88,7 +88,15 @@ tasks:
     edits are scaffolds and test hooks only.
 - id: AT3
   title: Replace the hash page table with array translation
-  status: pending
+  status: in_progress
+  blocked_on: "The bench host nix is offline (three wake attempts, 2026-11-15 and 2026-11-16). Open acceptance: AT-G4 and AT-G7 on nix; the io_uring backend suites and ASAN on the ring paths; the reservation above RAM plus swap and the resident-bytes drop after release (Linux-only tests); the DRP frozen-runner revision and fresh base (owner Sören) before the first AT-G7 campaign."
+  evidence:
+    tester: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b3-tester-AT3/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-tester-AT3-attempt2/native.yaml]
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-implementer-AT3-resume/native.yaml
+    implementer_failed_wave: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-implementer-AT3/
+    fix: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix1-rust/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix1-python/native.yaml]
+    gate_local: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix1-rust/gate-after-fix.txt, .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix1-rust/gate-miri.txt, .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix1-rust/gate-asan.txt]
+    review: scopes/active/array-translation/review.yaml#implementation_batches
   domain: pool
   depends_on:
   - AT2
@@ -107,6 +115,15 @@ tasks:
   - benches/mmap_workloads/collect.py
   - benches/mmap_workloads/validate.py
   - benches/mmap_workloads/analyze.py
+  - benches/mmap_workloads/frozen.py
+  - tests/translation.rs
+  - tests/mmap_workload_validation.py
+  - tests/pool.rs
+  - tests/loom_pool.rs
+  - tests/public_api.rs
+  - tests/drp005_probe_gate.rs
+  - src/sync.rs
+  - src/pool/file_slots.rs
   - mise.toml
   - Cargo.toml
   acceptance: AT2 is GREEN. Every verb resolves residency through Translation under
