@@ -51,6 +51,7 @@ pub(super) enum Lane {
 #[serde(rename_all = "snake_case")]
 pub(super) enum Arm {
     MmapRandom,
+    MmapRandomFlat,
     MmapNormal,
     MmapSequential,
     DiosSerial,
@@ -242,6 +243,17 @@ impl Lane {
         self.fair().then_some(Arm::PlainArray)
     }
 
+    /// The reported, never gated flat-loop reference arm of a session lane.
+    pub(super) fn flat_arm(self) -> Option<Arm> {
+        self.session().then_some(Arm::MmapRandomFlat)
+    }
+
+    /// A lane whose product arm is the session read; every arm of it iterates
+    /// session-sized chunks (AT-D16).
+    pub(super) fn session(self) -> bool {
+        self.arms()[1] == Arm::DiosSession
+    }
+
     pub(super) fn workers(self) -> u32 {
         match self {
             Self::FaultingReaders | Self::PressureRandom => 4,
@@ -409,6 +421,7 @@ impl Arm {
     pub(super) fn parse(name: &str) -> Result<Self, String> {
         match name {
             "mmap_random" => Ok(Self::MmapRandom),
+            "mmap_random_flat" => Ok(Self::MmapRandomFlat),
             "mmap_normal" => Ok(Self::MmapNormal),
             "mmap_sequential" => Ok(Self::MmapSequential),
             "dios_serial" => Ok(Self::DiosSerial),
@@ -438,7 +451,7 @@ impl Arm {
     pub(super) fn is_mmap(self) -> bool {
         matches!(
             self,
-            Self::MmapRandom | Self::MmapNormal | Self::MmapSequential
+            Self::MmapRandom | Self::MmapRandomFlat | Self::MmapNormal | Self::MmapSequential
         )
     }
 

@@ -1,6 +1,6 @@
-//! Fair lanes: one `#[inline(never)]` loop function per arm over one request
-//! vector, an untimed warm pass through that loop, and the page-size witness of
-//! the mapping each arm reads (fairness contract F1 to F7).
+//! Fair lanes: one `#[inline(never)]` loop function per loop shape over one
+//! request vector, an untimed warm pass through that loop, and the page-size
+//! witness of the mapping each arm reads (fairness contract F1 to F7).
 
 use std::fs;
 use std::hint::black_box;
@@ -15,8 +15,9 @@ use super::fixture::{self, error};
 use super::observe::{allocations_begin, allocations_end, nanoseconds};
 use super::os::{self, Mapping};
 
-/// Requests one session serves, the chunking of `resident_access_epoch_batch`.
-#[cfg(dios_read_session)]
+/// Requests one session serves, the chunking of `resident_access_epoch_batch`;
+/// the `mmap_random` and `plain_array` arms of a session lane iterate the same
+/// chunks (AT-D16).
 const SESSION_REQUESTS: usize = 16;
 
 /// One measured fair-lane process: the worker row and the F6 and F7 witnesses.
@@ -38,31 +39,28 @@ pub(super) fn measure(work: Work<'_>) -> Result<Measured, String> {
         Source::Mmap(_) => None,
         Source::Dios(pool, _) => Some(pool.register_reader().map_err(error)?),
     };
-    let array = match work.source {
+    let storage = match work.source {
         Source::Mmap(mapping) if work.arm == Arm::PlainArray => {
             plain_array(mapping, work.lane.warm_pages())
         }
         _ => Vec::new(),
     };
-    let mapped = match work.source {
+    let array = plain_array_pages(&storage);
+    let bytes = match work.source {
+        Source::Mmap(_) if work.arm == Arm::PlainArray => array,
         Source::Mmap(mapping) => mapping.bytes(),
         Source::Dios(..) => &[],
     };
-    let address = mapping_address(work, reader.as_ref(), &array)?;
+    let address = mapping_address(work, reader.as_ref(), array)?;
     let setup_ns = nanoseconds(setup_started.elapsed());
+    let useful_bytes = work.lane.useful_bytes() as usize;
     let read = |repetitions: u32| match (work.source, work.arm) {
-        (Source::Mmap(_), Arm::MmapRandom) => Ok(mmap_random_loop(
-            mapped,
-            &requests,
-            repetitions,
-            work.lane.useful_bytes() as usize,
-        )),
-        (Source::Mmap(_), Arm::PlainArray) => Ok(plain_array_loop(
-            &array,
-            &requests,
-            repetitions,
-            work.lane.useful_bytes() as usize,
-        )),
+        (Source::Mmap(_), Arm::MmapRandom | Arm::PlainArray) if work.lane.session() => {
+            Ok(chunked_loop(bytes, &requests, repetitions, useful_bytes))
+        }
+        (Source::Mmap(_), Arm::MmapRandom | Arm::MmapRandomFlat | Arm::PlainArray) => {
+            Ok(flat_loop(bytes, &requests, repetitions, useful_bytes))
+        }
         (Source::Dios(pool, file), arm) => read_pool(
             pool,
             reader.as_ref().expect("Dios reader"),
@@ -70,7 +68,7 @@ pub(super) fn measure(work: Work<'_>) -> Result<Measured, String> {
             arm,
             &requests,
             repetitions,
-            work.lane.useful_bytes() as usize,
+            useful_bytes,
         ),
         (Source::Mmap(_), arm) => Err(format!("{arm:?} does not read the file mapping")),
     };
@@ -155,13 +153,31 @@ fn measure_worker(
     worker
 }
 
-/// The floor arm's private copy of the lane's resident pages, built before timing.
+/// The storage of the floor arm's private copy of the lane's resident pages,
+/// built before timing; the copy starts at the first page boundary inside it,
+/// as the file mapping and the pool arena do (F11).
 fn plain_array(mapping: &Mapping, pages: u32) -> Vec<u8> {
-    let mut array = Vec::with_capacity(pages as usize * GRANULE as usize);
+    let length = pages as usize * GRANULE as usize;
+    let mut storage: Vec<u8> = Vec::with_capacity(length + GRANULE as usize);
+    let padding = storage.as_ptr().align_offset(GRANULE as usize);
+    assert!(padding < GRANULE as usize);
+    storage.resize(padding, 0);
     for page in 0..pages {
-        array.extend_from_slice(mapping.page(PageNumber(page)));
+        storage.extend_from_slice(mapping.page(PageNumber(page)));
     }
-    assert_eq!(array.len(), pages as usize * GRANULE as usize);
+    assert_eq!(storage.len(), padding + length);
+    storage
+}
+
+/// The page-aligned copy inside the floor arm's storage; empty for other arms.
+fn plain_array_pages(storage: &[u8]) -> &[u8] {
+    let padding = storage
+        .as_ptr()
+        .align_offset(GRANULE as usize)
+        .min(storage.len());
+    let array = &storage[padding..];
+    assert!(array.is_empty() || array.as_ptr().addr().is_multiple_of(GRANULE as usize));
+    assert!(array.len().is_multiple_of(GRANULE as usize));
     array
 }
 
@@ -218,29 +234,34 @@ fn read_pool(
     }
 }
 
+/// The flat loop of the mmap and floor arms, over the file mapping or the
+/// floor array; one function, so both arms run the same machine code.
 #[inline(never)]
-fn mmap_random_loop(mapped: &[u8], requests: &[u32], repetitions: u32, useful_bytes: usize) -> u64 {
+fn flat_loop(bytes: &[u8], requests: &[u32], repetitions: u32, useful_bytes: usize) -> u64 {
     let mut checksum = 0_u64;
     for _ in 0..repetitions {
         for &page in requests {
             let page = black_box(page);
             let start = page as usize * GRANULE as usize;
             checksum =
-                checksum.wrapping_add(black_box(consume(&mapped[start..start + useful_bytes])));
+                checksum.wrapping_add(black_box(consume(&bytes[start..start + useful_bytes])));
         }
     }
     checksum
 }
 
+/// The session-chunked loop of the mmap and floor arms of a session lane.
 #[inline(never)]
-fn plain_array_loop(array: &[u8], requests: &[u32], repetitions: u32, useful_bytes: usize) -> u64 {
+fn chunked_loop(bytes: &[u8], requests: &[u32], repetitions: u32, useful_bytes: usize) -> u64 {
     let mut checksum = 0_u64;
     for _ in 0..repetitions {
-        for &page in requests {
-            let page = black_box(page);
-            let start = page as usize * GRANULE as usize;
-            checksum =
-                checksum.wrapping_add(black_box(consume(&array[start..start + useful_bytes])));
+        for chunk in requests.chunks_exact(SESSION_REQUESTS) {
+            for &page in chunk {
+                let page = black_box(page);
+                let start = page as usize * GRANULE as usize;
+                checksum =
+                    checksum.wrapping_add(black_box(consume(&bytes[start..start + useful_bytes])));
+            }
         }
     }
     checksum

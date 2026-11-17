@@ -117,6 +117,38 @@ fn fair_lanes_pair_the_mmap_arm_with_the_product_arm_and_carry_the_plain_array_f
 }
 
 #[test]
+fn session_lanes_name_the_flat_reference_arm_and_the_get_lane_names_none() {
+    let catalog = mmap_workloads::lane_catalog();
+    for (name, product_arm, _, _) in FAIR_LANES {
+        let lane = catalog
+            .iter()
+            .find(|lane| lane["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is cataloged"));
+        if product_arm == "dios_session" {
+            assert_eq!(
+                lane["flat_arm"], "mmap_random_flat",
+                "{name} names mmap_random_flat as its flat reference arm"
+            );
+            assert_eq!(
+                lane["arms"],
+                serde_json::json!(["mmap_random", "dios_session"]),
+                "{name} keeps the flat arm out of the gated pair"
+            );
+            let error = sample_without_fixture(name, "mmap_random_flat", "plain", "flat-arm");
+            assert!(
+                !error.starts_with("unknown") && error != "arm does not belong to this comparison",
+                "{name} must accept the mmap_random_flat arm: {error}"
+            );
+        } else {
+            assert!(
+                lane["flat_arm"].is_null(),
+                "{name} has no sessions and names no flat reference arm"
+            );
+        }
+    }
+}
+
+#[test]
 fn fair_lanes_refuse_trace_mode_on_every_arm() {
     for (name, product_arm, _, _) in FAIR_LANES {
         for arm in ["mmap_random", product_arm, "plain_array"] {

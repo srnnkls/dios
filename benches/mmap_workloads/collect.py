@@ -520,13 +520,14 @@ def collect(options: argparse.Namespace) -> None:
                     options, [binary, binary], fixture, lane, lane["arms"], modes, lane["name"]
                 )
                 manifest["comparisons"].append(result)
-                if lane.get("floor_arm"):
-                    floor_arms = [lane["floor_arm"], lane["arms"][1]]
-                    result = collect_comparison(
-                        options, [binary, binary], fixture, lane, floor_arms, modes,
-                        f"{lane['name']}-{lane['floor_arm']}",
-                    )
-                    manifest["comparisons"].append(result)
+                for reference in ("floor_arm", "flat_arm"):
+                    if lane.get(reference):
+                        reference_arms = [lane[reference], lane["arms"][1]]
+                        result = collect_comparison(
+                            options, [binary, binary], fixture, lane, reference_arms, modes,
+                            f"{lane['name']}-{lane[reference]}",
+                        )
+                        manifest["comparisons"].append(result)
             (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
             print(f"{lane['name']}: complete", flush=True)
         if digest(binary) != manifest["executable_sha256"]:

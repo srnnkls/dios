@@ -7,6 +7,7 @@
 import contextlib
 import importlib.util
 import hashlib
+import itertools
 import json
 import os
 from pathlib import Path
@@ -264,6 +265,7 @@ FAIR_LANES = {
         name=lane,
         arms=["mmap_random", product_arm],
         floor_arm="plain_array",
+        **({"flat_arm": "mmap_random_flat"} if product_arm == "dios_session" else {}),
         cache="resident",
         operations=SEQUENCE_REQUESTS * repetitions,
         workers=1,
@@ -402,6 +404,7 @@ def session_frozen_manifest(capture: Path, lane: dict, gate: str) -> dict:
 
 FLOOR_ELAPSED_NS = 120_000_000
 MMAP_ELAPSED_NS = 150_000_000
+FLAT_ELAPSED_NS = 135_000_000
 PRODUCT_ELAPSED_NS = 180_000_000
 SUMMARIZE_HALF_WIDTH_NS = 1_000
 
@@ -412,7 +415,8 @@ def write_fair_capture(
     """Writes the rows and manifest a fair-lane collection leaves behind.
 
     The gated comparison pairs the lane's arms; the floor comparison pairs the
-    floor arm against the product arm. Every arm runs a constant elapsed time, so
+    floor arm, and a session lane's flat comparison its flat arm, against the
+    product arm. Every arm runs a constant elapsed time, so
     each arm's ns per read and each paired difference are exact. A base-build
     capture holds one comparison of the product arm against itself, the base
     build at `PRODUCT_ELAPSED_NS` and the candidate build at `MMAP_ELAPSED_NS`.
@@ -427,11 +431,14 @@ def write_fair_capture(
         "mmap_random": MMAP_ELAPSED_NS,
         product_arm: PRODUCT_ELAPSED_NS,
         lane["floor_arm"]: FLOOR_ELAPSED_NS,
+        "mmap_random_flat": FLAT_ELAPSED_NS,
     }
     gated_arms = [product_arm, product_arm] if base_build else list(lane["arms"])
     plan = [(lane["name"], gated_arms)]
     if not base_build:
         plan.append((f"{lane['name']}-{lane['floor_arm']}", [lane["floor_arm"], product_arm]))
+        if "flat_arm" in lane:
+            plan.append((f"{lane['name']}-{lane['flat_arm']}", [lane["flat_arm"], product_arm]))
     comparisons = []
     for name, arms in plan:
         directory = capture / name
@@ -468,6 +475,7 @@ def write_fair_capture(
         qualification_pairs=QUALIFICATION_PAIRS,
         measured_pairs=MEASURED_PAIRS,
         host_profile=host_profile,
+        **({"base_build": str(root / "base-tree")} if base_build else {}),
     )
     manifest = dict(
         frozen,
@@ -476,8 +484,6 @@ def write_fair_capture(
         executable_sha256=executable_sha256,
         comparisons=comparisons,
     )
-    if base_build:
-        manifest["base_build"] = str(root / "base-tree")
     (capture / "manifest.json").write_text(json.dumps(manifest))
     (root / "frozen.json").write_text(json.dumps(frozen))
     return manifest
@@ -967,7 +973,7 @@ class MmapEvidenceContract(unittest.TestCase):
             row["elapsed_ns"] = TIMED_REGION_NS_MIN - 1
             row["workers"][0]["elapsed_ns"] = TIMED_REGION_NS_MIN - 1
 
-        for arm in ("mmap_random", "dios_session", "plain_array"):
+        for arm in ("mmap_random", "mmap_random_flat", "dios_session", "plain_array"):
             self.accepts_row(fair_row(lane, arm, seed=0, elapsed_ns=MMAP_ELAPSED_NS))
             rejects(arm, lambda row: row.pop("warm_pass"), "no warm-pass witness")
             rejects(arm, short_timed_region, "timed region under 100 ms")
@@ -1006,7 +1012,7 @@ class MmapEvidenceContract(unittest.TestCase):
                     ):
                         MODULE.validate_row(row)
 
-    def test_warm_prepare_reports_ns_per_read_and_requires_the_floor_comparison(
+    def test_warm_prepare_reports_ns_per_read_and_requires_the_floor_and_flat_comparisons(
         self,
     ) -> None:
         lane = FAIR_LANES["resident_access_session_projection"]
@@ -1030,13 +1036,21 @@ class MmapEvidenceContract(unittest.TestCase):
                 tuple(comparison["arms"]): comparison for comparison in report["comparisons"]
             }
             self.assertEqual(
+                len(report["comparisons"]), 3, "report.json holds exactly three comparisons"
+            )
+            self.assertEqual(
                 set(comparisons),
-                {("mmap_random", "dios_session"), ("plain_array", "dios_session")},
-                "report.json holds the gated and the floor comparison",
+                {
+                    ("mmap_random", "dios_session"),
+                    ("plain_array", "dios_session"),
+                    ("mmap_random_flat", "dios_session"),
+                },
+                "report.json holds the gated, the floor and the flat comparison",
             )
             for (base, candidate), base_ns, candidate_ns in (
                 (("mmap_random", "dios_session"), MMAP_ELAPSED_NS, PRODUCT_ELAPSED_NS),
                 (("plain_array", "dios_session"), FLOOR_ELAPSED_NS, PRODUCT_ELAPSED_NS),
+                (("mmap_random_flat", "dios_session"), FLAT_ELAPSED_NS, PRODUCT_ELAPSED_NS),
             ):
                 comparison = comparisons[(base, candidate)]
                 self.assertEqual(
@@ -1062,14 +1076,51 @@ class MmapEvidenceContract(unittest.TestCase):
             tempfile.TemporaryDirectory() as temporary,
             unittest.mock.patch.object(subprocess, "run", fake_summarize),
         ):
-            root = Path(temporary)
-            manifest = write_fair_capture(root, lane)
-            manifest["comparisons"].pop()
-            (root / "capture/manifest.json").write_text(json.dumps(manifest))
-            with self.assertRaisesRegex(ValueError, "floor"):
-                MODULE.warm_prepare(root / "capture", root / "frozen.json", root / "paired.csv")
-            self.assertFalse((root / "paired.csv").exists())
-            self.assertFalse((root / "report.json").exists())
+            for (missing_arm, field, pattern), undeclared in itertools.product(
+                (("plain_array", "floor_arm", "floor"), ("mmap_random_flat", "flat_arm", "flat")),
+                (False, True),
+            ):
+                with self.subTest(missing=missing_arm, undeclared=undeclared):
+                    root = Path(temporary) / f"{missing_arm}-{undeclared}"
+                    manifest = write_fair_capture(root, lane)
+                    manifest["comparisons"] = [
+                        comparison for comparison in manifest["comparisons"]
+                        if comparison["arms"][0] != missing_arm
+                    ]
+                    if undeclared:
+                        for comparison in manifest["comparisons"]:
+                            comparison["lane"].pop(field)
+                    (root / "capture/manifest.json").write_text(json.dumps(manifest))
+                    with self.assertRaisesRegex(ValueError, pattern):
+                        MODULE.warm_prepare(
+                            root / "capture", root / "frozen.json", root / "paired.csv"
+                        )
+                    self.assertFalse((root / "paired.csv").exists())
+                    self.assertFalse((root / "report.json").exists())
+
+            for missing_arms in (
+                {"plain_array"}, {"mmap_random_flat"}, {"plain_array", "mmap_random_flat"}
+            ):
+                with self.subTest(self_declared_base_build=sorted(missing_arms)):
+                    root = Path(temporary) / f"self-declared-{'-'.join(sorted(missing_arms))}"
+                    manifest = write_fair_capture(root, lane)
+                    manifest["base_build"] = str(root / "base-tree")
+                    manifest["comparisons"] = [
+                        comparison for comparison in manifest["comparisons"]
+                        if comparison["arms"][0] not in missing_arms
+                    ]
+                    for comparison in manifest["comparisons"]:
+                        for field in ("floor_arm", "flat_arm"):
+                            comparison["lane"].pop(field)
+                        for reference in comparison["rows"]:
+                            reference["build"] = ("base", "candidate")[reference["position"]]
+                    (root / "capture/manifest.json").write_text(json.dumps(manifest))
+                    with self.assertRaisesRegex(ValueError, "base_build"):
+                        MODULE.warm_prepare(
+                            root / "capture", root / "frozen.json", root / "paired.csv"
+                        )
+                    self.assertFalse((root / "paired.csv").exists())
+                    self.assertFalse((root / "report.json").exists())
 
     def test_warm_prepare_reports_both_builds_of_a_base_build_capture_with_equal_arms(
         self,

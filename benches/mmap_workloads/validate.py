@@ -12,6 +12,10 @@ import subprocess
 
 HUGEPAGE_LANES = ("resident_access_session_fold_256m",)
 HUGEPAGE_PROFILE = "bench-thp-madvise"
+SESSION_ARM = "dios_session"
+FAIR_CANDIDATE_ARMS = (SESSION_ARM, "dios_get")
+FLOOR_ARM = "plain_array"
+FLAT_ARM = "mmap_random_flat"
 TIMED_REGION_NS_MIN = 100_000_000
 PAGE_SIZE_FIELDS = (
     "anonhugepages_kib",
@@ -199,8 +203,9 @@ def validate_pressure(row: dict) -> None:
 def warm_prepare(capture: Path, frozen: Path, output: Path) -> None:
     """Pair the validated rows of a frozen capture into the measured CSV.
 
-    A fair-lane capture also holds its floor comparison; `report.json` beside the
-    CSV reports ns per read per arm and each paired difference (F11).
+    A fair-lane capture also holds its floor comparison and a session-lane capture
+    its flat comparison; `report.json` beside the CSV reports ns per read per arm
+    and each paired difference (F11).
     """
     # Both modules import this one, so they load on first use.
     from analyze import paired_csv
@@ -210,8 +215,8 @@ def warm_prepare(capture: Path, frozen: Path, output: Path) -> None:
     expected = json.loads(frozen.read_text())
     manifest = json.loads((capture / "manifest.json").read_text())
     drift = sorted(
-        key for key, value in expected.items()
-        if key != "gate" and manifest.get(key) != value
+        key for key in expected.keys() | {"base_build"}
+        if key != "gate" and manifest.get(key) != expected.get(key)
     )
     if drift or manifest["status"] != "complete":
         raise ValueError(f"capture manifest differs from the frozen manifest: {drift}")
@@ -221,7 +226,15 @@ def warm_prepare(capture: Path, frozen: Path, output: Path) -> None:
     ]
     if len(gated) != 1:
         raise ValueError("capture manifest holds other than one comparison of the frozen lane or arms")
-    comparisons = gated + warm_prepare_floor(manifest, gated[0], expected)
+    base_build = "base_build" in expected
+    candidate_arm = expected["arms"][1]
+    floor_arm = FLOOR_ARM if candidate_arm in FAIR_CANDIDATE_ARMS else None
+    flat_arm = FLAT_ARM if candidate_arm == SESSION_ARM else None
+    comparisons = (
+        gated
+        + warm_prepare_reference(manifest, gated[0], expected, "floor_arm", floor_arm)
+        + warm_prepare_reference(manifest, gated[0], expected, "flat_arm", flat_arm)
+    )
     if len(comparisons) != len(manifest["comparisons"]):
         raise ValueError("capture manifest holds comparisons outside the frozen lane")
     paired = [warm_prepare_pairs(capture, comparison, expected) for comparison in comparisons]
@@ -232,10 +245,10 @@ def warm_prepare(capture: Path, frozen: Path, output: Path) -> None:
     ]
     for path, pairs in zip(paths, paired):
         path.write_text(paired_csv(pairs))
-    if gated[0]["lane"].get("floor_arm"):
+    if floor_arm:
         report = [
             warm_prepare_report(
-                manifest["executable"], comparison, pairs, path, "base_build" in manifest
+                manifest["executable"], comparison, pairs, path, base_build
             )
             for comparison, pairs, path in zip(comparisons, paired, paths)
         ]
@@ -244,16 +257,20 @@ def warm_prepare(capture: Path, frozen: Path, output: Path) -> None:
         )
 
 
-def warm_prepare_floor(manifest: dict, gated: dict, expected: dict) -> list[dict]:
-    """The floor comparison of a fair-lane capture; base-build captures carry none."""
-    floor_arm = gated["lane"].get("floor_arm")
-    if not floor_arm or "base_build" in manifest:
+def warm_prepare_reference(
+    manifest: dict, gated: dict, expected: dict, field: str, reference_arm: str | None
+) -> list[dict]:
+    """The floor or flat comparison the frozen arms require; frozen base builds carry none."""
+    if reference_arm is None or "base_build" in expected:
         return []
-    arms = [floor_arm, expected["arms"][1]]
-    floor = [comparison for comparison in manifest["comparisons"] if comparison["arms"] == arms]
-    if len(floor) != 1:
-        raise ValueError(f"fair-lane capture lacks its {floor_arm} floor comparison")
-    return floor
+    kind = field.removesuffix("_arm")
+    if gated["lane"].get(field) != reference_arm:
+        raise ValueError(f"capture lane does not declare its {reference_arm} {kind} arm")
+    arms = [reference_arm, expected["arms"][1]]
+    found = [comparison for comparison in manifest["comparisons"] if comparison["arms"] == arms]
+    if len(found) != 1:
+        raise ValueError(f"fair-lane capture lacks its {reference_arm} {kind} comparison")
+    return found
 
 
 def warm_prepare_pairs(capture: Path, comparison: dict, expected: dict) -> list:

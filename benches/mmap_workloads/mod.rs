@@ -44,7 +44,7 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
         [command, directory, lane, arm, seed, tracing, output] if command == "sample" => {
             let lane = Lane::parse(lane)?;
             let arm = Arm::parse(arm)?;
-            if !lane.arms().contains(&arm) && lane.floor_arm() != Some(arm) {
+            if !lane.arms().contains(&arm) && lane.floor_arm() != Some(arm) && lane.flat_arm() != Some(arm) {
                 return Err("arm does not belong to this comparison".to_owned());
             }
             let seed: u32 = seed.parse().map_err(error)?;
@@ -74,6 +74,9 @@ pub(crate) fn lane_catalog() -> Vec<serde_json::Value> {
             });
             if let Some(floor_arm) = lane.floor_arm() {
                 entry["floor_arm"] = json!(floor_arm);
+            }
+            if let Some(flat_arm) = lane.flat_arm() {
+                entry["flat_arm"] = json!(flat_arm);
             }
             entry
         })
