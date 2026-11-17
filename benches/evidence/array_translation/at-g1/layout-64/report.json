@@ -9,17 +9,17 @@
       "ns_per_read": {
         "base": {
           "arm": "mmap_random",
-          "ns_per_read": 3.6906258799135685
+          "ns_per_read": 3.9517289171616237
         },
         "candidate": {
           "arm": "dios_session",
-          "ns_per_read": 7.050506839156151
+          "ns_per_read": 5.7726614517470205
         }
       },
       "difference_ns_per_read": {
-        "estimate": 3.3598809592425822,
-        "ci95_lower": 3.314927804470062,
-        "ci95_upper": 3.401143629103899
+        "estimate": 1.8209325345853964,
+        "ci95_lower": 1.7932863898575306,
+        "ci95_upper": 1.8526649914681912
       }
     },
     {
@@ -31,17 +31,39 @@
       "ns_per_read": {
         "base": {
           "arm": "plain_array",
-          "ns_per_read": 3.8313524909317493
+          "ns_per_read": 3.9637620074053603
         },
         "candidate": {
           "arm": "dios_session",
-          "ns_per_read": 7.02677074794968
+          "ns_per_read": 5.735978649556637
         }
       },
       "difference_ns_per_read": {
-        "estimate": 3.19541825701793,
-        "ci95_lower": 3.1394089279075463,
-        "ci95_upper": 3.234044650445382
+        "estimate": 1.7722166421512762,
+        "ci95_lower": 1.716267407933871,
+        "ci95_upper": 1.817156767845154
+      }
+    },
+    {
+      "name": "resident_access_session_projection-mmap_random_flat",
+      "arms": [
+        "mmap_random_flat",
+        "dios_session"
+      ],
+      "ns_per_read": {
+        "base": {
+          "arm": "mmap_random_flat",
+          "ns_per_read": 3.6990252589186032
+        },
+        "candidate": {
+          "arm": "dios_session",
+          "ns_per_read": 5.800659779210886
+        }
+      },
+      "difference_ns_per_read": {
+        "estimate": 2.101634520292282,
+        "ci95_lower": 2.0374147665997344,
+        "ci95_upper": 2.199246244629224
       }
     }
   ]

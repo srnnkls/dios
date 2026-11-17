@@ -1,11 +1,11 @@
 {
   "adopted_bound": null,
-  "ci95_upper": 1.9359000266413913,
-  "difference_ns_ci95_lower": 440916204.5,
-  "difference_ns_ci95_upper": 464236262.0,
-  "difference_ns_mean": 452171412.7,
+  "ci95_upper": 1.4879868116501973,
+  "difference_ns_ci95_lower": 241591410.53333333,
+  "difference_ns_ci95_upper": 262090750.76666668,
+  "difference_ns_mean": 249565312.13333333,
   "kind": "characterization",
   "pairs": 30,
-  "ratio_geomean": 1.9130566039117431,
+  "ratio_geomean": 1.469772309306654,
   "ratio_orientation": "candidate/base"
 }

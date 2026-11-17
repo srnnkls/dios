@@ -2,15 +2,15 @@ checkpoint:
   scope_name: array-translation
   scope_path: scopes/active/array-translation
   branch: feat/array-translation
-  last_commit: 335079d
+  last_commit: e0f5cb6
   updated_at: '2026-11-17T11:30:00Z'
 
   batch:
     number: 5
     tasks: [AT5]
-    phase: green
+    phase: integration
     status: pending
-    waiting_on: "AT5 implementer dispatch; RED is AT4's (7d59f2b and the fair-lane wave)"
+    waiting_on: "AT-G3 needs the bench-thp-madvise host profile on nix (owner). AT-G1 and AT-G2 passed at 377a0ad."
 
   routing_snapshot:
     epoch_id: 20261115T161731Z-fba2be
@@ -21,4 +21,14 @@ checkpoint:
         - {agent: peer-gpt6-astra, effort: inherit, class: peer}
         - {agent: claude-opus, effort: inherit, class: native}
 
-  reports: {}
+  reports:
+    implementer: {AT5: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-implementer-AT5}
+    tester_correction: {AT5: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-tester-AT5-correction}
+    review:
+      general: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-review-general
+      architecture: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-review-architecture
+      compliance: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-review-compliance
+      abstractions: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-review-abstractions
+    fix: {round1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-fix1}
+    rereview: {round1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-rereview1}
+    gate_lever: {AT-G1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-at-g1-lever, review: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-lever-review, harness_tester: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-tester-chunks, harness_implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-implementer-chunks, harness_review: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-chunks-review}

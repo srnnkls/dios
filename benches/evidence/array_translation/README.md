@@ -71,3 +71,41 @@ Host `nix`, bench profile active, 30 measured fresh-process AB/BA pairs per lane
   `nix` under `~/build/dios/target/array-translation/` and `~/build/dios-gates/`.
 - Linux suites on `nix` at 5131d7d's tree before the runner fixes: `mise run test` 419
   passed, `mise run asan` 274 passed.
+
+## Results of 2026-11-17 (AT5)
+
+Host `nix`, bench profile active, THP `never`, 30 measured fresh-process AB/BA pairs per
+capture. Ratios are session read over the `mmap_random` arm in the same 16-request
+chunks (AT-D16); the flat column is the reported, ungated ratio over `mmap_random_flat`.
+
+| Gate | Build | Candidate | Geomean | CI95 upper | Bound | Result | Flat geomean / upper | Evidence |
+|------|-------|-----------|--------:|-----------:|------:|--------|----------------------|----------|
+| AT-G1 | layout 16 | 3e373a9, flat base | 1.9131 | 1.9359 | 1.50 | failed | | `at-g1-failed-3e373a9/` |
+| AT-G1 | layout 32 | 3e373a9, flat base | 1.9666 | 1.9850 | 1.50 | failed | | `at-g1-failed-3e373a9/` |
+| AT-G1 | layout 64 | 3e373a9, flat base | 1.9107 | 1.9234 | 1.50 | failed | | `at-g1-failed-3e373a9/` |
+| AT-G1 | layout 16 | 377a0ad | 1.4698 | 1.4880 | 1.50 | passed | 1.5612 / 1.5750 | `at-g1/layout-16/` |
+| AT-G1 | layout 32 | 377a0ad | 1.4694 | 1.4867 | 1.50 | passed | 1.5682 / 1.5889 | `at-g1/layout-32/` |
+| AT-G1 | layout 64 | 377a0ad | 1.4607 | 1.4676 | 1.50 | passed | 1.5670 / 1.5870 | `at-g1/layout-64/` |
+| AT-G2 | default | 3e373a9, flat base | 1.0479 | 1.0507 | 1.10 | passed | | `at-g2-3e373a9/` |
+| AT-G2 | default | 377a0ad | 1.0236 | 1.0301 | 1.10 | passed | 1.0245 / 1.0319 | `at-g2/` |
+
+ns per read at 377a0ad, from `report.json`:
+
+| Lane | Build | mmap, chunked | floor, chunked | mmap, flat | session | session minus chunked mmap (95% interval) |
+|------|-------|--------------:|---------------:|-----------:|--------:|-------------------------------------------|
+| 64-byte read | layout 16 | 3.950 | 3.941 | 3.707 | 5.81 | 1.859 (1.800 to 1.953) |
+| 64-byte read | layout 32 | 3.941 | 3.931 | 3.712 | 5.80 | 1.853 (1.796 to 1.944) |
+| 64-byte read | layout 64 | 3.952 | 3.964 | 3.699 | 5.77 | 1.821 (1.793 to 1.853) |
+| 4 KiB fold | default | 53.12 | 53.34 | 53.12 | 54.38 | 1.262 (0.841 to 1.674) |
+
+- AT-G1 failed at 3e373a9 against the flat mmap loop, at about 7.1 ns per session read.
+  Between that and the passing captures: the session read's hit path was slimmed
+  (74099d6, 7.1 to about 5.8 ns), and the owner decided that the mmap and floor arms of
+  a session lane iterate the same 16-request chunks as the session arm (AT-D16,
+  377a0ad). Against the flat loop the session read still stands at about 1.57.
+  `at-g1-failed-3e373a9/profile.md` holds the profile and the scratch experiment.
+- The floor array was 16 bytes past a page boundary before 377a0ad; floor figures of
+  earlier captures carry a two-cache-line read per 64-byte projection.
+- Every row of the passing captures shows zero pending reads, zero allocations and
+  zero faults in the timed region.
+- AT-G3 is not captured: it waits on the `bench-thp-madvise` host profile.

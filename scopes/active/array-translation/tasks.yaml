@@ -186,7 +186,14 @@ tasks:
     an API a base tree lacks are cfg-gated from build.rs (F10).
 - id: AT5
   title: Implement the session read
-  status: pending
+  status: in_progress
+  blocked_on: "AT-G3 only: the bench-thp-madvise host profile on nix (owner prerequisite of the bench plan). AT-G1 passed on three layout builds and AT-G2 passed at 377a0ad on 2026-11-17; code reviewed and committed (3e373a9, 74099d6, 377a0ad)."
+  evidence:
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-implementer-AT5/native.yaml
+    lever: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-at-g1-lever/native.yaml
+    harness: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b5-tester-chunks/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-implementer-chunks/native.yaml]
+    gates: benches/evidence/array_translation/README.md
+    review: scopes/active/array-translation/review.yaml#implementation_batches
   domain: pool
   depends_on:
   - AT4

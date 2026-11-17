@@ -436,3 +436,31 @@ implementation_batches:
   local_gates: "Python suite 25 tests OK; mise run lint clean here and clippy clean on nix; cargo test --features bench,mock 405 passed with only the four AT4 session tests failing by assertion; mise run loom 19 passed with the three AT4 session cases failing; mmap_workload_contract on nix 18 passed; legacy lane files hash to 604410a; the refactored ratio_gate reproduces five retained gate outputs character for character."
   characterization: "nix, single processes on resident_access_fair_get, 134,217,728 reads, THP never: mmap_random 3.649, plain_array 3.793, dios_get 24.904 ns per read. Not gate evidence."
   carried_to_AT5: "ReadSession::read_page returns a lifetime longer than the session; the dios_session arms have not run to completion; rows written before the fair flag no longer validate with the current validator."
+- batch: 5
+  tasks: [AT5]
+  reviewed_at: '2026-11-17T21:30:00Z'
+  status: review_passed_at_g3_open
+  reports: .tropos/peer/array-translation/20261115T161731Z-fba2be/
+  waves:
+  - subject: session read
+    commit: 3e373a9
+    reviewers: "general, architecture, compliance and abstractions, each by claude-opus and peer-gpt6-astra"
+    admitted: [M1 whole-reservation borrow in slot_entries, M2 restated liveness predicate]
+    fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-fix1/native.yaml
+    rereview: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-rereview1/claude-opus.yaml
+    persists: []
+  - subject: AT-G1 lever, session hit path
+    commit: 74099d6
+    reviewers: "general, architecture, compliance and abstractions, each by claude-opus and peer-gpt6-astra"
+    admitted: [M1 Miri does not reach the session path]
+    fix: "mise.toml: mise run miri also runs tests/read_session.rs (orchestrator edit, not re-reviewed)"
+    persists: []
+  - subject: one loop shape for all arms of a session lane (AT-D16)
+    commit: 377a0ad
+    reviewers: "general, architecture, compliance and abstractions, each by claude-opus and peer-gpt6-astra"
+    admitted: [M1 duplicate loop functions, M2 session lanes listed a third time, M3 floor array not page-aligned, M4 capture-controlled waiver of reference comparisons]
+    fixes: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b5-chunks-fix1/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-chunks-fix2/native.yaml]
+    rereviews: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b5-chunks-rereview1/peer-gpt6-astra.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-chunks-rereview2/peer-gpt6-astra.yaml]
+    persists: []
+  gates: "AT-G1 passed on three layout builds at 377a0ad (ci95 upper 1.4880, 1.4867, 1.4676; bound 1.50), AT-G2 passed (1.0301; bound 1.10); the flat-loop ratio is reported at about 1.57. AT-G3 not captured: host profile open."
+  local_gates: "mise run lint clean; cargo test --features bench,mock 410 passed; mise run loom 22 passed; mise run miri 53 passed; Python suite 25 tests OK. One run of the full suite showed a single failure of zero_allocation_validator_covers_both_g2_lane_shapes while a reviewer worked in the same tree; it did not repeat in three later runs."

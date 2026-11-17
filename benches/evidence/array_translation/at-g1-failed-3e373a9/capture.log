@@ -1,0 +1,18 @@
+[remote] $ ~/projects/dios/.mise/tasks/remote bash -c set -uo pipefail
+capture target/array-translation/at-g2 exit=0
+prepare target/array-translation/at-g2 exit=0
+{"arms":["mmap_random","dios_session"],"ns":{"base":{"arm":"mmap_random","ns_per_read":52.79102017482122},"candidate":{"arm":"dios_session","ns_per_read":55.323107318083444}},"diff":{"estimate":2.532087143262227,"ci95_lower":2.3654840926329297,"ci95_upper":2.7049171487490336}}
+{"arms":["plain_array","dios_session"],"ns":{"base":{"arm":"plain_array","ns_per_read":52.31982822616895},"candidate":{"arm":"dios_session","ns_per_read":55.320277514060336}},"diff":{"estimate":3.0004492878913878,"ci95_lower":2.8040857394536336,"ci95_upper":3.217302906513214}}
+capture target/array-translation/at-g1/layout-16 exit=0
+prepare target/array-translation/at-g1/layout-16 exit=0
+{"arms":["mmap_random","dios_session"],"ns":{"base":{"arm":"mmap_random","ns_per_read":3.692872932056586},"candidate":{"arm":"dios_session","ns_per_read":7.061812486002842}},"diff":{"estimate":3.3689395539462565,"ci95_lower":3.2850817181169987,"ci95_upper":3.4588296860456467}}
+{"arms":["plain_array","dios_session"],"ns":{"base":{"arm":"plain_array","ns_per_read":3.839669716109832},"candidate":{"arm":"dios_session","ns_per_read":7.022723034520944}},"diff":{"estimate":3.183053318411112,"ci95_lower":3.1377031549811365,"ci95_upper":3.230866941809654}}
+capture target/array-translation/at-g1/layout-32 exit=0
+prepare target/array-translation/at-g1/layout-32 exit=0
+{"arms":["mmap_random","dios_session"],"ns":{"base":{"arm":"mmap_random","ns_per_read":3.697493961453438},"candidate":{"arm":"dios_session","ns_per_read":7.272896998127302}},"diff":{"estimate":3.5754030366738636,"ci95_lower":3.5148208300272623,"ci95_upper":3.651154984533787}}
+{"arms":["plain_array","dios_session"],"ns":{"base":{"arm":"plain_array","ns_per_read":3.84436747332414},"candidate":{"arm":"dios_session","ns_per_read":7.24057045156757}},"diff":{"estimate":3.3962029782434304,"ci95_lower":3.33550842354695,"ci95_upper":3.472387093802293}}
+capture target/array-translation/at-g1/layout-64 exit=0
+prepare target/array-translation/at-g1/layout-64 exit=0
+{"arms":["mmap_random","dios_session"],"ns":{"base":{"arm":"mmap_random","ns_per_read":3.6906258799135685},"candidate":{"arm":"dios_session","ns_per_read":7.050506839156151}},"diff":{"estimate":3.3598809592425822,"ci95_lower":3.314927804470062,"ci95_upper":3.401143629103899}}
+{"arms":["plain_array","dios_session"],"ns":{"base":{"arm":"plain_array","ns_per_read":3.8313524909317493},"candidate":{"arm":"dios_session","ns_per_read":7.02677074794968}},"diff":{"estimate":3.19541825701793,"ci95_lower":3.1394089279075463,"ci95_upper":3.234044650445382}}
+exit=0
