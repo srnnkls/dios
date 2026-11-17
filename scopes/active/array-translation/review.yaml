@@ -422,13 +422,13 @@ implementation_batches:
   waves:
   - subject: session tests, scaffolds and bench arms
     commit: 7d59f2b
-    reviewers: [general, architecture, compliance, abstractions] x [claude-opus, peer-gpt6-astra]
+    reviewers: "general, architecture, compliance and abstractions, each by claude-opus and peer-gpt6-astra"
     admitted: [H1 work count, H2 arm symmetry, H3 Loom eviction case, M1 characterization fold, M2 AT-G3 command, M3 remap duplication]
     fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-fix1/native.yaml
     rereview: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-rereview1/peer-gpt6-astra.yaml
     persists: []
   - subject: fair lanes under the bench fairness contract (AT-D9 to AT-D13)
-    reviewers: [general, architecture, compliance, abstractions] x [claude-opus, peer-gpt6-astra]
+    reviewers: "general, architecture, compliance and abstractions, each by claude-opus and peer-gpt6-astra"
     admitted: [H1 mmap loop harness helper, M1 hand-rolled difference interval, M2 report keys, M3 hugepage constants, M4 fair-lane list, M5 function length]
     fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-fix2/native.yaml
     rereview: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-rereview2/peer-gpt6-astra.yaml
