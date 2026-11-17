@@ -43,6 +43,7 @@ mod miss;
 mod prefetch;
 mod read_spans;
 mod retention;
+mod session;
 mod translation;
 pub(crate) mod write_arena;
 
@@ -59,6 +60,7 @@ pub(crate) use miss::PoolBackend;
 pub(crate) use miss::sealed::Sealed as PoolBackendSealed;
 pub use prefetch::{PrefetchReport, PrefetchStats, Readahead};
 pub use retention::{RetainRefused, RetainRefusedReason, RetainedFrame, RetentionStats};
+pub use session::{ReadSession, SessionFile, SessionRead};
 pub use translation::Translation;
 
 /// Default frame granule, fixed per store at open and never below the `O_DIRECT`

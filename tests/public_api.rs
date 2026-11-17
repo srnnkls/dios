@@ -650,3 +650,48 @@ pub fn page_hash_reachable() -> u64 {
         "only the two removed items fail; the testing module and Translation stay reachable:\n{stderr}"
     );
 }
+
+#[test]
+fn session_read_surface_is_root_exported() {
+    let output = compile_api_probe(
+        "session-read-surface",
+        r"
+use dios::{FileId, GetError, Pool, ReadSession, ReaderCtx, SessionFile, SessionRead};
+
+fn open_file<'session>(
+    session: &'session ReadSession<'_>,
+    file: FileId,
+) -> Result<SessionFile<'session>, GetError> {
+    session.file(file)
+}
+
+fn read_page<'view>(
+    view: &'view SessionFile<'_>,
+    granule_idx: u32,
+) -> Result<SessionRead<'view>, GetError> {
+    view.page(granule_idx)
+}
+
+fn inspect_session_read(read: SessionRead<'_>) -> usize {
+    match read {
+        SessionRead::Hit(bytes) => {
+            let bytes: &[u8] = bytes;
+            bytes.len()
+        }
+        SessionRead::Absent => 0,
+    }
+}
+
+pub fn pin_session_surface() {
+    let session: for<'pool> fn(&'pool Pool, &'pool ReaderCtx) -> ReadSession<'pool> =
+        Pool::session;
+    std::hint::black_box((session, open_file, read_page, inspect_session_read));
+}
+",
+    );
+    assert!(
+        output.status.success(),
+        "session read surface probe failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

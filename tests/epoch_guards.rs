@@ -308,6 +308,54 @@ fn taking_guard_above_declared_reader_peak_panics_in_release() {
 }
 
 #[test]
+fn a_session_is_one_guard_that_pins_the_epoch_until_it_drops() {
+    let pool = epoch_pool_with_peak(1, 2);
+    let reader = pool.register_reader().expect("a reader slot");
+    let file = a_file_id();
+    let held = PageId::new(file, 70);
+    let evicted = PageId::new(file, 71);
+    pool.insert_resident_frame(held, 0x5A);
+    let evicted_frame = pool.insert_resident_frame(evicted, 0x5B);
+
+    let session = pool.session(&reader);
+    pool.evict_frame(evicted);
+    for _ in 0..4u32 {
+        pool.poll();
+        assert_eq!(
+            pool.frame_state(evicted_frame),
+            FrameState::Evicting,
+            "a live session publishes the reader's epoch, so a frame evicted under it is never reclaimed"
+        );
+    }
+    drop(session);
+    let mut freed = false;
+    for _ in 0..4u32 {
+        pool.poll();
+        if pool.frame_state(evicted_frame) == FrameState::Free {
+            freed = true;
+            break;
+        }
+    }
+    assert!(
+        freed,
+        "dropping the session unpins the reader's epoch and lets reclamation finish"
+    );
+
+    let session = pool.session(&reader);
+    let nested = pool
+        .pin(&reader, held)
+        .expect("a nested get guard inside a session is the second declared guard");
+    assert_eq!(nested[0], 0x5A);
+    let third = catch_unwind(AssertUnwindSafe(|| pool.pin(&reader, held)));
+    assert!(
+        third.is_err(),
+        "the session counts as one guard, so beside one nested guard a third acquisition exceeds a peak of two"
+    );
+    drop(nested);
+    drop(session);
+}
+
+#[test]
 fn first_guard_panics_when_declared_reader_peak_is_zero_in_release() {
     let pool = epoch_pool_with_peak(1, 0);
     let reader = pool.register_reader().expect("a reader slot");

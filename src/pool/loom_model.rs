@@ -27,11 +27,12 @@ use super::prefetch::state::{Prefetch, Terminal};
 use super::prefetch::{PrefetchStats, Readahead, Source};
 use super::read_spans::{ReadSpan, ReadSpans};
 use super::retention::{RetainRefused, RetainedFrame, Retention};
+use super::session::{ReadSession, SessionRead};
 use super::{
-    Clock, FrameState, Frames, InFlightFrame, PageId, PoolFile, PoolFileState, ResidentFileLease,
-    ResidentHint, ResidentLeaseError, ResidentLeaseState, SECTOR_BYTES, Translation,
-    acquire_resident_file_lease, begin_file_retirement, file_generation_is_live, file_is_live,
-    pin_with_resident_hint, publish_live_file,
+    Clock, FrameState, Frames, GetError, InFlightFrame, PageId, PoolFile, PoolFileState,
+    ResidentFileLease, ResidentHint, ResidentLeaseError, ResidentLeaseState, SECTOR_BYTES,
+    Translation, acquire_resident_file_lease, begin_file_retirement, file_generation_is_live,
+    file_is_live, pin_with_resident_hint, publish_live_file,
 };
 
 struct Control {
@@ -1307,8 +1308,26 @@ impl PoolModel {
     /// Writer under the control lock: publishes absent `page` in a fresh frame
     /// (frame 1) carrying `generation`.
     pub fn remap(&self, page: u32, generation: u8) {
+        self.remap_file(0, page, generation);
+    }
+
+    /// Writer under the control lock: publishes absent `page` of the live
+    /// `file_generation` in a fresh frame (frame 1) carrying `generation`.
+    pub fn remap_file(&self, file_generation: u32, page: u32, generation: u8) {
         let _control = self.control();
-        self.install(ReadFrameIdx::new(1), Self::page_id(page), generation);
+        self.install(
+            ReadFrameIdx::new(1),
+            Self::file_page_id(file_generation, page),
+            generation,
+        );
+    }
+
+    /// Reader 0's session over the production session resolution.
+    #[must_use]
+    pub fn session(&self) -> ModelSession<'_> {
+        ModelSession {
+            session: ReadSession::new(0, MODEL_FILE_GRANULES_MAX),
+        }
     }
 
     /// Observes the translation entry of `page` in the model's file slot.
@@ -1352,6 +1371,23 @@ impl PoolModel {
             "the modeled live file begins retirement"
         );
         file.state = PoolFileState::Retired;
+    }
+}
+
+/// A production [`ReadSession`] over the model's file slot.
+pub struct ModelSession<'pool> {
+    session: ReadSession<'pool>,
+}
+
+impl ModelSession<'_> {
+    /// Reads `page` of `file_generation` through the production session resolution.
+    ///
+    /// # Errors
+    ///
+    /// Returns the production session read's [`GetError`].
+    pub fn read(&self, file_generation: u32, page: u32) -> Result<SessionRead<'_>, GetError> {
+        self.session
+            .read_page(PoolModel::file_page_id(file_generation, page))
     }
 }
 

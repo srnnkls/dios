@@ -49,6 +49,23 @@
 //! Frame convention the proofs rely on: `make_resident` installs in frame 0,
 //! `remap` installs in frame 1.
 //!
+//! Session seam (AT4), delegating to the production session resolution:
+//!
+//! ```text
+//!   impl PoolModel {
+//!     // reader 0: the first-guard protocol once (epoch publish + SeqCst fence),
+//!     // held as one guard and unpinned on drop.
+//!     pub fn session(&self) -> ModelSession<'_>;
+//!     // writer under the Control lock: publish absent `page` of the live
+//!     // `file_generation` in a FRESH frame (frame 1) carrying `gen`.
+//!     pub fn remap_file(&self, file_generation: u32, page: u32, gen: u8);
+//!   }
+//!   impl ModelSession<'_> {
+//!     // entry load, then mirror load, then CLOCK reference; never submits.
+//!     pub fn read(&self, file_generation: u32, page: u32) -> Result<SessionRead<'_>, GetError>;
+//!   }
+//! ```
+//!
 //! Deferred boundary: dead-thread reader-slot deregistration racing epoch advance
 //! (design.md:124-125) is unmodeled — the bounded one-slot seam has no dereg
 //! thread; the RAII/TLS-destructor drop path is T007 single-threaded coverage, and
@@ -58,9 +75,10 @@
 #![cfg(loom)]
 
 use dios::loom_model::{DrainSource, PoolModel};
-use dios::{ResidentLeaseError, RetainRefusedReason};
+use dios::{GetError, ResidentLeaseError, RetainRefusedReason, SessionRead};
 use loom::model::Builder;
-use loom::sync::mpsc;
+use loom::sync::atomic::{AtomicBool, Ordering};
+use loom::sync::{Arc, mpsc};
 use loom::thread;
 
 const HELD_PAGE: u32 = 10;
@@ -1021,6 +1039,139 @@ fn a_get_racing_empty_file_retirement_and_slot_reuse_never_admits_the_successor(
                 .expect("the successor's page is resident")
                 .generation(),
             NEW_CONTENT
+        );
+    });
+}
+
+const SESSION_FILE_GENERATION: u32 = 1;
+
+#[test]
+fn a_publish_racing_a_session_read_returns_only_published_bytes() {
+    const PUBLISHED_FRAME: u32 = 1;
+
+    loom::model(|| {
+        let pool = PoolModel::new(2);
+        pool.make_file_live(SESSION_FILE_GENERATION);
+
+        let writer_pool = pool.clone();
+        let writer = thread::spawn(move || {
+            writer_pool.remap_file(SESSION_FILE_GENERATION, HELD_PAGE, HELD_GEN);
+        });
+
+        {
+            let session = pool.session();
+            match session.read(SESSION_FILE_GENERATION, HELD_PAGE) {
+                Ok(SessionRead::Hit(bytes)) => assert_eq!(
+                    bytes[0], HELD_GEN,
+                    "a set entry names a frame whose publication is complete"
+                ),
+                Ok(SessionRead::Absent) => {}
+                Err(error) => panic!("the file stays live: {error:?}"),
+            }
+        }
+        writer.join().expect("writer thread");
+
+        assert_eq!(pool.translation_entry(HELD_PAGE), Some(PUBLISHED_FRAME));
+        let session = pool.session();
+        assert!(
+            matches!(
+                session.read(SESSION_FILE_GENERATION, HELD_PAGE),
+                Ok(SessionRead::Hit(bytes)) if bytes[0] == HELD_GEN
+            ),
+            "once published, the page hits in a new session"
+        );
+    });
+}
+
+#[test]
+fn eviction_reclaim_and_reuse_racing_a_session_read_never_change_its_bytes() {
+    loom::model(|| {
+        let pool = PoolModel::new(1);
+        pool.make_file_resident(SESSION_FILE_GENERATION, HELD_PAGE, HELD_GEN);
+        let eviction_started = Arc::new(AtomicBool::new(false));
+        let (attempted_tx, attempted_rx) = mpsc::channel();
+
+        let reader_pool = pool.clone();
+        let reader_eviction_started = Arc::clone(&eviction_started);
+        let reader = thread::spawn(move || {
+            let session = reader_pool.session();
+            let read = session.read(SESSION_FILE_GENERATION, HELD_PAGE);
+            let raced_eviction = reader_eviction_started.load(Ordering::SeqCst);
+            match read {
+                Ok(SessionRead::Hit(bytes)) => {
+                    assert_eq!(
+                        bytes[0], HELD_GEN,
+                        "a session hit observes its own page's publication"
+                    );
+                    attempted_rx
+                        .recv()
+                        .expect("the writer reports its eviction, reclaim and reuse attempts");
+                    assert_eq!(
+                        bytes[0], HELD_GEN,
+                        "no reclaim or refill lands under a live session (INV-2, INV-3)"
+                    );
+                }
+                Ok(SessionRead::Absent) => assert!(
+                    raced_eviction,
+                    "a read that completes before eviction starts hits the resident page"
+                ),
+                Err(error) => panic!("the file stays live: {error:?}"),
+            }
+        });
+
+        eviction_started.store(true, Ordering::SeqCst);
+        pool.evict_file(SESSION_FILE_GENERATION, HELD_PAGE);
+        pool.poll_file_pass(SESSION_FILE_GENERATION, INTRUDER_PAGE, INTRUDER_GEN);
+        pool.poll_file_pass(SESSION_FILE_GENERATION, INTRUDER_PAGE, INTRUDER_GEN);
+        // An Absent read has already dropped the receiver; only a held hit waits.
+        let _ = attempted_tx.send(());
+
+        reader.join().expect("reader thread");
+    });
+}
+
+#[test]
+fn a_session_read_racing_empty_file_retirement_and_slot_reuse_never_admits_the_successor() {
+    const OLD_FILE_GENERATION: u32 = 1;
+    const NEW_FILE_GENERATION: u32 = 2;
+    const PAGE: u32 = 7;
+    const NEW_CONTENT: u8 = 0x72;
+
+    loom::model(|| {
+        let pool = PoolModel::new(1);
+        pool.make_file_live(OLD_FILE_GENERATION);
+
+        let reader_pool = pool.clone();
+        let reader = thread::spawn(move || {
+            let session = reader_pool.session();
+            match session.read(OLD_FILE_GENERATION, PAGE) {
+                Ok(SessionRead::Hit(bytes)) => panic!(
+                    "the retired file held no page, so a hit is the successor's bytes: {:#x}",
+                    bytes[0]
+                ),
+                Ok(SessionRead::Absent) | Err(GetError::StaleFile { .. }) => {}
+                Err(error) => panic!("unexpected session error: {error:?}"),
+            }
+        });
+
+        pool.retire_empty_file(OLD_FILE_GENERATION);
+        pool.make_file_resident(NEW_FILE_GENERATION, PAGE, NEW_CONTENT);
+        reader.join().expect("reader thread");
+
+        let session = pool.session();
+        assert!(
+            matches!(
+                session.read(NEW_FILE_GENERATION, PAGE),
+                Ok(SessionRead::Hit(bytes)) if bytes[0] == NEW_CONTENT
+            ),
+            "the successor's page hits through the reused slot"
+        );
+        assert!(
+            matches!(
+                session.read(OLD_FILE_GENERATION, PAGE),
+                Err(GetError::StaleFile { .. })
+            ),
+            "the retired generation reads StaleFile whatever the entry holds (INV-7)"
         );
     });
 }

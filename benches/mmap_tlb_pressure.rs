@@ -10,6 +10,10 @@
 //! SANITY bound as `mmap_warm_path`. The THP state makes any Linux number
 //! interpretable — see the plan. All platforms — the mock backend composes
 //! anywhere.
+//!
+//! `session OUTPUT_DIR` runs the AT-G3 capture instead: the mmap fold against
+//! sessions of 16 reads, writing `paired.csv` and the Linux `hugepage.json`
+//! witness of `benches/evidence/array_translation/README.md` into `OUTPUT_DIR`.
 
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
@@ -19,7 +23,7 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use dios::testing::{MockDriver, PoolBuilderTestingExt, PoolTestingExt};
-use dios::{DirectIo, Get, PageId, PendingToken, Pool, ReaderCtx, ReadyResult};
+use dios::{DirectIo, Get, PageId, PendingToken, Pool, ReaderCtx, ReadyResult, SessionRead};
 
 const GRANULE: usize = 4096;
 const RESIDENT_PAGES: u32 = 65_536;
@@ -36,6 +40,7 @@ const QUEUE_CAPACITY: u32 = RESIDENT_PAGES / 2;
 const MAX_INFLIGHT: u32 = 1;
 const MISS_HEADROOM: u32 = 3;
 const READY_POLLS_MAX: u32 = 64;
+const SESSION_READS: u32 = 16;
 
 // `PROT_READ` (0x1) and `MAP_SHARED` (0x1) hold on both linux and darwin uapi;
 // `off_t` is a signed 64-bit file offset on both. A file-backed shared read
@@ -62,6 +67,23 @@ fn scan_granule(bytes: &[u8]) -> u64 {
     bytes.chunks_exact(8).fold(0u64, |acc, chunk| {
         acc ^ u64::from_ne_bytes(chunk.try_into().expect("an 8-byte chunk"))
     })
+}
+
+/// Sum-folds a granule as `u64` words — the session mode's scan, whose
+/// checksum over uniform granules stays nonzero so the arms' checksums compare.
+fn fold_granule(bytes: &[u8]) -> u64 {
+    assert_eq!(bytes.len(), GRANULE, "a folded granule is a full granule");
+    bytes.chunks_exact(8).fold(0u64, |acc, chunk| {
+        acc.wrapping_add(u64::from_ne_bytes(
+            chunk.try_into().expect("an 8-byte chunk"),
+        ))
+    })
+}
+
+/// The byte every granule of page `idx` holds in the pool, and in the mapping
+/// of the session mode.
+fn page_fill(idx: u32) -> u8 {
+    u8::try_from(0xA0 | (idx & 0x1F)).expect("fill fits u8")
 }
 
 /// The next replayed index, wrapping every `indices.len()` calls. Base and
@@ -102,10 +124,10 @@ struct MmapRegion {
 }
 
 impl MmapRegion {
-    fn resident() -> Self {
+    fn resident(page_byte: fn(u32) -> u8) -> Self {
         let len = RESIDENT_PAGES as usize * GRANULE;
         let path = temp_path("mmap-tlb");
-        write_backing_file(&path);
+        write_backing_file(&path, page_byte);
         let file = std::fs::OpenOptions::new()
             .read(true)
             .open(&path)
@@ -164,12 +186,11 @@ impl Drop for MmapRegion {
     }
 }
 
-fn write_backing_file(path: &Path) {
-    let granule = vec![0xA5_u8; GRANULE];
+fn write_backing_file(path: &Path, page_byte: fn(u32) -> u8) {
     let file = std::fs::File::create(path).expect("create the mmap-backing file");
     let mut offset = 0u64;
-    for _ in 0..RESIDENT_PAGES {
-        file.write_all_at(&granule, offset)
+    for idx in 0..RESIDENT_PAGES {
+        file.write_all_at(&[page_byte(idx); GRANULE], offset)
             .expect("write a granule");
         offset += GRANULE as u64;
     }
@@ -198,11 +219,7 @@ fn resident_pool() -> (Pool<MockDriver>, dios::FileId) {
         .expect("mock file opens");
     let file_id = file.file_id();
     for idx in 0..RESIDENT_PAGES {
-        mock.seed_page(
-            &file,
-            idx,
-            u8::try_from(0xA0 | (idx & 0x1F)).expect("fill fits u8"),
-        );
+        mock.seed_page(&file, idx, page_fill(idx));
     }
     let pool = Pool::builder()
         .frame_count(RESIDENT_PAGES)
@@ -253,8 +270,20 @@ fn drive_ready<'pool>(
 }
 
 fn main() {
+    let positional: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|argument| argument != "--bench")
+        .collect();
+    match positional.as_slice() {
+        [] => characterize(),
+        [mode, output] if mode == "session" => session(Path::new(output)),
+        _ => panic!("usage: mmap_tlb_pressure [session OUTPUT_DIR]"),
+    }
+}
+
+fn characterize() {
     let indices = build_indices();
-    let region = MmapRegion::resident();
+    let region = MmapRegion::resident(|_| 0xA5);
     let (pool, file_id) = resident_pool();
     let reader = pool.register_reader().expect("first reader slot");
     warm_all_pages(&pool, &reader, file_id);
@@ -299,4 +328,115 @@ fn main() {
         "pool residency machinery must stay within {RESIDENCY_RATIO_MAX}x of a bare mmap read, got ci95 upper {:.4}",
         gate.ratio_ci95_upper
     );
+}
+
+/// AT-G3: each iteration is one session of `SESSION_READS` whole-granule folds
+/// against the same folds through the mapping, at the same replayed indices.
+fn session(output: &Path) {
+    let indices = build_indices();
+    let region = MmapRegion::resident(page_fill);
+    let (pool, file_id) = resident_pool();
+    let reader = pool.register_reader().expect("first reader slot");
+    warm_all_pages(&pool, &reader, file_id);
+    let arena_address = match pool
+        .get(&reader, PageId::new(file_id, 0))
+        .expect("the registered file is live")
+    {
+        Get::Hit(guard) => guard.as_ptr().addr(),
+        Get::Pending(_) | Get::Busy => panic!("a warmed page must hit"),
+    };
+
+    let mmap_cursor = Cell::new(0usize);
+    let session_cursor = Cell::new(0usize);
+    let mmap_checksum = Cell::new(0u64);
+    let session_checksum = Cell::new(0u64);
+    let before = hugepage_witness(arena_address);
+    let samples = dios::bench::run_paired(
+        "paired",
+        REPS,
+        ITERS_PER_REP,
+        || {
+            for _ in 0..SESSION_READS {
+                let idx = next_index(&mmap_cursor, &indices);
+                let sum = black_box(fold_granule(region.granule(idx)));
+                mmap_checksum.set(mmap_checksum.get().wrapping_add(sum));
+            }
+        },
+        || {
+            let session = pool.session(&reader);
+            let view = session.file(file_id).expect("the registered file is live");
+            for _ in 0..SESSION_READS {
+                let idx = next_index(&session_cursor, &indices);
+                match view.page(idx).expect("the registered file is live") {
+                    SessionRead::Hit(bytes) => {
+                        let sum = black_box(fold_granule(bytes));
+                        session_checksum.set(session_checksum.get().wrapping_add(sum));
+                    }
+                    SessionRead::Absent => panic!("a resident page must hit in a session"),
+                }
+            }
+        },
+    );
+    let after = hugepage_witness(arena_address);
+    assert_eq!(
+        mmap_checksum.get(),
+        session_checksum.get(),
+        "both arms fold equal bytes at equal indices"
+    );
+
+    let path = dios::bench::write_samples(output, &samples).expect("write paired.csv");
+    std::fs::write(
+        output.join("hugepage.json"),
+        format!("{{\"before\":{before},\"after\":{after}}}\n"),
+    )
+    .expect("write hugepage.json");
+    let gate = dios::bench::ratio_gate(&samples, BOOTSTRAP_RESAMPLES);
+    println!(
+        "mmap_tlb_pressure session: pairs {REPS}, ratio geomean {:.4}, ci95 upper {:.4}, samples {}, hugepage witness {before} -> {after}",
+        gate.ratio_geomean,
+        gate.ratio_ci95_upper,
+        path.display()
+    );
+}
+
+/// The THP mode and the hugepage backing of the arena mapping containing
+/// `arena_address`, as a JSON object.
+fn hugepage_witness(arena_address: usize) -> String {
+    let enabled = std::fs::read_to_string("/sys/kernel/mm/transparent_hugepage/enabled")
+        .expect("the THP mode is readable");
+    let mode = enabled
+        .split_once('[')
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .map(|(mode, _)| mode)
+        .expect("the THP mode is bracketed");
+    let smaps = std::fs::read_to_string("/proc/self/smaps").expect("smaps is readable");
+    let anonhugepages_kib = smaps_field_kib(&smaps, arena_address, "AnonHugePages:");
+    let arena_kib = smaps_field_kib(&smaps, arena_address, "Size:");
+    format!(
+        "{{\"transparent_hugepage\":\"{mode}\",\"anonhugepages_kib\":{anonhugepages_kib},\"arena_kib\":{arena_kib}}}"
+    )
+}
+
+fn smaps_field_kib(smaps: &str, address: usize, field: &str) -> u64 {
+    let mut in_mapping = false;
+    for line in smaps.lines() {
+        if let Some((range, _)) = line.split_once(' ')
+            && let Some((start, end)) = range.split_once('-')
+            && let (Ok(start), Ok(end)) = (
+                usize::from_str_radix(start, 16),
+                usize::from_str_radix(end, 16),
+            )
+        {
+            in_mapping = (start..end).contains(&address);
+            continue;
+        }
+        if in_mapping && let Some(rest) = line.strip_prefix(field) {
+            return rest
+                .trim()
+                .trim_end_matches(" kB")
+                .parse()
+                .expect("the smaps field parses");
+        }
+    }
+    panic!("no smaps mapping contains the arena address");
 }

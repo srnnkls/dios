@@ -148,7 +148,7 @@ def validate_pressure(row: dict) -> None:
 
 
 def warm_prepare(capture: Path, frozen: Path, output: Path) -> None:
-    """Pair validated base-build rows into the measured AT-G4 comparison CSV."""
+    """Pair the validated rows of a frozen one-comparison capture into the measured CSV."""
     # Both modules import this one, so they load on first use.
     from analyze import paired_csv, read_comparison
     from collect import base_build_schedule

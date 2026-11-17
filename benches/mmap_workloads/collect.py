@@ -364,18 +364,27 @@ def collect_base_build(
     runners = [runner_identity(built, tree), runner_identity(binary, Path())]
     base, identity = retain_binary(built, base_output)
     arms = [lane["arms"][1]] * 2
-    qualification_pairs, measured_pairs = comparison_pairs(options.mode)
-    manifest.update(
-        base_build=str(tree),
-        lane=lane["name"],
-        arms=arms,
-        executables=[identity, manifest["executable_sha256"]],
-        fixture_sha256=manifest["fixture"]["sha256"],
-        qualification_pairs=qualification_pairs,
-        measured_pairs=measured_pairs,
+    manifest.update(base_build=str(tree))
+    record_comparison_identity(
+        options, manifest, lane, arms, [identity, manifest["executable_sha256"]]
     )
     return collect_comparison(
         options, [base, binary], fixture, lane, arms, ["plain", "plain"], lane["name"], runners
+    )
+
+
+def record_comparison_identity(
+    options: argparse.Namespace, manifest: dict, lane: dict, arms: list[str], executables: list[str]
+) -> None:
+    """The identity fields `warm-prepare` checks against the frozen manifest."""
+    qualification_pairs, measured_pairs = comparison_pairs(options.mode)
+    manifest.update(
+        lane=lane["name"],
+        arms=arms,
+        executables=executables,
+        fixture_sha256=manifest["fixture"]["sha256"],
+        qualification_pairs=qualification_pairs,
+        measured_pairs=measured_pairs,
     )
 
 
@@ -428,6 +437,11 @@ def collect(options: argparse.Namespace) -> None:
                     if options.mode == "trace"
                     else ["plain", "plain"]
                 )
+                if len(selected) == 1 and options.mode == "run":
+                    record_comparison_identity(
+                        options, manifest, lane, lane["arms"],
+                        [manifest["executable_sha256"]] * 2,
+                    )
                 result = collect_comparison(
                     options, [binary, binary], fixture, lane, lane["arms"], modes, lane["name"]
                 )

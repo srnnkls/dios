@@ -195,7 +195,14 @@ def names_tree(command: list[str], working_directory, tree: Path) -> bool:
     return any(str(tree) in argument for argument in command)
 
 
-def fake_collector_processes(root: Path, base_tree: Path, fixture_sha256: str, samples: list):
+def fake_collector_processes(
+    root: Path,
+    base_tree: Path,
+    fixture_sha256: str,
+    samples: list,
+    lanes: tuple = (RESIDENT_LANE,),
+    shape_row=None,
+):
     """Stands in for cargo, the runner and the host tools; records each sample process."""
     built = {}
     runner = runner_sha256()
@@ -216,6 +223,8 @@ def fake_collector_processes(root: Path, base_tree: Path, fixture_sha256: str, s
         samples.append(dict(build=build_name, arm=arm, seed=int(seed), target=target))
         row = resident_row(seed=int(seed), elapsed_ns=1_000 + len(samples))
         row.update(lane=lane, arm=arm, fixture=fixture_sha256, trace=tracing == "trace")
+        if shape_row is not None:
+            shape_row(row)
         Path(target).write_text(json.dumps(row))
         return ""
 
@@ -229,9 +238,9 @@ def fake_collector_processes(root: Path, base_tree: Path, fixture_sha256: str, s
         elif command[-1] == "identity":
             stdout = json.dumps(dict(runner_sha256=runner, debug_assertions=False))
         elif command[-1] == "list":
-            stdout = json.dumps([RESIDENT_LANE])
+            stdout = json.dumps(list(lanes))
         elif "summarize" in command:
-            stdout = json.dumps(dict(ratio=1.0))
+            stdout = json.dumps(dict(ratio=1.0, pairs=MEASURED_PAIRS))
         elif command[0] == "findmnt":
             stdout = "/dev/nvme0n1p2 ext4\n"
         elif command[0] == "git" and "rev-parse" in command:
@@ -241,6 +250,87 @@ def fake_collector_processes(root: Path, base_tree: Path, fixture_sha256: str, s
         return subprocess.CompletedProcess(command, 0, stdout, "")
 
     return run
+
+
+SESSION_LANES = {
+    lane: dict(
+        name=lane,
+        arms=["mmap_random", "dios_session"],
+        cache="resident",
+        operations=1024,
+        workers=1,
+        useful_bytes_per_read=bytes_per_read,
+        frames=1024,
+    )
+    for lane, bytes_per_read in (
+        ("resident_access_session_projection", 64),
+        ("resident_access_session_fold", 4096),
+    )
+}
+
+
+def session_row_shape(fixture_identity: dict, bytes_per_read: int):
+    """Shapes a fake row as the runner writes it for each arm of a session lane."""
+
+    def shape(row: dict) -> None:
+        row["fixture"] = dict(fixture_identity)
+        row["useful_bytes"] = row["operations"] * bytes_per_read
+        if row["arm"].startswith("mmap_"):
+            row.update(io_mode="mmap", registration="none")
+            row["workers"][0]["hits"] = 0
+
+    return shape
+
+
+def collect_session_capture(root: Path, lane: dict) -> Path:
+    """Runs the collector over fake processes for one session lane."""
+    fixture_sha256 = write_fixture(root / "fixture")
+    fixture_identity = json.loads((root / "fixture/fixture.json").read_text())
+    with unittest.mock.patch.object(
+        sys,
+        "argv",
+        ["collect.py", str(root / "capture"), "--input", str(root / "fixture"),
+         "--lanes", lane["name"]],
+    ):
+        options = COLLECT.arguments()
+    with (
+        contextlib.chdir(REPOSITORY),
+        unittest.mock.patch.object(
+            COLLECT.subprocess,
+            "run",
+            fake_collector_processes(
+                root,
+                root / "no-base-build",
+                fixture_sha256,
+                [],
+                lanes=(lane,),
+                shape_row=session_row_shape(
+                    fixture_identity, lane["useful_bytes_per_read"]
+                ),
+            ),
+        ),
+        unittest.mock.patch.object(
+            COLLECT, "host_snapshot", return_value=dict(governors=["performance"])
+        ),
+    ):
+        COLLECT.collect(options)
+    return root / "capture"
+
+
+def session_frozen_manifest(capture: Path, lane: dict, gate: str) -> dict:
+    """The frozen manifest of a session gate: one executable runs both arms."""
+    manifest = json.loads((capture / "manifest.json").read_text())
+    executable = manifest["executable_sha256"]
+    fixture = json.loads((capture.parent / "fixture/fixture.json").read_text())
+    return dict(
+        gate=gate,
+        lane=lane["name"],
+        arms=["mmap_random", "dios_session"],
+        executables=[executable, executable],
+        fixture_sha256=fixture["sha256"],
+        qualification_pairs=QUALIFICATION_PAIRS,
+        measured_pairs=MEASURED_PAIRS,
+    )
 
 
 class MmapEvidenceContract(unittest.TestCase):
@@ -530,6 +620,98 @@ class MmapEvidenceContract(unittest.TestCase):
         rejects("manifest", manifest_drift)
         rejects("frozen lane or arms", mmap_candidate)
         rejects("frozen fixture", unfrozen_fixture)
+
+    def test_warm_prepare_pairs_one_executable_session_arms_and_rejects_drift(
+        self,
+    ) -> None:
+        for gate, lane in zip(("at-g1", "at-g2"), SESSION_LANES.values()):
+            with self.subTest(lane=lane["name"]), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                capture = collect_session_capture(root, lane)
+                frozen = root / "frozen.json"
+                frozen.write_text(json.dumps(session_frozen_manifest(capture, lane, gate)))
+                manifest = json.loads((capture / "manifest.json").read_text())
+                comparison = manifest["comparisons"][0]
+                self.assertEqual(comparison["arms"], ["mmap_random", "dios_session"])
+
+                elapsed = {}
+                for reference in comparison["rows"]:
+                    row = json.loads(
+                        (capture / lane["name"] / Path(reference["raw"]).name).read_text()
+                    )
+                    self.assertEqual(row["arm"], comparison["arms"][reference["position"]])
+                    if reference["pair"] >= 0:
+                        elapsed[(reference["pair"], reference["position"])] = row["elapsed_ns"]
+                output = root / "paired.csv"
+                try:
+                    MODULE.warm_prepare(capture, frozen, output)
+                except (ValueError, KeyError) as error:
+                    self.fail(f"warm-prepare refused a complete session capture: {error!r}")
+                self.assertEqual(
+                    output.read_text().splitlines(),
+                    ["base_ns,candidate_ns"]
+                    + [
+                        f"{elapsed[(pair, 0)]},{elapsed[(pair, 1)]}"
+                        for pair in range(MEASURED_PAIRS)
+                    ],
+                    "measured pairs only, the mmap arm as base and the session arm as candidate",
+                )
+
+                def rejects(pattern: str, corrupt) -> None:
+                    saved = manifest_path.read_text()
+                    rows = {path: path.read_bytes() for path in rows_directory.iterdir()}
+                    try:
+                        corrupted = json.loads(saved)
+                        corrupt(corrupted)
+                        manifest_path.write_text(json.dumps(corrupted))
+                        target = root / f"rejected-{pattern}.csv"
+                        with self.assertRaisesRegex(ValueError, pattern):
+                            MODULE.warm_prepare(capture, frozen, target)
+                        self.assertFalse(target.exists())
+                    finally:
+                        manifest_path.write_text(saved)
+                        for path, raw in rows.items():
+                            path.write_bytes(raw)
+
+                manifest_path = capture / "manifest.json"
+                rows_directory = capture / lane["name"]
+
+                def rewrite_session_row(manifest: dict, pair: int, change) -> None:
+                    reference = next(
+                        row for row in manifest["comparisons"][0]["rows"]
+                        if row["pair"] == pair and row["position"] == 1
+                    )
+                    path = rows_directory / Path(reference["raw"]).name
+                    row = json.loads(path.read_text())
+                    change(row)
+                    raw = json.dumps(row).encode()
+                    path.write_bytes(raw)
+                    reference["sha256"] = hashlib.sha256(raw).hexdigest()
+
+                def mixed_identity(manifest: dict) -> None:
+                    manifest["comparisons"][0]["rows"][10]["executable_sha256"] = "d" * 64
+
+                def double_work(row: dict) -> None:
+                    row["operations"] = 2048
+                    row["useful_bytes"] = 2048 * lane["useful_bytes_per_read"]
+                    row["workers"][0].update(operations=2048, hits=2048)
+
+                def other_checksum(row: dict) -> None:
+                    row["expected_checksum"] = 72
+                    row["workers"][0]["checksum"] = 72
+
+                def other_bytes(row: dict) -> None:
+                    row["useful_bytes"] = row["operations"] * 8
+
+                def incomplete_pair(manifest: dict) -> None:
+                    rows = manifest["comparisons"][0]["rows"]
+                    rows.remove(next(row for row in rows if row["pair"] == MEASURED_PAIRS - 1))
+
+                rejects("identity", mixed_identity)
+                rejects("work", lambda manifest: rewrite_session_row(manifest, 3, double_work))
+                rejects("checksum", lambda manifest: rewrite_session_row(manifest, 4, other_checksum))
+                rejects("useful_bytes", lambda manifest: rewrite_session_row(manifest, 5, other_bytes))
+                rejects("missing|incomplete", incomplete_pair)
 
     def test_minor_fault_regime_rejects_storage_faults(self) -> None:
         row = sample()

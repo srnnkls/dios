@@ -28,12 +28,7 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
         }
         [command, ..] if command.starts_with("scan-") => run_scan(arguments),
         [command] if command == "list" => {
-            let lanes: Vec<_> = Lane::ALL.into_iter().map(|lane| json!({
-                "name": lane.name(), "arms": lane.arms(), "cache": lane.cache(),
-                "operations": lane.operations(), "workers": lane.workers(),
-                "useful_bytes_per_read": lane.useful_bytes(), "frames": lane.frames(),
-            })).collect();
-            println!("{}", serde_json::to_string_pretty(&lanes).map_err(error)?);
+            println!("{}", serde_json::to_string_pretty(&lane_catalog()).map_err(error)?);
             Ok(())
         }
         [command, directory] if command == "create" => fixture::create(Path::new(directory)).map_err(error),
@@ -51,6 +46,9 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
             if !lane.arms().contains(&arm) { return Err("arm does not belong to this comparison".to_owned()); }
             let seed: u32 = seed.parse().map_err(error)?;
             if seed > 1_000_000 { return Err("seed exceeds fixed bound".to_owned()); }
+            if tracing == "trace" && lane.repetitions() > 1 {
+                return Err("trace mode is refused for a repeated sequence".to_owned());
+            }
             match tracing.as_str() {
                 "plain" => sample::<false>(Path::new(directory), lane, arm, seed, Path::new(output)),
                 "trace" => sample::<true>(Path::new(directory), lane, arm, seed, Path::new(output)),
@@ -59,6 +57,20 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
         }
         _ => Err("usage: list | create NEW_DIR | summarize CSV | sample INPUT LANE ARM SEED plain|trace NEW_JSON".to_owned()),
     }
+}
+
+/// The lane catalog `list` prints and the collector freezes.
+pub(crate) fn lane_catalog() -> Vec<serde_json::Value> {
+    Lane::ALL
+        .into_iter()
+        .map(|lane| {
+            json!({
+                "name": lane.name(), "arms": lane.arms(), "cache": lane.cache(),
+                "operations": lane.timed_operations(), "workers": lane.workers(),
+                "useful_bytes_per_read": lane.useful_bytes(), "frames": lane.frames(),
+            })
+        })
+        .collect()
 }
 
 fn run_scan(arguments: &[String]) -> Result<(), String> {
@@ -125,7 +137,8 @@ fn sample<const TRACE: bool>(
     let fixture_identity: serde_json::Value =
         serde_json::from_reader(fs::File::open(directory.join("fixture.json")).map_err(error)?)
             .map_err(error)?;
-    let expected_checksum = fixture::expected(lane, seed);
+    let expected_checksum =
+        fixture::expected(lane, seed).wrapping_mul(u64::from(lane.repetitions()));
     let mapping = os::Mapping::open(&directory.join("pages.bin")).map_err(error)?;
     let cache_before = fixture::prepare(&mapping, lane, arm, seed).map_err(error)?;
     let pool = if arm.is_mmap() {
@@ -155,8 +168,8 @@ fn sample<const TRACE: bool>(
     sample_check_workers(&workers, expected_checksum)?;
     let (io_mode, registration) = sample_posture(pool.as_ref());
     let row = json!({"schema": 1, "lane": lane, "arm": arm, "seed": seed,
-        "trace": TRACE, "cache": lane.cache(), "operations": lane.operations(),
-        "useful_bytes": u64::from(lane.operations()) * u64::from(lane.useful_bytes()),
+        "trace": TRACE, "cache": lane.cache(), "operations": lane.timed_operations(),
+        "useful_bytes": u64::from(lane.timed_operations()) * u64::from(lane.useful_bytes()),
         "frames": lane.frames(), "expected_checksum": expected_checksum,
         "elapsed_ns": elapsed_ns, "cache_before": cache_before,
         "system_before": before, "system_after": after, "io_mode": io_mode,

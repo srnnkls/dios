@@ -29,6 +29,8 @@ pub(super) enum Lane {
     ResidentAccessEpochBatch,
     ResidentAccessRetained,
     ResidentAccessPageBatch,
+    ResidentAccessSessionProjection,
+    ResidentAccessSessionFold,
     PrefetchFragmented,
     PrefetchFragmentedWhole,
     PrefetchScan,
@@ -54,6 +56,7 @@ pub(super) enum Arm {
     DiosEpochBatch,
     DiosRetained,
     DiosPageBatch,
+    DiosSession,
     DiosPrefetch,
     DiosPrefetchWhole,
     DiosAutomatic,
@@ -71,7 +74,7 @@ pub(super) enum Cache {
 }
 
 impl Lane {
-    pub(super) const ALL: [Self; 29] = [
+    pub(super) const ALL: [Self; 31] = [
         Self::ResidentProjection,
         Self::ResidentDecode,
         Self::MinorProjection,
@@ -90,6 +93,8 @@ impl Lane {
         Self::ResidentAccessEpochBatch,
         Self::ResidentAccessRetained,
         Self::ResidentAccessPageBatch,
+        Self::ResidentAccessSessionProjection,
+        Self::ResidentAccessSessionFold,
         Self::PrefetchFragmented,
         Self::PrefetchFragmentedWhole,
         Self::PrefetchScan,
@@ -130,6 +135,8 @@ impl Lane {
             Self::ResidentAccessEpochBatch => "resident_access_epoch_batch",
             Self::ResidentAccessRetained => "resident_access_retained",
             Self::ResidentAccessPageBatch => "resident_access_page_batch",
+            Self::ResidentAccessSessionProjection => "resident_access_session_projection",
+            Self::ResidentAccessSessionFold => "resident_access_session_fold",
             Self::PrefetchFragmented => "prefetch_fragmented",
             Self::PrefetchFragmentedWhole => "prefetch_fragmented_whole",
             Self::PrefetchScan => "prefetch_scan",
@@ -175,6 +182,7 @@ impl Lane {
         }
     }
 
+    /// Requests in the lane's fixed sequence.
     pub(super) fn operations(self) -> u32 {
         if self.resident_access() {
             return 65_536;
@@ -193,6 +201,23 @@ impl Lane {
         }
     }
 
+    /// Times one timed process replays the fixed sequence.
+    pub(super) fn repetitions(self) -> u32 {
+        if self.session() { 256 } else { 1 }
+    }
+
+    /// Reads one timed process performs.
+    pub(super) fn timed_operations(self) -> u32 {
+        self.operations() * self.repetitions()
+    }
+
+    pub(super) fn session(self) -> bool {
+        matches!(
+            self,
+            Self::ResidentAccessSessionProjection | Self::ResidentAccessSessionFold
+        )
+    }
+
     pub(super) fn workers(self) -> u32 {
         match self {
             Self::FaultingReaders | Self::PressureRandom => 4,
@@ -201,6 +226,9 @@ impl Lane {
     }
 
     pub(super) fn useful_bytes(self) -> u32 {
+        if self == Self::ResidentAccessSessionFold {
+            return GRANULE;
+        }
         if self.resident_access() {
             return 64;
         }
@@ -271,6 +299,9 @@ impl Lane {
             Self::ResidentAccessEpochBatch => Arm::DiosEpochBatch,
             Self::ResidentAccessRetained => Arm::DiosRetained,
             Self::ResidentAccessPageBatch => Arm::DiosPageBatch,
+            Self::ResidentAccessSessionProjection | Self::ResidentAccessSessionFold => {
+                Arm::DiosSession
+            }
             Self::ColdGather
             | Self::ColdGatherNormal
             | Self::ScanDecode
@@ -285,6 +316,9 @@ impl Lane {
 
     pub(super) fn page(self, seed: u32, index: u32) -> PageNumber {
         assert!(index < self.operations());
+        if self == Self::ResidentAccessSessionFold {
+            return PageNumber(index % self.warm_pages());
+        }
         if self.resident_access() {
             let index = if self == Self::ResidentAccessPageBatch {
                 index / 16
@@ -321,6 +355,8 @@ impl Lane {
                 | Self::ResidentAccessEpochBatch
                 | Self::ResidentAccessRetained
                 | Self::ResidentAccessPageBatch
+                | Self::ResidentAccessSessionProjection
+                | Self::ResidentAccessSessionFold
         )
     }
 
@@ -345,6 +381,7 @@ impl Arm {
             "dios_epoch_batch" => Ok(Self::DiosEpochBatch),
             "dios_retained" => Ok(Self::DiosRetained),
             "dios_page_batch" => Ok(Self::DiosPageBatch),
+            "dios_session" => Ok(Self::DiosSession),
             "dios_prefetch" => Ok(Self::DiosPrefetch),
             "dios_prefetch_whole" => Ok(Self::DiosPrefetchWhole),
             "dios_automatic" => Ok(Self::DiosAutomatic),
