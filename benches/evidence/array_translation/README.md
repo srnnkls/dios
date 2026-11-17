@@ -14,19 +14,21 @@ pins one frozen manifest and one capture command per gate. AT-G4 and AT-G7 ran f
 | `at-gN/rows/` | Rich process rows as captured |
 | `at-gN/paired.csv` | `base_ns,candidate_ns` pairs derived from the validated rows |
 | `at-gN/gate.txt` | Output of the `mise run gate` command of the gate |
-| `at-g3/hugepage.json` | Hugepage witness of every AT-G3 run |
+| `at-gN/report.json` | ns per read per arm, their difference and the floor comparison (F11) |
+| `at-gN/layout-NN/` | One capture per layout build of AT-G1, AT-G5 and AT-G6 (F12) |
 
 ## Hugepage witness (AT-G3)
 
-Each AT-G3 run records, before the first and after the last timed iteration:
+Each AT-G3 row records, before the first and after the last timed iteration (rule F7 of the plan's fairness contract):
 
 - `transparent_hugepage`: the bracketed mode read from `/sys/kernel/mm/transparent_hugepage/enabled`.
 - `anonhugepages_kib`: the `AnonHugePages` line of the arena mapping in the process's own `/proc/self/smaps`.
 - `arena_kib`: the `Size` line of that mapping.
 
-A run is valid only when `anonhugepages_kib` equals `arena_kib` at both points. An
-invalid run is excluded and recorded, never counted as a failure or a pass. The AT-G3
-manifest pins the expected THP mode.
+A gated run is valid only when `anonhugepages_kib` equals `arena_kib` at both points;
+an equal-reach run is valid only when `anonhugepages_kib` is 0 at both points. An
+invalid run is excluded and recorded, never counted as a failure or a pass. Each
+AT-G3 manifest pins its expected THP mode.
 
 ## Prerequisite for AT-G7
 

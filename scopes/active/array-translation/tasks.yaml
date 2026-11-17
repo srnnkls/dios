@@ -1,11 +1,11 @@
 ---
 scope: array-translation
 code: AT
-next_id: 9
+next_id: 10
 meta:
   created: '2026-11-15'
   last_updated: '2026-11-17'
-  progress: 3/8
+  progress: 3/9
 phases:
 - name: Contracts
   tasks: [AT1]
@@ -15,6 +15,8 @@ phases:
   tasks: [AT4, AT5]
 - name: Copy-out
   tasks: [AT6, AT7]
+- name: Get hit path
+  tasks: [AT9]
 - name: Campaign
   tasks: [AT8]
 tasks:
@@ -134,7 +136,7 @@ tasks:
     collect_comparison and the base-build capture. AT-G4 and AT-G7 pass on nix. Lint, Loom, Miri and ASAN are clean.
 - id: AT4
   title: Pin the session read with failing tests and bench arms
-  status: pending
+  status: in_progress
   domain: pool
   depends_on:
   - AT3
@@ -155,11 +157,28 @@ tasks:
   - tests/mmap_workload_validation.py
   - tests/mmap_workload_contract.rs
   - benches/mmap_tlb_pressure.rs
+  - benches/mmap_workloads/fair.rs
+  - benches/mmap_workloads/engine.rs
+  - benches/mmap_workloads/analyze.py
+  - benches/mmap_workloads/fixture.rs
+  - build.rs
+  - benches/plans/array_translation.md
   acceptance: RED for AC-6 to AC-10 and the session half of AC-15 and AC-17. The
     session arms for AT-G1, AT-G2 and AT-G3 exist with equal bytes and checksums
     across arms, the warm-prepare validator rejects mixed identity, unequal work and
     incomplete pairs, and no performance pass is claimed. Source edits are scaffolds
     and test hooks only.
+    Amended 2026-11-17 (AT-D9 to AT-D13), the session lanes, a fair get lane
+    resident_access_fair_get and the plain_array floor arm run in the fair-lane module
+    under rules F1 to F11 of the bench plan, with the warm pass, the timed region of
+    at least 100 ms, the page-size witness and ns per read in the gate output; the
+    collector gains the layout builds of F12 and the shared-runner base build of F10,
+    and warm-prepare rejects what AC-18 lists. The legacy resident lanes and the
+    characterization mode of mmap_tlb_pressure keep the loop code of 604410a (AC-19).
+    AT-G3 is the fair lane resident_access_session_fold_256m on the shipping backend
+    with the page-size witness in its rows; the session mode of mmap_tlb_pressure is
+    removed. The 64-byte fair lanes repeat the sequence 2,048 times and arms that call
+    an API a base tree lacks are cfg-gated from build.rs (F10).
 - id: AT5
   title: Implement the session read
   status: pending
@@ -175,6 +194,12 @@ tasks:
   acceptance: AT4 is GREEN. Pool::session, ReadSession::file and SessionFile::page
     meet FR-6 to FR-8 and TR-3, TR-4. AT-G1, AT-G2 and AT-G3 pass on nix with the
     hugepage witness recorded, or the failing gate's lever is raised with the profile.
+    Amended 2026-11-17, the read is inlinable into its caller and SessionFile holds the
+    loop-invariant values (arena base, granule shift, entry base of the file slot,
+    bound) so a read loads none of them; ReadSession::read_page returns a
+    session-scoped lifetime; AT-G1 passes on the three layout builds (AC-21) and every
+    gate reports ns per read with the floor arm. The pin head of pin_live and pin_owned
+    is unified here (AT-D6).
 - id: AT6
   title: Pin the copy-out read with failing tests and bench arms
   status: pending
@@ -192,7 +217,9 @@ tasks:
   - src/mock.rs
   - tests/public_api.rs
   - tests/zero_alloc.rs
-  - benches/mmap_workloads/resident.rs
+  - benches/mmap_workloads/fair.rs
+  - benches/mmap_workloads/validate.py
+  - build.rs
   - benches/mmap_workloads/catalog.rs
   - benches/mmap_workloads/mod.rs
   - tests/mmap_workload_validation.py
@@ -202,6 +229,9 @@ tasks:
     off-module volatile read and seam use in a pool file and in src/mock.rs; the
     copy, floor and mmap-copy arms share bytes and checksum. Model limits stay
     visible. Source edits are scaffolds, test and mock hooks only.
+    Amended 2026-11-17, the copy, optimistic-floor and mmap-copy arms run in the
+    fair-lane module under F1 to F11 with the plain_array floor comparison, and
+    warm-prepare covers them (AC-18, AC-19).
 - id: AT7
   title: Implement the copy-out read
   status: pending
@@ -217,6 +247,8 @@ tasks:
   acceptance: AT6 is GREEN. Pool::read_copy meets FR-9 to FR-11 and TR-6 under the
     AD-7 order. AT-G5 and AT-G6 pass on nix, or the result is retained with the
     exact-arm profile and returned to the owner.
+    Amended 2026-11-17, AT-G5 and AT-G6 pass on the three layout builds (AC-21) with
+    ns per read and the floor reported.
 - id: AT8
   title: Run the binding campaign and record the evidence
   status: pending
@@ -224,11 +256,37 @@ tasks:
   depends_on:
   - AT5
   - AT7
+  - AT9
   files:
   - benches/evidence/array_translation/
   - benches/plans/array_translation.md
   - scopes/active/array-translation/validation.yaml
-  acceptance: AC-16. All seven gates run under the frozen manifests on nix with
+  acceptance: AC-16. All eight gates run under the frozen manifests on nix, AT-G4 as
+    the shared-runner recapture at-g4-campaign, with
     every pair retained. The translation-memory report, session length sweep,
     liveness pricing, pressure fast and fallback counts and the AT-G1 profile are
     recorded. sira receives the landed API for its SAB006 gate.
+- id: AT9
+  title: Slim the get hit path
+  status: pending
+  domain: pool
+  depends_on:
+  - AT5
+  files:
+  - src/pool/mod.rs
+  - src/pool/epoch.rs
+  - src/pool/translation.rs
+  - src/pool/frames.rs
+  - src/pool/clock.rs
+  - tests/pool.rs
+  - tests/public_api.rs
+  - tests/zero_alloc.rs
+  - tests/loom_pool.rs
+  - benches/evidence/array_translation/manifests/at-g8.json
+  acceptance: FR-12 and AC-20. A get hit reaches its caller without an out-of-line call
+    into the crate and without a result returned through memory; miss, busy and error
+    outcomes leave through an out-of-line path; each hit-path assertion of 604410a is
+    made once; the public API snapshot is unchanged; the retained disassembly of the
+    fair get loop shows no call into dios on a hit and one out-of-line slow target. AT-G8 passes on nix at 0.85 with
+    one runner source built against the tree AT5 leaves and the changed tree, and the
+    AT-G7 lanes still pass. Lint, Loom, Miri and ASAN are clean.

@@ -70,6 +70,10 @@ Every axis resolves to a provider rule, a decision stated here, or `n/a`. The ex
 - AD-11: Gates AT-G1 to AT-G7 carry the owner-selected bounds of 2026-11-14 in the bench plan.
 - AD-12: The translation mapping is reserved without commit accounting (`MAP_NORESERVE` on Linux) and sized by the two builder options (owner, 2026-11-15); rejected a 64 GiB default reservation and commit per file at registration: [design](design.md#reservation-and-release).
 - AD-13: The optimistic copy takes one `Acquire` fence before its second stamp load and in-process payload writers take one `Release` fence after the claim (owner, 2026-11-15, amending the WRC no-fence contract, which still bars the `SeqCst` epoch fence); rejected an x86-only fast path: [design](design.md#copy-acceptance).
+- AD-14: Benches against mmap follow the fairness contract of the bench plan (owner, 2026-11-17): the legacy resident lanes are frozen as harness-shape lanes, gated comparisons run in a fair-lane module with a plain-array floor arm, the ratio bounds stay and ns per read is reported beside them; rejected fixing the legacy lanes in place, gating on an inlined fold and gating on absolute nanoseconds.
+- AD-15: AT-G3 claims a hugepage-backed arena against ext4 mmap on 4 KiB pages under a recorded THP `madvise` host profile, with an ungated equal-reach row (owner, 2026-11-17); rejected equal reach only and demoting the gate to characterization.
+- AD-16: AT-G1, AT-G5 and AT-G6 pass only on three builds with perturbed code layout (owner, 2026-11-17); rejected deciding them on one build.
+- AD-17: The scope adds a `get` hit-path change after the session read, gated by AT-G8 at 0.85 (owner, 2026-11-17): a register-sized hit result, an inlinable fast path with the slow path out of line, and each hit-path assertion made once; rejected carrying it inside the session work.
 
 ## Context
 
@@ -124,6 +128,7 @@ Every axis resolves to a provider rule, a decision stated here, or `n/a`. The ex
 - FR-9: `Pool::read_copy` MUST make one optimistic attempt and at most one ordinary `get` fallback, returning `Copied`, `Pending` or `Busy`, with the output valid only on `Copied`.
 - FR-10: The optimistic attempt MUST run in this order and accept only if every step holds: load the entry to find the frame; load the stamp and require Resident; load the entry again and require the same frame; copy; `Acquire` fence; load the stamp again and require equality; load the mirror and require the requested generation.
 - FR-11: Every in-process writer of read-frame payload MUST use same-width relaxed atomic word stores (WRC-D1) and MUST take a `Release` fence after claiming the frame and before its first payload store.
+- FR-12: In an optimized caller of another crate that matches the result of `get` at the call site (witness: the loop function of the fair `get` lane, profile `profiling`, x86-64 on `nix`), a hit MUST execute no call into the crate and MUST carry its hit value in registers, while miss, busy and error outcomes leave through one out-of-line path; the hit value of the fast path is a private value of at most two machine words and the public signature of `get` is unchanged; every argument and invariant the hit path asserts at `604410a` MUST still be asserted, once.
 
 ### Technical Requirements
 
@@ -133,8 +138,9 @@ Every axis resolves to a provider rule, a decision stated here, or `n/a`. The ex
 - TR-4: `ReadSession` and `SessionFile` MUST be neither `Send` nor `Sync` and MUST NOT outlive the pool or the reader; a slice from a session MUST NOT outlive that session (it is an ordinary `&[u8]` and may be read by scoped threads while the session lives); escapes MUST fail to compile.
 - TR-5: Releasing translation backing MUST be advisory for correctness: every entry is already absent when the release runs.
 - TR-6: Volatile payload loads MUST live only in `src/pool/read_copy.rs` behind the single `Frames::optimistic_payload_ptr` seam.
-- TR-7: Gates AT-G1 to AT-G7 MUST pass on `nix` under the bench plan's protocol before adoption.
+- TR-7: Gates AT-G1 to AT-G8 MUST pass on `nix` under the bench plan's protocol before adoption.
 - TR-8: The public API MUST drop `PageTable` and add the types `ReadSession`, `SessionFile`, `SessionRead` and `ReadCopy`, the methods `Pool::session`, `ReadSession::file`, `SessionFile::page`, `Pool::read_copy` and `PoolBuilder::file_granules_max`, and the variants `GetError::BeyondFileBound`, `PoolConfigError::FileGranulesMaxNotPowerOfTwo`, `PoolConfigError::FrameCountAboveTranslationLimit` and `PoolConfigError::TranslationUnrepresentable`, pinned by `tests/public_api.rs`.
+- TR-9: Every lane that decides AT-G1, AT-G2, AT-G3, AT-G5, AT-G6 or AT-G8 MUST satisfy rules F1 to F11 of the bench plan's fairness contract, AT-G1, AT-G5 and AT-G6 MUST pass under F12, and the legacy resident lanes MUST keep the loop code of `604410a`; AT-G4 stays on its legacy lane, where both arms run one loop, and is recaptured only with one runner built against both trees.
 
 ## Acceptance Criteria
 
@@ -153,8 +159,12 @@ Every axis resolves to a provider rule, a decision stated here, or `n/a`. The ex
 - [ ] AC-13 (FR-11): Given the writer inventory, when Miri runs the in-process fills, then every read-frame payload write is a same-width atomic store.
 - [ ] AC-14 (TR-6): Given a volatile payload read or a seam call outside `src/pool/read_copy.rs` in a pool file and in `src/mock.rs`, when `tests/arch3_sync_alias.rs` runs, then both are rejected.
 - [ ] AC-15 (TR-1): Given warmed pools on both backends, when hits, session reads and successful copies run under the zero-alloc harness, then no allocation is recorded.
-- [ ] AC-16 (TR-7): Given the frozen manifests, when the campaign runs on `nix`, then AT-G1 to AT-G7 pass and the evidence is retained.
+- [ ] AC-16 (TR-7): Given the frozen manifests, when the campaign runs on `nix`, then AT-G1 to AT-G8 pass and the evidence is retained.
 - [ ] AC-17 (TR-8): Given the public API snapshot, when it is regenerated, then it shows exactly the additions and the removal of TR-8.
+- [ ] AC-18 (TR-9): Given a capture of a fair lane, when `warm-prepare` validates it, then unequal runner hashes across product versions, a missing warm pass, a timed region under 100 ms, a fault in the timed region of a resident lane, a missing page-size witness or a missing floor comparison each reject the set, and `report.json` shows ns per read per arm and their difference with its interval.
+- [ ] AC-19 (TR-9): Given the legacy resident lanes, when their loop functions are compared with `604410a`, then they are unchanged, and the session, copy, fair `get` and floor arms run in the fair-lane module.
+- [ ] AC-20 (FR-12, TR-7): Given one runner source built against the tree AT5 leaves and the tree after the hit-path change, when AT-G8 runs on `nix`, then its upper bound is at or below 0.85, the AT-G7 lanes still pass, the hit path makes each of its assertions once, the retained disassembly of the fair `get` loop shows no call into `dios` on the hit path and one out-of-line target for miss, busy and error, and the public API snapshot is unchanged.
+- [ ] AC-21 (TR-9): Given the three layout builds of AT-G1, AT-G5 and AT-G6, when each is captured, then every build passes its bound.
 
 ## API Contract
 
@@ -169,6 +179,7 @@ Every axis resolves to a provider rule, a decision stated here, or `n/a`. The ex
 | `PoolConfigError::FileGranulesMaxNotPowerOfTwo` | `{ requested: u32 }` | Zero or non-power-of-two bound |
 | `PoolConfigError::FrameCountAboveTranslationLimit` | `{ requested: u32, limit: u32 }` | Frame count above `2^30` |
 | `PoolConfigError::TranslationUnrepresentable` | `{ registered_file_capacity: u32, file_granules_max: u32 }` | Entry count overflows the mapping size |
+| `Pool::get` | signature unchanged | Hit result sized for register return, fast path inlinable (FR-12) |
 | `PageTable` | removed | Hash table no longer part of the product |
 
 ## Verification
@@ -179,4 +190,4 @@ Every axis resolves to a provider rule, a decision stated here, or `n/a`. The ex
 - `mise run asan`: syscall-touching suites on the translation and copy paths.
 - `mise run lint`: clippy pedantic and rustfmt clean.
 - `mise run remote -- mise run bench-mmap-workloads <output>`: resident session, copy and regression lanes on `nix`.
-- `mise run gate <paired.csv> <bound>`: asserts each of AT-G1 to AT-G7 against its bound.
+- `mise run gate <paired.csv> <bound>`: asserts each of AT-G1 to AT-G8 against its bound.

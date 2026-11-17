@@ -9,7 +9,8 @@
 | Resident 64-byte read, Dios/mmap, 1,024 pages, Zen 2 (`resident_access_ordinary`, 2026-09-14) | 8.148, upper 8.300 (46.2 ns against 5.7 ns) | session read upper <= 1.50 (AT-G1) |
 | Whole-granule fold, Dios/mmap, 1,024 pages | 1.72 on M1 (advisory) | session read upper <= 1.10 (AT-G2) |
 | Whole-granule fold, Dios/mmap, 256 MiB set (`mmap_tlb_pressure` THP attribution, 2026-08-18) | 1.18 with the hugepage-advised arena, 1.48 without | session read upper <= 1.00 (AT-G3) |
-| `get` hit cost | 46.2 ns on Zen 2 | new/old upper <= 0.85 (AT-G4) |
+| `get` hit cost | 46.2 ns on Zen 2 | new/old upper <= 0.85 (AT-G4), passed at 0.7539 on 2026-11-17 |
+| `get` hit cost after the swap, lean harness | about 28 ns on Zen 2 (scratch, 2026-11-17) | hit-path change/before upper <= 0.85 (AT-G8) |
 | Copy-out of 64 bytes against an mmap copy | no verb | upper <= 1.50 (AT-G5) |
 
 A resident read today pays for three things an mmap read does not: a hash probe of
@@ -209,6 +210,30 @@ keep their present representation because no unguarded reader touches them. The
 owner's approval of the two fences amends the inherited contract, whose no-fence rule
 still bars the `SeqCst` epoch fence from the optimistic path.
 
+### Get hit path
+
+Profile of 2026-11-17 on Zen 2, lean harness, 28 ns per hit: `pin_live` about 12 ns
+(a third at function entry, a fifth writing the 48-byte guard into the return slot),
+the caller unwrapping `Result<Get, GetError>` about 6 ns, the `get` wrapper about 3 ns.
+No single operation dominates; the epoch fence is about 1% of `pin_live`.
+
+AD-17 keeps the public signature and changes how a hit reaches the caller (FR-12):
+
+- The fast path is inlinable into a caller of another crate and ends in one of two
+  ways: a hit value of at most two machine words (frame reference and reader slot),
+  from which the guard is built in the caller's frame, or a tail call to one
+  out-of-line function that owns miss, busy, stale-file and bound errors.
+- `pin_live` loses `#[inline(never)]`; the slow path keeps `#[cold]` and
+  `#[inline(never)]`.
+- Reader ownership, pool identity and the granule bound are each asserted or checked
+  once on the hit path; the translation entry is not bound-checked a second time
+  behind the public bound check.
+- The INV-7 order (epoch pin, entry load, mirror, pin commit) and every atomic
+  ordering are unchanged; the Loom cases of AT2 and AT4 cover the changed path.
+
+Rejected: a second public hit-only verb (surface without a new capability, FR-12 is
+met without it) and removing assertions (AGENTS.md safety rules).
+
 ### Inherited copy-out contract
 
 The volatile-word exception, its single module, the same-width atomic writers, the
@@ -242,6 +267,7 @@ the Miri model limits for this scope are recorded in [audits](audits.md).
 | Translation swap | AT2, AT3 | Every existing test passes without `PageTable`; AT-G4 and AT-G7 pass |
 | Session read | AT4, AT5 | Session cases pass under Loom and compile-fail; AT-G1, AT-G2, AT-G3 pass |
 | Copy-out | AT6, AT7 | Copy cases pass under Loom, Miri and the confinement rule; AT-G5, AT-G6 pass |
+| Get hit path | AT9 | The fair `get` loop holds no call into the crate on a hit; AT-G8 passes |
 | Campaign | AT8 | Evidence, translation-memory report and the sira handoff are recorded |
 
 AT-G1 levers, applied only after the failing arm is profiled and the owner approves the

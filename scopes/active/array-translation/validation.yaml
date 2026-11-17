@@ -103,6 +103,51 @@ clarification_sessions:
             section: Decisions
             action: AD-13 recorded; FR-10 and FR-11 updated
 
+  - id: S003
+    timestamp: 2026-11-17
+    source: implementation
+    questions:
+      - id: Q008
+        question: "Fix the legacy resident lanes in place, or freeze them and add fair lanes?"
+        answer: "Freeze, add fair lanes"
+        area: constraints
+        doc_updates:
+          - file: benches/plans/array_translation.md
+            section: Fairness contract
+            action: F1 to F11 and the frozen legacy lanes recorded; AD-14, TR-9, AC-18, AC-19 derived
+      - id: Q009
+        question: "How are the ratio gates defined against a 6 ns mmap read that is mostly shared harness cost?"
+        answer: "Keep bounds, add ns and floor"
+        area: constraints
+        doc_updates:
+          - file: benches/plans/array_translation.md
+            section: Fairness contract
+            action: F11 and the plain_array floor arm recorded
+      - id: Q010
+        question: "What does AT-G3 claim?"
+        answer: "Scoped claim plus equal-reach row"
+        area: constraints
+        doc_updates:
+          - file: benches/plans/array_translation.md
+            section: Gates, Workload contract
+            action: AT-G3 scoped; THP prerequisite and equal-reach row recorded; AD-15
+      - id: Q011
+        question: "Should a single build decide AT-G1, AT-G5 and AT-G6?"
+        answer: "Three builds, each passing"
+        area: constraints
+        doc_updates:
+          - file: benches/plans/array_translation.md
+            section: Fairness contract
+            action: F12 recorded; AD-16, AC-21
+      - id: Q012
+        question: "Which bound gates the get hit-path change?"
+        answer: "<= 0.85"
+        area: scope
+        doc_updates:
+          - file: scope.md
+            section: Decisions, Requirements
+            action: AD-17, FR-12, AC-20 and task AT9 recorded; AT-G8 in the bench plan
+
 owner_decisions:
   - id: AT-D1
     decided_at: 2026-11-14
@@ -136,6 +181,34 @@ owner_decisions:
     decided_at: 2026-11-17
     owner: Sören
     decision: "One fresh 30-pair rerun of the RC-G4 lane automatic_fragmented is authorized at the same commit and executables. The first set failed (ratio geomean 1.0251, ci95 upper 1.0800, bound 1.02) on one pair at 2.18 whose automatic-arm process polled 1.18M times instead of 0.51M for the same 1,024 reads; the other 29 pairs lie within 0.971 to 1.003. The failed set is retained and the rerun decides the lane."
+  - id: AT-D9
+    decided_at: 2026-11-17
+    owner: Sören
+    decision: "The benches against mmap are made fair and comparable, informed by subagent research on benchmarking against mmap, and without cheating: no harness change removes a cost that a real caller of the product API pays, no product change is made for the bench alone, bounds stay as recorded and retained results keep their standing. Trigger: on resident_access_ordinary the get arm pays about 7 of 35 ns per read in harness-only call layers and result re-wrapping that the mmap arm lacks (scratch measurement on nix, 2026-11-17)."
+  - id: AT-D10
+    decided_at: 2026-11-17
+    owner: Sören
+    decision: "The legacy resident lanes (resident_access_ordinary, _hinted, _epoch_batch, _retained, _page_batch, resident_projection, resident_decode and the characterization mode of mmap_tlb_pressure) are frozen byte for byte and labelled harness-shape lanes. The session and copy arms, a fair get arm and a plain-array floor arm live in a new module that follows the fairness contract of the bench plan. The AT4 change to the shared finish function is reverted."
+  - id: AT-D11
+    decided_at: 2026-11-17
+    owner: Sören
+    decision: "The ratio bounds of AT-G1, AT-G5 and AT-G6 and the shared non-inlined fold stay as selected on 2026-11-14. Every gate additionally reports ns per read for each arm, their difference with its interval, a plain-array floor arm, and an inlined-fold variant as characterization."
+  - id: AT-D12
+    decided_at: 2026-11-17
+    owner: Sören
+    decision: "AT-G3 keeps its bound and is scoped to what it measures: a hugepage-backed arena against ext4 mmap with 4 KiB pages, under a separate recorded THP=madvise host profile pinned in its manifest. A row with the arena on 4 KiB pages is reported and not gated. The arm is CPU-pinned, draws over all 65,536 pages and runs on the shipping backend."
+  - id: AT-D13
+    decided_at: 2026-11-17
+    owner: Sören
+    decision: "AT-G1, AT-G5 and AT-G6 are each captured on three builds with perturbed code layout, recorded in their manifests, 30 pairs per build, and pass only when all three pass."
+  - id: AT-D14
+    decided_at: 2026-11-17
+    owner: Sören
+    decision: "The scope is expanded by a get hit-path task after AT5 with its own gate: a register-sized hit result, an inlinable fast path with the slow path out of line, and deduplicated assertions. It does not ride along in the session work."
+  - id: AT-D15
+    decided_at: 2026-11-17
+    owner: Sören
+    decision: "AT-G8 bounds the get hit after the hit-path change against get as AT5 leaves it at 0.85, on the fair get lane, with one runner source built against both trees; the AT-G7 lanes must still pass."
   - id: WRC-D1
     inherited_from: scopes/draft/warm-read-copy-out/validation.yaml
     decision: "Volatile-word exception, same-width atomic writers, one audited module, mirror-only liveness carry over; the bracket is amended by Q005 and A001."
@@ -221,6 +294,26 @@ review_config:
   reviewers:
   - peer-gpt6-astra
   - peer-opus
+
+amendment_review_gate:
+  status: passed
+  amended_at: '2026-11-17'
+  subject: "Owner decisions AT-D9 to AT-D15: fairness contract, AT-G3 scoping, layout builds, AT9 and AT-G8"
+  reviewers:
+  - peer-gpt6-astra
+  - peer-opus
+  effort: high
+  reports: .tropos/peer/scope-array-translation/20261117T153735Z-6ba2ce/
+  blocking_resolved: 5
+  medium_resolved: 8
+  fix_rounds: 2
+  targeted_reviewer: peer-opus
+  reason: Five high and five medium findings named concrete defects of the amendment and
+    were folded; the targeted re-review found seven folds clean and three residual
+    contradictions (the AT-G3 validity rule against the equal-reach row, the AT-G4
+    recapture command, the AT-G8 mmap pair), which the second fold resolves in the
+    documents. The second fold was not re-reviewed; two fix rounds are the limit. No
+    product code, test or benchmark result is claimed by the amendment.
 
 review_gate:
   status: passed
