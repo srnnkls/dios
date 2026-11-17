@@ -71,7 +71,7 @@ pub use translation::Translation;
 /// against real encoded segments, and a per-store override remains available.
 pub const GRANULE_DEFAULT: u32 = 4096;
 
-const FILE_GRANULES_MAX_DEFAULT: u32 = 1 << 22;
+pub(crate) const FILE_GRANULES_MAX_DEFAULT: u32 = 1 << 22;
 
 /// The `O_DIRECT` sector floor: every frame and staging slot is aligned to this,
 /// and no granule may fall below it.
@@ -2033,11 +2033,9 @@ impl<D: PoolBackend> Pool<D> {
                 );
                 let slot = reader.slot();
                 let page = entry.page();
-                let (bytes, frame) = self
+                let guard = self
                     .pin_owned(&page, slot)
                     .expect("the protected successful frame remains pinnable");
-                let guard =
-                    FrameGuard::new(bytes, slot, frame, page.file().slot(), &self.retention);
                 let slot = token.slot;
                 let generation = token.generation;
                 let _ = token.consume();
@@ -2454,40 +2452,59 @@ impl<D: PoolBackend> Pool<D> {
         slot: &'ctx epoch::ReaderSlot,
         page: &PageId,
     ) -> Option<FrameGuard<'ctx>> {
-        let (bytes, frame) = self.pin_owned(page, slot)?;
-        Some(FrameGuard::new(
-            bytes,
-            slot,
-            frame,
-            page.file().slot(),
-            &self.retention,
-        ))
+        self.pin_owned(page, slot)
     }
 
     #[inline(never)]
     fn pin_owned<'pool>(
         &'pool self,
         page: &PageId,
+        slot: &'pool epoch::ReaderSlot,
+    ) -> Option<FrameGuard<'pool>> {
+        let begun = self.pin_begin(slot);
+        let (begun, frame) = self.pin_entry(begun, slot, *page)?;
+        Some(self.pin_owned_commit(begun, frame, slot, *page))
+    }
+
+    /// The epoch publication every lock-free resolution starts with: `get`,
+    /// the owned pin and the session read.
+    #[inline]
+    fn pin_begin(&self, slot: &epoch::ReaderSlot) -> epoch::PinBegun {
+        slot.begin_pin(self.global_epoch.load(Ordering::Acquire))
+    }
+
+    /// Loads `page`'s entry under the begun pin, aborting the pin when the
+    /// entry is absent.
+    #[inline]
+    fn pin_entry(
+        &self,
+        begun: epoch::PinBegun,
         slot: &epoch::ReaderSlot,
-    ) -> Option<(&'pool [u8], ReadFrameIdx)> {
-        let begun = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
-        let mapped = self.table.lookup(*page);
-        let Some(frame) = mapped else {
+        page: PageId,
+    ) -> Option<(epoch::PinBegun, ReadFrameIdx)> {
+        let Some(frame) = self.table.lookup(page) else {
             slot.abort_pin(begun);
             return None;
         };
-        Some(self.pin_owned_commit(begun, frame, slot))
+        Some((begun, frame))
     }
 
     fn pin_owned_commit<'pool>(
         &'pool self,
         begun: epoch::PinBegun,
         frame: ReadFrameIdx,
-        slot: &epoch::ReaderSlot,
-    ) -> (&'pool [u8], ReadFrameIdx) {
+        slot: &'pool epoch::ReaderSlot,
+        page: PageId,
+    ) -> FrameGuard<'pool> {
         let _ = self.clock.reference_from(frame, slot);
         let pin = slot.commit_pin(begun, frame);
-        (self.frames.frame_bytes(&pin), pin.frame())
+        FrameGuard::new(
+            self.frames.frame_bytes(&pin),
+            slot,
+            pin.frame(),
+            page.file().slot(),
+            &self.retention,
+        )
     }
 
     /// The lock-free resolution of `get`: pins the epoch, loads the entry and
@@ -2499,11 +2516,10 @@ impl<D: PoolBackend> Pool<D> {
         slot: &'pool epoch::ReaderSlot,
         page: PageId,
     ) -> LivePin<'pool> {
-        let begun = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
+        let begun = self.pin_begin(slot);
         #[cfg(all(feature = "mock", not(loom)))]
         self.pause_get_between_pin_and_entry_if_armed();
-        let Some(frame) = self.table.lookup(page) else {
-            slot.abort_pin(begun);
+        let Some((begun, frame)) = self.pin_entry(begun, slot, page) else {
             return LivePin::Absent;
         };
         if !file_generation_is_live(
@@ -2513,14 +2529,7 @@ impl<D: PoolBackend> Pool<D> {
             slot.abort_pin(begun);
             return LivePin::StaleFile;
         }
-        let (bytes, frame) = self.pin_owned_commit(begun, frame, slot);
-        LivePin::Hit(FrameGuard::new(
-            bytes,
-            slot,
-            frame,
-            page.file().slot(),
-            &self.retention,
-        ))
+        LivePin::Hit(self.pin_owned_commit(begun, frame, slot, page))
     }
 
     fn assert_reader_owner(&self, reader: &ReaderCtx) {
@@ -3175,7 +3184,13 @@ fn publish_live_file(
 
 #[inline]
 fn file_generation_is_live(live_generation: &AtomicU64, file: FileId) -> bool {
-    live_generation.load(Ordering::Acquire) == file_live_word(file)
+    live_word_is_live(live_generation, file_live_word(file))
+}
+
+/// The one file-liveness rule: the slot's mirror holds the file's live word.
+#[inline]
+fn live_word_is_live(live_generation: &AtomicU64, live_word: u64) -> bool {
+    live_generation.load(Ordering::Acquire) == live_word
 }
 
 fn begin_file_retirement(entry: &mut PoolFile, live_generation: &AtomicU64, file: FileId) -> bool {

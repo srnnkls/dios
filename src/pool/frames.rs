@@ -10,7 +10,7 @@ use std::mem::MaybeUninit;
 use std::num::NonZeroU32;
 use std::ptr::NonNull;
 
-use crate::pool::epoch::{FrameGuard, PinBegun, PinCommit};
+use crate::pool::epoch::{FrameGuard, PinBegun, PinCommit, SessionPin};
 use crate::pool::{Control, PageId, SECTOR_BYTES};
 use crate::sync::{AtomicU64, Ordering, UnsafeCell};
 
@@ -23,6 +23,53 @@ const FRAME_STATE_MASK: u64 = (1 << FRAME_STATE_BITS) - 1;
 const FRAME_GENERATION_MAX: u64 = u64::MAX >> FRAME_STATE_BITS;
 const FRAME_STATE_TAG_MAX: u64 = 3;
 const _: () = assert!(FRAME_STATE_TAG_MAX <= FRAME_STATE_MASK);
+
+/// The loop-invariant geometry of a [`Frames`] arena for a session's reads.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SessionArena<'pool> {
+    base: NonNull<u8>,
+    granule_shift: u32,
+    count: u32,
+    frames: &'pool Frames,
+}
+
+impl<'pool> SessionArena<'pool> {
+    /// The granule backing `frame`, which a set translation entry named after
+    /// `pin` published the reader's epoch.
+    ///
+    /// # Panics
+    ///
+    /// If `frame` is out of range for the configured count.
+    #[must_use]
+    #[inline]
+    pub(crate) fn frame_bytes<'session>(
+        &self,
+        _pin: &'session SessionPin<'_>,
+        frame: ReadFrameIdx,
+    ) -> &'session [u8]
+    where
+        'pool: 'session,
+    {
+        assert!(frame.get() < self.count, "frame index out of range");
+        debug_assert!(
+            matches!(
+                self.frames.state(frame),
+                FrameState::Resident | FrameState::Evicting
+            ),
+            "a session frame is Resident or Evicting while its bytes are borrowed"
+        );
+        let offset = (frame.get() as usize) << self.granule_shift;
+        // SAFETY: `frame < count`, so the granule starts inside the arena
+        // `base` addresses for `'pool`.
+        let start = unsafe { self.base.as_ptr().add(offset) };
+        // SAFETY: the granule lies inside the arena and is initialized. The
+        // entry naming `frame` was set while the frame was Resident (INV-2)
+        // and loaded after the pin published and fenced the reader's epoch,
+        // so EBR frees the frame only after the pin drops (INV-3): no token
+        // writes it while the borrow lives.
+        unsafe { std::slice::from_raw_parts(start, 1usize << self.granule_shift) }
+    }
+}
 
 /// One preallocated full-page identity per frame, written under the frame's
 /// [`InFlightFrame`] token and read under one of three witnesses: a validated
@@ -474,6 +521,18 @@ impl Frames {
         // SAFETY: the committed pin proves a validated Resident/Evicting frame
         // whose reuse EBR defers past this borrow, so no token writes it.
         unsafe { self.granule_slice(index) }
+    }
+
+    /// The arena's base, granule and frame count, copied once so a session's
+    /// reads load none of them from the pool.
+    #[must_use]
+    pub(crate) fn session_arena(&self) -> SessionArena<'_> {
+        SessionArena {
+            base: self.base,
+            granule_shift: self.granule.trailing_zeros(),
+            count: self.count,
+            frames: self,
+        }
     }
 
     /// The `granule`-byte region backing `frame` under exclusive arena

@@ -67,8 +67,30 @@ impl Translation {
     #[must_use]
     #[inline]
     pub fn lookup(&self, page: PageId) -> Option<ReadFrameIdx> {
-        let word = self.entry(page).load(Ordering::Acquire);
-        word.checked_sub(1).map(ReadFrameIdx::new)
+        entry_frame(self.entry(page))
+    }
+
+    /// The entries of `file`'s slot indexed by granule: the slice's base and
+    /// length are the slot's entry base and `file_granules_max`.
+    ///
+    /// # Panics
+    ///
+    /// If `file`'s slot lies outside the reservation.
+    #[inline]
+    pub(crate) fn slot_entries(&self, file: FileId) -> &[AtomicU32] {
+        assert!(
+            file.slot() < self.registered_file_capacity,
+            "a session file lies in a reserved file slot"
+        );
+        let start = usize::try_from(u64::from(file.slot()) << self.file_granules_shift)
+            .expect("a reserved entry index fits usize");
+        let entries = self.entries.elements(start, 1 << self.file_granules_shift);
+        debug_assert_eq!(
+            entries.len().trailing_zeros(),
+            self.file_granules_shift,
+            "a slot holds file_granules_max entries"
+        );
+        entries
     }
 
     /// Sets the absent entry of `page` to `frame`.
@@ -146,11 +168,45 @@ impl Translation {
     }
 }
 
+/// The frame a translation entry names, loaded `Acquire` so a set entry
+/// carries the frame's completed publication.
+#[inline]
+pub(crate) fn entry_frame(entry: &AtomicU32) -> Option<ReadFrameIdx> {
+    let word = entry.load(Ordering::Acquire);
+    word.checked_sub(1).map(ReadFrameIdx::new)
+}
+
 impl std::fmt::Debug for Translation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Translation")
             .field("registered_file_capacity", &self.registered_file_capacity)
             .field("file_granules_max", &(1u64 << self.file_granules_shift))
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::driver::DEFAULT_REGISTERED_FILE_CAPACITY;
+    use crate::pool::FILE_GRANULES_MAX_DEFAULT;
+
+    #[test]
+    fn slot_entries_of_a_default_reservation_index_the_slot_by_granule() {
+        let translation =
+            Translation::try_reserve(DEFAULT_REGISTERED_FILE_CAPACITY, FILE_GRANULES_MAX_DEFAULT)
+                .expect("the default reservation maps");
+        let file = FileId::new(0, DEFAULT_REGISTERED_FILE_CAPACITY - 1, 1);
+        let granule_idx = FILE_GRANULES_MAX_DEFAULT - 1;
+        translation.publish(PageId::new(file, granule_idx), ReadFrameIdx::new(7));
+
+        let entries = translation.slot_entries(file);
+
+        assert_eq!(entries.len(), FILE_GRANULES_MAX_DEFAULT as usize);
+        assert_eq!(
+            entry_frame(&entries[granule_idx as usize]),
+            Some(ReadFrameIdx::new(7))
+        );
+        assert_eq!(entry_frame(&entries[0]), None);
     }
 }

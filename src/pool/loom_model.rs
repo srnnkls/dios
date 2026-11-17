@@ -1326,7 +1326,15 @@ impl PoolModel {
     #[must_use]
     pub fn session(&self) -> ModelSession<'_> {
         ModelSession {
-            session: ReadSession::new(0, MODEL_FILE_GRANULES_MAX),
+            session: ReadSession::new(
+                &self.readers.slots()[0],
+                &self.global_epoch,
+                &self.translation,
+                &self.frames,
+                &self.clock,
+                &self.file_live_generations,
+                0,
+            ),
         }
     }
 

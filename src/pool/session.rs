@@ -1,26 +1,43 @@
 //! Session read: one epoch pin shared by many resident-only reads of one
 //! reader (FR-6 to FR-8).
 
-use std::marker::PhantomData;
-
 use crate::driver::FileId;
+use crate::sync::{AtomicU32, AtomicU64};
 
-use super::epoch::ReaderCtx;
-use super::{GetError, PageId, Pool, PoolBackend};
+#[cfg(loom)]
+use crate::sync::Ordering;
+
+#[cfg(loom)]
+use super::epoch::ReaderSlot;
+use super::epoch::{ReaderCtx, SessionPin};
+#[cfg(loom)]
+use super::frames::Frames;
+use super::frames::SessionArena;
+use super::translation::{Translation, entry_frame};
+use super::{Clock, GetError, PageId, Pool, PoolBackend, file_live_word, live_word_is_live};
 
 /// Many resident-only reads of one reader under one epoch pin; borrows the
 /// pool and the reader and is neither `Send` nor `Sync`.
 #[derive(Debug)]
 pub struct ReadSession<'pool> {
+    pin: SessionPin<'pool>,
+    translation: &'pool Translation,
+    arena: SessionArena<'pool>,
+    clock: &'pool Clock,
+    file_live_generations: &'pool [AtomicU64],
     identity: u64,
-    file_granules_max: u32,
-    _reader: PhantomData<&'pool ReaderCtx>,
 }
 
-/// One file's identity-validated view inside a [`ReadSession`].
+/// One file's identity-validated view inside a [`ReadSession`], holding the
+/// values every read of the file reuses.
 #[derive(Debug)]
 pub struct SessionFile<'session> {
-    session: &'session ReadSession<'session>,
+    pin: &'session SessionPin<'session>,
+    entries: &'session [AtomicU32],
+    live_generation: &'session AtomicU64,
+    live_word: u64,
+    arena: SessionArena<'session>,
+    clock: &'session Clock,
     file: FileId,
 }
 
@@ -43,28 +60,50 @@ impl<D: PoolBackend> Pool<D> {
     ///
     /// # Panics
     ///
-    /// If `reader` belongs to another pool.
+    /// If `reader` belongs to another pool or already holds its declared peak
+    /// of guards.
     #[must_use]
     pub fn session<'pool>(&'pool self, reader: &'pool ReaderCtx) -> ReadSession<'pool> {
         self.assert_reader_owner(reader);
-        ReadSession::new(self.identity, self.file_granules_max)
+        let slot = reader.slot();
+        ReadSession {
+            pin: slot.commit_session(self.pin_begin(slot)),
+            translation: &self.table,
+            arena: self.frames.session_arena(),
+            clock: &self.clock,
+            file_live_generations: &self.file_live_generations,
+            identity: self.identity,
+        }
     }
 }
 
+#[cfg(loom)]
 impl<'pool> ReadSession<'pool> {
-    pub(crate) fn new(identity: u64, file_granules_max: u32) -> Self {
-        assert!(
-            file_granules_max.is_power_of_two(),
-            "the per-file granule bound is a power of two"
-        );
+    /// A session over the parts of a pool, pinning `slot`'s epoch from
+    /// `global_epoch`.
+    pub(crate) fn new(
+        slot: &'pool ReaderSlot,
+        global_epoch: &AtomicU64,
+        translation: &'pool Translation,
+        frames: &'pool Frames,
+        clock: &'pool Clock,
+        file_live_generations: &'pool [AtomicU64],
+        identity: u64,
+    ) -> Self {
         Self {
+            pin: slot.commit_session(slot.begin_pin(global_epoch.load(Ordering::Acquire))),
+            translation,
+            arena: frames.session_arena(),
+            clock,
+            file_live_generations,
             identity,
-            file_granules_max,
-            _reader: PhantomData,
         }
     }
+}
 
-    /// Validates `file`'s pool identity once for the session's reads of it.
+impl ReadSession<'_> {
+    /// Validates `file`'s pool identity and liveness once for the session's
+    /// reads of it.
     ///
     /// # Errors
     ///
@@ -79,26 +118,33 @@ impl<'pool> ReadSession<'pool> {
             self.identity,
             "file identity used with a foreign pool"
         );
+        let entries = self.translation.slot_entries(file);
+        let live_generation = &self.file_live_generations[file.slot() as usize];
+        let live_word = file_live_word(file);
+        if !live_word_is_live(live_generation, live_word) {
+            return Err(GetError::StaleFile {
+                page: PageId::new(file, 0),
+            });
+        }
         Ok(SessionFile {
-            session: self,
+            pin: &self.pin,
+            entries,
+            live_generation,
+            live_word,
+            arena: self.arena,
+            clock: self.clock,
             file,
         })
     }
 
-    /// The session resolution shared by [`SessionFile::page`] and the Loom seam.
-    pub(crate) fn read_page(&self, page: PageId) -> Result<SessionRead<'pool>, GetError> {
-        if page.granule_idx() >= self.file_granules_max {
-            return Err(GetError::BeyondFileBound { page });
-        }
-        Ok(SessionRead::Absent)
+    /// The session resolution of one page, shared with the Loom seam.
+    #[cfg(loom)]
+    pub(crate) fn read_page(&self, page: PageId) -> Result<SessionRead<'_>, GetError> {
+        self.file(page.file())?.resolve(page.granule_idx())
     }
 }
 
-impl Drop for ReadSession<'_> {
-    fn drop(&mut self) {}
-}
-
-impl SessionFile<'_> {
+impl<'session> SessionFile<'session> {
     /// Reads one granule of the file without submitting I/O.
     ///
     /// # Errors
@@ -106,7 +152,30 @@ impl SessionFile<'_> {
     /// Returns [`GetError::StaleFile`] when the file generation is no longer
     /// live and [`GetError::BeyondFileBound`] for a granule at or above
     /// `file_granules_max`.
+    #[inline]
     pub fn page(&self, granule_idx: u32) -> Result<SessionRead<'_>, GetError> {
-        self.session.read_page(PageId::new(self.file, granule_idx))
+        self.resolve(granule_idx)
+    }
+
+    /// Loads the entry, then the file-generation mirror (INV-7), then sets
+    /// the CLOCK reference of the frame it borrows.
+    #[inline]
+    fn resolve(&self, granule_idx: u32) -> Result<SessionRead<'session>, GetError> {
+        let Some(entry) = self.entries.get(granule_idx as usize) else {
+            return Err(GetError::BeyondFileBound {
+                page: PageId::new(self.file, granule_idx),
+            });
+        };
+        let frame = entry_frame(entry);
+        if !live_word_is_live(self.live_generation, self.live_word) {
+            return Err(GetError::StaleFile {
+                page: PageId::new(self.file, granule_idx),
+            });
+        }
+        let Some(frame) = frame else {
+            return Ok(SessionRead::Absent);
+        };
+        let _ = self.clock.reference_from(frame, self.pin.slot());
+        Ok(SessionRead::Hit(self.arena.frame_bytes(self.pin, frame)))
     }
 }

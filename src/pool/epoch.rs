@@ -56,6 +56,30 @@ impl PinCommit {
     }
 }
 
+/// A committed pin that holds the reader's published epoch as one live guard
+/// without naming a frame: every frame a set translation entry names after the
+/// pin cannot be reclaimed until it drops (INV-2, INV-3). Thread-bound like
+/// the reader that minted it.
+#[must_use]
+#[derive(Debug)]
+pub(crate) struct SessionPin<'reader> {
+    slot: &'reader ReaderSlot,
+    _thread_bound: PhantomData<*const ()>,
+}
+
+impl<'reader> SessionPin<'reader> {
+    pub(crate) fn slot(&self) -> &'reader ReaderSlot {
+        self.slot
+    }
+}
+
+impl Drop for SessionPin<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        self.slot.release_guard();
+    }
+}
+
 /// One registered reader's epoch state. A `ReaderCtx` is thread-bound (`!Send`),
 /// so only its owning thread writes `local_epoch`/`guard_count`; the atomics
 /// carry those values across the shared slot table without a warm-path RMW (a
@@ -202,11 +226,31 @@ impl ReaderSlot {
     /// Commits a pin on the frame it validated, counting one more live guard
     /// for this reader.
     #[inline]
+    pub(crate) fn commit_pin(&self, begun: PinBegun, frame: ReadFrameIdx) -> PinCommit {
+        self.commit_guard(begun);
+        PinCommit {
+            frame,
+            _thread_bound: PhantomData,
+        }
+    }
+
+    /// Commits a pin that holds the published epoch for a session's many
+    /// reads instead of one frame, counting one live guard until it drops.
+    #[inline]
+    pub(crate) fn commit_session(&self, begun: PinBegun) -> SessionPin<'_> {
+        self.commit_guard(begun);
+        SessionPin {
+            slot: self,
+            _thread_bound: PhantomData,
+        }
+    }
+
+    #[inline]
     #[expect(
         clippy::needless_pass_by_value,
         reason = "the begun witness is linear: committing consumes it so it cannot also be aborted"
     )]
-    pub(crate) fn commit_pin(&self, begun: PinBegun, frame: ReadFrameIdx) -> PinCommit {
+    fn commit_guard(&self, begun: PinBegun) {
         let taken = self
             .guard_count()
             .checked_add(1)
@@ -218,10 +262,6 @@ impl ReaderSlot {
         self.guard_count.store(taken, Ordering::Relaxed);
         let PinBegun { first, .. } = begun;
         debug_assert_eq!(first, taken == 1, "the first pin commits the first guard");
-        PinCommit {
-            frame,
-            _thread_bound: PhantomData,
-        }
     }
 
     /// Abandons a pin whose validation failed: no guard was minted, so a

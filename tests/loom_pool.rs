@@ -1111,10 +1111,15 @@ fn eviction_reclaim_and_reuse_racing_a_session_read_never_change_its_bytes() {
                         "no reclaim or refill lands under a live session (INV-2, INV-3)"
                     );
                 }
-                Ok(SessionRead::Absent) => assert!(
-                    raced_eviction,
-                    "a read that completes before eviction starts hits the resident page"
-                ),
+                Ok(SessionRead::Absent) => {
+                    assert!(
+                        raced_eviction,
+                        "a read that completes before eviction starts hits the resident page"
+                    );
+                    attempted_rx
+                        .recv()
+                        .expect("the writer reports its eviction, reclaim and reuse attempts");
+                }
                 Err(error) => panic!("the file stays live: {error:?}"),
             }
         });
@@ -1123,8 +1128,9 @@ fn eviction_reclaim_and_reuse_racing_a_session_read_never_change_its_bytes() {
         pool.evict_file(SESSION_FILE_GENERATION, HELD_PAGE);
         pool.poll_file_pass(SESSION_FILE_GENERATION, INTRUDER_PAGE, INTRUDER_GEN);
         pool.poll_file_pass(SESSION_FILE_GENERATION, INTRUDER_PAGE, INTRUDER_GEN);
-        // An Absent read has already dropped the receiver; only a held hit waits.
-        let _ = attempted_tx.send(());
+        attempted_tx
+            .send(())
+            .expect("the reader receives the attempts report in every arm");
 
         reader.join().expect("reader thread");
     });

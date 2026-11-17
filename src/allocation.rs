@@ -368,6 +368,26 @@ impl<T> MappedSlice<T> {
         unsafe { element.as_ref() }
     }
 
+    /// Borrows elements `start..start + len` without forming a reference to
+    /// the whole table, so a sparse reservation is never retagged or touched
+    /// beyond the range.
+    ///
+    /// # Panics
+    ///
+    /// If the range exceeds the slice.
+    pub(crate) fn elements(&self, start: usize, len: usize) -> &[T] {
+        assert!(
+            start <= self.len && len <= self.len - start,
+            "an element range lies inside the slice"
+        );
+        // SAFETY: `start + len <= self.len`, so the offset stays inside the
+        // mapping's `len` elements.
+        let first = unsafe { self.base().add(start) };
+        // SAFETY: the range is initialised and aligned for `T` and owned by
+        // this value for its lifetime, as for `deref`.
+        unsafe { std::slice::from_raw_parts(first.as_ptr(), len) }
+    }
+
     /// Returns to the kernel the whole OS pages inside elements
     /// `start..end`; pages shared with elements outside the range stay backed.
     ///
