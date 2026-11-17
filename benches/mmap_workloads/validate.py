@@ -181,7 +181,7 @@ def warm_prepare(capture: Path, frozen: Path, output: Path) -> None:
     pairs = read_comparison(capture, comparison)
     for pair in pairs:
         for row in pair:
-            if row["fixture"] != expected["fixture_sha256"]:
+            if row["fixture"]["sha256"] != expected["fixture_sha256"]:
                 raise ValueError("row fixture differs from the frozen fixture")
     output.write_text(paired_csv(pairs))
 

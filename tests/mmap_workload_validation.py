@@ -94,7 +94,7 @@ def resident_row(seed: int, elapsed_ns: int) -> dict:
         io_mode="Direct",
         registration="Unregistered",
         seed=seed,
-        fixture=FIXTURE_SHA256,
+        fixture=dict(granule=4096, pages=65536, schema=1, sha256=FIXTURE_SHA256, spare_pages=1),
         runner_sha256="r" * 64,
         trace=False,
         debug_assertions=False,
@@ -522,7 +522,7 @@ class MmapEvidenceContract(unittest.TestCase):
             rewrite_rows(root, manifest, (1,), measure_mmap)
 
         def unfrozen_fixture(root: Path, manifest: dict) -> None:
-            rewrite_rows(root, manifest, (0, 1), lambda row: row.update(fixture="e" * 64))
+            rewrite_rows(root, manifest, (0, 1), lambda row: row["fixture"].update(sha256="e" * 64))
 
         rejects("identity", mixed_identity)
         rejects("work", unequal_work)
