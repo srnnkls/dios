@@ -25,7 +25,8 @@ const WARM_FRAME_COUNT: u32 = 520;
 const CYCLING_FRAME_COUNT: u32 = 64;
 const CYCLING_WORKING_SET: u32 = 96;
 const RESIDENT_PAGE_COUNT: u32 = 512;
-const BINDING_ITERATIONS: u64 = 32_768;
+const BINDING_ITERATIONS_RECORDED: u64 = 32_768;
+const BINDING_ITERATIONS_DRP_G4: u64 = 2_097_152;
 const INPUT_PAGE_PERIOD: u32 = 64;
 const INPUT_PAGE_FACTOR: u32 = 17;
 const INPUT_OFFSET_FACTOR: u32 = 73;
@@ -162,6 +163,25 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &[String]) -> Result<(), String> {
+    if let [mode, lane, arm] = args
+        && mode == "describe"
+    {
+        let request = parse_request(&[
+            "run".to_owned(),
+            lane.clone(),
+            arm.clone(),
+            "0".to_owned(),
+            "base-candidate".to_owned(),
+            String::new(),
+            String::new(),
+            String::new(),
+        ])?;
+        println!(
+            "{{\"lane\":\"{}\",\"arm\":\"{}\",\"iterations\":{}}}",
+            request.lane.name, request.lane.arm, request.iterations
+        );
+        return Ok(());
+    }
     let request = parse_request(args)?;
     if request.kind == RunKind::Binding {
         require_clean_product_source()?;
@@ -244,19 +264,22 @@ fn parse_request(args: &[String]) -> Result<RunRequest, String> {
                 proof: Some(PathBuf::from(proof)),
             })
         }
-        [mode, lane, arm, pair, order, input, output, manifest] if mode == "run" => Ok(RunRequest {
-            kind: RunKind::Binding,
-            lane: parse_lane(lane, arm)?,
-            pair: parse_number(pair, "pair")?,
-            order: parse_order(order)?,
-            iterations: BINDING_ITERATIONS,
-            schedule: binding_schedule(lane, arm),
-            input: PathBuf::from(input),
-            output: PathBuf::from(output),
-            manifest: PathBuf::from(manifest),
-            proof: None,
-        }),
-        _ => Err("usage: read_path_product <smoke LANE ARM PAIR ORDER FOLD ITERATIONS SCHEDULE INPUT OUTPUT MANIFEST [PROOF]|run LANE ARM PAIR ORDER INPUT OUTPUT MANIFEST>".to_owned()),
+        [mode, lane, arm, pair, order, input, output, manifest] if mode == "run" => {
+            let parsed_lane = parse_lane(lane, arm)?;
+            Ok(RunRequest {
+                kind: RunKind::Binding,
+                lane: parsed_lane,
+                pair: parse_number(pair, "pair")?,
+                order: parse_order(order)?,
+                iterations: binding_iterations(parsed_lane),
+                schedule: binding_schedule(lane, arm),
+                input: PathBuf::from(input),
+                output: PathBuf::from(output),
+                manifest: PathBuf::from(manifest),
+                proof: None,
+            })
+        }
+        _ => Err("usage: read_path_product <smoke LANE ARM PAIR ORDER FOLD ITERATIONS SCHEDULE INPUT OUTPUT MANIFEST [PROOF]|run LANE ARM PAIR ORDER INPUT OUTPUT MANIFEST|describe LANE ARM>".to_owned()),
     }
 }
 
@@ -360,6 +383,14 @@ fn arm_static(arm: &str) -> Result<&'static str, String> {
         "one_thread" => Ok("one_thread"),
         "eight_threads" => Ok("eight_threads"),
         _ => Err(format!("unknown frozen arm {arm:?}")),
+    }
+}
+
+fn binding_iterations(lane: Lane) -> u64 {
+    if lane.gate == "DRP-G4" {
+        BINDING_ITERATIONS_DRP_G4
+    } else {
+        BINDING_ITERATIONS_RECORDED
     }
 }
 

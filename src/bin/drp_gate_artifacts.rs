@@ -11,7 +11,10 @@ const PROCESS_HEADER: &str = "gate,lane,pair,order,arm,workload,iterations,check
 const PAIR_COUNT: u32 = 30;
 const G2_BASE_COMMIT: &str = "a94860f31e9f1649fcb73eccf8c3798c739c64fe";
 const G4_BASE_COMMIT: &str = "1004a2e6fcae0bcc9552dc3211c2416e388a250d";
-const G4_CPU_SET: &str = "0-3,32-35";
+const G4_CPU_SET: &str = "0-7";
+const CCX_ZERO_TOPOLOGY: &str = "CCX-0 CPUs 0-3,32-35";
+const G4_TOPOLOGY: &str = "physical CPUs 0-7, SMT siblings 32-39 idle";
+const G4_ITERATIONS: u64 = 2_097_152;
 const RUST_TOOLCHAIN: &str = "rustc 1.96.0";
 const MISE_TOOLCHAIN: &str = "2026.8.0";
 
@@ -336,6 +339,18 @@ fn validate_lane_contract(
 ) -> Result<(), String> {
     let first = arm_identity(rows, first_arm)?;
     let second = arm_identity(rows, second_arm)?;
+    let gate = lane_gate(&rows[0].lane)?;
+    if rows.iter().any(|row| row.gate != gate) {
+        return Err(format!(
+            "gate {:?} does not belong to lane {:?}",
+            rows[0].gate, rows[0].lane
+        ));
+    }
+    if gate == "DRP-G4" && rows.iter().any(|row| row.iterations != G4_ITERATIONS) {
+        return Err(format!(
+            "DRP-G4 rows must carry the amended {G4_ITERATIONS} iterations per process"
+        ));
+    }
     match rows[0].lane.as_str() {
         "drp_g2_warm_ordinary" => validate_g2(
             first,
@@ -499,9 +514,13 @@ fn validate_execution_facts(
     manifest: &PreRunManifest,
 ) -> Result<(), String> {
     let lane = validated.rows[0].lane.as_str();
-    let cpu_set = match lane {
-        "drp_g2_warm_ordinary" | "drp_g2_cycling_reuse" | "drp_g3_hint_materiality" => "0",
-        "drp_g4_ordinary_base_8t" | "drp_g4_ordinary_scaling" | "drp_g4_hint_scaling" => G4_CPU_SET,
+    let (cpu_set, topology) = match lane {
+        "drp_g2_warm_ordinary" | "drp_g2_cycling_reuse" | "drp_g3_hint_materiality" => {
+            ("0", CCX_ZERO_TOPOLOGY)
+        }
+        "drp_g4_ordinary_base_8t" | "drp_g4_ordinary_scaling" | "drp_g4_hint_scaling" => {
+            (G4_CPU_SET, G4_TOPOLOGY)
+        }
         _ => return Err(format!("manifest names unknown frozen lane {lane:?}")),
     };
     let expected_host = json!({
@@ -509,7 +528,7 @@ fn validate_execution_facts(
         "cpu_set": cpu_set,
         "governor": "performance",
         "kernel": "6.6.64",
-        "topology": "CCX-0 CPUs 0-3,32-35",
+        "topology": topology,
         "nvme": "Samsung SSD 970 PRO",
         "direct_io": "verified",
         "transparent_hugepage": "never",
@@ -689,6 +708,17 @@ fn lane_arms(lane: &str) -> Result<(&'static str, &'static str), String> {
         }
         "drp_g3_hint_materiality" => Ok(("ordinary", "hinted")),
         "drp_g4_ordinary_scaling" | "drp_g4_hint_scaling" => Ok(("one_thread", "eight_threads")),
+        _ => Err(format!("unknown frozen gate lane {lane:?}")),
+    }
+}
+
+fn lane_gate(lane: &str) -> Result<&'static str, String> {
+    match lane {
+        "drp_g2_warm_ordinary" | "drp_g2_cycling_reuse" => Ok("DRP-G2"),
+        "drp_g3_hint_materiality" => Ok("DRP-G3"),
+        "drp_g4_ordinary_base_8t" | "drp_g4_ordinary_scaling" | "drp_g4_hint_scaling" => {
+            Ok("DRP-G4")
+        }
         _ => Err(format!("unknown frozen gate lane {lane:?}")),
     }
 }

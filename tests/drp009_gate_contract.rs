@@ -27,6 +27,14 @@ const CYCLING_WORKLOAD: &str = "real_pool_driver_cycling_reuse_full_4096_byte_fo
 const RUNNER_SOURCE: &str = "benches/read_path_product.rs";
 const RUNNER_BUILD: &str = "build.rs";
 const CONVERTER_SOURCE: &str = "src/bin/drp_gate_artifacts.rs";
+const PAIR_FIXTURE_ITERATIONS: u64 = 100;
+const G2_BINDING_ITERATIONS: u64 = 32_768;
+const G4_BINDING_ITERATIONS: u64 = 2_097_152;
+const G4_OLD_ITERATIONS: u64 = 32_768;
+const G4_EIGHT_THREAD_CPU_SET: &str = "0-7";
+const G4_OLD_EIGHT_THREAD_CPU_SET: &str = "0-3,32-35";
+const CCX_ZERO_TOPOLOGY: &str = "CCX-0 CPUs 0-3,32-35";
+const G4_TOPOLOGY: &str = "physical CPUs 0-7, SMT siblings 32-39 idle";
 
 static TEMP_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
@@ -301,6 +309,11 @@ fn write_manifest_for_products(
     second: (&str, &str, &str),
 ) {
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let topology = if benchmark_arguments[1].starts_with("drp_g4_") {
+        G4_TOPOLOGY
+    } else {
+        CCX_ZERO_TOPOLOGY
+    };
     let first_cargo_lock = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
     let second_cargo_lock = if first.1 == second.1 && first.2 == second.2 {
         first_cargo_lock
@@ -337,7 +350,7 @@ fn write_manifest_for_products(
             "cpu_set": cpu_set,
             "governor": "performance",
             "kernel": "6.6.64",
-            "topology": "CCX-0 CPUs 0-3,32-35",
+            "topology": topology,
             "nvme": "Samsung SSD 970 PRO",
             "direct_io": "verified",
             "transparent_hugepage": "never",
@@ -658,6 +671,7 @@ struct PairSpec {
     second_executable: &'static str,
     first_cpu: &'static str,
     second_cpu: &'static str,
+    iterations: u64,
 }
 
 fn pair_fixture_rows(spec: PairSpec, manifest: &Path) -> String {
@@ -702,15 +716,22 @@ fn pair_fixture_row(spec: PairSpec, manifest: &Path, pair: u32, first: bool) -> 
         "candidate-base"
     };
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ns_per_op = format_ns_per_op(elapsed_ns, spec.iterations);
     format!(
-        "{},{},{pair},{order},{arm},{workload},100,{PAIR_FIXTURE_CHECKSUM},0,{commit},{executable},{cpu},{},{},{},{elapsed_ns},{}\n",
+        "{},{},{pair},{order},{arm},{workload},{},{PAIR_FIXTURE_CHECKSUM},0,{commit},{executable},{cpu},{},{},{},{elapsed_ns},{ns_per_op}\n",
         spec.gate,
         spec.lane,
+        spec.iterations,
         sha256_path(manifest),
         sha256_path(&repository.join(RUNNER_SOURCE)),
         sha256_path(&repository.join(RUNNER_BUILD)),
-        elapsed_ns / 100,
     )
+}
+
+fn format_ns_per_op(elapsed_ns: u64, iterations: u64) -> String {
+    let whole = elapsed_ns / iterations;
+    let fraction = (elapsed_ns % iterations) * 1_000_000_000 / iterations;
+    format!("{whole}.{fraction:09}")
 }
 
 #[test]
@@ -986,7 +1007,7 @@ fn converter_rejects_noncanonical_lane_relationships() {
     assert_noncanonical_rejected(&dir.0, "g4-product", g4_scaling);
 
     let mut g4_cpu = g4_scaling_pair_spec();
-    g4_cpu.second_cpu = "0-7";
+    g4_cpu.second_cpu = G4_OLD_EIGHT_THREAD_CPU_SET;
     assert_noncanonical_rejected(&dir.0, "g4-cpu", g4_cpu);
 }
 
@@ -1041,6 +1062,7 @@ fn g2_pair_spec() -> PairSpec {
         second_executable: CANDIDATE_EXECUTABLE,
         first_cpu: "0",
         second_cpu: "0",
+        iterations: PAIR_FIXTURE_ITERATIONS,
     }
 }
 
@@ -1067,6 +1089,7 @@ fn g3_pair_spec() -> PairSpec {
         second_executable: CANDIDATE_EXECUTABLE,
         first_cpu: "0",
         second_cpu: "0",
+        iterations: PAIR_FIXTURE_ITERATIONS,
     }
 }
 
@@ -1082,8 +1105,9 @@ fn g4_base_pair_spec() -> PairSpec {
         second_commit: CANDIDATE_COMMIT,
         first_executable: BASE_EXECUTABLE,
         second_executable: CANDIDATE_EXECUTABLE,
-        first_cpu: "0-3,32-35",
-        second_cpu: "0-3,32-35",
+        first_cpu: G4_EIGHT_THREAD_CPU_SET,
+        second_cpu: G4_EIGHT_THREAD_CPU_SET,
+        iterations: G4_BINDING_ITERATIONS,
     }
 }
 
@@ -1100,7 +1124,8 @@ fn g4_scaling_pair_spec() -> PairSpec {
         first_executable: CANDIDATE_EXECUTABLE,
         second_executable: CANDIDATE_EXECUTABLE,
         first_cpu: "0",
-        second_cpu: "0-3,32-35",
+        second_cpu: G4_EIGHT_THREAD_CPU_SET,
+        iterations: G4_BINDING_ITERATIONS,
     }
 }
 
@@ -1110,6 +1135,179 @@ fn g4_hint_scaling_pair_spec() -> PairSpec {
         first_workload: "real_pool_driver_shared_1_thread_hinted_full_4096_byte_fold",
         second_workload: "real_pool_driver_shared_8_thread_hinted_full_4096_byte_fold",
         ..g4_scaling_pair_spec()
+    }
+}
+
+fn assert_spec_rejected_naming(dir: &Path, name: &str, spec: PairSpec, expected: &str) {
+    assert_rows_rejected_under_manifest(dir, name, spec, spec.second_cpu, expected);
+}
+
+fn assert_rows_rejected_under_manifest(
+    dir: &Path,
+    name: &str,
+    spec: PairSpec,
+    manifest_cpu: &str,
+    expected: &str,
+) {
+    let manifest = dir.join(format!("{name}-manifest.json"));
+    write_manifest_for_products(
+        &manifest,
+        &["run", spec.lane],
+        manifest_cpu,
+        (spec.first_arm, spec.first_commit, spec.first_executable),
+        (spec.second_arm, spec.second_commit, spec.second_executable),
+    );
+    let process = dir.join(format!("{name}-process.csv"));
+    write_new(&process, pair_fixture_rows(spec, &manifest).as_bytes());
+    assert_conversion_rejected(dir, name, &process, &manifest, expected);
+}
+
+#[test]
+fn converter_rejects_drp_g4_rows_with_the_old_iteration_count() {
+    let dir = TestDir::create();
+    assert_canonical_converts(&dir.0, "amended-g4-base", g4_base_pair_spec());
+
+    let mut old_iterations = g4_base_pair_spec();
+    old_iterations.iterations = G4_OLD_ITERATIONS;
+    assert_spec_rejected_naming(&dir.0, "old-iterations", old_iterations, "iteration");
+}
+
+#[test]
+fn converter_rejects_drp_g4_lanes_under_a_foreign_gate() {
+    let dir = TestDir::create();
+    for (name, spec) in [
+        ("foreign-g4-base", g4_base_pair_spec()),
+        ("foreign-g4-scaling", g4_scaling_pair_spec()),
+        ("foreign-g4-hint-scaling", g4_hint_scaling_pair_spec()),
+    ] {
+        let mut foreign_gate = spec;
+        foreign_gate.gate = "DRP-G2";
+        foreign_gate.iterations = G4_OLD_ITERATIONS;
+        assert_spec_rejected_naming(&dir.0, name, foreign_gate, "does not belong");
+    }
+}
+
+#[test]
+fn converter_binds_the_host_topology_to_the_lane() {
+    let dir = TestDir::create();
+    let spec = g4_base_pair_spec();
+    let manifest = dir.0.join("old-topology-manifest.json");
+    write_manifest_for_products(
+        &manifest,
+        &["run", spec.lane],
+        spec.second_cpu,
+        (spec.first_arm, spec.first_commit, spec.first_executable),
+        (spec.second_arm, spec.second_commit, spec.second_executable),
+    );
+    let mut value: Value =
+        serde_json::from_slice(&fs::read(&manifest).expect("read DRP-G4 pre-run manifest"))
+            .expect("parse DRP-G4 pre-run manifest");
+    assert_eq!(value["host"]["topology"], G4_TOPOLOGY);
+    value["host"]["topology"] = json!(CCX_ZERO_TOPOLOGY);
+    fs::write(
+        &manifest,
+        serde_json::to_vec_pretty(&value).expect("encode old-topology manifest"),
+    )
+    .expect("write old-topology manifest");
+    let process = dir.0.join("old-topology-process.csv");
+    write_new(&process, pair_fixture_rows(spec, &manifest).as_bytes());
+    assert_conversion_rejected(&dir.0, "old-topology", &process, &manifest, "manifest");
+}
+
+#[test]
+fn converter_rejects_eight_thread_rows_on_the_old_cpu_set() {
+    let dir = TestDir::create();
+    assert_canonical_converts(&dir.0, "amended-g4-base", g4_base_pair_spec());
+
+    let mut old_cpu_set = g4_base_pair_spec();
+    old_cpu_set.first_cpu = G4_OLD_EIGHT_THREAD_CPU_SET;
+    old_cpu_set.second_cpu = G4_OLD_EIGHT_THREAD_CPU_SET;
+    assert_rows_rejected_under_manifest(
+        &dir.0,
+        "old-cpu-set",
+        old_cpu_set,
+        G4_EIGHT_THREAD_CPU_SET,
+        "cpu",
+    );
+}
+
+#[test]
+fn converter_accepts_the_one_thread_reference_only_on_cpu_zero() {
+    let dir = TestDir::create();
+    assert_canonical_converts(&dir.0, "reference-cpu-0", g4_scaling_pair_spec());
+
+    for (name, cpu_set) in [
+        ("reference-cpu-1", "1"),
+        ("reference-eight-thread-set", G4_EIGHT_THREAD_CPU_SET),
+    ] {
+        let mut moved_reference = g4_scaling_pair_spec();
+        moved_reference.first_cpu = cpu_set;
+        assert_spec_rejected_naming(&dir.0, name, moved_reference, "cpu");
+    }
+}
+
+fn describe_binding_request(lane: &str, arm: &str) -> Value {
+    let described = Command::new(env!("CARGO"))
+        .args([
+            "bench",
+            "--quiet",
+            "--features",
+            "bench",
+            "--bench",
+            "read_path_product",
+            "--",
+            "describe",
+            lane,
+            arm,
+        ])
+        .output()
+        .expect("execute the DRP runner's binding-request description");
+    assert!(
+        described.status.success(),
+        "runner must describe the {lane}/{arm} binding request: {}",
+        diagnostic(&described)
+    );
+    let value: Value = serde_json::from_slice(&described.stdout)
+        .expect("runner describes its binding request as one JSON object");
+    assert_eq!(value["lane"], lane);
+    assert_eq!(value["arm"], arm);
+    value
+}
+
+fn assert_binding_iterations(lane: &str, arms: &[&str], expected: u64) {
+    for arm in arms {
+        let request = describe_binding_request(lane, arm);
+        assert_eq!(
+            request["iterations"], expected,
+            "{lane}/{arm} binding iterations per process"
+        );
+    }
+}
+
+#[test]
+fn eight_thread_lane_requests_the_amended_iteration_count() {
+    assert_binding_iterations(
+        "drp_g4_ordinary_base_8t",
+        &["base", "candidate"],
+        G4_BINDING_ITERATIONS,
+    );
+}
+
+#[test]
+fn scaling_lanes_request_the_amended_iteration_count() {
+    for lane in ["drp_g4_ordinary_scaling", "drp_g4_hint_scaling"] {
+        assert_binding_iterations(
+            lane,
+            &["one_thread", "eight_threads"],
+            G4_BINDING_ITERATIONS,
+        );
+    }
+}
+
+#[test]
+fn drp_g2_lanes_keep_their_recorded_iteration_count() {
+    for lane in ["drp_g2_warm_ordinary", "drp_g2_cycling_reuse"] {
+        assert_binding_iterations(lane, &["base", "candidate"], G2_BINDING_ITERATIONS);
     }
 }
 
