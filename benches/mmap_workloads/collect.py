@@ -18,14 +18,17 @@ import subprocess
 import tarfile
 import time
 
-from validate import validate_row
+from validate import HUGEPAGE_LANES, HUGEPAGE_PROFILE, validate_row
 
 
 RUNNER_SOURCES = ["benches/mmap_workloads.rs"] + [
     f"benches/mmap_workloads/{name}" for name in (
         "mod.rs", "catalog.rs", "engine.rs", "fixture.rs", "observe.rs", "os.rs",
-        "resident.rs", "scan_config.rs", "scan.rs", "probe.rs", "probe/clock.rs")
+        "resident.rs", "scan_config.rs", "scan.rs", "probe.rs", "probe/clock.rs", "fair.rs")
 ]
+REPOSITORY = Path(__file__).resolve().parents[2]
+LAYOUTS = (16, 32, 64)
+HOST_PROFILES = {"bench": "[never]", HUGEPAGE_PROFILE: "[madvise]"}
 
 
 def source_paths() -> list[Path]:
@@ -58,9 +61,15 @@ def digest(path: Path) -> str:
 
 
 def execute(
-    command: list[str], log: Path | None = None, timeout: int = 190, cwd: Path | None = None
+    command: list[str],
+    log: Path | None = None,
+    timeout: int = 190,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> str:
-    result = subprocess.run(command, text=True, capture_output=True, timeout=timeout, cwd=cwd)
+    result = subprocess.run(
+        command, text=True, capture_output=True, timeout=timeout, cwd=cwd, env=env
+    )
     if log is not None:
         log.write_text(result.stdout + result.stderr)
     if result.returncode:
@@ -70,11 +79,18 @@ def execute(
     return result.stdout
 
 
-def build_binary(output: Path, tree: Path | None = None) -> Path:
+def build_binary(
+    output: Path,
+    tree: Path | None = None,
+    env: dict[str, str] | None = None,
+    manifest_path: Path | None = None,
+) -> Path:
+    selection = [] if manifest_path is None else ["--manifest-path", str(manifest_path)]
     text = execute(
         [
             "cargo",
             "build",
+            *selection,
             "--profile",
             "profiling",
             "--features",
@@ -86,6 +102,7 @@ def build_binary(output: Path, tree: Path | None = None) -> Path:
         output / "build.log",
         timeout=300,
         cwd=tree,
+        env=env,
     )
     binaries = [
         entry["executable"]
@@ -96,6 +113,46 @@ def build_binary(output: Path, tree: Path | None = None) -> Path:
     if len(binaries) != 1:
         raise ValueError("expected exactly one mmap_workloads executable")
     return Path(binaries[0]).resolve()
+
+
+def layout_environment(layout: int | None) -> dict[str, str] | None:
+    """The build environment aligning every function at `layout` bytes (F12)."""
+    if layout is None:
+        return None
+    if layout not in LAYOUTS:
+        raise ValueError(f"layout must be one of {LAYOUTS}")
+    flags = os.environ.get("RUSTFLAGS", "").split()
+    flags += ["-C", f"llvm-args=-align-all-functions={layout.bit_length() - 1}"]
+    return dict(os.environ, RUSTFLAGS=" ".join(flags))
+
+
+def build_shared_runner(output: Path, tree: Path, env: dict[str, str] | None) -> Path:
+    """Builds this tree's runner sources against the product sources of `tree` (F10)."""
+    harness = output / "shared-runner"
+    harness.mkdir()
+    shutil.copy2(REPOSITORY / "Cargo.lock", harness / "Cargo.lock")
+    (harness / "Cargo.toml").write_text(
+        "[package]\n"
+        'name = "dios-mmap-workloads-shared-runner"\n'
+        'version = "0.0.0"\n'
+        'edition = "2024"\n'
+        "publish = false\n"
+        f"build = {json.dumps(str(REPOSITORY / 'build.rs'))}\n"
+        "autobenches = false\n\n"
+        "[features]\nbench = []\n\n"
+        "[dependencies]\n"
+        f'dios = {{ path = {json.dumps(str(tree))}, features = ["bench"] }}\n'
+        'serde = { version = "1", features = ["derive"] }\n'
+        'serde_json = "1"\nsha2 = "0.10"\nlibc = "0.2"\nio-uring = "0.7"\n\n'
+        '[build-dependencies]\nsha2 = "0.10"\n\n'
+        '[profile.profiling]\ninherits = "release"\ndebug = true\nstrip = false\n\n'
+        "[[bench]]\n"
+        'name = "mmap_workloads"\n'
+        f"path = {json.dumps(str(REPOSITORY / 'benches/mmap_workloads.rs'))}\n"
+        "harness = false\n"
+    )
+    environment = dict(env if env is not None else os.environ, DIOS_PRODUCT_WORKTREE=str(tree))
+    return build_binary(output, env=environment, manifest_path=harness / "Cargo.toml")
 
 
 def block_queues(root: Path = Path("/sys/class/block")) -> dict:
@@ -114,7 +171,7 @@ def block_queues(root: Path = Path("/sys/class/block")) -> dict:
     return result
 
 
-def host_snapshot(output: Path, name: str) -> dict:
+def host_snapshot(output: Path, name: str, host_profile: str = "bench") -> dict:
     text = execute(["ps", "-eo", "pid,comm,args", "--sort=-pcpu"])
     (output / f"{name}-processes.txt").write_text(text)
     paths = {
@@ -138,7 +195,7 @@ def host_snapshot(output: Path, name: str) -> dict:
     snapshot["artifact_filesystem"] = execute(
         ["findmnt", "-T", str(output), "-no", "SOURCE,FSTYPE"]
     ).strip()
-    if snapshot["governors"] != ["performance"] or "[never]" not in snapshot["thp"]:
+    if snapshot["governors"] != ["performance"] or HOST_PROFILES[host_profile] not in snapshot["thp"]:
         raise ValueError("host differs from pinned governor/THP protocol")
     return snapshot
 
@@ -161,9 +218,17 @@ def retain_binary(binary: Path, output: Path) -> tuple[Path, str]:
 
 
 def prepare(options: argparse.Namespace) -> tuple[Path, Path, dict]:
+    if options.layout is not None and options.binary:
+        raise ValueError("a layout capture builds its own executable")
+    if options.shared_runner and not options.base_build:
+        raise ValueError("--shared-runner pairs against a --base-build tree")
     output = options.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    binary = options.binary.resolve() if options.binary else build_binary(output)
+    binary = (
+        options.binary.resolve()
+        if options.binary
+        else build_binary(output, env=layout_environment(options.layout))
+    )
     runner_identity(binary, Path())
     saved, identity = retain_binary(binary, output)
     fixture = options.input.resolve() if options.input else output / "input"
@@ -188,7 +253,9 @@ def prepare(options: argparse.Namespace) -> tuple[Path, Path, dict]:
         "input": str(fixture),
         "git_head": execute(["git", "rev-parse", "HEAD"]).strip(),
         "git_status": execute(["git", "status", "--short"]),
-        "host_before": host_snapshot(output, "before"),
+        "host_profile": options.host_profile,
+        "layout": options.layout,
+        "host_before": host_snapshot(output, "before", options.host_profile),
         "comparisons": [],
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -360,8 +427,13 @@ def collect_base_build(
     tree = options.base_build.resolve()
     base_output = output / "base-build"
     base_output.mkdir()
-    built = build_binary(base_output, tree)
-    runners = [runner_identity(built, tree), runner_identity(binary, Path())]
+    environment = layout_environment(options.layout)
+    if options.shared_runner:
+        built = build_shared_runner(base_output, tree, environment)
+        runners = [runner_identity(built, Path()), runner_identity(binary, Path())]
+    else:
+        built = build_binary(base_output, tree, environment)
+        runners = [runner_identity(built, tree), runner_identity(binary, Path())]
     base, identity = retain_binary(built, base_output)
     arms = [lane["arms"][1]] * 2
     manifest.update(base_build=str(tree))
@@ -413,6 +485,8 @@ def collect(options: argparse.Namespace) -> None:
             raise ValueError("unknown lane selection")
         if options.base_build and (len(selected) != 1 or options.mode != "run"):
             raise ValueError("a base-build capture runs one lane in run mode")
+        if options.host_profile != "bench" and set(selected) - set(HUGEPAGE_LANES):
+            raise ValueError(f"{options.host_profile} is accepted for {HUGEPAGE_LANES} only")
         for lane in lanes:
             if lane["name"] not in selected:
                 continue
@@ -446,11 +520,20 @@ def collect(options: argparse.Namespace) -> None:
                     options, [binary, binary], fixture, lane, lane["arms"], modes, lane["name"]
                 )
                 manifest["comparisons"].append(result)
+                if lane.get("floor_arm"):
+                    floor_arms = [lane["floor_arm"], lane["arms"][1]]
+                    result = collect_comparison(
+                        options, [binary, binary], fixture, lane, floor_arms, modes,
+                        f"{lane['name']}-{lane['floor_arm']}",
+                    )
+                    manifest["comparisons"].append(result)
             (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
             print(f"{lane['name']}: complete", flush=True)
         if digest(binary) != manifest["executable_sha256"]:
             raise ValueError("executable changed during collection")
-        manifest.update(status="complete", host_after=host_snapshot(output, "after"))
+        manifest.update(
+            status="complete", host_after=host_snapshot(output, "after", options.host_profile)
+        )
     except (ValueError, RuntimeError, OSError, subprocess.TimeoutExpired) as failure:
         manifest.update(status="failed", error=str(failure))
         raise
@@ -474,6 +557,18 @@ def arguments() -> argparse.Namespace:
         type=Path,
         help="base-build tree whose runner pairs with this tree's runner",
     )
+    parser.add_argument(
+        "--shared-runner",
+        action="store_true",
+        help="build this tree's runner against the --base-build tree instead of its own",
+    )
+    parser.add_argument(
+        "--layout",
+        type=int,
+        choices=LAYOUTS,
+        help="function alignment in bytes of a code-layout build",
+    )
+    parser.add_argument("--host-profile", choices=tuple(HOST_PROFILES), default="bench")
     return parser.parse_args()
 
 

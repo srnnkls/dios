@@ -2,24 +2,15 @@ checkpoint:
   scope_name: array-translation
   scope_path: scopes/active/array-translation
   branch: feat/array-translation
-  last_commit: 604410a
+  last_commit: 335079d
   updated_at: '2026-11-17T11:30:00Z'
 
   batch:
-    number: 4
-    tasks: [AT4]
-    phase: fix
-    status: in_progress
-    waiting_on: "batch 4 fix round 1 (H1 work count, H2 arm symmetry, H3 Loom case, M1 to M3)"
-
-  in_flight_mutations:
-    - task: AT4
-      phase: fix
-      agent: claude-opus
-      report_dir: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-fix1
-      status: dispatched
-      evidence:
-        before: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-fix1/baseline.git-status.txt
+    number: 5
+    tasks: [AT5]
+    phase: green
+    status: pending
+    waiting_on: "AT5 implementer dispatch; RED is AT4's (7d59f2b and the fair-lane wave)"
 
   routing_snapshot:
     epoch_id: 20261115T161731Z-fba2be
@@ -30,11 +21,4 @@ checkpoint:
         - {agent: peer-gpt6-astra, effort: inherit, class: peer}
         - {agent: claude-opus, effort: inherit, class: native}
 
-  reports:
-    tester: {AT4: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-tester-AT4}
-    implementer: {AT4: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-implementer-AT4}
-    review:
-      general: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-review-general
-      architecture: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-review-architecture
-      compliance: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-review-compliance
-      abstractions: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-review-abstractions
+  reports: {}

@@ -5,7 +5,7 @@ next_id: 10
 meta:
   created: '2026-11-15'
   last_updated: '2026-11-17'
-  progress: 3/9
+  progress: 4/9
 phases:
 - name: Contracts
   tasks: [AT1]
@@ -136,7 +136,12 @@ tasks:
     collect_comparison and the base-build capture. AT-G4 and AT-G7 pass on nix. Lint, Loom, Miri and ASAN are clean.
 - id: AT4
   title: Pin the session read with failing tests and bench arms
-  status: in_progress
+  status: done
+  completed_at: '2026-11-17T18:30:00Z'
+  evidence:
+    first_wave: {commit: 7d59f2b, tester: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-tester-AT4/native.yaml, implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-implementer-AT4/native.yaml, fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-fix1/native.yaml}
+    fair_wave: {tester: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b4-tester-AT4-fair/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-tester-AT4-fair-attempt2/native.yaml], implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-implementer-AT4-fair/native.yaml, fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-fix2/native.yaml}
+    review: scopes/active/array-translation/review.yaml#implementation_batches
   domain: pool
   depends_on:
   - AT3

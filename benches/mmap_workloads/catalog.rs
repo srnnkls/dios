@@ -31,6 +31,9 @@ pub(super) enum Lane {
     ResidentAccessPageBatch,
     ResidentAccessSessionProjection,
     ResidentAccessSessionFold,
+    #[serde(rename = "resident_access_session_fold_256m")]
+    ResidentAccessSessionFold256m,
+    ResidentAccessFairGet,
     PrefetchFragmented,
     PrefetchFragmentedWhole,
     PrefetchScan,
@@ -57,6 +60,8 @@ pub(super) enum Arm {
     DiosRetained,
     DiosPageBatch,
     DiosSession,
+    DiosGet,
+    PlainArray,
     DiosPrefetch,
     DiosPrefetchWhole,
     DiosAutomatic,
@@ -74,7 +79,7 @@ pub(super) enum Cache {
 }
 
 impl Lane {
-    pub(super) const ALL: [Self; 31] = [
+    pub(super) const ALL: [Self; 33] = [
         Self::ResidentProjection,
         Self::ResidentDecode,
         Self::MinorProjection,
@@ -95,6 +100,8 @@ impl Lane {
         Self::ResidentAccessPageBatch,
         Self::ResidentAccessSessionProjection,
         Self::ResidentAccessSessionFold,
+        Self::ResidentAccessSessionFold256m,
+        Self::ResidentAccessFairGet,
         Self::PrefetchFragmented,
         Self::PrefetchFragmentedWhole,
         Self::PrefetchScan,
@@ -137,6 +144,8 @@ impl Lane {
             Self::ResidentAccessPageBatch => "resident_access_page_batch",
             Self::ResidentAccessSessionProjection => "resident_access_session_projection",
             Self::ResidentAccessSessionFold => "resident_access_session_fold",
+            Self::ResidentAccessSessionFold256m => "resident_access_session_fold_256m",
+            Self::ResidentAccessFairGet => "resident_access_fair_get",
             Self::PrefetchFragmented => "prefetch_fragmented",
             Self::PrefetchFragmentedWhole => "prefetch_fragmented_whole",
             Self::PrefetchScan => "prefetch_scan",
@@ -201,9 +210,15 @@ impl Lane {
         }
     }
 
-    /// Times one timed process replays the fixed sequence.
+    /// Times one timed process replays the fixed sequence; a fair lane's count
+    /// keeps the timed region of its floor arm at or above 100 ms.
     pub(super) fn repetitions(self) -> u32 {
-        if self.session() { 256 } else { 1 }
+        match self {
+            Self::ResidentAccessSessionProjection | Self::ResidentAccessFairGet => 2_048,
+            Self::ResidentAccessSessionFold => 256,
+            Self::ResidentAccessSessionFold256m => 64,
+            _ => 1,
+        }
     }
 
     /// Reads one timed process performs.
@@ -211,11 +226,20 @@ impl Lane {
         self.operations() * self.repetitions()
     }
 
-    pub(super) fn session(self) -> bool {
+    /// Lanes of the fairness contract, served by the fair-lane module.
+    pub(super) fn fair(self) -> bool {
         matches!(
             self,
-            Self::ResidentAccessSessionProjection | Self::ResidentAccessSessionFold
+            Self::ResidentAccessSessionProjection
+                | Self::ResidentAccessSessionFold
+                | Self::ResidentAccessSessionFold256m
+                | Self::ResidentAccessFairGet
         )
+    }
+
+    /// The reported, never gated floor arm of a fair lane.
+    pub(super) fn floor_arm(self) -> Option<Arm> {
+        self.fair().then_some(Arm::PlainArray)
     }
 
     pub(super) fn workers(self) -> u32 {
@@ -226,7 +250,10 @@ impl Lane {
     }
 
     pub(super) fn useful_bytes(self) -> u32 {
-        if self == Self::ResidentAccessSessionFold {
+        if matches!(
+            self,
+            Self::ResidentAccessSessionFold | Self::ResidentAccessSessionFold256m
+        ) {
             return GRANULE;
         }
         if self.resident_access() {
@@ -244,6 +271,9 @@ impl Lane {
     }
 
     pub(super) fn warm_pages(self) -> u32 {
+        if self == Self::ResidentAccessSessionFold256m {
+            return PAGES;
+        }
         if self.resident_access() {
             return 1024;
         }
@@ -264,6 +294,9 @@ impl Lane {
         }
         if self == Self::PrefetchPollution {
             return 1024;
+        }
+        if self == Self::ResidentAccessSessionFold256m {
+            return PAGES;
         }
         if self.cache() == Cache::Pressure {
             16_384
@@ -299,9 +332,10 @@ impl Lane {
             Self::ResidentAccessEpochBatch => Arm::DiosEpochBatch,
             Self::ResidentAccessRetained => Arm::DiosRetained,
             Self::ResidentAccessPageBatch => Arm::DiosPageBatch,
-            Self::ResidentAccessSessionProjection | Self::ResidentAccessSessionFold => {
-                Arm::DiosSession
-            }
+            Self::ResidentAccessSessionProjection
+            | Self::ResidentAccessSessionFold
+            | Self::ResidentAccessSessionFold256m => Arm::DiosSession,
+            Self::ResidentAccessFairGet => Arm::DiosGet,
             Self::ColdGather
             | Self::ColdGatherNormal
             | Self::ScanDecode
@@ -357,6 +391,8 @@ impl Lane {
                 | Self::ResidentAccessPageBatch
                 | Self::ResidentAccessSessionProjection
                 | Self::ResidentAccessSessionFold
+                | Self::ResidentAccessSessionFold256m
+                | Self::ResidentAccessFairGet
         )
     }
 
@@ -382,6 +418,8 @@ impl Arm {
             "dios_retained" => Ok(Self::DiosRetained),
             "dios_page_batch" => Ok(Self::DiosPageBatch),
             "dios_session" => Ok(Self::DiosSession),
+            "dios_get" => Ok(Self::DiosGet),
+            "plain_array" => Ok(Self::PlainArray),
             "dios_prefetch" => Ok(Self::DiosPrefetch),
             "dios_prefetch_whole" => Ok(Self::DiosPrefetchWhole),
             "dios_automatic" => Ok(Self::DiosAutomatic),
@@ -402,6 +440,11 @@ impl Arm {
             self,
             Self::MmapRandom | Self::MmapNormal | Self::MmapSequential
         )
+    }
+
+    /// Whether the arm reads through a pool built over the fixture.
+    pub(super) fn reads_pool(self) -> bool {
+        !self.is_mmap() && self != Self::PlainArray
     }
 
     pub(super) fn explicit_hints(self) -> bool {

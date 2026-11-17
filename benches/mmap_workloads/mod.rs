@@ -1,5 +1,6 @@
 mod catalog;
 mod engine;
+mod fair;
 mod fixture;
 mod observe;
 mod os;
@@ -43,7 +44,9 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
         [command, directory, lane, arm, seed, tracing, output] if command == "sample" => {
             let lane = Lane::parse(lane)?;
             let arm = Arm::parse(arm)?;
-            if !lane.arms().contains(&arm) { return Err("arm does not belong to this comparison".to_owned()); }
+            if !lane.arms().contains(&arm) && lane.floor_arm() != Some(arm) {
+                return Err("arm does not belong to this comparison".to_owned());
+            }
             let seed: u32 = seed.parse().map_err(error)?;
             if seed > 1_000_000 { return Err("seed exceeds fixed bound".to_owned()); }
             if tracing == "trace" && lane.repetitions() > 1 {
@@ -64,11 +67,15 @@ pub(crate) fn lane_catalog() -> Vec<serde_json::Value> {
     Lane::ALL
         .into_iter()
         .map(|lane| {
-            json!({
+            let mut entry = json!({
                 "name": lane.name(), "arms": lane.arms(), "cache": lane.cache(),
                 "operations": lane.timed_operations(), "workers": lane.workers(),
                 "useful_bytes_per_read": lane.useful_bytes(), "frames": lane.frames(),
-            })
+            });
+            if let Some(floor_arm) = lane.floor_arm() {
+                entry["floor_arm"] = json!(floor_arm);
+            }
+            entry
         })
         .collect()
 }
@@ -141,10 +148,10 @@ fn sample<const TRACE: bool>(
         fixture::expected(lane, seed).wrapping_mul(u64::from(lane.repetitions()));
     let mapping = os::Mapping::open(&directory.join("pages.bin")).map_err(error)?;
     let cache_before = fixture::prepare(&mapping, lane, arm, seed).map_err(error)?;
-    let pool = if arm.is_mmap() {
-        None
-    } else {
+    let pool = if arm.reads_pool() {
         Some(fixture::pool(&directory.join("pages.bin"), lane, arm)?)
+    } else {
+        None
     };
     let source = pool
         .as_ref()
@@ -153,12 +160,13 @@ fn sample<const TRACE: bool>(
         });
     let before = snapshot();
     sample_check_limit(lane, &before)?;
-    let workers = engine::measure::<TRACE>(Work {
+    let work = Work {
         source,
         lane,
         arm,
         seed,
-    })?;
+    };
+    let (workers, witnesses) = sample_measure::<TRACE>(work)?;
     let after = snapshot();
     let elapsed_ns = workers
         .iter()
@@ -166,9 +174,13 @@ fn sample<const TRACE: bool>(
         .max()
         .expect("worker exists");
     sample_check_workers(&workers, expected_checksum)?;
-    let (io_mode, registration) = sample_posture(pool.as_ref());
-    let row = json!({"schema": 1, "lane": lane, "arm": arm, "seed": seed,
-        "trace": TRACE, "cache": lane.cache(), "operations": lane.timed_operations(),
+    let (io_mode, registration) = if arm == Arm::PlainArray {
+        ("none".to_owned(), "none".to_owned())
+    } else {
+        sample_posture(pool.as_ref())
+    };
+    let mut row = json!({"schema": 1, "lane": lane, "arm": arm, "seed": seed,
+        "fair": lane.fair(), "trace": TRACE, "cache": lane.cache(), "operations": lane.timed_operations(),
         "useful_bytes": u64::from(lane.timed_operations()) * u64::from(lane.useful_bytes()),
         "frames": lane.frames(), "expected_checksum": expected_checksum,
         "elapsed_ns": elapsed_ns, "cache_before": cache_before,
@@ -178,7 +190,29 @@ fn sample<const TRACE: bool>(
         "debug_assertions": cfg!(debug_assertions),
         "prefetch": sample_prefetch(pool.as_ref()),
     });
+    let serde_json::Value::Object(witnesses) = witnesses else {
+        unreachable!("sample witnesses are an object")
+    };
+    row.as_object_mut()
+        .expect("row is an object")
+        .extend(witnesses);
     sample_write(output, &row, &workers)
+}
+
+/// The timed workers of one sample and an object of the row fields of its
+/// fair-lane witnesses: the warm pass and the page size, empty for other lanes.
+fn sample_measure<const TRACE: bool>(
+    work: Work<'_>,
+) -> Result<(Vec<engine::WorkerResult>, serde_json::Value), String> {
+    if work.lane.fair() {
+        assert!(!TRACE, "fair lanes refuse trace mode");
+        let measured = fair::measure(work)?;
+        let witnesses = json!({"warm_pass": {"operations": measured.warm_pass_operations},
+            "page_size": measured.page_size});
+        Ok((vec![measured.worker], witnesses))
+    } else {
+        Ok((engine::measure::<TRACE>(work)?, json!({})))
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -249,6 +283,7 @@ fn runner_hash() -> String {
         include_str!("scan.rs"),
         include_str!("probe.rs"),
         include_str!("probe/clock.rs"),
+        include_str!("fair.rs"),
     ] {
         hash.update(source.as_bytes());
     }
@@ -312,14 +347,21 @@ fn summarize(path: &Path) -> Result<(), String> {
     if samples.base_ns.len() < 30 {
         return Err("characterization requires at least 30 pairs".to_owned());
     }
-    let gate = dios::bench::ratio_gate(&samples, 10_000);
-    println!(
-        "{}",
-        json!({"ratio_orientation": "candidate/base", "pairs": samples.base_ns.len(),
-        "ratio_geomean": gate.ratio_geomean, "ci95_upper": gate.ratio_ci95_upper,
-        "kind": "characterization", "adopted_bound": null})
-    );
+    println!("{}", summarize_samples(&samples));
     Ok(())
+}
+
+/// The shared harness's ratio and paired difference candidate minus base in
+/// nanoseconds per process.
+fn summarize_samples(samples: &dios::bench::PairedSamples) -> serde_json::Value {
+    let gate = dios::bench::ratio_gate(samples, 10_000);
+    let difference = dios::bench::paired_difference(samples, 10_000);
+    json!({"ratio_orientation": "candidate/base", "pairs": samples.base_ns.len(),
+        "ratio_geomean": gate.ratio_geomean, "ci95_upper": gate.ratio_ci95_upper,
+        "difference_ns_mean": difference.difference_ns_mean,
+        "difference_ns_ci95_lower": difference.difference_ns_ci95_lower,
+        "difference_ns_ci95_upper": difference.difference_ns_ci95_upper,
+        "kind": "characterization", "adopted_bound": null})
 }
 
 fn snapshot() -> serde_json::Value {
@@ -365,4 +407,36 @@ fn snapshot() -> serde_json::Value {
         });
     value.insert("global_tlb_interrupts".to_owned(), json!(interrupts));
     serde_json::Value::Object(value)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn summarize_formats_the_shared_harness_ratio_and_paired_difference() {
+        let base_ns: Vec<u64> = (0..32_u64).map(|pair| 1_000_000 + pair * 1_000).collect();
+        let samples = dios::bench::PairedSamples {
+            name: "noisy".to_owned(),
+            candidate_ns: base_ns
+                .iter()
+                .enumerate()
+                .map(|(pair, &ns)| if pair % 2 == 0 { ns + 400 } else { ns + 600 })
+                .collect(),
+            base_ns,
+        };
+        let summary = super::summarize_samples(&samples);
+        let gate = dios::bench::ratio_gate(&samples, 10_000);
+        let difference = dios::bench::paired_difference(&samples, 10_000);
+        assert_eq!(summary["ratio_geomean"], gate.ratio_geomean);
+        assert_eq!(summary["ci95_upper"], gate.ratio_ci95_upper);
+        assert_eq!(summary["pairs"], 32);
+        assert_eq!(summary["difference_ns_mean"], difference.difference_ns_mean);
+        assert_eq!(
+            summary["difference_ns_ci95_lower"],
+            difference.difference_ns_ci95_lower
+        );
+        assert_eq!(
+            summary["difference_ns_ci95_upper"],
+            difference.difference_ns_ci95_upper
+        );
+    }
 }

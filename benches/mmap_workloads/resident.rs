@@ -3,16 +3,14 @@ use std::time::Instant;
 
 use dios::{
     FileId, FrameGuard, Get, PageId, Pool, ReaderCtx, ResidentFileLease, ResidentHint,
-    RetainedFrame, SessionRead,
+    RetainedFrame,
 };
 
 use super::catalog::{Arm, Lane, PageNumber, consume};
 use super::engine::{Source, Work, WorkerResult};
 use super::fixture::error;
 use super::observe::{Observer, allocations_begin, allocations_end, nanoseconds};
-use super::os::{self, Mapping};
-
-const SESSION_REQUESTS: usize = 16;
+use super::os;
 
 #[derive(Default)]
 struct Session<'a> {
@@ -34,10 +32,6 @@ impl Session<'_> {
 pub(super) fn measure<const TRACE: bool>(work: Work<'_>) -> Result<WorkerResult, String> {
     os::pin(0).map_err(error)?;
     assert_eq!(work.lane.workers(), 1);
-    assert!(
-        !TRACE || work.lane.repetitions() == 1,
-        "trace events bound one sequence"
-    );
     let reader = match work.source {
         Source::Mmap(_) => None,
         Source::Dios(pool, _) => Some(pool.register_reader().map_err(error)?),
@@ -64,13 +58,7 @@ pub(super) fn measure<const TRACE: bool>(work: Work<'_>) -> Result<WorkerResult,
     let usage = os::usage().map_err(error)?.since(usage_before);
     result?;
     observer.counters.allocations = allocations;
-    assert_eq!(observer.counters.operations, work.lane.timed_operations());
-    if work.arm == Arm::DiosSession {
-        let reads = observer.counters.operations;
-        observer.counters.hits = reads;
-        observer.counters.guard_acquisitions =
-            reads / u32::try_from(SESSION_REQUESTS).expect("session length");
-    }
+    assert_eq!(observer.counters.operations, work.lane.operations());
     let teardown_started = Instant::now();
     drop(session);
     let teardown_ns = nanoseconds(teardown_started.elapsed());
@@ -136,9 +124,6 @@ fn timed_workload<const TRACE: bool>(
     observer: &mut Observer<TRACE>,
 ) -> Result<(), String> {
     match work.source {
-        Source::Mmap(mapping) if work.lane.session() => {
-            mmap_sessions(work.lane, mapping, requests, observer);
-        }
         Source::Mmap(mapping) => {
             for (index, page) in requests.iter().enumerate() {
                 let started = observer.start();
@@ -156,8 +141,6 @@ fn timed_workload<const TRACE: bool>(
             let reader = reader.expect("Dios reader");
             if matches!(work.arm, Arm::DiosEpochBatch | Arm::DiosPageBatch) {
                 batches(work, reader, requests, observer)?;
-            } else if work.arm == Arm::DiosSession {
-                sessions(work, reader, requests, observer)?;
             } else {
                 for (index, page) in requests.iter().enumerate() {
                     let started = observer.start();
@@ -270,62 +253,6 @@ fn batches<const TRACE: bool>(
     Ok(())
 }
 
-/// The mmap arm of the session lanes: the replay, request index, barrier and
-/// consume path of `sessions`, without the session API.
-fn mmap_sessions<const TRACE: bool>(
-    lane: Lane,
-    mapping: &Mapping,
-    requests: &[PageNumber],
-    observer: &mut Observer<TRACE>,
-) {
-    assert!(requests.len().is_multiple_of(SESSION_REQUESTS));
-    for repetition in 0..lane.repetitions() as usize {
-        for (chunk, pages) in requests.chunks_exact(SESSION_REQUESTS).enumerate() {
-            for (offset, page) in pages.iter().enumerate() {
-                let started = observer.start();
-                let index = repetition * requests.len() + chunk * SESSION_REQUESTS + offset;
-                let page = black_box(*page);
-                finish(observer, lane, index, page, mapping.page(page), started);
-            }
-        }
-    }
-}
-
-/// One session and one `SessionFile` per `SESSION_REQUESTS` requests, opened
-/// and dropped inside the timed region; hit counters are derived after timing.
-fn sessions<const TRACE: bool>(
-    work: Work<'_>,
-    reader: &ReaderCtx,
-    requests: &[PageNumber],
-    observer: &mut Observer<TRACE>,
-) -> Result<(), String> {
-    let Source::Dios(pool, file) = work.source else {
-        unreachable!("Dios session");
-    };
-    assert!(requests.len().is_multiple_of(SESSION_REQUESTS));
-    for repetition in 0..work.lane.repetitions() as usize {
-        for (chunk, pages) in requests.chunks_exact(SESSION_REQUESTS).enumerate() {
-            let session = pool.session(reader);
-            let view = session.file(file).map_err(error)?;
-            for (offset, page) in pages.iter().enumerate() {
-                let started = observer.start();
-                let index = repetition * requests.len() + chunk * SESSION_REQUESTS + offset;
-                let page = black_box(*page);
-                match view.page(page.0) {
-                    Ok(SessionRead::Hit(bytes)) => {
-                        finish(observer, work.lane, index, page, bytes, started);
-                    }
-                    Ok(SessionRead::Absent) => {
-                        return Err("resident session read was Absent".to_owned());
-                    }
-                    Err(failure) => return Err(error(failure)),
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 fn finish<const TRACE: bool>(
     observer: &mut Observer<TRACE>,
     lane: Lane,
@@ -336,7 +263,6 @@ fn finish<const TRACE: bool>(
 ) {
     let index = u32::try_from(index).expect("bounded request index");
     let offset = lane.word_offset(index) as usize * 8;
-    let useful = lane.useful_bytes() as usize;
-    let sum = black_box(consume(black_box(&bytes[offset..offset + useful])));
+    let sum = black_box(consume(black_box(&bytes[offset..offset + 64])));
     observer.finish(index, page, started, sum);
 }

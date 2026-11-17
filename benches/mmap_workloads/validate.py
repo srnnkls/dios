@@ -7,6 +7,21 @@
 import argparse
 import json
 from pathlib import Path
+from statistics import fmean
+import subprocess
+
+HUGEPAGE_LANES = ("resident_access_session_fold_256m",)
+HUGEPAGE_PROFILE = "bench-thp-madvise"
+TIMED_REGION_NS_MIN = 100_000_000
+PAGE_SIZE_FIELDS = (
+    "anonhugepages_kib",
+    "filepmdmapped_kib",
+    "kernelpagesize_kib",
+    "mapping_kib",
+    "transparent_hugepage",
+    "advice",
+    "filesystem",
+)
 
 
 def validate_row(row: dict) -> None:
@@ -45,12 +60,46 @@ def validate_row(row: dict) -> None:
         raise ValueError("minor targets had present PTEs")
     if row["arm"].startswith("mmap_"):
         validate_mmap(row, totals)
+    elif row["arm"] == "plain_array":
+        validate_plain(row, totals)
     else:
         validate_dios(row, totals)
+    if row["fair"]:
+        validate_fair(row, totals)
     if row.get("trace"):
         validate_trace(row)
     if row.get("prefetch") is not None:
         validate_prefetch(row)
+
+
+def validate_plain(row: dict, totals: dict) -> None:
+    if row["io_mode"] != "none" or row["registration"] != "none":
+        raise ValueError("plain array posture differs")
+    if totals["pending"] != 0 or totals["hits"] != 0:
+        raise ValueError("plain array sample contains Dios counters")
+
+
+def validate_fair(row: dict, totals: dict) -> None:
+    """F6 and F7: warm pass, timed-region length, resident faults, page-size witness."""
+    warm_pass = row.get("warm_pass")
+    if not isinstance(warm_pass, dict) or not warm_pass.get("operations"):
+        raise ValueError("fair row lacks its warm-pass witness")
+    if row["operations"] % warm_pass["operations"] != 0:
+        raise ValueError("timed region is not whole repetitions of the warm pass")
+    if row["elapsed_ns"] < TIMED_REGION_NS_MIN:
+        raise ValueError("fair timed region is under 100 ms")
+    if row["cache"] == "resident" and (totals["major_faults"] or totals["minor_faults"]):
+        raise ValueError("resident fair lane faulted in the timed region")
+    page_size = row.get("page_size")
+    if not isinstance(page_size, dict):
+        raise ValueError("fair row lacks its page-size witness")
+    for point in ("before", "after"):
+        witness = page_size.get(point)
+        if not isinstance(witness, dict):
+            raise ValueError(f"fair row lacks its page-size witness {point} timing")
+        missing = [field for field in PAGE_SIZE_FIELDS if field not in witness]
+        if missing:
+            raise ValueError(f"page-size witness {point} timing lacks {missing}")
 
 
 def validate_trace(row: dict) -> None:
@@ -148,10 +197,13 @@ def validate_pressure(row: dict) -> None:
 
 
 def warm_prepare(capture: Path, frozen: Path, output: Path) -> None:
-    """Pair the validated rows of a frozen one-comparison capture into the measured CSV."""
+    """Pair the validated rows of a frozen capture into the measured CSV.
+
+    A fair-lane capture also holds its floor comparison; `report.json` beside the
+    CSV reports ns per read per arm and each paired difference (F11).
+    """
     # Both modules import this one, so they load on first use.
-    from analyze import paired_csv, read_comparison
-    from collect import base_build_schedule
+    from analyze import paired_csv
 
     if not capture.is_dir() or not frozen.is_file():
         raise ValueError("capture directory and frozen manifest are required")
@@ -163,13 +215,58 @@ def warm_prepare(capture: Path, frozen: Path, output: Path) -> None:
     )
     if drift or manifest["status"] != "complete":
         raise ValueError(f"capture manifest differs from the frozen manifest: {drift}")
-    if len(manifest["comparisons"]) != 1:
-        raise ValueError("capture manifest holds other than one comparison")
-    comparison = manifest["comparisons"][0]
+    gated = [
+        comparison for comparison in manifest["comparisons"]
+        if comparison["arms"] == expected["arms"]
+    ]
+    if len(gated) != 1:
+        raise ValueError("capture manifest holds other than one comparison of the frozen lane or arms")
+    comparisons = gated + warm_prepare_floor(manifest, gated[0], expected)
+    if len(comparisons) != len(manifest["comparisons"]):
+        raise ValueError("capture manifest holds comparisons outside the frozen lane")
+    paired = [warm_prepare_pairs(capture, comparison, expected) for comparison in comparisons]
+    for comparison, pairs in zip(comparisons, paired):
+        warm_prepare_posture(pairs, comparison, expected)
+    paths = [output] + [
+        output.with_name(f"{comparison['name']}-paired.csv") for comparison in comparisons[1:]
+    ]
+    for path, pairs in zip(paths, paired):
+        path.write_text(paired_csv(pairs))
+    if gated[0]["lane"].get("floor_arm"):
+        report = [
+            warm_prepare_report(
+                manifest["executable"], comparison, pairs, path, "base_build" in manifest
+            )
+            for comparison, pairs, path in zip(comparisons, paired, paths)
+        ]
+        (output.parent / "report.json").write_text(
+            json.dumps({"comparisons": report}, indent=2) + "\n"
+        )
+
+
+def warm_prepare_floor(manifest: dict, gated: dict, expected: dict) -> list[dict]:
+    """The floor comparison of a fair-lane capture; base-build captures carry none."""
+    floor_arm = gated["lane"].get("floor_arm")
+    if not floor_arm or "base_build" in manifest:
+        return []
+    arms = [floor_arm, expected["arms"][1]]
+    floor = [comparison for comparison in manifest["comparisons"] if comparison["arms"] == arms]
+    if len(floor) != 1:
+        raise ValueError(f"fair-lane capture lacks its {floor_arm} floor comparison")
+    return floor
+
+
+def warm_prepare_pairs(capture: Path, comparison: dict, expected: dict) -> list:
+    from analyze import read_comparison
+    from collect import base_build_schedule
+
     lanes = comparison.get("lanes", [comparison["lane"]["name"]] * 2)
-    if lanes != [expected["lane"]] * 2 or comparison["arms"] != expected["arms"]:
+    if lanes != [expected["lane"]] * 2:
         raise ValueError("comparison lane or arms differ from the frozen lane or arms")
-    schedule =base_build_schedule(expected["qualification_pairs"], expected["measured_pairs"])
+    runners = comparison.get("runners")
+    if runners is not None and len(set(runners)) != 1:
+        raise ValueError("comparison builds unequal runner hashes")
+    schedule = base_build_schedule(expected["qualification_pairs"], expected["measured_pairs"])
     references = comparison["rows"]
     if [(row["pair"], row["position"]) for row in references] != [
         (step["pair"], step["position"]) for step in schedule
@@ -183,7 +280,60 @@ def warm_prepare(capture: Path, frozen: Path, output: Path) -> None:
         for row in pair:
             if row["fixture"]["sha256"] != expected["fixture_sha256"]:
                 raise ValueError("row fixture differs from the frozen fixture")
-    output.write_text(paired_csv(pairs))
+    return pairs
+
+
+def warm_prepare_posture(pairs: list, comparison: dict, expected: dict) -> None:
+    """AT-G3 posture: a hugepage-backed product arena under the THP profile, none otherwise."""
+    if expected["lane"] not in HUGEPAGE_LANES:
+        return
+    hugepage = expected.get("host_profile") == HUGEPAGE_PROFILE
+    for pair in pairs:
+        for row in pair:
+            if not row["arm"].startswith("dios_"):
+                continue
+            for point in row["page_size"].values():
+                full = point["mapping_kib"]
+                if hugepage and point["anonhugepages_kib"] != full:
+                    raise ValueError("invalid run: arena is not fully hugepage-backed")
+                if not hugepage and point["anonhugepages_kib"] != 0:
+                    raise ValueError("invalid equal-reach run: arena holds a huge page")
+
+
+def warm_prepare_report(
+    executable: str, comparison: dict, pairs: list, path: Path, base_build: bool
+) -> dict:
+    """ns per read per position and the paired difference of one comparison (F11)."""
+    result = subprocess.run(
+        [executable, "summarize", str(path)],
+        text=True, capture_output=True, timeout=190,
+    )
+    if result.returncode:
+        raise ValueError(f"summarize failed: {result.stderr[-3000:]}")
+    summary = json.loads(result.stdout)
+    operations = pairs[0][0]["operations"]
+    arms = comparison["arms"]
+    ns_per_read = {}
+    for position, role in enumerate(("base", "candidate")):
+        entry = {"arm": arms[position]}
+        if base_build:
+            [entry["build"]] = {
+                reference["build"]
+                for reference in comparison["rows"]
+                if reference["position"] == position
+            }
+        entry["ns_per_read"] = fmean(pair[position]["elapsed_ns"] for pair in pairs) / operations
+        ns_per_read[role] = entry
+    return {
+        "name": comparison["name"],
+        "arms": arms,
+        "ns_per_read": ns_per_read,
+        "difference_ns_per_read": {
+            "estimate": summary["difference_ns_mean"] / operations,
+            "ci95_lower": summary["difference_ns_ci95_lower"] / operations,
+            "ci95_upper": summary["difference_ns_ci95_upper"] / operations,
+        },
+    }
 
 
 def counters(text: str | None) -> dict[str, int]:

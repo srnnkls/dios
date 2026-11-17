@@ -8,6 +8,7 @@ import contextlib
 import importlib.util
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -38,6 +39,7 @@ def sample() -> dict:
     return {
         "lane": "cold_point",
         "arm": "mmap_random",
+        "fair": False,
         "cache": "cold",
         "operations": 1024,
         "useful_bytes": 65_536,
@@ -252,32 +254,99 @@ def fake_collector_processes(
     return run
 
 
-SESSION_LANES = {
+SEQUENCE_REQUESTS = 65_536
+TIMED_REGION_NS_MIN = 100_000_000
+THP_ORDINARY = "always madvise [never]"
+THP_MADVISE = "always [madvise] never"
+
+FAIR_LANES = {
     lane: dict(
         name=lane,
-        arms=["mmap_random", "dios_session"],
+        arms=["mmap_random", product_arm],
+        floor_arm="plain_array",
         cache="resident",
-        operations=1024,
+        operations=SEQUENCE_REQUESTS * repetitions,
         workers=1,
         useful_bytes_per_read=bytes_per_read,
-        frames=1024,
+        frames=pages,
     )
-    for lane, bytes_per_read in (
-        ("resident_access_session_projection", 64),
-        ("resident_access_session_fold", 4096),
+    for lane, product_arm, bytes_per_read, repetitions, pages in (
+        ("resident_access_session_projection", "dios_session", 64, 2_048, 1024),
+        ("resident_access_session_fold", "dios_session", 4096, 256, 1024),
+        ("resident_access_session_fold_256m", "dios_session", 4096, 64, 65_536),
+        ("resident_access_fair_get", "dios_get", 64, 2_048, 1024),
     )
+}
+SESSION_LANES = {
+    name: FAIR_LANES[name]
+    for name in ("resident_access_session_projection", "resident_access_session_fold")
 }
 
 
-def session_row_shape(fixture_identity: dict, bytes_per_read: int):
-    """Shapes a fake row as the runner writes it for each arm of a session lane."""
+def page_size_witness(row: dict, lane: dict) -> dict:
+    """The F7 witness of the mapping one arm reads, as the runner records it."""
+    mapping_kib = lane["frames"] * 4
+    anonhugepages_kib = 0
+    advice = "none"
+    if row["arm"].startswith("mmap_"):
+        advice = "random"
+    elif row["arm"].startswith("dios_") and lane["name"].endswith("_256m"):
+        anonhugepages_kib = mapping_kib
+    point = dict(
+        anonhugepages_kib=anonhugepages_kib,
+        filepmdmapped_kib=0,
+        kernelpagesize_kib=4,
+        mapping_kib=mapping_kib,
+        transparent_hugepage=THP_MADVISE if anonhugepages_kib else THP_ORDINARY,
+        advice=advice,
+        filesystem="ext4",
+    )
+    return dict(before=dict(point), after=dict(point))
+
+
+def shape_fair_row(row: dict, lane: dict, elapsed_ns: int) -> None:
+    """Shapes a row as the runner writes it for one arm of a fair lane."""
+    operations = lane["operations"]
+    row.update(
+        lane=lane["name"],
+        fair=True,
+        cache="resident",
+        operations=operations,
+        useful_bytes=operations * lane["useful_bytes_per_read"],
+        elapsed_ns=elapsed_ns,
+        warm_pass=dict(operations=SEQUENCE_REQUESTS),
+    )
+    row["cache_before"].update(
+        hot_expected=lane["frames"], hot_resident=lane["frames"], cold_expected=0
+    )
+    row["workers"][0].update(
+        operations=operations,
+        hits=operations,
+        major_faults=0,
+        minor_faults=0,
+        elapsed_ns=elapsed_ns,
+    )
+    if not row["arm"].startswith("dios_"):
+        row.update(io_mode="mmap" if row["arm"].startswith("mmap_") else "none")
+        row.update(registration="none")
+        row["workers"][0]["hits"] = 0
+    row["page_size"] = page_size_witness(row, lane)
+
+
+def fair_row(lane: dict, arm: str, seed: int, elapsed_ns: int) -> dict:
+    row = resident_row(seed=seed, elapsed_ns=elapsed_ns)
+    row["arm"] = arm
+    row["fixture"]["pages"] = 65_536
+    shape_fair_row(row, lane, elapsed_ns)
+    return row
+
+
+def session_row_shape(fixture_identity: dict, lane: dict):
+    """Shapes a fake row as the runner writes it for each arm of a fair lane."""
 
     def shape(row: dict) -> None:
         row["fixture"] = dict(fixture_identity)
-        row["useful_bytes"] = row["operations"] * bytes_per_read
-        if row["arm"].startswith("mmap_"):
-            row.update(io_mode="mmap", registration="none")
-            row["workers"][0]["hits"] = 0
+        shape_fair_row(row, lane, TIMED_REGION_NS_MIN + row["elapsed_ns"])
 
     return shape
 
@@ -304,9 +373,7 @@ def collect_session_capture(root: Path, lane: dict) -> Path:
                 fixture_sha256,
                 [],
                 lanes=(lane,),
-                shape_row=session_row_shape(
-                    fixture_identity, lane["useful_bytes_per_read"]
-                ),
+                shape_row=session_row_shape(fixture_identity, lane),
             ),
         ),
         unittest.mock.patch.object(
@@ -333,7 +400,166 @@ def session_frozen_manifest(capture: Path, lane: dict, gate: str) -> dict:
     )
 
 
+FLOOR_ELAPSED_NS = 120_000_000
+MMAP_ELAPSED_NS = 150_000_000
+PRODUCT_ELAPSED_NS = 180_000_000
+SUMMARIZE_HALF_WIDTH_NS = 1_000
+
+
+def write_fair_capture(
+    root: Path, lane: dict, host_profile: str = "bench", base_build: bool = False
+) -> dict:
+    """Writes the rows and manifest a fair-lane collection leaves behind.
+
+    The gated comparison pairs the lane's arms; the floor comparison pairs the
+    floor arm against the product arm. Every arm runs a constant elapsed time, so
+    each arm's ns per read and each paired difference are exact. A base-build
+    capture holds one comparison of the product arm against itself, the base
+    build at `PRODUCT_ELAPSED_NS` and the candidate build at `MMAP_ELAPSED_NS`.
+    """
+    capture = root / "capture"
+    capture.mkdir(parents=True)
+    executable = capture / "mmap_workloads-retained"
+    executable.write_bytes(b"retained fair runner")
+    executable_sha256 = hashlib.sha256(executable.read_bytes()).hexdigest()
+    product_arm = lane["arms"][1]
+    elapsed = {
+        "mmap_random": MMAP_ELAPSED_NS,
+        product_arm: PRODUCT_ELAPSED_NS,
+        lane["floor_arm"]: FLOOR_ELAPSED_NS,
+    }
+    gated_arms = [product_arm, product_arm] if base_build else list(lane["arms"])
+    plan = [(lane["name"], gated_arms)]
+    if not base_build:
+        plan.append((f"{lane['name']}-{lane['floor_arm']}", [lane["floor_arm"], product_arm]))
+    comparisons = []
+    for name, arms in plan:
+        directory = capture / name
+        directory.mkdir()
+        references = []
+        for step in COLLECT.base_build_schedule(QUALIFICATION_PAIRS, MEASURED_PAIRS):
+            pair, position = step["pair"], step["position"]
+            arm = arms[position]
+            elapsed_ns = (PRODUCT_ELAPSED_NS, MMAP_ELAPSED_NS)[position] if base_build else elapsed[arm]
+            row = fair_row(lane, arm, seed=max(pair, 0), elapsed_ns=elapsed_ns)
+            raw = json.dumps(row).encode()
+            (directory / step["row"]).write_bytes(raw)
+            reference = dict(
+                raw=step["row"],
+                sha256=hashlib.sha256(raw).hexdigest(),
+                pair=pair,
+                position=position,
+                seed=max(pair, 0),
+                executable_sha256=executable_sha256,
+            )
+            if base_build:
+                reference["build"] = step["build"]
+            references.append(reference)
+        comparisons.append(
+            dict(name=name, lane=dict(lane), arms=list(arms), modes=["plain", "plain"],
+                 rows=references)
+        )
+    frozen = dict(
+        gate="at-gN",
+        lane=lane["name"],
+        arms=gated_arms,
+        executables=[executable_sha256, executable_sha256],
+        fixture_sha256=FIXTURE_SHA256,
+        qualification_pairs=QUALIFICATION_PAIRS,
+        measured_pairs=MEASURED_PAIRS,
+        host_profile=host_profile,
+    )
+    manifest = dict(
+        frozen,
+        status="complete",
+        executable=str(executable),
+        executable_sha256=executable_sha256,
+        comparisons=comparisons,
+    )
+    if base_build:
+        manifest["base_build"] = str(root / "base-tree")
+    (capture / "manifest.json").write_text(json.dumps(manifest))
+    (root / "frozen.json").write_text(json.dumps(frozen))
+    return manifest
+
+
+def rewrite_capture_rows(root: Path, manifest: dict, change, comparison_index: int = 0) -> None:
+    comparison = manifest["comparisons"][comparison_index]
+    for reference in comparison["rows"]:
+        path = root / "capture" / comparison["name"] / reference["raw"]
+        row = json.loads(path.read_text())
+        change(row)
+        raw = json.dumps(row).encode()
+        path.write_bytes(raw)
+        reference["sha256"] = hashlib.sha256(raw).hexdigest()
+    (root / "capture/manifest.json").write_text(json.dumps(manifest))
+
+
+def fake_summarize(command, *arguments, **keywords) -> subprocess.CompletedProcess:
+    """Stands in for the shared harness's `summarize` over the paired CSV it is given."""
+    command = [str(argument) for argument in command]
+    if "summarize" not in command:
+        raise AssertionError(f"warm-prepare runs only summarize: {command!r}")
+    lines = Path(command[-1]).read_text().splitlines()
+    pairs = [tuple(int(value) for value in line.split(",")) for line in lines[1:]]
+    differences = [candidate - base for base, candidate in pairs]
+    mean = sum(differences) / len(differences)
+    ratio = sum(candidate / base for base, candidate in pairs) / len(pairs)
+    summary = dict(
+        ratio_orientation="candidate/base",
+        pairs=len(pairs),
+        ratio_geomean=ratio,
+        ci95_upper=ratio,
+        difference_ns_mean=mean,
+        difference_ns_ci95_lower=mean - SUMMARIZE_HALF_WIDTH_NS,
+        difference_ns_ci95_upper=mean + SUMMARIZE_HALF_WIDTH_NS,
+        kind="characterization",
+        adopted_bound=None,
+    )
+    return subprocess.CompletedProcess(command, 0, json.dumps(summary), "")
+
+
+def collector_options(argv: list[str]):
+    with unittest.mock.patch.object(sys, "argv", ["collect.py"] + argv):
+        try:
+            return COLLECT.arguments()
+        except SystemExit as refusal:
+            raise AssertionError(f"collector refuses {argv}") from refusal
+
+
+def refuse_any_process(command, *arguments, **keywords):
+    raise AssertionError(f"a refused option starts no process: {command!r}")
+
+
+def run_collector(options, run) -> Exception | None:
+    """Runs the collector over faked processes; returns the failure it stopped with."""
+    with (
+        contextlib.chdir(REPOSITORY),
+        unittest.mock.patch.object(COLLECT.subprocess, "run", run),
+        unittest.mock.patch.object(
+            COLLECT, "host_snapshot", return_value=dict(governors=["performance"])
+        ),
+    ):
+        try:
+            COLLECT.collect(options)
+        except (ValueError, RuntimeError, OSError, KeyError) as error:
+            return error
+    return None
+
+
 class MmapEvidenceContract(unittest.TestCase):
+    def accepts_row(self, row: dict) -> None:
+        try:
+            MODULE.validate_row(row)
+        except (ValueError, KeyError) as error:
+            self.fail(f"{row['lane']}/{row['arm']}: a conforming fair row is refused: {error!r}")
+
+    def accepts_capture(self, root: Path) -> None:
+        try:
+            MODULE.warm_prepare(root / "capture", root / "frozen.json", root / "paired.csv")
+        except (ValueError, KeyError) as error:
+            self.fail(f"warm-prepare refused a complete fair capture: {error!r}")
+
     def test_cpu_scope_accepts_tail_called_read_loops_and_excludes_fixture_setup(
         self,
     ) -> None:
@@ -644,7 +870,8 @@ class MmapEvidenceContract(unittest.TestCase):
                         elapsed[(reference["pair"], reference["position"])] = row["elapsed_ns"]
                 output = root / "paired.csv"
                 try:
-                    MODULE.warm_prepare(capture, frozen, output)
+                    with unittest.mock.patch.object(subprocess, "run", fake_summarize):
+                        MODULE.warm_prepare(capture, frozen, output)
                 except (ValueError, KeyError) as error:
                     self.fail(f"warm-prepare refused a complete session capture: {error!r}")
                 self.assertEqual(
@@ -665,7 +892,10 @@ class MmapEvidenceContract(unittest.TestCase):
                         corrupt(corrupted)
                         manifest_path.write_text(json.dumps(corrupted))
                         target = root / f"rejected-{pattern}.csv"
-                        with self.assertRaisesRegex(ValueError, pattern):
+                        with (
+                            unittest.mock.patch.object(subprocess, "run", fake_summarize),
+                            self.assertRaisesRegex(ValueError, pattern),
+                        ):
                             MODULE.warm_prepare(capture, frozen, target)
                         self.assertFalse(target.exists())
                     finally:
@@ -692,9 +922,10 @@ class MmapEvidenceContract(unittest.TestCase):
                     manifest["comparisons"][0]["rows"][10]["executable_sha256"] = "d" * 64
 
                 def double_work(row: dict) -> None:
-                    row["operations"] = 2048
-                    row["useful_bytes"] = 2048 * lane["useful_bytes_per_read"]
-                    row["workers"][0].update(operations=2048, hits=2048)
+                    doubled = 2 * row["operations"]
+                    row["operations"] = doubled
+                    row["useful_bytes"] = doubled * lane["useful_bytes_per_read"]
+                    row["workers"][0].update(operations=doubled, hits=doubled)
 
                 def other_checksum(row: dict) -> None:
                     row["expected_checksum"] = 72
@@ -719,6 +950,350 @@ class MmapEvidenceContract(unittest.TestCase):
         row["workers"][0]["minor_faults"] = 100
         with self.assertRaisesRegex(ValueError, "major"):
             MODULE.validate_row(row)
+
+
+    def test_fair_rows_require_the_warm_pass_a_100_ms_timed_region_and_no_resident_faults(
+        self,
+    ) -> None:
+        lane = FAIR_LANES["resident_access_session_projection"]
+
+        def rejects(arm: str, corrupt, reason: str) -> None:
+            row = fair_row(lane, arm, seed=0, elapsed_ns=MMAP_ELAPSED_NS)
+            corrupt(row)
+            with self.assertRaises(ValueError, msg=f"{arm}: {reason}"):
+                MODULE.validate_row(row)
+
+        def short_timed_region(row: dict) -> None:
+            row["elapsed_ns"] = TIMED_REGION_NS_MIN - 1
+            row["workers"][0]["elapsed_ns"] = TIMED_REGION_NS_MIN - 1
+
+        for arm in ("mmap_random", "dios_session", "plain_array"):
+            self.accepts_row(fair_row(lane, arm, seed=0, elapsed_ns=MMAP_ELAPSED_NS))
+            rejects(arm, lambda row: row.pop("warm_pass"), "no warm-pass witness")
+            rejects(arm, short_timed_region, "timed region under 100 ms")
+            rejects(
+                arm,
+                lambda row: row["workers"][0].update(minor_faults=1),
+                "minor-fault delta in the timed region of a resident lane",
+            )
+        rejects(
+            "dios_session",
+            lambda row: row["workers"][0].update(major_faults=1),
+            "major fault in the timed region of a resident lane",
+        )
+
+    def test_fair_rows_require_the_page_size_witness_per_arm(self) -> None:
+        lane = FAIR_LANES["resident_access_fair_get"]
+        for arm in ("mmap_random", "dios_get"):
+            self.accepts_row(fair_row(lane, arm, seed=0, elapsed_ns=MMAP_ELAPSED_NS))
+            row = fair_row(lane, arm, seed=0, elapsed_ns=MMAP_ELAPSED_NS)
+            del row["page_size"]
+            with self.assertRaises(ValueError, msg=f"{arm} without its page-size witness"):
+                MODULE.validate_row(row)
+            for point in ("before", "after"):
+                for field in (
+                    "anonhugepages_kib",
+                    "filepmdmapped_kib",
+                    "kernelpagesize_kib",
+                    "transparent_hugepage",
+                    "advice",
+                    "filesystem",
+                ):
+                    row = fair_row(lane, arm, seed=0, elapsed_ns=MMAP_ELAPSED_NS)
+                    del row["page_size"][point][field]
+                    with self.assertRaises(
+                        ValueError, msg=f"{arm} without {field} {point} the timed region"
+                    ):
+                        MODULE.validate_row(row)
+
+    def test_warm_prepare_reports_ns_per_read_and_requires_the_floor_comparison(
+        self,
+    ) -> None:
+        lane = FAIR_LANES["resident_access_session_projection"]
+        operations = lane["operations"]
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            unittest.mock.patch.object(subprocess, "run", fake_summarize),
+        ):
+            root = Path(temporary)
+            write_fair_capture(root, lane)
+            output = root / "paired.csv"
+            self.accepts_capture(root)
+            self.assertEqual(
+                output.read_text().splitlines(),
+                ["base_ns,candidate_ns"]
+                + [f"{MMAP_ELAPSED_NS},{PRODUCT_ELAPSED_NS}"] * MEASURED_PAIRS,
+                "paired.csv keeps the gated pairs in base_ns,candidate_ns form",
+            )
+            report = json.loads((root / "report.json").read_text())
+            comparisons = {
+                tuple(comparison["arms"]): comparison for comparison in report["comparisons"]
+            }
+            self.assertEqual(
+                set(comparisons),
+                {("mmap_random", "dios_session"), ("plain_array", "dios_session")},
+                "report.json holds the gated and the floor comparison",
+            )
+            for (base, candidate), base_ns, candidate_ns in (
+                (("mmap_random", "dios_session"), MMAP_ELAPSED_NS, PRODUCT_ELAPSED_NS),
+                (("plain_array", "dios_session"), FLOOR_ELAPSED_NS, PRODUCT_ELAPSED_NS),
+            ):
+                comparison = comparisons[(base, candidate)]
+                self.assertEqual(
+                    comparison["ns_per_read"],
+                    dict(
+                        base=dict(arm=base, ns_per_read=base_ns / operations),
+                        candidate=dict(arm=candidate, ns_per_read=candidate_ns / operations),
+                    ),
+                    "ns per read is keyed by position, each entry naming its arm",
+                )
+                difference = comparison["difference_ns_per_read"]
+                expected = (candidate_ns - base_ns) / operations
+                half_width = SUMMARIZE_HALF_WIDTH_NS / operations
+                self.assertAlmostEqual(difference["estimate"], expected, places=9)
+                self.assertAlmostEqual(
+                    difference["ci95_lower"], expected - half_width, places=9
+                )
+                self.assertAlmostEqual(
+                    difference["ci95_upper"], expected + half_width, places=9
+                )
+
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            unittest.mock.patch.object(subprocess, "run", fake_summarize),
+        ):
+            root = Path(temporary)
+            manifest = write_fair_capture(root, lane)
+            manifest["comparisons"].pop()
+            (root / "capture/manifest.json").write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError, "floor"):
+                MODULE.warm_prepare(root / "capture", root / "frozen.json", root / "paired.csv")
+            self.assertFalse((root / "paired.csv").exists())
+            self.assertFalse((root / "report.json").exists())
+
+    def test_warm_prepare_reports_both_builds_of_a_base_build_capture_with_equal_arms(
+        self,
+    ) -> None:
+        lane = FAIR_LANES["resident_access_fair_get"]
+        operations = lane["operations"]
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            unittest.mock.patch.object(subprocess, "run", fake_summarize),
+        ):
+            root = Path(temporary)
+            write_fair_capture(root, lane, base_build=True)
+            self.accepts_capture(root)
+            report = json.loads((root / "report.json").read_text())
+            [comparison] = report["comparisons"]
+            self.assertEqual(comparison["arms"], ["dios_get", "dios_get"])
+            self.assertEqual(
+                comparison["ns_per_read"],
+                dict(
+                    base=dict(
+                        arm="dios_get", build="base",
+                        ns_per_read=PRODUCT_ELAPSED_NS / operations,
+                    ),
+                    candidate=dict(
+                        arm="dios_get", build="candidate",
+                        ns_per_read=MMAP_ELAPSED_NS / operations,
+                    ),
+                ),
+                "the candidate of an equal-arm capture keeps the base entry",
+            )
+
+    def test_rows_carry_the_runner_fair_flag_and_validation_branches_on_it(self) -> None:
+        row = sample()
+        del row["fair"]
+        with self.assertRaises((ValueError, KeyError), msg="a row without the fair flag"):
+            MODULE.validate_row(row)
+
+        lane = dict(FAIR_LANES["resident_access_fair_get"], name="resident_access_fair_next")
+        for arm in ("mmap_random", "dios_get", "plain_array"):
+            self.accepts_row(fair_row(lane, arm, seed=0, elapsed_ns=MMAP_ELAPSED_NS))
+            row = fair_row(lane, arm, seed=0, elapsed_ns=MMAP_ELAPSED_NS)
+            row.pop("warm_pass")
+            with self.assertRaises(
+                ValueError, msg=f"{arm}: a fair row of a lane the validator never named"
+            ):
+                MODULE.validate_row(row)
+
+    def test_collector_takes_the_hugepage_lanes_and_profile_from_the_validator(self) -> None:
+        validator = importlib.import_module("validate")
+        self.assertIs(COLLECT.HUGEPAGE_LANES, validator.HUGEPAGE_LANES)
+        self.assertIs(COLLECT.HUGEPAGE_PROFILE, validator.HUGEPAGE_PROFILE)
+        self.assertIn(validator.HUGEPAGE_PROFILE, COLLECT.HOST_PROFILES)
+
+    def test_warm_prepare_rejects_a_base_build_capture_with_unequal_runner_hashes(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = write_base_build_capture(root)
+            comparison = manifest["comparisons"][0]
+            runners = ["a" * 64, "r" * 64]
+            comparison["runners"] = runners
+            for reference in comparison["rows"]:
+                path = root / "capture/resident_access_ordinary" / reference["raw"]
+                row = json.loads(path.read_text())
+                row["runner_sha256"] = runners[reference["position"]]
+                raw = json.dumps(row).encode()
+                path.write_bytes(raw)
+                reference["sha256"] = hashlib.sha256(raw).hexdigest()
+            (root / "capture/manifest.json").write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError, "runner"):
+                MODULE.warm_prepare(root / "capture", root / "frozen.json", root / "paired.csv")
+            self.assertFalse((root / "paired.csv").exists())
+
+    def test_fold_256m_rows_follow_the_hugepage_posture_of_their_manifest(self) -> None:
+        lane = FAIR_LANES["resident_access_session_fold_256m"]
+
+        def set_arena(anonhugepages_kib: int):
+            def change(row: dict) -> None:
+                if row["arm"] != "dios_session":
+                    return
+                for point in row["page_size"].values():
+                    point["anonhugepages_kib"] = anonhugepages_kib
+                    point["transparent_hugepage"] = (
+                        THP_MADVISE if anonhugepages_kib else THP_ORDINARY
+                    )
+
+            return change
+
+        full_kib = lane["frames"] * 4
+        for host_profile, accepted, refused, reason in (
+            ("bench-thp-madvise", full_kib, full_kib - 2048, "arena not fully hugepage-backed"),
+            ("bench", 0, 2048, "equal-reach arena holding a huge page"),
+        ):
+            with (
+                self.subTest(host_profile=host_profile),
+                tempfile.TemporaryDirectory() as temporary,
+                unittest.mock.patch.object(subprocess, "run", fake_summarize),
+            ):
+                root = Path(temporary)
+                manifest = write_fair_capture(root, lane, host_profile=host_profile)
+                for index in range(len(manifest["comparisons"])):
+                    rewrite_capture_rows(root, manifest, set_arena(accepted), index)
+                self.accepts_capture(root)
+                (root / "paired.csv").unlink()
+                (root / "report.json").unlink(missing_ok=True)
+
+                rewrite_capture_rows(root, manifest, set_arena(refused), 0)
+                with self.assertRaisesRegex(ValueError, "huge|invalid", msg=reason):
+                    MODULE.warm_prepare(
+                        root / "capture", root / "frozen.json", root / "paired.csv"
+                    )
+                self.assertFalse((root / "paired.csv").exists())
+
+    def test_collector_layout_builds_record_their_function_alignment(self) -> None:
+        def build_flags(command: list[str], keywords: dict) -> tuple:
+            environment = keywords.get("env") or os.environ
+            return tuple(command) + tuple(
+                f"{key}={value}" for key, value in sorted(environment.items())
+                if "RUSTFLAGS" in key
+            )
+
+        builds = {}
+        for layout in (16, 32, 64):
+            with self.subTest(layout=layout), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                lane = FAIR_LANES["resident_access_session_projection"]
+                fixture_sha256 = write_fixture(root / "fixture")
+                fixture_identity = json.loads((root / "fixture/fixture.json").read_text())
+                fake = fake_collector_processes(
+                    root, root / "no-base-build", fixture_sha256, [], lanes=(lane,),
+                    shape_row=session_row_shape(fixture_identity, lane),
+                )
+                flags = []
+
+                def run(command, *arguments, **keywords):
+                    if str(command[0]) == "cargo":
+                        flags.append(build_flags([str(part) for part in command], keywords))
+                    return fake(command, *arguments, **keywords)
+
+                options = collector_options(
+                    [str(root / "capture"), "--input", str(root / "fixture"),
+                     "--lanes", lane["name"], "--layout", str(layout)]
+                )
+                run_collector(options, run)
+                manifest = json.loads((root / "capture/manifest.json").read_text())
+                self.assertEqual(manifest.get("layout"), layout, "manifest records the layout")
+                self.assertEqual(len(flags), 1, "one build per layout capture")
+                builds[layout] = flags[0]
+        self.assertEqual(
+            len(set(builds.values())), 3, f"each layout builds with its own alignment: {builds}"
+        )
+        for refused in ("8", "128", "default"):
+            with (
+                self.subTest(refused=refused),
+                tempfile.TemporaryDirectory() as temporary,
+                unittest.mock.patch.object(COLLECT.subprocess, "run", refuse_any_process),
+                unittest.mock.patch.object(
+                    sys, "argv",
+                    ["collect.py", str(Path(temporary) / "capture"), "--layout", refused],
+                ),
+                self.assertRaises((SystemExit, ValueError)),
+            ):
+                COLLECT.collect(COLLECT.arguments())
+
+    def test_collector_shared_runner_builds_this_runner_against_the_base_tree(self) -> None:
+        this_runner = runner_sha256()
+        for shared in (True, False):
+            with self.subTest(shared=shared), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                base_tree = root / "dios-at-base"
+                write_base_tree(base_tree)
+                runner_source = base_tree / "benches/mmap_workloads/mod.rs"
+                runner_source.write_bytes(runner_source.read_bytes() + b"\n// base runner\n")
+                base_runner = hashlib.sha256(
+                    b"".join((base_tree / path).read_bytes() for path in COLLECT.RUNNER_SOURCES)
+                ).hexdigest()
+                fixture_sha256 = write_fixture(root / "fixture")
+                fake = fake_collector_processes(root, base_tree, fixture_sha256, [])
+                own_base_builds, names_base_builds = [], []
+
+                def run(command, *arguments, cwd=None, **keywords):
+                    command = [str(part) for part in command]
+                    if command[0] == "cargo":
+                        environment = " ".join(str(value) for value in (keywords.get("env") or {}).values())
+                        names_base = names_tree(command + [environment], cwd, base_tree)
+                        builds_base_sources = cwd is not None and Path(cwd).resolve().is_relative_to(base_tree)
+                        own_base_builds.append(builds_base_sources)
+                        names_base_builds.append(names_base)
+                        if names_base and not builds_base_sources:
+                            stdout = fake(command, *arguments, cwd=base_tree, **keywords).stdout
+                            executable = Path(json.loads(stdout)["executable"])
+                            executable.write_bytes(b"shared runner against base")
+                            return subprocess.CompletedProcess(command, 0, stdout, "")
+                    if command[-1] == "identity":
+                        content = Path(command[0]).read_bytes()
+                        runner = base_runner if content == b"base runner" else this_runner
+                        return subprocess.CompletedProcess(
+                            command, 0, json.dumps(dict(runner_sha256=runner, debug_assertions=False)), ""
+                        )
+                    return fake(command, *arguments, cwd=cwd, **keywords)
+
+                argv = [str(root / "capture"), "--input", str(root / "fixture"),
+                        "--lanes", "resident_access_ordinary", "--base-build", str(base_tree)]
+                options = collector_options(argv + (["--shared-runner"] if shared else []))
+                failure = run_collector(options, run)
+                manifest = json.loads((root / "capture/manifest.json").read_text())
+                self.assertEqual(len(manifest["comparisons"]), 1, f"collector stopped with {failure!r}")
+                runners = manifest["comparisons"][0]["runners"]
+                if shared:
+                    self.assertEqual(
+                        runners, [this_runner, this_runner],
+                        "one runner hash for both executables",
+                    )
+                    self.assertNotIn(True, own_base_builds, "the base tree's own runner is not built")
+                    self.assertIn(True, names_base_builds, "one runner build targets the base tree")
+                else:
+                    self.assertEqual(runners, [base_runner, this_runner])
+                self.assertIsNone(failure)
+        self.assertIn(
+            "benches/mmap_workloads/fair.rs",
+            COLLECT.RUNNER_SOURCES,
+            "the runner hash covers the fair-lane module and its cfg-gated arms",
+        )
 
 
 if __name__ == "__main__":

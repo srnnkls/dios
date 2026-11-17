@@ -414,3 +414,25 @@ implementation_batches:
     report: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-rereview1/peer-gpt6-astra.yaml
     resolved: [H1, M1, M2, M3]
     persists: []
+- batch: 4
+  tasks: [AT4]
+  reviewed_at: '2026-11-17T18:30:00Z'
+  status: passed
+  reports: .tropos/peer/array-translation/20261115T161731Z-fba2be/
+  waves:
+  - subject: session tests, scaffolds and bench arms
+    commit: 7d59f2b
+    reviewers: [general, architecture, compliance, abstractions] x [claude-opus, peer-gpt6-astra]
+    admitted: [H1 work count, H2 arm symmetry, H3 Loom eviction case, M1 characterization fold, M2 AT-G3 command, M3 remap duplication]
+    fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-fix1/native.yaml
+    rereview: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-rereview1/peer-gpt6-astra.yaml
+    persists: []
+  - subject: fair lanes under the bench fairness contract (AT-D9 to AT-D13)
+    reviewers: [general, architecture, compliance, abstractions] x [claude-opus, peer-gpt6-astra]
+    admitted: [H1 mmap loop harness helper, M1 hand-rolled difference interval, M2 report keys, M3 hugepage constants, M4 fair-lane list, M5 function length]
+    fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-fix2/native.yaml
+    rereview: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-rereview2/peer-gpt6-astra.yaml
+    persists: []
+  local_gates: "Python suite 25 tests OK; mise run lint clean here and clippy clean on nix; cargo test --features bench,mock 405 passed with only the four AT4 session tests failing by assertion; mise run loom 19 passed with the three AT4 session cases failing; mmap_workload_contract on nix 18 passed; legacy lane files hash to 604410a; the refactored ratio_gate reproduces five retained gate outputs character for character."
+  characterization: "nix, single processes on resident_access_fair_get, 134,217,728 reads, THP never: mmap_random 3.649, plain_array 3.793, dios_get 24.904 ns per read. Not gate evidence."
+  carried_to_AT5: "ReadSession::read_page returns a lifetime longer than the session; the dios_session arms have not run to completion; rows written before the fair flag no longer validate with the current validator."
