@@ -16,6 +16,7 @@ const PFR_SUPPORT_FILES: [&str; 5] = [
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(dios_resident_hint)");
     println!("cargo::rustc-check-cfg=cfg(dios_reclamation_observation)");
+    println!("cargo::rustc-check-cfg=cfg(dios_registration_posture)");
     println!("cargo::rustc-check-cfg=cfg(pfr_product_retention)");
     println!("cargo::rerun-if-env-changed=CARGO_FEATURE_BENCH");
     if env::var_os("CARGO_FEATURE_BENCH").is_some() {
@@ -67,6 +68,9 @@ fn main() {
     }
     if pool.contains("reclamation_epochs_observed_internal") {
         println!("cargo::rustc-cfg=dios_reclamation_observation");
+    }
+    if pool.contains("pub fn registration_posture") && pool.contains("pub fn arena_locked") {
+        println!("cargo::rustc-cfg=dios_registration_posture");
     }
 }
 

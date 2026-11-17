@@ -2,13 +2,13 @@ checkpoint:
   scope_name: array-translation
   scope_path: scopes/active/array-translation
   branch: feat/array-translation
-  last_commit: b7a871c
+  last_commit: ca7e6d0
   updated_at: '2026-11-17T09:45:00Z'
 
   batch:
     number: 3
     tasks: [AT3]
-    phase: review
+    phase: integration
     status: in_progress
     waiting_on: "AT-G7: DRP frozen-runner revision (AT-D7), fresh base and the campaign on nix. AT-G4 passed at b8f95c1; Linux suites and ASAN are clean."
 
@@ -34,5 +34,5 @@ checkpoint:
     fix: {round1_rust: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix1-rust, round1_python: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix1-python, round2_python: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix2-python}
 
     rereview: {round1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-rereview1, round2: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-rereview2}
-    drp_runner: {tester: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-tester, implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-implementer, review: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-review, fix1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-fix1, rereview1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-rereview1}
+    drp_runner: {tester: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-tester, implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-implementer, review: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-review, fix1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-fix1, rereview1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-rereview1, fix2: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-fix2, rereview2: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-rereview2}
     gate_lever: {AT-G4: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-at-g4-lever}
