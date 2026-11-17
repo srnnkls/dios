@@ -87,6 +87,12 @@ also meets F6.
 
 - AT-G1 reads one 64-byte projection per request. The session arm opens one session
   and one `SessionFile` per 16 requests, the same chunking as `resident_access_epoch_batch`.
+  In every session lane (AT-G1, AT-G2, AT-G3) the `mmap_random` and `plain_array` arms
+  iterate the same 16-request chunks with nothing at the chunk boundary, so the three
+  arms differ only in the access expression and in opening and dropping the session
+  (AT-D16). The arm `mmap_random_flat` runs the same requests in one flat loop; its
+  comparison against `dios_session` is captured with every session-lane capture and
+  reported in `report.json`, not gated.
 - AT-G2 folds the whole granule (512 `u64` words) per request over sequential pages,
   with the same 16-request sessions.
 - AT-G5 and AT-G6 copy the 64 bytes into a caller buffer and consume that buffer on
