@@ -1,0 +1,7 @@
+[gate] $ cargo bench --features bench --bench compare -- benches/evidence/array_translation/at-g7/drp/drp_g2_warm_ordinary/paired.csv 1.01
+   Compiling dios v0.1.0 (/Users/srnnkls/projects/dios)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 4.21s
+     Running benches/compare.rs (target/release/deps/compare-58da936688e8c316)
+gate paired: pairs 30, ratio geomean 0.9159, ci95 upper 0.9181, threshold 1.0100 -> PASS
+mbx[cache]: 0 hits, 4 misses, 1 bypassed; 0 B downloaded, 0 B uploaded, 20.7 KiB stored locally
+mbx[savings]: has saved 1d 2h across 3569 builds. this line is the only thanks it needs.

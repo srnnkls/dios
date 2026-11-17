@@ -4,8 +4,8 @@ code: AT
 next_id: 9
 meta:
   created: '2026-11-15'
-  last_updated: '2026-11-15'
-  progress: 2/8
+  last_updated: '2026-11-17'
+  progress: 3/8
 phases:
 - name: Contracts
   tasks: [AT1]
@@ -88,8 +88,7 @@ tasks:
     edits are scaffolds and test hooks only.
 - id: AT3
   title: Replace the hash page table with array translation
-  status: in_progress
-  blocked_on: "AT-G7 on nix, behind the DRP frozen-runner revision and fresh base dispatched inside AT3 (AT-D7). Closed on 2026-11-17 on nix: mise run test (416 passed, io_uring suites and both Linux-only reservation cases included), mise run asan (271 passed), AT-G4 at b8f95c1 (ratio geomean 0.7462, ci95 upper 0.7539, bound 0.85) after a failed capture at e1bbd2f (0.9076, 0.9189) and the inlining lever."
+  status: done
   evidence:
     tester: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b3-tester-AT3/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-tester-AT3-attempt2/native.yaml]
     implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-implementer-AT3-resume/native.yaml

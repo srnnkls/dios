@@ -292,10 +292,34 @@ implementation_batches:
 - batch: 3
   tasks: [AT3]
   reviewed_at: '2026-11-16T10:19:54Z'
-  status: review_passed_host_gates_open
+  status: passed
   reports: .tropos/peer/array-translation/20261115T161731Z-fba2be/
   local_gates: "macOS, eager backend, on the fixed tree: mise run lint clean; cargo test --features bench,mock 391 passed; mise run loom 19 passed; mise run miri 52 passed, 1 ignored; mise run asan 274 passed; Python suites pass."
-  open_acceptance: "AT-G4, AT-G7, the io_uring suites and ASAN on the ring paths, and the two Linux-only reservation tests have not run; nix is offline."
+  host_gates: "nix, 2026-11-17: mise run test 419 passed and mise run asan 274 passed, io_uring suites and both Linux-only reservation cases included; AT-G4 passed at b8f95c1 (0.7462, ci95 upper 0.7539, bound 0.85); AT-G7 passed at 5131d7d on all eight lanes, the RC-G4 fragmented lane on the owner-authorized rerun (AT-D8). Results: benches/evidence/array_translation/README.md."
+  host_waves:
+  - subject: warm-prepare row fixture and capture commands (fix round 2)
+    commit: e1bbd2f
+    fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix2-python/native.yaml
+    rereview: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-rereview2/peer-gpt6-astra.yaml
+    resolved: [H1, M1]
+    note: "The capture commands gained MISE_EXE for bench-host-guard and the retained mise for uv after this re-review, by orchestrator edit of the plan."
+  - subject: AT-G4 gate lever, inlined hit-path helpers
+    commit: b8f95c1
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-at-g4-lever/native.yaml
+    review: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-at-g4-lever-review/peer-gpt6-astra.yaml
+    reviewers: [peer-gpt6-astra]
+    findings: []
+  - subject: DRP frozen-runner revision (AT-D7)
+    commits: [ca7e6d0, 5131d7d]
+    tester: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-tester/native.yaml
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-implementer/native.yaml
+    review: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-review/peer-gpt6-astra.yaml
+    reviewers: [peer-gpt6-astra, claude-opus]
+    review_shape: "both reviewers, the four roles in one pass each"
+    admitted: [M1 topology, M2 gate and lane, M3 describe path, M4 old-CPU falsifier, H1 base build]
+    fixes: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-fix1/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-fix2/native.yaml]
+    rereviews: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-rereview1/peer-gpt6-astra.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-rereview2/peer-gpt6-astra.yaml]
+    persists: []
   synthesized_report:
     reviewers:
     - general-claude-opus

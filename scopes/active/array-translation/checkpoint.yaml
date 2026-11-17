@@ -3,14 +3,14 @@ checkpoint:
   scope_path: scopes/active/array-translation
   branch: feat/array-translation
   last_commit: ca7e6d0
-  updated_at: '2026-11-17T09:45:00Z'
+  updated_at: '2026-11-17T11:30:00Z'
 
   batch:
-    number: 3
-    tasks: [AT3]
-    phase: integration
-    status: in_progress
-    waiting_on: "AT-G7: DRP frozen-runner revision (AT-D7), fresh base and the campaign on nix. AT-G4 passed at b8f95c1; Linux suites and ASAN are clean."
+    number: 4
+    tasks: [AT4]
+    phase: red
+    status: pending
+    waiting_on: "AT4 tester dispatch under the raised budget (AT-D4)"
 
   routing_snapshot:
     epoch_id: 20261115T161731Z-fba2be
@@ -21,18 +21,4 @@ checkpoint:
         - {agent: peer-gpt6-astra, effort: inherit, class: peer}
         - {agent: claude-opus, effort: inherit, class: native}
 
-  reports:
-    tester: {AT3: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-tester-AT3}
-    tester_attempt2: {AT3: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-tester-AT3-attempt2}
-    implementer: {AT3: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-implementer-AT3-resume}
-    implementer_failed_wave: {AT3: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-implementer-AT3}
-    review:
-      general: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-review-general
-      architecture: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-review-architecture
-      compliance: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-review-compliance
-      abstractions: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-review-abstractions
-    fix: {round1_rust: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix1-rust, round1_python: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix1-python, round2_python: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix2-python}
-
-    rereview: {round1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-rereview1, round2: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-rereview2}
-    drp_runner: {tester: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-tester, implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-implementer, review: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-review, fix1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-fix1, rereview1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-rereview1, fix2: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-fix2, rereview2: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-rereview2}
-    gate_lever: {AT-G4: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-at-g4-lever}
+  reports: {}

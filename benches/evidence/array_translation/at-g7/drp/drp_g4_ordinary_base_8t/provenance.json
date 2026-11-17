@@ -1,0 +1,52 @@
+{
+  "base_executable_sha256": "82a7ecc6e7fa7e9b613e152c381c6e880549cd85a48034f6b5915bc78bc66563",
+  "base_source_commit": "1004a2e6fcae0bcc9552dc3211c2416e388a250d",
+  "benchmark_arguments": [
+    "run",
+    "drp_g4_ordinary_base_8t"
+  ],
+  "candidate_executable_sha256": "69b6d8a5f1483ac4e4e0922b498f414c13f87a1bcc8ff7c3d413a4ef39960eb9",
+  "candidate_source_commit": "5131d7de2b3a1223a1875c91699667dec912b79a",
+  "converter": {
+    "source_sha256": "377fb6f2f5efc2de19b611440e54936e8356a37391d0d1bcc741d742ac2cf1ce"
+  },
+  "converter_path": "/home/srnnkls/build/dios-gates/targets/at-control-5131d7d/debug/drp_gate_artifacts",
+  "converter_sha256": "9ebcaee45e0453b05d63c8e4f1d7b1a9ce44127048c04937443f806642c82db6",
+  "host": {
+    "cache_protocol": "resident-prefill-or-cycling-warmup",
+    "cpu": "AMD Ryzen Threadripper 3970X 32-Core Processor",
+    "cpu_set": "0-7",
+    "direct_io": "verified",
+    "governor": "performance",
+    "kernel": "6.6.64",
+    "nvme": "Samsung SSD 970 PRO",
+    "topology": "physical CPUs 0-7, SMT siblings 32-39 idle",
+    "transparent_hugepage": "never"
+  },
+  "paired_csv_sha256": "3d321d4140262048bc61f325ea36821a16e26e56e812dd62d046291fbb08e783",
+  "pre_run_manifest_sha256": "6d5b94214440e7254c8d7e169206521f49cdfc7c5f47102eea55fcab1d247b8a",
+  "process_csv_sha256": "1e63ae18894cc38bd18af613baecc359b5dfe19b506a3ebe9b08e0d6cbfc209a",
+  "products": [
+    {
+      "arm": "base",
+      "cargo_lock_sha256": "ccbd0d132f8d0c00f7df428247338ea117222dd71b0dfaf9555c610e21dc6466",
+      "executable_sha256": "82a7ecc6e7fa7e9b613e152c381c6e880549cd85a48034f6b5915bc78bc66563",
+      "source_commit": "1004a2e6fcae0bcc9552dc3211c2416e388a250d"
+    },
+    {
+      "arm": "candidate",
+      "cargo_lock_sha256": "757e1121240aa29eed42c2de39f8ed0b257f161be4903e240fa8f43057b3f423",
+      "executable_sha256": "69b6d8a5f1483ac4e4e0922b498f414c13f87a1bcc8ff7c3d413a4ef39960eb9",
+      "source_commit": "5131d7de2b3a1223a1875c91699667dec912b79a"
+    }
+  ],
+  "runner": {
+    "build_sha256": "da29d3b493f6440a8a86dd3a695260f9e714d12a7d820c6dc2194ba0b1e088a7",
+    "source_sha256": "f2391d5c8e69146aeaaf77e8d112f0b42115dc2c926dd8dd9b452ea8727a76b1"
+  },
+  "schema": "dios-drp009-pre-run-v1",
+  "toolchain": {
+    "mise": "2026.8.0",
+    "rust": "rustc 1.96.0"
+  }
+}

@@ -1,0 +1,13 @@
+[remote] $ ~/projects/dios/.mise/tasks/remote env MISE_EXE=/home/srnnkls/build/dios-gates/tools/mise-v2026.8.0-linux-x64 /home/srnnkls/build/dios-gates/tools/mise-v2026.8.0-linux-x64 run bench-mmap-workloads target/array-translation/at-g7-rc-g4-rerun --lanes automatic_fragmented --input target/array-translation/at-g4/input
+[bench-host-guard] $ if [ ! -e /etc/NIXOS ]; then
+bench_profile=active
+thp=always madvise [never]
+governors=performance
+mise WARN  mise version 2026.11.9 available
+mise WARN  To update, run mise self-update
+[bench-mmap-workloads] $ ~/build/dios/.mise/tasks/bench-mmap-workloads target/a…
+automatic_fragmented: 10/30 pairs
+automatic_fragmented: 20/30 pairs
+automatic_fragmented: 30/30 pairs
+automatic_fragmented: complete
+Finished in 6.07s
