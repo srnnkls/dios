@@ -1,0 +1,82 @@
+[gate] $ cargo bench --features bench --bench compare -- benches/evidence/array_translation/at-g4/paired.csv 0.85
+   Compiling version_check v0.9.5
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.46
+   Compiling unicode-ident v1.0.24
+   Compiling serde_core v1.0.228
+   Compiling typenum v1.20.1
+   Compiling libc v0.2.186
+   Compiling cfg-if v1.0.4
+   Compiling zmij v1.0.21
+   Compiling generic-array v0.14.7
+   Compiling serde_json v1.0.150
+   Compiling crossbeam-utils v0.8.22
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling digest v0.10.7
+   Compiling cpufeatures v0.2.17
+   Compiling itoa v1.0.18
+   Compiling memchr v2.8.3
+   Compiling zerocopy v0.8.54
+   Compiling syn v2.0.118
+   Compiling crossbeam-epoch v0.9.20
+   Compiling sha2 v0.10.9
+   Compiling shlex v2.0.1
+   Compiling serde v1.0.228
+   Compiling crossbeam-deque v0.8.7
+   Compiling find-msvc-tools v0.1.9
+   Compiling autocfg v1.5.1
+   Compiling cc v1.2.66
+   Compiling num-traits v0.2.19
+   Compiling dios v0.1.0 (/Users/srnnkls/projects/dios)
+   Compiling rayon-core v1.13.0
+   Compiling either v1.16.0
+   Compiling ciborium-io v0.2.2
+   Compiling anstyle v1.0.14
+   Compiling regex-syntax v0.8.11
+   Compiling alloca v0.4.0
+   Compiling clap_lex v1.1.0
+   Compiling plotters-backend v0.3.7
+   Compiling plotters-svg v0.3.7
+   Compiling clap_builder v4.6.0
+   Compiling zerocopy-derive v0.8.54
+   Compiling serde_derive v1.0.228
+   Compiling regex-automata v0.4.15
+   Compiling itertools v0.13.0
+   Compiling cast v0.3.0
+   Compiling same-file v1.0.6
+   Compiling criterion-plot v0.8.2
+   Compiling tinytemplate v1.2.1
+   Compiling walkdir v2.5.0
+   Compiling clap v4.6.1
+   Compiling regex v1.13.0
+   Compiling plotters v0.3.7
+   Compiling rayon v1.12.0
+   Compiling page_size v0.6.0
+   Compiling anes v0.1.6
+   Compiling oorandom v11.1.5
+   Compiling half v2.7.1
+   Compiling ciborium-ll v0.2.2
+   Compiling ciborium v0.2.2
+   Compiling criterion v0.8.2
+    Finished `bench` profile [optimized + debuginfo] target(s) in 4m 15s
+     Running benches/compare.rs (target/release/deps/compare-58da936688e8c316)
+gate paired: pairs 30, ratio geomean 0.9076, ci95 upper 0.9189, threshold 0.8500 -> FAIL
+error: bench failed, to rerun pass `--bench compare`
+
+Caused by:
+  process didn't exit successfully: `/Users/srnnkls/projects/dios/target/release/deps/compare-58da936688e8c316 benches/evidence/array_translation/at-g4/paired.csv 0.85 --bench` (exit status: 1)
+mbx[cache]: 0 hits, 105 misses, 2 not looked up, 5 bypassed; 0 B downloaded, 0 B uploaded, 189.6 MiB stored locally
+mbx[gc]: 18.2 GiB free on the disk holding /Users/srnnkls/Library/Caches/mbx, under the 20.0 GiB minimum; collecting private state and managed targets past their budgets, then shared cache objects if the cache disk is short
+mbx[gc]: kept 1 target directories in use by running commands
+mbx[gc]: evicted 0 objects and 0 action results (7.3 MiB logical); 589.7 MiB logical remain
+mbx[gc]: removed 70 learned incremental units and 0 checkout directories (7.7 KiB logical); 0 units (63.1 MiB logical) remain
+mbx[gc]: removed 1 generated source trees (90 B logical); 0 B logical remain
+mbx[gc]: removed 1 target directories (1.7 GiB logical, 0 abandoned and 1 live, 1 kept for running commands or builds that started meanwhile); 624.0 MiB logical remain
+mbx[gc]: kept 1 target directories in use by running commands
+mbx[gc]: evicted 1707 shared cache objects and 289 action results below gc.max_size because the disk was under gc.min_free_size (590.1 MiB logical freed)
+mbx[gc]: evicted 71 shared cache objects and 13 action results below gc.max_size because the disk was under gc.min_free_size (2.9 MiB logical freed)
+mbx[gc]: evicted 78 shared cache objects and 11 action results below gc.max_size because the disk was under gc.min_free_size (21.7 MiB logical freed)
+mbx[gc]: evicted 42 shared cache objects and 6 action results below gc.max_size because the disk was under gc.min_free_size (18.8 MiB logical freed)
+mbx[savings]: 127449 compilations, each compiled once and served warm ever since
+[gate] ERROR task failed

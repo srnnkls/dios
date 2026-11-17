@@ -2,15 +2,15 @@ checkpoint:
   scope_name: array-translation
   scope_path: scopes/active/array-translation
   branch: feat/array-translation
-  last_commit: 8c4a8b4
-  updated_at: '2026-11-16T10:19:54Z'
+  last_commit: b8f95c1
+  updated_at: '2026-11-17T09:45:00Z'
 
   batch:
     number: 3
     tasks: [AT3]
     phase: integration
-    status: pending
-    waiting_on: "nix host gates and Linux-only suites for AT3; review and local gates are clear"
+    status: in_progress
+    waiting_on: "AT-G7: DRP frozen-runner revision (AT-D7), fresh base and the campaign on nix. AT-G4 passed at b8f95c1; Linux suites and ASAN are clean."
 
   routing_snapshot:
     epoch_id: 20261115T161731Z-fba2be
@@ -31,6 +31,7 @@ checkpoint:
       architecture: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-review-architecture
       compliance: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-review-compliance
       abstractions: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-review-abstractions
-    fix: {round1_rust: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix1-rust, round1_python: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix1-python}
+    fix: {round1_rust: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix1-rust, round1_python: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix1-python, round2_python: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix2-python}
 
-    rereview: {round1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-rereview1}
+    rereview: {round1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-rereview1, round2: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-rereview2}
+    gate_lever: {AT-G4: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-at-g4-lever}

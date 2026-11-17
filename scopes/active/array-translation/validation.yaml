@@ -128,6 +128,10 @@ owner_decisions:
     decided_at: 2026-11-16
     owner: Sören
     decision: "The duplicated pin head of pin_live and pin_owned (batch 3 review) is not unified in AT3. AT5 owns it, where the session read is the third resolution path; AT-G4 measures the hit path as AT3 leaves it."
+  - id: AT-D7
+    decided_at: 2026-11-17
+    owner: Sören
+    decision: "The DRP frozen-runner revision of the owner amendment of 2026-09-14 (DRP-G4 eight-thread protocol) is dispatched inside AT3: tester and implementer revise the runner, the amendment text in benches/plans/dios_r1_r7_read_performance.md is committed with it, and the fresh base and the AT-G7 campaign run on nix from a clean worktree before AT4 starts."
   - id: WRC-D1
     inherited_from: scopes/draft/warm-read-copy-out/validation.yaml
     decision: "Volatile-word exception, same-width atomic writers, one audited module, mirror-only liveness carry over; the bracket is amended by Q005 and A001."

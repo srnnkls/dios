@@ -89,7 +89,7 @@ tasks:
 - id: AT3
   title: Replace the hash page table with array translation
   status: in_progress
-  blocked_on: "The bench host nix is offline (three wake attempts, 2026-11-15 and 2026-11-16). Open acceptance: AT-G4 and AT-G7 on nix; the io_uring backend suites and ASAN on the ring paths; the reservation above RAM plus swap and the resident-bytes drop after release (Linux-only tests); the DRP frozen-runner revision and fresh base (owner Sören) before the first AT-G7 campaign."
+  blocked_on: "AT-G7 on nix, behind the DRP frozen-runner revision and fresh base dispatched inside AT3 (AT-D7). Closed on 2026-11-17 on nix: mise run test (416 passed, io_uring suites and both Linux-only reservation cases included), mise run asan (271 passed), AT-G4 at b8f95c1 (ratio geomean 0.7462, ci95 upper 0.7539, bound 0.85) after a failed capture at e1bbd2f (0.9076, 0.9189) and the inlining lever."
   evidence:
     tester: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b3-tester-AT3/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-tester-AT3-attempt2/native.yaml]
     implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-implementer-AT3-resume/native.yaml
