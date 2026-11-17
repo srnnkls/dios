@@ -7,9 +7,7 @@ use crate::sync::{AtomicU32, AtomicU64};
 #[cfg(loom)]
 use crate::sync::Ordering;
 
-#[cfg(loom)]
-use super::epoch::ReaderSlot;
-use super::epoch::{ReaderCtx, SessionPin};
+use super::epoch::{ReaderCtx, ReaderSlot, SessionPin};
 #[cfg(loom)]
 use super::frames::Frames;
 use super::frames::SessionArena;
@@ -33,6 +31,7 @@ pub struct ReadSession<'pool> {
 #[derive(Debug)]
 pub struct SessionFile<'session> {
     pin: &'session SessionPin<'session>,
+    reader: &'session ReaderSlot,
     entries: &'session [AtomicU32],
     live_generation: &'session AtomicU64,
     live_word: u64,
@@ -63,13 +62,16 @@ impl<D: PoolBackend> Pool<D> {
     /// If `reader` belongs to another pool or already holds its declared peak
     /// of guards.
     #[must_use]
+    #[inline]
     pub fn session<'pool>(&'pool self, reader: &'pool ReaderCtx) -> ReadSession<'pool> {
         self.assert_reader_owner(reader);
         let slot = reader.slot();
         ReadSession {
             pin: slot.commit_session(self.pin_begin(slot)),
             translation: &self.table,
-            arena: self.frames.session_arena(),
+            arena: self
+                .frames
+                .session_arena(self.clock.session_reference_bits()),
             clock: &self.clock,
             file_live_generations: &self.file_live_generations,
             identity: self.identity,
@@ -93,7 +95,7 @@ impl<'pool> ReadSession<'pool> {
         Self {
             pin: slot.commit_session(slot.begin_pin(global_epoch.load(Ordering::Acquire))),
             translation,
-            arena: frames.session_arena(),
+            arena: frames.session_arena(clock.session_reference_bits()),
             clock,
             file_live_generations,
             identity,
@@ -112,10 +114,10 @@ impl ReadSession<'_> {
     /// # Panics
     ///
     /// If `file` belongs to another pool.
+    #[inline]
     pub fn file(&self, file: FileId) -> Result<SessionFile<'_>, GetError> {
-        assert_eq!(
-            file.driver(),
-            self.identity,
+        assert!(
+            file.driver() == self.identity,
             "file identity used with a foreign pool"
         );
         let entries = self.translation.slot_entries(file);
@@ -128,6 +130,7 @@ impl ReadSession<'_> {
         }
         Ok(SessionFile {
             pin: &self.pin,
+            reader: self.pin.slot(),
             entries,
             live_generation,
             live_word,
@@ -175,7 +178,9 @@ impl<'session> SessionFile<'session> {
         let Some(frame) = frame else {
             return Ok(SessionRead::Absent);
         };
-        let _ = self.clock.reference_from(frame, self.pin.slot());
-        Ok(SessionRead::Hit(self.arena.frame_bytes(self.pin, frame)))
+        let (reference_bit, bytes) = self.arena.frame(self.pin, frame);
+        self.clock
+            .reference_session(reference_bit, frame, self.reader);
+        Ok(SessionRead::Hit(bytes))
     }
 }

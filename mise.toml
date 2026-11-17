@@ -28,7 +28,7 @@ env = { RUSTDOCFLAGS = "-D warnings" }
 run = "cargo doc --no-deps --features bench,mock"
 
 [tasks.miri]
-description = "Miri over the pure-memory unit tests: UB, aliasing, uninit reads"
+description = "Miri over the pure-memory unit tests and the session read: UB, aliasing, uninit reads"
 run = '''
 set -eu
 toolchain=${DIOS_NIGHTLY:-nightly}
@@ -36,7 +36,8 @@ rustup component add --toolchain "$toolchain" miri >/dev/null 2>&1 || {
   echo "install the miri component: rustup component add --toolchain $toolchain miri" >&2
   exit 1
 }
-exec cargo "+$toolchain" miri test --lib --features mock
+cargo "+$toolchain" miri test --lib --features mock
+exec cargo "+$toolchain" miri test --features mock --test read_session
 '''
 
 [tasks.loom]

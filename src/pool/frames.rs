@@ -12,7 +12,7 @@ use std::ptr::NonNull;
 
 use crate::pool::epoch::{FrameGuard, PinBegun, PinCommit, SessionPin};
 use crate::pool::{Control, PageId, SECTOR_BYTES};
-use crate::sync::{AtomicU64, Ordering, UnsafeCell};
+use crate::sync::{AtomicBool, AtomicU64, Ordering, UnsafeCell};
 
 #[cfg(all(test, target_os = "linux", not(miri)))]
 const SECTOR: usize = SECTOR_BYTES as usize;
@@ -24,33 +24,40 @@ const FRAME_GENERATION_MAX: u64 = u64::MAX >> FRAME_STATE_BITS;
 const FRAME_STATE_TAG_MAX: u64 = 3;
 const _: () = assert!(FRAME_STATE_TAG_MAX <= FRAME_STATE_MASK);
 
-/// The loop-invariant geometry of a [`Frames`] arena for a session's reads.
+/// The loop-invariant geometry of a [`Frames`] arena for a session's reads,
+/// with the CLOCK reference bits whose length is the frame count.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SessionArena<'pool> {
-    base: NonNull<u8>,
+    /// One granule below the arena base, so the granule a translation entry
+    /// names is `base_biased + (entry << granule_shift)`: the entry word, not
+    /// the decremented frame index, feeds the address.
+    base_biased: *const u8,
     granule_shift: u32,
-    count: u32,
+    reference_bits: &'pool [AtomicBool],
     frames: &'pool Frames,
 }
 
 impl<'pool> SessionArena<'pool> {
-    /// The granule backing `frame`, which a set translation entry named after
-    /// `pin` published the reader's epoch.
+    /// The reference bit and the granule backing `frame`, which a set
+    /// translation entry named after `pin` published the reader's epoch.
     ///
     /// # Panics
     ///
     /// If `frame` is out of range for the configured count.
     #[must_use]
     #[inline]
-    pub(crate) fn frame_bytes<'session>(
+    pub(crate) fn frame<'session>(
         &self,
         _pin: &'session SessionPin<'_>,
         frame: ReadFrameIdx,
-    ) -> &'session [u8]
+    ) -> (&'pool AtomicBool, &'session [u8])
     where
         'pool: 'session,
     {
-        assert!(frame.get() < self.count, "frame index out of range");
+        let index = frame.get() as usize;
+        let Some(reference_bit) = self.reference_bits.get(index) else {
+            panic!("frame index out of range");
+        };
         debug_assert!(
             matches!(
                 self.frames.state(frame),
@@ -58,16 +65,17 @@ impl<'pool> SessionArena<'pool> {
             ),
             "a session frame is Resident or Evicting while its bytes are borrowed"
         );
-        let offset = (frame.get() as usize) << self.granule_shift;
-        // SAFETY: `frame < count`, so the granule starts inside the arena
-        // `base` addresses for `'pool`.
-        let start = unsafe { self.base.as_ptr().add(offset) };
-        // SAFETY: the granule lies inside the arena and is initialized. The
+        let offset = (index + 1) << self.granule_shift;
+        let start = self.base_biased.wrapping_add(offset);
+        // SAFETY: `index` addresses a reference bit and there is one bit per
+        // frame, so `index < count`: `start` is the arena base plus `index`
+        // granules, inside the arena for `'pool`, and initialized. The
         // entry naming `frame` was set while the frame was Resident (INV-2)
         // and loaded after the pin published and fenced the reader's epoch,
         // so EBR frees the frame only after the pin drops (INV-3): no token
         // writes it while the borrow lives.
-        unsafe { std::slice::from_raw_parts(start, 1usize << self.granule_shift) }
+        let bytes = unsafe { std::slice::from_raw_parts(start, 1usize << self.granule_shift) };
+        (reference_bit, bytes)
     }
 }
 
@@ -523,14 +531,31 @@ impl Frames {
         unsafe { self.granule_slice(index) }
     }
 
-    /// The arena's base, granule and frame count, copied once so a session's
-    /// reads load none of them from the pool.
+    /// The arena's base and granule with the clock's per-frame
+    /// `reference_bits`, copied once so a session's reads load none of them
+    /// from the pool and bound a frame by one check.
+    ///
+    /// # Panics
+    ///
+    /// If `reference_bits` does not hold one bit per frame.
     #[must_use]
-    pub(crate) fn session_arena(&self) -> SessionArena<'_> {
+    #[inline]
+    pub(crate) fn session_arena<'pool>(
+        &'pool self,
+        reference_bits: &'pool [AtomicBool],
+    ) -> SessionArena<'pool> {
+        assert!(
+            reference_bits.len() == self.count as usize,
+            "a session arena holds one reference bit per frame"
+        );
         SessionArena {
-            base: self.base,
+            base_biased: self
+                .base
+                .as_ptr()
+                .cast_const()
+                .wrapping_sub(self.granule as usize),
             granule_shift: self.granule.trailing_zeros(),
-            count: self.count,
+            reference_bits,
             frames: self,
         }
     }
