@@ -194,6 +194,7 @@ impl Clock {
         self.consumed.metadata_bytes() + self.completed.metadata_bytes()
     }
 
+    #[inline]
     fn checked_index(&self, frame: ReadFrameIdx) -> usize {
         let index = frame.get() as usize;
         assert!(

@@ -3148,6 +3148,7 @@ pub(crate) fn acquire_resident_file_lease(
     ResidentLeaseState::acquire(state, file)
 }
 
+#[inline]
 fn file_live_word(file: FileId) -> u64 {
     (u64::from(file.generation()) << 1) | 1
 }
@@ -3170,6 +3171,7 @@ fn publish_live_file(
     live_generation.store(file_live_word(id), Ordering::Release);
 }
 
+#[inline]
 fn file_generation_is_live(live_generation: &AtomicU64, file: FileId) -> bool {
     live_generation.load(Ordering::Acquire) == file_live_word(file)
 }

@@ -65,6 +65,7 @@ impl Translation {
     /// If `page` lies outside the reserved slots or at or above
     /// `file_granules_max`.
     #[must_use]
+    #[inline]
     pub fn lookup(&self, page: PageId) -> Option<ReadFrameIdx> {
         let word = self.entry(page).load(Ordering::Acquire);
         word.checked_sub(1).map(ReadFrameIdx::new)
@@ -128,6 +129,7 @@ impl Translation {
         self.entries.resident_bytes()
     }
 
+    #[inline]
     fn entry(&self, page: PageId) -> &AtomicU32 {
         assert!(
             page.file().slot() < self.registered_file_capacity,

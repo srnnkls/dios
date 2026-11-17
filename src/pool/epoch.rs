@@ -167,6 +167,7 @@ impl ReaderSlot {
         self.occupied.store(false, Ordering::Release);
     }
 
+    #[inline]
     fn guard_count(&self) -> u64 {
         self.guard_count.load(Ordering::Relaxed)
     }
@@ -175,6 +176,7 @@ impl ReaderSlot {
     /// on its FIRST live guard — a nested pin finds a non-zero count and keeps the
     /// epoch already published by the outer guard. The returned witness must be
     /// committed or aborted on this slot.
+    #[inline]
     pub(crate) fn begin_pin(&self, global_epoch: u64) -> PinBegun {
         assert!(
             global_epoch != QUIESCENT,
@@ -199,6 +201,7 @@ impl ReaderSlot {
 
     /// Commits a pin on the frame it validated, counting one more live guard
     /// for this reader.
+    #[inline]
     #[expect(
         clippy::needless_pass_by_value,
         reason = "the begun witness is linear: committing consumes it so it cannot also be aborted"
@@ -238,6 +241,7 @@ impl ReaderSlot {
 
     /// Drops one live guard; the reader goes quiescent on its last guard so a
     /// published epoch never outlives the guards that justified it.
+    #[inline]
     pub(crate) fn release_guard(&self) {
         let count = self.guard_count();
         assert!(count > 0, "a released guard was previously committed");
@@ -524,6 +528,7 @@ impl Deref for FrameGuard<'_> {
 }
 
 impl Drop for FrameGuard<'_> {
+    #[inline]
     fn drop(&mut self) {
         self.slot.release_guard();
     }
