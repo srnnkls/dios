@@ -225,6 +225,9 @@ AD-17 keeps the public signature and changes how a hit reaches the caller (FR-12
   out-of-line function that owns miss, busy, stale-file and bound errors.
 - `pin_live` loses `#[inline(never)]`; the slow path keeps `#[cold]` and
   `#[inline(never)]`.
+- The first reference to a frame after a CLOCK sweep cleared its bit (speculation
+  consume, bit store, counter) stays one cold out-of-line function shared with the
+  session read; a hit on an already referenced frame loads the bit and branches.
 - Reader ownership, pool identity and the granule bound are each asserted or checked
   once on the hit path; the translation entry is not bound-checked a second time
   behind the public bound check.

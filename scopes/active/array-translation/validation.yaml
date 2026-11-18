@@ -213,6 +213,10 @@ owner_decisions:
     decided_at: 2026-11-17
     owner: Sören
     decision: "In the session lanes the mmap and floor arms iterate the same 16-request chunks as the session arm, with nothing at the chunk boundary, so the gated ratio isolates the session API; the flat-loop mmap arm is captured and reported beside it in every report and is not gated. Evidence: on nix the chunked loop alone costs the mmap arm 0.73 ns per read (3.68 against 4.41, scratch build of 3e373a9); AT4's first review required the same loop shape and the fair-lane rewrite dropped it. The change moves AT-G1 in the product's favour: about 1.57 against the flat loop and about 1.31 against the chunked loop after the lever wave."
+  - id: AT-D17
+    decided_at: 2026-11-18
+    owner: Sören
+    decision: "FR-12 and AC-20 are amended: a get hit on a frame whose CLOCK reference is already set executes no call into the crate; the first reference to a frame after a sweep cleared its bit takes one cold out-of-line call, as in the session read. Rejected inlining the first-reference work into every caller. Raised by the AT9 review (general-peer-gpt6-astra) against FR-12 as first written."
   - id: WRC-D1
     inherited_from: scopes/draft/warm-read-copy-out/validation.yaml
     decision: "Volatile-word exception, same-width atomic writers, one audited module, mirror-only liveness carry over; the bracket is amended by Q005 and A001."

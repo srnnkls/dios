@@ -280,7 +280,7 @@ tasks:
     recorded. sira receives the landed API for its SAB006 gate.
 - id: AT9
   title: Slim the get hit path
-  status: pending
+  status: in_progress
   domain: pool
   depends_on:
   - AT5
@@ -299,6 +299,7 @@ tasks:
     into the crate and without a result returned through memory; miss, busy and error
     outcomes leave through an out-of-line path; each hit-path assertion of 604410a is
     made once; the public API snapshot is unchanged; the retained disassembly of the
-    fair get loop shows no call into dios on a hit and one out-of-line slow target. AT-G8 passes on nix at 0.85 with
+    fair get loop shows no call into dios on a hit whose CLOCK reference is set, one cold
+    first-reference target and one out-of-line slow target. AT-G8 passes on nix at 0.85 with
     one runner source built against the tree AT5 leaves and the changed tree, and the
     AT-G7 lanes still pass. Lint, Loom, Miri and ASAN are clean.
