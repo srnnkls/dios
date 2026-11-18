@@ -1346,6 +1346,40 @@ class MmapEvidenceContract(unittest.TestCase):
             "the runner hash covers the fair-lane module and its cfg-gated arms",
         )
 
+    def test_collector_shared_runner_builds_from_one_manifest_across_captures(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            base_tree = root / "dios-at-base"
+            write_base_tree(base_tree)
+            fixture_sha256 = write_fixture(root / "fixture")
+            fake = fake_collector_processes(root, base_tree, fixture_sha256, [])
+            manifest_paths = []
+
+            def run(command, *arguments, **keywords):
+                command = [str(part) for part in command]
+                if command[0] == "cargo" and "--manifest-path" in command:
+                    manifest_paths.append(Path(command[command.index("--manifest-path") + 1]))
+                return fake(command, *arguments, **keywords)
+
+            captures = [root / "capture-freeze", root / "capture-gated"]
+            for capture in captures:
+                options = collector_options(
+                    [str(capture), "--input", str(root / "fixture"),
+                     "--lanes", "resident_access_ordinary",
+                     "--base-build", str(base_tree), "--shared-runner"]
+                )
+                self.assertIsNone(run_collector(options, run))
+            self.assertEqual(len(manifest_paths), 2, "one shared-runner build per capture")
+            self.assertEqual(
+                manifest_paths[0], manifest_paths[1],
+                "repeated captures build the base from one harness manifest",
+            )
+            for capture in captures:
+                self.assertFalse(
+                    manifest_paths[0].resolve().is_relative_to(capture),
+                    "the harness lies outside every capture's output directory",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

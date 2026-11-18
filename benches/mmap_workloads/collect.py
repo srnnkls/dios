@@ -127,11 +127,28 @@ def layout_environment(layout: int | None) -> dict[str, str] | None:
 
 
 def build_shared_runner(output: Path, tree: Path, env: dict[str, str] | None) -> Path:
-    """Builds this tree's runner sources against the product sources of `tree` (F10)."""
-    harness = output / "shared-runner"
-    harness.mkdir()
-    shutil.copy2(REPOSITORY / "Cargo.lock", harness / "Cargo.lock")
-    (harness / "Cargo.toml").write_text(
+    """Builds this tree's runner sources against the product sources of `tree` (F10).
+
+    The harness path keys on the base tree and the runner inputs alone: cargo bakes the
+    manifest path into the executable, so repeated captures must share it to build the
+    executable a frozen manifest pins.
+    """
+    harness_manifest = shared_runner_manifest(tree)
+    lock = (REPOSITORY / "Cargo.lock").read_bytes()
+    runner = b"".join((REPOSITORY / path).read_bytes() for path in RUNNER_SOURCES)
+    key = hashlib.sha256(harness_manifest.encode() + lock + runner).hexdigest()
+    harness = tree / "target/shared-runner" / key
+    harness.mkdir(parents=True, exist_ok=True)
+    if not (harness / "Cargo.lock").exists():
+        (harness / "Cargo.lock").write_bytes(lock)
+    if not (harness / "Cargo.toml").exists():
+        (harness / "Cargo.toml").write_text(harness_manifest)
+    environment = dict(env if env is not None else os.environ, DIOS_PRODUCT_WORKTREE=str(tree))
+    return build_binary(output, env=environment, manifest_path=harness / "Cargo.toml")
+
+
+def shared_runner_manifest(tree: Path) -> str:
+    return (
         "[package]\n"
         'name = "dios-mmap-workloads-shared-runner"\n'
         'version = "0.0.0"\n'
@@ -151,8 +168,6 @@ def build_shared_runner(output: Path, tree: Path, env: dict[str, str] | None) ->
         f"path = {json.dumps(str(REPOSITORY / 'benches/mmap_workloads.rs'))}\n"
         "harness = false\n"
     )
-    environment = dict(env if env is not None else os.environ, DIOS_PRODUCT_WORKTREE=str(tree))
-    return build_binary(output, env=environment, manifest_path=harness / "Cargo.toml")
 
 
 def block_queues(root: Path = Path("/sys/class/block")) -> dict:
