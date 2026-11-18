@@ -1,7 +1,7 @@
 [gate] $ cargo bench --features bench --bench compare -- benches/evidence/array_translation/at-g1/layout-64/resident_access_session_projection-mmap_random_flat-paired.csv 1.50
     Finished `bench` profile [optimized + debuginfo] target(s) in 0.05s
      Running benches/compare.rs (target/release/deps/compare-58da936688e8c316)
-gate resident_access_session_projection-mmap_random_flat-paired: pairs 30, ratio geomean 1.5670, ci95 upper 1.5870, threshold 1.5000 -> FAIL
+gate resident_access_session_projection-mmap_random_flat-paired: pairs 30, ratio geomean 1.5578, ci95 upper 1.5762, threshold 1.5000 -> FAIL
 error: bench failed, to rerun pass `--bench compare`
 
 Caused by:

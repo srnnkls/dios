@@ -109,3 +109,31 @@ ns per read at 377a0ad, from `report.json`:
 - Every row of the passing captures shows zero pending reads, zero allocations and
   zero faults in the timed region.
 - AT-G3 is not captured: it waits on the `bench-thp-madvise` host profile.
+
+## Results of 2026-11-18 (AT9)
+
+Host `nix`, bench profile active, THP `never`, 30 measured fresh-process AB/BA pairs per
+capture.
+
+| Gate | Build | Candidate | Geomean | CI95 upper | Bound | Result | Evidence |
+|------|-------|-----------|--------:|-----------:|------:|--------|----------|
+| AT-G8 | default, shared runner | f193292 against 8597238 | 0.5454 | 0.5722 | 0.85 | passed | `at-g8/` |
+| AT-G1 | layout 16 | fdada37 | 1.4881 | 1.5112 | 1.50 | failed | `at-g1/layout-16/` |
+| AT-G1 | layout 32 | fdada37 | 1.5487 | 1.5541 | 1.50 | failed | `at-g1/layout-32/` |
+| AT-G1 | layout 64 | fdada37 | 1.4491 | 1.4619 | 1.50 | passed | `at-g1/layout-64/` |
+| AT-G2 | default | fdada37 | 1.0232 | 1.0273 | 1.10 | passed | `at-g2/` |
+
+- AT-G8: `get` reads 23.0 ns per hit on the base, in its two stack-alignment modes
+  (`at-g8/get-stack-alignment.md`), and 12.4 ns after the hit-path change; the difference
+  is 10.6 ns (9.4 to 11.8). Two earlier captures were rejected by the validator for
+  tooling defects fixed in 1dd0438 and fdada37.
+- Reported, not gated: `get` against `mmap_random` on the fair lane at fdada37 is 3.31
+  (12.43 against 3.76 ns per read; floor 3.68), from `at-g8-mmap/`.
+- AT-G1 passed on three layout builds at 377a0ad (`at-g1-377a0ad/`) and fails on two of
+  three at fdada37, after the `get` hit-path change. The session loop's machine code is
+  the same in both trees. Per read the session arm executes 84.1 instructions and the
+  chunked mmap arm 63.2 in every build; branch mispredicts per 1,000 reads are 75 on the
+  mmap arm, 81 on the session arm in the three builds of 377a0ad, and 106, 102 and 83
+  in the builds of fdada37 (single `perf stat` processes). The session read stands at
+  5.99 to 6.11 ns against 3.95 to 4.22 ns for the chunked mmap arm; against the flat
+  mmap loop the ratio is reported at 1.56 to 1.66.

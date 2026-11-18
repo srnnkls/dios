@@ -1,0 +1,22 @@
+[remote] $ ~/projects/dios/.mise/tasks/remote bash -c set -uo pipefail
+capture target/array-translation/at-g2 exit=0
+prepare target/array-translation/at-g2 exit=0
+{"arms":["mmap_random","dios_session"],"base":53.12,"cand":54.382,"diff":1.262,"lo":0.841,"hi":1.674}
+{"arms":["plain_array","dios_session"],"base":53.342,"cand":54.907,"diff":1.565,"lo":1.097,"hi":2.013}
+{"arms":["mmap_random_flat","dios_session"],"base":53.116,"cand":54.42,"diff":1.304,"lo":0.83,"hi":1.765}
+capture target/array-translation/at-g1/layout-16 exit=0
+prepare target/array-translation/at-g1/layout-16 exit=0
+{"arms":["mmap_random","dios_session"],"base":3.95,"cand":5.809,"diff":1.859,"lo":1.8,"hi":1.953}
+{"arms":["plain_array","dios_session"],"base":3.941,"cand":5.763,"diff":1.822,"lo":1.795,"hi":1.854}
+{"arms":["mmap_random_flat","dios_session"],"base":3.707,"cand":5.79,"diff":2.082,"lo":2.043,"hi":2.146}
+capture target/array-translation/at-g1/layout-32 exit=0
+prepare target/array-translation/at-g1/layout-32 exit=0
+{"arms":["mmap_random","dios_session"],"base":3.941,"cand":5.795,"diff":1.853,"lo":1.796,"hi":1.944}
+{"arms":["plain_array","dios_session"],"base":3.931,"cand":5.761,"diff":1.83,"lo":1.803,"hi":1.861}
+{"arms":["mmap_random_flat","dios_session"],"base":3.712,"cand":5.824,"diff":2.112,"lo":2.039,"hi":2.207}
+capture target/array-translation/at-g1/layout-64 exit=0
+prepare target/array-translation/at-g1/layout-64 exit=0
+{"arms":["mmap_random","dios_session"],"base":3.952,"cand":5.773,"diff":1.821,"lo":1.793,"hi":1.853}
+{"arms":["plain_array","dios_session"],"base":3.964,"cand":5.736,"diff":1.772,"lo":1.716,"hi":1.817}
+{"arms":["mmap_random_flat","dios_session"],"base":3.699,"cand":5.801,"diff":2.102,"lo":2.037,"hi":2.199}
+exit=0

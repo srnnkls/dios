@@ -9,17 +9,17 @@
       "ns_per_read": {
         "base": {
           "arm": "mmap_random",
-          "ns_per_read": 3.9497605370978515
+          "ns_per_read": 4.025422672679027
         },
         "candidate": {
           "arm": "dios_session",
-          "ns_per_read": 5.809167009343704
+          "ns_per_read": 5.9898284596701465
         }
       },
       "difference_ns_per_read": {
-        "estimate": 1.859406472245852,
-        "ci95_lower": 1.7999962757031123,
-        "ci95_upper": 1.9527282622953257
+        "estimate": 1.9644057869911193,
+        "ci95_lower": 1.8777406886219978,
+        "ci95_upper": 2.069018011291822
       }
     },
     {
@@ -31,17 +31,17 @@
       "ns_per_read": {
         "base": {
           "arm": "plain_array",
-          "ns_per_read": 3.9411225053171317
+          "ns_per_read": 4.001694300025702
         },
         "candidate": {
           "arm": "dios_session",
-          "ns_per_read": 5.763213643431664
+          "ns_per_read": 5.951248039801915
         }
       },
       "difference_ns_per_read": {
-        "estimate": 1.822091138114532,
-        "ci95_lower": 1.795304228613774,
-        "ci95_upper": 1.8544335934023062
+        "estimate": 1.949553739776214,
+        "ci95_lower": 1.863346773137649,
+        "ci95_upper": 2.04725296869874
       }
     },
     {
@@ -53,17 +53,17 @@
       "ns_per_read": {
         "base": {
           "arm": "mmap_random_flat",
-          "ns_per_read": 3.707295711835225
+          "ns_per_read": 3.706498721987009
         },
         "candidate": {
           "arm": "dios_session",
-          "ns_per_read": 5.789623490472635
+          "ns_per_read": 5.940318254629771
         }
       },
       "difference_ns_per_read": {
-        "estimate": 2.082327778637409,
-        "ci95_lower": 2.0426539619763693,
-        "ci95_upper": 2.1461178988218306
+        "estimate": 2.233819532642762,
+        "ci95_lower": 2.1744511760771275,
+        "ci95_upper": 2.3282662163178127
       }
     }
   ]
