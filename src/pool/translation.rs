@@ -153,18 +153,31 @@ impl Translation {
 
     #[inline]
     fn entry(&self, page: PageId) -> &AtomicU32 {
+        self.bounded_entry(page)
+            .unwrap_or_else(|| panic!("a translated granule lies below file_granules_max"))
+    }
+
+    /// The entry of `page`, or `None` for a granule at or above
+    /// `file_granules_max`.
+    ///
+    /// # Panics
+    ///
+    /// If `page` lies outside the reserved slots.
+    #[inline]
+    pub(crate) fn bounded_entry(&self, page: PageId) -> Option<&AtomicU32> {
         assert!(
             page.file().slot() < self.registered_file_capacity,
             "a translated page lies in a reserved file slot"
         );
-        assert!(
-            page.granule_idx() >> self.file_granules_shift == 0,
-            "a translated granule lies below file_granules_max"
-        );
+        if page.granule_idx() >> self.file_granules_shift != 0 {
+            return None;
+        }
         let index = (u64::from(page.file().slot()) << self.file_granules_shift)
             | u64::from(page.granule_idx());
-        self.entries
-            .element(usize::try_from(index).expect("a reserved entry index fits usize"))
+        Some(
+            self.entries
+                .element(usize::try_from(index).expect("a reserved entry index fits usize")),
+        )
     }
 }
 

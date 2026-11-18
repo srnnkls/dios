@@ -158,11 +158,19 @@ impl ColdGetPauseState {
     }
 }
 
-/// The outcome of one lock-free `get` resolution.
-enum LivePin<'pool> {
-    Hit(FrameGuard<'pool>),
+/// Why one lock-free `get` resolution minted no pin.
+#[derive(Debug, Clone, Copy)]
+enum PinMiss {
     Absent,
     StaleFile,
+}
+
+/// Why `get` left its lock-free hit path; an absent page carries its entry.
+#[derive(Debug, Clone, Copy)]
+enum GetMiss<'pool> {
+    BeyondFileBound,
+    StaleFile,
+    Absent(&'pool AtomicU32),
 }
 
 /// Stable address of an aligned file extent: a generational file id and the
@@ -1743,6 +1751,11 @@ impl<D: PoolBackend> Pool<D> {
     /// # Panics
     ///
     /// If `reader` or the page's file identity belongs to another pool.
+    #[inline(always)]
+    #[expect(
+        clippy::inline_always,
+        reason = "a hit reaches a caller in another crate without a call only when get is inlined there"
+    )]
     pub fn get<'pool>(
         &'pool self,
         reader: &'pool ReaderCtx,
@@ -1750,19 +1763,36 @@ impl<D: PoolBackend> Pool<D> {
     ) -> Result<Get<'pool>, GetError> {
         self.assert_reader_owner(reader);
         let reader_slot = reader.slot();
-        assert_eq!(
-            page.file().driver(),
-            self.identity,
+        assert!(
+            page.file().driver() == self.identity,
             "file identity used with a foreign pool"
         );
-        if page.granule_idx() >= self.file_granules_max {
-            return Err(GetError::BeyondFileBound { page });
-        }
-        match self.pin_live(reader_slot, page) {
-            LivePin::Hit(guard) => return Ok(Get::Hit(guard)),
-            LivePin::StaleFile => return Err(GetError::StaleFile { page }),
-            LivePin::Absent => {}
-        }
+        let miss = match self.table.bounded_entry(page) {
+            Some(entry) => match self.pin_live(reader_slot, page, entry) {
+                Ok(pin) => return Ok(Get::Hit(self.pinned_guard(pin, reader_slot, page))),
+                Err(PinMiss::Absent) => GetMiss::Absent(entry),
+                Err(PinMiss::StaleFile) => GetMiss::StaleFile,
+            },
+            None => GetMiss::BeyondFileBound,
+        };
+        self.get_missed(reader, page, miss)
+    }
+
+    /// The one out-of-line exit of `get` for every outcome but a lock-free hit.
+    #[cold]
+    #[inline(never)]
+    fn get_missed<'pool>(
+        &'pool self,
+        reader: &'pool ReaderCtx,
+        page: PageId,
+        miss: GetMiss<'pool>,
+    ) -> Result<Get<'pool>, GetError> {
+        let entry = match miss {
+            GetMiss::BeyondFileBound => return Err(GetError::BeyondFileBound { page }),
+            GetMiss::StaleFile => return Err(GetError::StaleFile { page }),
+            GetMiss::Absent(entry) => entry,
+        };
+        let reader_slot = reader.slot();
         #[cfg(all(feature = "mock", not(loom)))]
         self.pause_cold_get_if_armed();
         let mut control = self.control();
@@ -1775,10 +1805,10 @@ impl<D: PoolBackend> Pool<D> {
             .is_some_and(|frame| self.frames.state(frame) == FrameState::Resident)
         {
             drop(control);
-            return match self.pin_live(reader_slot, page) {
-                LivePin::Hit(guard) => Ok(Get::Hit(guard)),
-                LivePin::StaleFile => Err(GetError::StaleFile { page }),
-                LivePin::Absent => Ok(Get::Busy),
+            return match self.pin_live(reader_slot, page, entry) {
+                Ok(pin) => Ok(Get::Hit(self.pinned_guard(pin, reader_slot, page))),
+                Err(PinMiss::StaleFile) => Err(GetError::StaleFile { page }),
+                Err(PinMiss::Absent) => Ok(Get::Busy),
             };
         }
         control.prefetch.reconcile(&self.clock);
@@ -2463,7 +2493,8 @@ impl<D: PoolBackend> Pool<D> {
     ) -> Option<FrameGuard<'pool>> {
         let begun = self.pin_begin(slot);
         let (begun, frame) = self.pin_entry(begun, slot, *page)?;
-        Some(self.pin_owned_commit(begun, frame, slot, *page))
+        let pin = self.pin_commit(begun, frame, slot);
+        Some(self.pinned_guard(pin, slot, *page))
     }
 
     /// The epoch publication every lock-free resolution starts with: `get`,
@@ -2489,15 +2520,30 @@ impl<D: PoolBackend> Pool<D> {
         Some((begun, frame))
     }
 
-    fn pin_owned_commit<'pool>(
-        &'pool self,
+    #[inline]
+    fn pin_commit(
+        &self,
         begun: epoch::PinBegun,
         frame: ReadFrameIdx,
+        slot: &epoch::ReaderSlot,
+    ) -> PinCommit {
+        let _ = self.clock.reference_from(frame, slot);
+        slot.commit_pin(begun, frame)
+    }
+
+    /// The guard over the frame `pin` holds on `slot`, built in the frame of
+    /// `get`'s caller from the register-sized pin.
+    #[inline]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the commit is linear: the guard it becomes consumes it"
+    )]
+    fn pinned_guard<'pool>(
+        &'pool self,
+        pin: PinCommit,
         slot: &'pool epoch::ReaderSlot,
         page: PageId,
     ) -> FrameGuard<'pool> {
-        let _ = self.clock.reference_from(frame, slot);
-        let pin = slot.commit_pin(begun, frame);
         FrameGuard::new(
             self.frames.frame_bytes(&pin),
             slot,
@@ -2510,28 +2556,31 @@ impl<D: PoolBackend> Pool<D> {
     /// The lock-free resolution of `get`: pins the epoch, loads the entry and
     /// only then the file-generation mirror (INV-7), so an entry a reused slot's
     /// successor published is never admitted under the retired identity.
-    #[inline(never)]
-    fn pin_live<'pool>(
-        &'pool self,
-        slot: &'pool epoch::ReaderSlot,
+    #[inline]
+    fn pin_live(
+        &self,
+        slot: &epoch::ReaderSlot,
         page: PageId,
-    ) -> LivePin<'pool> {
+        entry: &AtomicU32,
+    ) -> Result<PinCommit, PinMiss> {
         let begun = self.pin_begin(slot);
         #[cfg(all(feature = "mock", not(loom)))]
         self.pause_get_between_pin_and_entry_if_armed();
-        let Some((begun, frame)) = self.pin_entry(begun, slot, page) else {
-            return LivePin::Absent;
+        let Some(frame) = translation::entry_frame(entry) else {
+            slot.abort_pin(begun);
+            return Err(PinMiss::Absent);
         };
         if !file_generation_is_live(
             &self.file_live_generations[page.file().slot() as usize],
             page.file(),
         ) {
             slot.abort_pin(begun);
-            return LivePin::StaleFile;
+            return Err(PinMiss::StaleFile);
         }
-        LivePin::Hit(self.pin_owned_commit(begun, frame, slot, page))
+        Ok(self.pin_commit(begun, frame, slot))
     }
 
+    #[inline]
     fn assert_reader_owner(&self, reader: &ReaderCtx) {
         assert!(
             reader.belongs_to(&self.readers),

@@ -73,7 +73,13 @@ impl Clock {
         frame: ReadFrameIdx,
         reader: &super::epoch::ReaderSlot,
     ) -> bool {
-        self.reference_observed(frame, || reader.index())
+        let bit = &self.reference_bits[self.checked_index(frame)];
+        if bit.load(Ordering::Relaxed) {
+            false
+        } else {
+            self.reference_first(bit, frame, reader);
+            true
+        }
     }
 
     #[inline]
@@ -114,13 +120,13 @@ impl Clock {
             "a session reference bit is the frame's own bit"
         );
         if !bit.load(Ordering::Relaxed) {
-            self.reference_session_first(bit, frame, reader);
+            self.reference_first(bit, frame, reader);
         }
     }
 
     #[cold]
     #[inline(never)]
-    fn reference_session_first(
+    fn reference_first(
         &self,
         bit: &AtomicBool,
         frame: ReadFrameIdx,

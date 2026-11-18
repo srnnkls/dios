@@ -271,6 +271,7 @@ impl ReaderSlot {
         clippy::needless_pass_by_value,
         reason = "the begun witness is linear: aborting consumes it so it cannot also be committed"
     )]
+    #[inline]
     pub(crate) fn abort_pin(&self, begun: PinBegun) {
         let PinBegun { first, .. } = begun;
         if first {
@@ -433,10 +434,12 @@ impl ReaderCtx {
         }
     }
 
+    #[inline]
     pub(crate) fn slot(&self) -> &ReaderSlot {
         &self.registry.slots[self.slot as usize]
     }
 
+    #[inline]
     pub(crate) fn belongs_to(&self, registry: &Arc<ReaderRegistry>) -> bool {
         Arc::ptr_eq(&self.registry, registry)
     }
@@ -541,6 +544,7 @@ pub struct FrameGuard<'pool> {
 }
 
 impl<'pool> FrameGuard<'pool> {
+    #[inline]
     pub(crate) fn new(
         bytes: &'pool [u8],
         slot: &'pool ReaderSlot,
