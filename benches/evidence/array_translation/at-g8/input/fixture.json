@@ -1,0 +1,7 @@
+{
+  "granule": 4096,
+  "pages": 65536,
+  "schema": 1,
+  "sha256": "54ae45ec997182e04336fd1f928503fc1b8ac46f070c796332ca0133b03f1d2f",
+  "spare_pages": 1
+}
