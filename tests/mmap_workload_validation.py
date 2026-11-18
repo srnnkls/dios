@@ -138,7 +138,6 @@ def write_base_build_capture(root: Path) -> dict:
                 pair=pair,
                 position=position,
                 seed=pair,
-                build=step["build"],
                 executable_sha256=(BASE_EXECUTABLE, CANDIDATE_EXECUTABLE)[position],
             )
         )
@@ -451,17 +450,16 @@ def write_fair_capture(
             row = fair_row(lane, arm, seed=max(pair, 0), elapsed_ns=elapsed_ns)
             raw = json.dumps(row).encode()
             (directory / step["row"]).write_bytes(raw)
-            reference = dict(
-                raw=step["row"],
-                sha256=hashlib.sha256(raw).hexdigest(),
-                pair=pair,
-                position=position,
-                seed=max(pair, 0),
-                executable_sha256=executable_sha256,
+            references.append(
+                dict(
+                    raw=step["row"],
+                    sha256=hashlib.sha256(raw).hexdigest(),
+                    pair=pair,
+                    position=position,
+                    seed=max(pair, 0),
+                    executable_sha256=executable_sha256,
+                )
             )
-            if base_build:
-                reference["build"] = step["build"]
-            references.append(reference)
         comparisons.append(
             dict(name=name, lane=dict(lane), arms=list(arms), modes=["plain", "plain"],
                  rows=references)
@@ -1112,8 +1110,6 @@ class MmapEvidenceContract(unittest.TestCase):
                     for comparison in manifest["comparisons"]:
                         for field in ("floor_arm", "flat_arm"):
                             comparison["lane"].pop(field)
-                        for reference in comparison["rows"]:
-                            reference["build"] = ("base", "candidate")[reference["position"]]
                     (root / "capture/manifest.json").write_text(json.dumps(manifest))
                     with self.assertRaisesRegex(ValueError, "base_build"):
                         MODULE.warm_prepare(
@@ -1151,6 +1147,81 @@ class MmapEvidenceContract(unittest.TestCase):
                 ),
                 "the candidate of an equal-arm capture keeps the base entry",
             )
+
+    def test_warm_prepare_writes_no_gate_input_when_the_report_fails(self) -> None:
+        def failing_summarize(command, *arguments, **keywords) -> subprocess.CompletedProcess:
+            return subprocess.CompletedProcess(command, 1, "", "summarize refused")
+
+        lane = FAIR_LANES["resident_access_fair_get"]
+        for base_build in (False, True):
+            with (
+                self.subTest(base_build=base_build),
+                tempfile.TemporaryDirectory() as temporary,
+                unittest.mock.patch.object(subprocess, "run", failing_summarize),
+            ):
+                root = Path(temporary)
+                write_fair_capture(root, lane, base_build=base_build)
+                with self.assertRaisesRegex(ValueError, "summarize"):
+                    MODULE.warm_prepare(
+                        root / "capture", root / "frozen.json", root / "paired.csv"
+                    )
+                self.assertEqual(
+                    sorted(path.name for path in root.iterdir()),
+                    ["capture", "frozen.json"],
+                    "a failed report leaves neither paired.csv nor report.json",
+                )
+
+    def test_warm_prepare_writes_no_gate_input_when_any_output_write_fails(self) -> None:
+        lane = FAIR_LANES["resident_access_fair_get"]
+        write_text = Path.write_text
+        for base_build in (False, True):
+            writes = []
+
+            def counting_write(path: Path, data: str, *arguments, **keywords) -> int:
+                writes.append(path)
+                return write_text(path, data, *arguments, **keywords)
+
+            with (
+                tempfile.TemporaryDirectory() as temporary,
+                unittest.mock.patch.object(subprocess, "run", fake_summarize),
+                unittest.mock.patch.object(Path, "write_text", counting_write),
+            ):
+                root = Path(temporary)
+                write_fair_capture(root, lane, base_build=base_build)
+                writes.clear()
+                self.accepts_capture(root)
+            self.assertGreaterEqual(
+                len(writes), 2, "warm-prepare writes paired.csv and report.json"
+            )
+            for failing_write in range(len(writes)):
+                calls = []
+
+                def partial_write(path: Path, data: str, *arguments, **keywords) -> int:
+                    calls.append(path)
+                    if len(calls) - 1 == failing_write:
+                        write_text(path, data[: len(data) // 2], *arguments, **keywords)
+                        raise OSError(28, "No space left on device", str(path))
+                    return write_text(path, data, *arguments, **keywords)
+
+                with (
+                    self.subTest(base_build=base_build, failing_write=failing_write),
+                    tempfile.TemporaryDirectory() as temporary,
+                    unittest.mock.patch.object(subprocess, "run", fake_summarize),
+                ):
+                    root = Path(temporary)
+                    write_fair_capture(root, lane, base_build=base_build)
+                    with (
+                        unittest.mock.patch.object(Path, "write_text", partial_write),
+                        self.assertRaises(OSError),
+                    ):
+                        MODULE.warm_prepare(
+                            root / "capture", root / "frozen.json", root / "paired.csv"
+                        )
+                    self.assertEqual(
+                        sorted(path.name for path in root.iterdir()),
+                        ["capture", "frozen.json"],
+                        "a failed output write leaves neither paired.csv nor report.json",
+                    )
 
     def test_rows_carry_the_runner_fair_flag_and_validation_branches_on_it(self) -> None:
         row = sample()

@@ -6,9 +6,11 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 from statistics import fmean
 import subprocess
+import tempfile
 
 HUGEPAGE_LANES = ("resident_access_session_fold_256m",)
 HUGEPAGE_PROFILE = "bench-thp-madvise"
@@ -209,6 +211,7 @@ def warm_prepare(capture: Path, frozen: Path, output: Path) -> None:
     """
     # Both modules import this one, so they load on first use.
     from analyze import paired_csv
+    from collect import base_build_schedule
 
     if not capture.is_dir() or not frozen.is_file():
         raise ValueError("capture directory and frozen manifest are required")
@@ -243,18 +246,45 @@ def warm_prepare(capture: Path, frozen: Path, output: Path) -> None:
     paths = [output] + [
         output.with_name(f"{comparison['name']}-paired.csv") for comparison in comparisons[1:]
     ]
-    for path, pairs in zip(paths, paired):
-        path.write_text(paired_csv(pairs))
-    if floor_arm:
-        report = [
-            warm_prepare_report(
-                manifest["executable"], comparison, pairs, path, base_build
-            )
-            for comparison, pairs, path in zip(comparisons, paired, paths)
+    builds = {}
+    if base_build:
+        schedule = base_build_schedule(expected["qualification_pairs"], expected["measured_pairs"])
+        builds = {step["position"]: step["build"] for step in schedule}
+    staged = []
+    published = []
+    try:
+        outputs = [
+            (path, warm_prepare_stage(path, paired_csv(pairs), staged))
+            for path, pairs in zip(paths, paired)
         ]
-        (output.parent / "report.json").write_text(
-            json.dumps({"comparisons": report}, indent=2) + "\n"
-        )
+        if floor_arm:
+            report = [
+                warm_prepare_report(manifest["executable"], comparison, pairs, temporary, builds)
+                for comparison, pairs, (_, temporary) in zip(comparisons, paired, outputs)
+            ]
+            report_path = output.parent / "report.json"
+            report_text = json.dumps({"comparisons": report}, indent=2) + "\n"
+            outputs.append((report_path, warm_prepare_stage(report_path, report_text, staged)))
+        # The gate reads paired.csv, so it appears last, once every other output is in place.
+        for path, temporary in outputs[1:] + outputs[:1]:
+            temporary.replace(path)
+            published.append(path)
+    except BaseException:
+        for path in staged + published:
+            path.unlink(missing_ok=True)
+        raise
+
+
+def warm_prepare_stage(path: Path, text: str, staged: list[Path]) -> Path:
+    """Write `text` under a temporary name beside `path`, recorded in `staged` before writing."""
+    descriptor, name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".partial"
+    )
+    os.close(descriptor)
+    temporary = Path(name)
+    staged.append(temporary)
+    temporary.write_text(text)
+    return temporary
 
 
 def warm_prepare_reference(
@@ -318,7 +348,7 @@ def warm_prepare_posture(pairs: list, comparison: dict, expected: dict) -> None:
 
 
 def warm_prepare_report(
-    executable: str, comparison: dict, pairs: list, path: Path, base_build: bool
+    executable: str, comparison: dict, pairs: list, path: Path, builds: dict[int, str]
 ) -> dict:
     """ns per read per position and the paired difference of one comparison (F11)."""
     result = subprocess.run(
@@ -333,12 +363,8 @@ def warm_prepare_report(
     ns_per_read = {}
     for position, role in enumerate(("base", "candidate")):
         entry = {"arm": arms[position]}
-        if base_build:
-            [entry["build"]] = {
-                reference["build"]
-                for reference in comparison["rows"]
-                if reference["position"] == position
-            }
+        if builds:
+            entry["build"] = builds[position]
         entry["ns_per_read"] = fmean(pair[position]["elapsed_ns"] for pair in pairs) / operations
         ns_per_read[role] = entry
     return {
