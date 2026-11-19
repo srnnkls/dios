@@ -26,6 +26,12 @@ RUNNER_SOURCES = ["benches/mmap_workloads.rs"] + [
         "mod.rs", "catalog.rs", "engine.rs", "fixture.rs", "observe.rs", "os.rs",
         "resident.rs", "scan_config.rs", "scan.rs", "probe.rs", "probe/clock.rs", "fair.rs")
 ]
+# The runner sources of the frozen RC executable, as 604410a defines them.
+RUNNER_SOURCES_FROZEN = ["benches/mmap_workloads.rs"] + [
+    f"benches/mmap_workloads/{name}" for name in (
+        "mod.rs", "catalog.rs", "engine.rs", "fixture.rs", "observe.rs", "os.rs",
+        "resident.rs", "scan_config.rs", "scan.rs", "probe.rs", "probe/clock.rs")
+]
 REPOSITORY = Path(__file__).resolve().parents[2]
 LAYOUTS = (16, 32, 64)
 HOST_PROFILES = {"bench": "[never]", HUGEPAGE_PROFILE: "[madvise]"}
@@ -215,10 +221,10 @@ def host_snapshot(output: Path, name: str, host_profile: str = "bench") -> dict:
     return snapshot
 
 
-def runner_identity(binary: Path, tree: Path) -> str:
+def runner_identity(binary: Path, tree: Path, runner_sources: list[str]) -> str:
     compiled = json.loads(execute([str(binary), "identity"]))
     runner_hash = hashlib.sha256(
-        b"".join((tree / path).read_bytes() for path in RUNNER_SOURCES)
+        b"".join((tree / path).read_bytes() for path in runner_sources)
     ).hexdigest()
     if compiled["runner_sha256"] != runner_hash or compiled["debug_assertions"]:
         raise ValueError("retained executable does not match current release harness")
@@ -232,19 +238,21 @@ def retain_binary(binary: Path, output: Path) -> tuple[Path, str]:
     return saved, identity
 
 
-def prepare(options: argparse.Namespace) -> tuple[Path, Path, dict]:
-    if options.layout is not None and options.binary:
-        raise ValueError("a layout capture builds its own executable")
-    if options.shared_runner and not options.base_build:
-        raise ValueError("--shared-runner pairs against a --base-build tree")
+def prepare(options: argparse.Namespace, profile: dict | None = None) -> tuple[Path, Path, dict]:
+    """Retains the executable and fixture identity and opens the capture manifest.
+
+    `profile` holds the `host_profile` and `layout` a fair-lane capture records; a collector
+    without it runs the bench host profile on the default layout and records neither.
+    """
+    profile = profile or {}
     output = options.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     binary = (
         options.binary.resolve()
         if options.binary
-        else build_binary(output, env=layout_environment(options.layout))
+        else build_binary(output, env=layout_environment(profile.get("layout")))
     )
-    runner_identity(binary, Path())
+    runner_identity(binary, Path(), RUNNER_SOURCES)
     saved, identity = retain_binary(binary, output)
     fixture = options.input.resolve() if options.input else output / "input"
     if not options.input:
@@ -268,9 +276,8 @@ def prepare(options: argparse.Namespace) -> tuple[Path, Path, dict]:
         "input": str(fixture),
         "git_head": execute(["git", "rev-parse", "HEAD"]).strip(),
         "git_status": execute(["git", "status", "--short"]),
-        "host_profile": options.host_profile,
-        "layout": options.layout,
-        "host_before": host_snapshot(output, "before", options.host_profile),
+        **profile,
+        "host_before": host_snapshot(output, "before", profile.get("host_profile", "bench")),
         "comparisons": [],
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -445,10 +452,11 @@ def collect_base_build(
     environment = layout_environment(options.layout)
     if options.shared_runner:
         built = build_shared_runner(base_output, tree, environment)
-        runners = [runner_identity(built, Path()), runner_identity(binary, Path())]
+        base_runner = runner_identity(built, Path(), RUNNER_SOURCES)
     else:
         built = build_binary(base_output, tree, environment)
-        runners = [runner_identity(built, tree), runner_identity(binary, Path())]
+        base_runner = collect_base_build_runner_identity(built, tree)
+    runners = [base_runner, runner_identity(binary, Path(), RUNNER_SOURCES)]
     base, identity = retain_binary(built, base_output)
     arms = [lane["arms"][1]] * 2
     manifest.update(base_build=str(tree))
@@ -457,6 +465,19 @@ def collect_base_build(
     )
     return collect_comparison(
         options, [base, binary], fixture, lane, arms, ["plain", "plain"], lane["name"], runners
+    )
+
+
+def collect_base_build_runner_identity(binary: Path, tree: Path) -> str:
+    """The base executable's runner hash, identified by one of this collector's runner-source lists."""
+    for sources in (RUNNER_SOURCES, RUNNER_SOURCES_FROZEN):
+        if all((tree / path).is_file() for path in sources):
+            try:
+                return runner_identity(binary, tree, sources)
+            except ValueError:
+                continue
+    raise ValueError(
+        f"base executable's runner matches neither RUNNER_SOURCES nor RUNNER_SOURCES_FROZEN over {tree}"
     )
 
 
@@ -486,8 +507,18 @@ def write_comparison(binary: Path, output: Path, timings: list) -> dict:
     return {"csv_sha256": digest(path), "summary": summary}
 
 
+def collect_prepare(options: argparse.Namespace) -> tuple[Path, Path, dict]:
+    if options.layout is not None and options.binary:
+        raise ValueError("a layout capture builds its own executable")
+    if options.shared_runner and not options.base_build:
+        raise ValueError("--shared-runner pairs against a --base-build tree")
+    if options.base_build and options.mode != "run":
+        raise ValueError("a base-build capture runs one lane in run mode")
+    return prepare(options, dict(host_profile=options.host_profile, layout=options.layout))
+
+
 def collect(options: argparse.Namespace) -> None:
-    binary, fixture, manifest = prepare(options)
+    binary, fixture, manifest = collect_prepare(options)
     output = options.output.resolve()
     try:
         lanes = json.loads(execute([str(binary), "list"]))
@@ -498,7 +529,7 @@ def collect(options: argparse.Namespace) -> None:
         )
         if set(selected) - {lane["name"] for lane in lanes}:
             raise ValueError("unknown lane selection")
-        if options.base_build and (len(selected) != 1 or options.mode != "run"):
+        if options.base_build and len(selected) != 1:
             raise ValueError("a base-build capture runs one lane in run mode")
         if options.host_profile != "bench" and set(selected) - set(HUGEPAGE_LANES):
             raise ValueError(f"{options.host_profile} is accepted for {HUGEPAGE_LANES} only")

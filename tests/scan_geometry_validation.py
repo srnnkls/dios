@@ -1,17 +1,24 @@
 """Reject scan results with unequal useful work or invalid resource witnesses."""
 
+import argparse
+import contextlib
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
+import unittest.mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "benches/mmap_workloads"))
 from scan_collect import matrix, validate_scan
 import scan_analyze
+import scan_campaign
+import scan_collect
 import collect
 import coalescing
 
@@ -211,6 +218,117 @@ class ScanEvidenceContract(unittest.TestCase):
             broken[group][0][field] = value
             with self.assertRaises(ValueError, msg=field):
                 validate_scan(broken)
+
+    def test_scan_collection_prepares_with_its_own_options_and_frozen_manifest_fields(self):
+        repository = Path(__file__).resolve().parents[1]
+        runner = hashlib.sha256(
+            b"".join((repository / path).read_bytes() for path in collect.RUNNER_SOURCES)
+        ).hexdigest()
+
+        def run(command, *arguments, **keywords) -> subprocess.CompletedProcess:
+            command = [str(argument) for argument in command]
+            stdout = ""
+            if command[-1] == "identity":
+                stdout = json.dumps(dict(runner_sha256=runner, debug_assertions=False))
+            elif command[0] == "findmnt":
+                stdout = "/dev/nvme0n1p2 ext4\n"
+            elif command[0] == "git" and "rev-parse" in command:
+                stdout = "604410a" + "0" * 33 + "\n"
+            elif command[0] == "cargo" or "sample" in command or "scan-sample" in command:
+                raise AssertionError(f"scan collection with --binary starts {command!r}")
+            return subprocess.CompletedProcess(command, 0, stdout, "")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "mmap_workloads"
+            binary.write_bytes(b"scan runner")
+            fixture = root / "fixture"
+            fixture.mkdir()
+            (fixture / "pages.bin").write_bytes(b"\0" * 4096)
+            (fixture / "fixture.json").write_text(
+                json.dumps(dict(sha256=collect.digest(fixture / "pages.bin")))
+            )
+            argv = ["scan_collect.py", str(root / "capture"), "--input", str(fixture),
+                    "--binary", str(binary), "--experiment", "geometry", "--mode", "smoke",
+                    "--cases", "cold-granule-64"]
+            with unittest.mock.patch.object(sys, "argv", argv):
+                options = scan_collect.arguments()
+            def comparison(options, binary, fixture, case, identities=None) -> dict:
+                (options.output.resolve() / case[0]).mkdir()
+                return dict(name=case[0], base=case[1], candidate=case[2], rows=[])
+
+            with (
+                contextlib.chdir(repository),
+                unittest.mock.patch.object(collect.subprocess, "run", run),
+                unittest.mock.patch.object(
+                    collect, "host_snapshot", return_value=dict(governors=["performance"])
+                ) as prepare_snapshot,
+                unittest.mock.patch.object(
+                    scan_collect, "host_snapshot", return_value=dict(governors=["performance"])
+                ),
+                unittest.mock.patch.object(scan_collect, "comparison", comparison),
+                unittest.mock.patch.object(scan_collect, "verify_comparison"),
+            ):
+                try:
+                    scan_collect.collect(options)
+                except AttributeError as failure:
+                    self.fail(f"scan collection reads options it does not define: {failure!r}")
+            manifest = json.loads((root / "capture/manifest.json").read_text())
+        self.assertEqual(manifest["status"], "complete")
+        self.assertEqual(set(manifest), {
+            "schema", "status", "mode", "executable_sha256", "executable", "sources",
+            "fixture", "fixture_device", "fixture_filesystem", "input", "git_head",
+            "git_status", "host_before", "comparisons", "kind", "experiment", "host_after",
+        })
+        for call in prepare_snapshot.call_args_list:
+            profile = call.args[2] if len(call.args) > 2 else call.kwargs.get("host_profile", "bench")
+            self.assertEqual(profile, "bench", "scan collection pins the bench host profile")
+
+    def test_frozen_runner_is_identified_by_the_runner_sources_it_was_built_from(self):
+        frozen_sources = [path for path in collect.RUNNER_SOURCES if not path.endswith("/fair.rs")]
+        product = ["src/lib.rs", "Cargo.toml", "Cargo.lock", "build.rs"]
+        contents = {path: f"// {path}\n".encode() for path in frozen_sources + product}
+        runner = hashlib.sha256(b"".join(contents[path] for path in frozen_sources)).hexdigest()
+
+        def run(command, *arguments, **keywords) -> subprocess.CompletedProcess:
+            command = [str(argument) for argument in command]
+            if command[-1] != "identity":
+                raise AssertionError(f"frozen retention starts {command!r}")
+            stdout = json.dumps(dict(runner_sha256=runner, debug_assertions=False))
+            return subprocess.CompletedProcess(command, 0, stdout, "")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tree = root / "tree"
+            for path, content in contents.items():
+                (tree / path).parent.mkdir(parents=True, exist_ok=True)
+                (tree / path).write_bytes(content)
+            baseline = root / "baseline"
+            baseline.mkdir()
+            for name in ("retained-source.tar.gz", "starting-tree.tar.gz"):
+                with tarfile.open(baseline / name, "w:gz") as archive:
+                    for path in contents:
+                        archive.add(tree / path, arcname=path)
+            binary = root / "mmap_workloads"
+            binary.write_bytes(b"frozen runner")
+            preflight = baseline / "preflight.json"
+            preflight.write_text(json.dumps({
+                "starting_tree_source_archive": "starting-tree.tar.gz",
+                "retained_executable": str(binary),
+                "retained_source_archive_sha256": collect.digest(baseline / "retained-source.tar.gz"),
+                "starting_tree_source_sha256": collect.digest(baseline / "starting-tree.tar.gz"),
+                "retained_executable_sha256": collect.digest(binary),
+            }))
+            output = root / "capture"
+            output.mkdir()
+            options = argparse.Namespace(preflight=preflight, frozen_binary=None)
+            with unittest.mock.patch.object(collect.subprocess, "run", run):
+                try:
+                    identity = scan_campaign.retain_frozen(options, output)
+                except ValueError as failure:
+                    self.fail(f"a frozen archive without fair.rs is refused: {failure}")
+                scan_campaign.verify_retained(output / "frozen", identity)
+        self.assertEqual(identity["runner_sha256"], runner)
 
     def test_matrices_match_windows_and_bound_geometry_bytes(self):
         for _, base, candidate in matrix("lookahead", None):

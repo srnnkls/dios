@@ -1417,6 +1417,59 @@ class MmapEvidenceContract(unittest.TestCase):
             "the runner hash covers the fair-lane module and its cfg-gated arms",
         )
 
+    def test_collector_identifies_a_base_runner_by_one_of_its_own_runner_source_lists(self) -> None:
+        this_runner = runner_sha256()
+        cases = {
+            "before_fair": (COLLECT.RUNNER_SOURCES_FROZEN, COLLECT.RUNNER_SOURCES_FROZEN),
+            "current": (COLLECT.RUNNER_SOURCES, COLLECT.RUNNER_SOURCES),
+            "neither": (COLLECT.RUNNER_SOURCES, None),
+        }
+        for case, (tree_sources, reported_sources) in cases.items():
+            with self.subTest(base=case), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                base_tree = root / f"dios-at-base-{case}"
+                for path in tree_sources + ["Cargo.toml", "Cargo.lock"]:
+                    (base_tree / path).parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(REPOSITORY / path, base_tree / path)
+                (base_tree / "benches/mmap_workloads/collect.py").write_text(
+                    "RUNNER_SOURCES = [(lambda: 1 / 0)()]\n"
+                )
+                base_runner = (
+                    hashlib.sha256(
+                        b"".join((base_tree / path).read_bytes() for path in reported_sources)
+                    ).hexdigest()
+                    if reported_sources is not None
+                    else "0" * 64
+                )
+                fixture_sha256 = write_fixture(root / "fixture")
+                samples = []
+                fake = fake_collector_processes(root, base_tree, fixture_sha256, samples)
+
+                def run(command, *arguments, cwd=None, **keywords):
+                    command = [str(part) for part in command]
+                    if command[-1] == "identity":
+                        content = Path(command[0]).read_bytes()
+                        runner = base_runner if content == b"base runner" else this_runner
+                        return subprocess.CompletedProcess(
+                            command, 0, json.dumps(dict(runner_sha256=runner, debug_assertions=False)), ""
+                        )
+                    return fake(command, *arguments, cwd=cwd, **keywords)
+
+                options = collector_options(
+                    [str(root / "capture"), "--input", str(root / "fixture"),
+                     "--lanes", "resident_access_ordinary", "--base-build", str(base_tree)]
+                )
+                failure = run_collector(options, run)
+                manifest = json.loads((root / "capture/manifest.json").read_text())
+                if reported_sources is not None:
+                    self.assertIsNone(failure, f"a {case} base runner is identified")
+                    self.assertEqual(manifest["comparisons"][0]["runners"], [base_runner, this_runner])
+                else:
+                    self.assertIsInstance(failure, ValueError)
+                    self.assertIn("matches neither", str(failure))
+                    self.assertEqual(samples, [], "the unidentified base runs no sample")
+                    self.assertEqual(manifest["comparisons"], [])
+
     def test_collector_shared_runner_builds_from_one_manifest_across_captures(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
