@@ -181,3 +181,11 @@ captures are retained in `at-g1-fdada37/` and `at-g2-fdada37/`.
 - The `get` loop's machine code in the runner of 6ba0592 matches the AT-G8 candidate
   executable instruction for instruction; only code addresses differ.
 - At fdada37 layouts 16 and 32 failed and 64 passed; here 64 fails and 16 and 32 pass.
+- Single `perf stat` processes per build (`at-g1/profile/counters.txt`): the session arm
+  executes 78.5 instructions and 15.4 branches per read, against 84.1 and 16.4 at fdada37
+  and 377a0ad; the chunked mmap arm 63.2 and 12.2. Cycles per read stay where they were:
+  26.3 to 27.9 for the session arm (377a0ad 26.5 to 26.6, fdada37 27.9 to 28.3), 17.5
+  for the mmap arm on layouts 32 and 64 and 22.2 on layout 16. Branch mispredicts per
+  1,000 reads: session 90 to 98 (377a0ad 81, fdada37 98 to 101), mmap 75. On layout 64,
+  55 % of the session loop's mispredicts fall on the chunk-loop bound, 8 % on the
+  reference-bit test and 6 % on the entry test.
