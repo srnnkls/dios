@@ -2,15 +2,17 @@ checkpoint:
   scope_name: array-translation
   scope_path: scopes/active/array-translation
   branch: feat/array-translation
-  last_commit: e0f5cb6
-  updated_at: '2026-11-17T11:30:00Z'
+  last_commit: bbfcef8
+  updated_at: '2026-11-19T19:20:00Z'
 
   batch:
     number: 5
     tasks: [AT5]
-    phase: integration
-    status: pending
-    waiting_on: "AT-G3 needs the bench-thp-madvise host profile on nix (owner). AT-G1 and AT-G2 passed at 377a0ad."
+    phase: bench
+    status: in_progress
+    waiting_on: "Liveness wave committed. Next on nix: Linux suites, get disassembly check (AT-G8), AT-G1 three layout builds, AT-G2."
+
+  in_flight_mutations: []
 
   routing_snapshot:
     epoch_id: 20261115T161731Z-fba2be
@@ -22,13 +24,13 @@ checkpoint:
         - {agent: claude-opus, effort: inherit, class: native}
 
   reports:
-    implementer: {AT5: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-implementer-AT5}
-    tester_correction: {AT5: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-tester-AT5-correction}
+    tester: {AT5_liveness: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-tester-AT5-liveness}
+    implementer: {AT5_liveness: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-implementer-AT5-liveness}
+    green_gate: {AT5_liveness: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-implementer-AT5-liveness/green-gate}
     review:
-      general: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-review-general
-      architecture: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-review-architecture
-      compliance: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-review-compliance
-      abstractions: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-review-abstractions
-    fix: {round1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-fix1}
-    rereview: {round1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-rereview1}
-    gate_lever: {AT-G1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-at-g1-lever, review: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-lever-review, harness_tester: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-tester-chunks, harness_implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-implementer-chunks, harness_review: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-chunks-review}
+      AT5_liveness:
+        requirements: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-review
+        general: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-review-general
+        architecture: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-review-architecture
+        compliance: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-review-compliance
+        abstractions: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-review-abstractions

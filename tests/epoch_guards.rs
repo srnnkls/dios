@@ -32,8 +32,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use dios::driver::Driver;
-use dios::testing::{FrameState, PoolTestingExt};
-use dios::{DirectIo, FileId, PageId, Pool};
+use dios::testing::{FrameState, PoolTestingExt, ReadFrameIdx};
+use dios::{DirectIo, FileId, GetError, PageId, Pool, RetireStatus, SessionRead};
 
 static FILE_SEQ: AtomicU32 = AtomicU32::new(0);
 
@@ -353,6 +353,158 @@ fn a_session_is_one_guard_that_pins_the_epoch_until_it_drops() {
     );
     drop(nested);
     drop(session);
+}
+
+/// Default `file_granules_max` (AD-3).
+const FILE_GRANULES_MAX_DEFAULT: u32 = 1 << 22;
+
+/// A file registered with `pool`, so its identity is the pool's.
+fn a_pool_file(pool: &Pool) -> FileId {
+    let n = FILE_SEQ.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "dios_epoch_session_file_{}_{n}.bin",
+        std::process::id()
+    ));
+    std::fs::write(&path, [0u8; 64]).expect("temp file writable");
+    pool.open(&path, DirectIo::Disabled)
+        .expect("the pool registers the temp file")
+}
+
+/// One read's outcome as owned bytes, comparable across views.
+fn read_outcome(read: Result<SessionRead<'_>, GetError>) -> Result<Option<Vec<u8>>, GetError> {
+    read.map(|outcome| match outcome {
+        SessionRead::Hit(bytes) => Some(bytes.to_vec()),
+        SessionRead::Absent => None,
+    })
+}
+
+fn assert_reclaims_within_four_polls(pool: &Pool, frame: ReadFrameIdx, reason: &str) {
+    for _ in 0..4u32 {
+        pool.poll();
+        if pool.frame_state(frame) == FrameState::Free {
+            return;
+        }
+    }
+    panic!("{reason}");
+}
+
+#[test]
+fn a_file_session_is_one_guard_whose_pin_lives_as_long_as_its_view_and_reads_as_session_file() {
+    let pool = epoch_pool_with_peak(1, 2);
+    let reader = pool.register_reader().expect("a reader slot");
+    let file = a_pool_file(&pool);
+    let retired = a_pool_file(&pool);
+    let held = PageId::new(file, 70);
+    let evicted = PageId::new(file, 71);
+    let evicted_after_failed_open = PageId::new(file, 73);
+    pool.insert_resident_frame(held, 0x5A);
+    let evicted_frame = pool.insert_resident_frame(evicted, 0x5B);
+    let failed_open_frame = pool.insert_resident_frame(evicted_after_failed_open, 0x5D);
+
+    let granules = [70, 71, 72, FILE_GRANULES_MAX_DEFAULT];
+    let fused = {
+        let view = pool.session_file(&reader, file).expect("a live file opens");
+        granules.map(|granule_idx| read_outcome(view.page(granule_idx)))
+    };
+    let two_step = {
+        let session = pool.session(&reader);
+        let view = session.file(file).expect("a live file opens");
+        granules.map(|granule_idx| read_outcome(view.page(granule_idx)))
+    };
+    assert_eq!(
+        fused,
+        [
+            Ok(Some(vec![0x5A; GRANULE])),
+            Ok(Some(vec![0x5B; GRANULE])),
+            Ok(None),
+            Err(GetError::BeyondFileBound {
+                page: PageId::new(file, FILE_GRANULES_MAX_DEFAULT)
+            }),
+        ],
+        "a FileSession reads resident granules, Absent and the bound"
+    );
+    assert_eq!(
+        fused, two_step,
+        "FileSession::page reads as SessionFile::page"
+    );
+
+    let view = pool.session_file(&reader, file).expect("a live file opens");
+    pool.evict_frame(evicted);
+    for _ in 0..4u32 {
+        pool.poll();
+        assert_eq!(
+            pool.frame_state(evicted_frame),
+            FrameState::Evicting,
+            "a live FileSession pins the reader's epoch, so a frame evicted under it is never reclaimed"
+        );
+    }
+    drop(view);
+    assert_reclaims_within_four_polls(
+        &pool,
+        evicted_frame,
+        "dropping the FileSession unpins the reader's epoch",
+    );
+
+    assert_eq!(pool.retire_file(retired), RetireStatus::Retiring);
+    assert!(
+        matches!(
+            pool.session_file(&reader, retired),
+            Err(GetError::StaleFile { page }) if page.file() == retired
+        ),
+        "a retired file does not open"
+    );
+    pool.evict_frame(evicted_after_failed_open);
+    assert_reclaims_within_four_polls(
+        &pool,
+        failed_open_frame,
+        "a failed open releases its epoch pin",
+    );
+    let first = pool
+        .pin(&reader, held)
+        .expect("a failed open leaves no guard behind: first of two");
+    let second = pool
+        .pin(&reader, held)
+        .expect("a failed open leaves no guard behind: second of two");
+    drop((first, second));
+
+    let view = pool.session_file(&reader, file).expect("a live file opens");
+    let nested = pool
+        .pin(&reader, held)
+        .expect("a nested get guard inside a FileSession is the second declared guard");
+    assert_eq!(nested[0], 0x5A);
+    let third = catch_unwind(AssertUnwindSafe(|| pool.pin(&reader, held)));
+    assert!(
+        third.is_err(),
+        "a FileSession counts as one guard, so beside one nested guard a third acquisition exceeds a peak of two"
+    );
+    drop(nested);
+    drop(view);
+}
+
+#[test]
+fn a_file_session_asserts_the_pool_identity_of_its_reader_and_its_file() {
+    let owner = epoch_pool_with_peak(1, 2);
+    let foreign = epoch_pool_with_peak(1, 2);
+    let owner_reader = owner.register_reader().expect("a reader slot");
+    let foreign_reader = foreign.register_reader().expect("a reader slot");
+    let owner_file = a_pool_file(&owner);
+    let foreign_file = a_pool_file(&foreign);
+    assert!(
+        owner.session_file(&owner_reader, owner_file).is_ok(),
+        "the owner's reader opens the owner's file"
+    );
+
+    let foreign_reader_open = catch_unwind(AssertUnwindSafe(|| {
+        let _ = owner.session_file(&foreign_reader, owner_file);
+    }));
+    assert!(
+        foreign_reader_open.is_err(),
+        "a reader of another pool asserts"
+    );
+    let foreign_file_open = catch_unwind(AssertUnwindSafe(|| {
+        let _ = owner.session_file(&owner_reader, foreign_file);
+    }));
+    assert!(foreign_file_open.is_err(), "a file of another pool asserts");
 }
 
 #[test]

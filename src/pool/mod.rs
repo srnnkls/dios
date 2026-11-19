@@ -47,7 +47,7 @@ mod session;
 mod translation;
 pub(crate) mod write_arena;
 
-use epoch::{EvictQueue, FrameOutcome, PinCommit, ReaderRegistry, advance_epoch};
+use epoch::{EvictQueue, FrameOutcome, PinCommit, ReaderRegistry, advance_epoch, epoch_matured};
 use miss::{MissEntry, MissInterests, MissOutcome, MissSlot, MissTable};
 use retention::Retention;
 
@@ -60,7 +60,7 @@ pub(crate) use miss::PoolBackend;
 pub(crate) use miss::sealed::Sealed as PoolBackendSealed;
 pub use prefetch::{PrefetchReport, PrefetchStats, Readahead};
 pub use retention::{RetainRefused, RetainRefusedReason, RetainedFrame, RetentionStats};
-pub use session::{ReadSession, SessionFile, SessionRead};
+pub use session::{FileSession, ReadSession, SessionFile, SessionRead};
 pub use translation::Translation;
 
 /// Default frame granule, fixed per store at open and never below the `O_DIRECT`
@@ -1068,8 +1068,21 @@ struct Control {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PoolFileState {
     Live,
-    Retiring,
+    /// Retirement began when the global epoch was `epoch`; the handle and the
+    /// slot stay held until the epoch has advanced twice past it.
+    Retiring {
+        epoch: u64,
+    },
     Retired,
+}
+
+/// Whether a retiring file's slot may be closed and released now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetirementGrace {
+    /// After two epoch advances past the retirement record.
+    Epochs,
+    /// At pool teardown, where no session or guard can outlive the pool.
+    Teardown,
 }
 
 #[derive(Debug)]
@@ -1419,7 +1432,7 @@ impl<D: PoolBackend> Pool<D> {
     fn shutdown_for_drop(pool: &mut Pool<D>) {
         if !pool.retention.is_disabled() {
             let mut control = pool.control();
-            pool.progress_retirements(&mut control);
+            pool.progress_retirements(&mut control, RetirementGrace::Teardown);
         }
         pool.shutdown_internal();
     }
@@ -1651,9 +1664,7 @@ impl<D: PoolBackend> Pool<D> {
         let id = fd.file_id();
         let mut control = self.control();
         assert!(
-            control.files[slot]
-                .as_ref()
-                .is_none_or(|entry| entry.state == PoolFileState::Retired),
+            file_slot_is_vacant(&control.files, id),
             "a file slot is absent or retired before registration"
         );
         self.retention.clear_file_retiring(id.slot());
@@ -1727,7 +1738,10 @@ impl<D: PoolBackend> Pool<D> {
             .as_ref()
             .filter(|entry| {
                 entry.id == file
-                    && matches!(entry.state, PoolFileState::Live | PoolFileState::Retiring)
+                    && matches!(
+                        entry.state,
+                        PoolFileState::Live | PoolFileState::Retiring { .. }
+                    )
             })
             .map(|entry| {
                 entry
@@ -2230,7 +2244,7 @@ impl<D: PoolBackend> Pool<D> {
         let backend = self.drain_completions(&mut control);
         let reclaimed = self.advance_and_reclaim(&mut control);
         Self::deliver_product_completions(&mut control, out);
-        self.progress_retirements(&mut control);
+        self.progress_retirements(&mut control, RetirementGrace::Epochs);
         self.progress_prefetch(&mut control);
         if backend > 0 || reclaimed > 0 || out.iter().next().is_some() {
             self.wake.consume_current();
@@ -2265,7 +2279,7 @@ impl<D: PoolBackend> Pool<D> {
         self.route_completion_batch(&mut control);
         let reclaimed = self.advance_and_reclaim(&mut control);
         Self::deliver_product_completions(&mut control, out);
-        self.progress_retirements(&mut control);
+        self.progress_retirements(&mut control, RetirementGrace::Epochs);
         self.progress_prefetch(&mut control);
         if backend.backend_completions > 0 || reclaimed > 0 || out.iter().next().is_some() {
             self.wake.consume_current();
@@ -2284,12 +2298,25 @@ impl<D: PoolBackend> Pool<D> {
         }
     }
 
-    /// Starts or advances typed file retirement.
+    /// Starts or advances retirement of `file`. From the first call on, `get`,
+    /// `read_copy`, `lease_file`, submissions, [`ReadSession::file`] and
+    /// [`Pool::session_file`] report `file` as stale, and its resident
+    /// granules are unmapped. A [`SessionFile`] or [`FileSession`] obtained
+    /// before the first call keeps returning `file`'s resident granules or
+    /// `Absent` until its session drops.
     ///
-    /// The first call reports [`RetireStatus::Retiring`] for the accepted
-    /// `Live -> Retiring` transition even when its in-memory progress pass can
-    /// close the file immediately. A subsequent call observes
-    /// [`RetireStatus::Retired`].
+    /// The first call reports [`RetireStatus::Retiring`]. A later call returns
+    /// [`RetireStatus::Retired`] once no reader can observe `file`'s bytes, no
+    /// I/O on it is in flight, its handle is closed and its slot can be
+    /// registered again. That requires every session and guard opened before
+    /// the first call to drop, followed by two advancing polls; until then a
+    /// registration that finds no other free slot returns
+    /// [`FileRegistrationError::AtCapacity`]. A thread waiting for `Retired`
+    /// while it holds such a session never sees it.
+    ///
+    /// The pool does not observe changes to the underlying file. To keep every
+    /// reader from seeing bytes from before an in-place change, retire the file
+    /// and wait for `Retired` before changing it.
     ///
     /// # Panics
     ///
@@ -2312,8 +2339,13 @@ impl<D: PoolBackend> Pool<D> {
             return RetireStatus::Retired;
         }
         self.retention.mark_file_retiring(file.slot());
-        let started = begin_file_retirement(entry, &self.file_live_generations[index], file);
-        self.progress_retirements(&mut control);
+        let started = begin_file_retirement(
+            entry,
+            &self.file_live_generations[index],
+            file,
+            self.global_epoch.load(Ordering::Acquire),
+        );
+        self.progress_retirements(&mut control, RetirementGrace::Epochs);
         if started {
             RetireStatus::Retiring
         } else if control.files[index]
@@ -2341,12 +2373,18 @@ impl<D: PoolBackend> Pool<D> {
         }
     }
 
-    fn progress_retirements(&self, control: &mut Control) {
+    fn progress_retirements(&self, control: &mut Control, grace: RetirementGrace) {
+        let global_epoch = self.global_epoch.load(Ordering::Acquire);
         for index in 0..control.files.len() {
-            let Some(file) = control.files[index]
+            let Some((file, grace_elapsed)) = control.files[index]
                 .as_ref()
-                .filter(|entry| entry.state == PoolFileState::Retiring)
-                .map(|entry| entry.id)
+                .filter(|entry| matches!(entry.state, PoolFileState::Retiring { .. }))
+                .map(|entry| {
+                    (
+                        entry.id,
+                        retirement_grace_elapsed(entry, grace, global_epoch),
+                    )
+                })
             else {
                 continue;
             };
@@ -2375,7 +2413,7 @@ impl<D: PoolBackend> Pool<D> {
                     .as_ref()
                     .is_some_and(|operation| operation.file() == file)
             });
-            if !miss_live && !frames_live && !product_live {
+            if grace_elapsed && !miss_live && !frames_live && !product_live {
                 let entry = control.files[index]
                     .as_mut()
                     .expect("the retiring file remains registered");
@@ -2429,7 +2467,7 @@ impl<D: PoolBackend> Pool<D> {
         let mut control = self.control();
         let _ = self.drain_completions(&mut control);
         let reclaimed = self.advance_and_reclaim(&mut control);
-        self.progress_retirements(&mut control);
+        self.progress_retirements(&mut control, RetirementGrace::Epochs);
         self.progress_prefetch(&mut control);
         debug_assert!(
             reclaimed <= self.frame_count as usize,
@@ -3242,17 +3280,55 @@ fn live_word_is_live(live_generation: &AtomicU64, live_word: u64) -> bool {
     live_generation.load(Ordering::Acquire) == live_word
 }
 
-fn begin_file_retirement(entry: &mut PoolFile, live_generation: &AtomicU64, file: FileId) -> bool {
+/// Clears the slot's mirror and records `global_epoch` on the transition from
+/// live to retiring; a repeated call leaves the record unchanged. Returns
+/// whether this call began retirement.
+fn begin_file_retirement(
+    entry: &mut PoolFile,
+    live_generation: &AtomicU64,
+    file: FileId,
+    global_epoch: u64,
+) -> bool {
     assert_eq!(entry.id, file, "retirement names the exact generation");
-    assert_ne!(
-        entry.state,
-        PoolFileState::Retired,
-        "a retired file cannot begin retirement"
-    );
-    let started = entry.state == PoolFileState::Live;
-    entry.state = PoolFileState::Retiring;
-    live_generation.store(0, Ordering::Release);
-    started
+    match entry.state {
+        PoolFileState::Live => {
+            live_generation.store(0, Ordering::Release);
+            entry.state = PoolFileState::Retiring {
+                epoch: global_epoch,
+            };
+            true
+        }
+        PoolFileState::Retiring { .. } => {
+            assert_eq!(
+                live_generation.load(Ordering::Relaxed),
+                0,
+                "a retiring file's mirror stays cleared"
+            );
+            false
+        }
+        PoolFileState::Retired => panic!("a retired file cannot begin retirement"),
+    }
+}
+
+/// Whether the retiring `entry` may close its handle and release its slot:
+/// at teardown, or once the global epoch has advanced twice past its
+/// retirement record, so no session that validated it before the mirror
+/// cleared still holds its view (INV-3).
+fn retirement_grace_elapsed(entry: &PoolFile, grace: RetirementGrace, global_epoch: u64) -> bool {
+    let PoolFileState::Retiring { epoch } = entry.state else {
+        panic!("only a retiring file has a retirement grace");
+    };
+    match grace {
+        RetirementGrace::Epochs => epoch_matured(epoch, global_epoch),
+        RetirementGrace::Teardown => true,
+    }
+}
+
+/// Whether `file`'s slot can register a file: absent, or its last file retired.
+fn file_slot_is_vacant(files: &[Option<PoolFile>], file: FileId) -> bool {
+    files[file.slot() as usize]
+        .as_ref()
+        .is_none_or(|entry| entry.state == PoolFileState::Retired)
 }
 
 fn live_file_handle(

@@ -1,5 +1,5 @@
 //! Session read: one epoch pin shared by many resident-only reads of one
-//! reader (FR-6 to FR-8).
+//! reader (FR-6 to FR-8), with file liveness validated once per view.
 
 use crate::driver::FileId;
 use crate::sync::{AtomicU32, AtomicU64};
@@ -12,7 +12,7 @@ use super::epoch::{ReaderCtx, ReaderSlot, SessionPin};
 use super::frames::Frames;
 use super::frames::SessionArena;
 use super::translation::{Translation, entry_frame};
-use super::{Clock, GetError, PageId, Pool, PoolBackend, file_live_word, live_word_is_live};
+use super::{Clock, GetError, PageId, Pool, PoolBackend, file_generation_is_live};
 
 /// Many resident-only reads of one reader under one epoch pin; borrows the
 /// pool and the reader and is neither `Send` nor `Sync`.
@@ -31,12 +31,26 @@ pub struct ReadSession<'pool> {
 #[derive(Debug)]
 pub struct SessionFile<'session> {
     pin: &'session SessionPin<'session>,
-    reader: &'session ReaderSlot,
-    entries: &'session [AtomicU32],
-    live_generation: &'session AtomicU64,
-    live_word: u64,
-    arena: SessionArena<'session>,
-    clock: &'session Clock,
+    view: FileView<'session>,
+}
+
+/// A one-file session opened by [`Pool::session_file`]: its own epoch pin and
+/// the validated view of one file; borrows the pool and the reader and is
+/// neither `Send` nor `Sync`.
+#[derive(Debug)]
+pub struct FileSession<'pool> {
+    pin: SessionPin<'pool>,
+    view: FileView<'pool>,
+}
+
+/// The loop-invariant values of one file's reads under a session pin, taken
+/// after the pin validated the file's liveness.
+#[derive(Debug, Clone, Copy)]
+struct FileView<'pool> {
+    reader: &'pool ReaderSlot,
+    entries: &'pool [AtomicU32],
+    arena: SessionArena<'pool>,
+    clock: &'pool Clock,
     file: FileId,
 }
 
@@ -77,6 +91,46 @@ impl<D: PoolBackend> Pool<D> {
             identity: self.identity,
         }
     }
+
+    /// Opens a one-file session in one call: pins `reader`'s epoch as one
+    /// guard, then validates `file`'s pool identity and liveness once, as
+    /// [`Pool::session`] followed by [`ReadSession::file`]. The pin is
+    /// released when the [`FileSession`] drops or the open fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GetError::StaleFile`] when [`Pool::retire_file`] was called
+    /// for `file` before this call, or when its slot holds another file.
+    ///
+    /// # Panics
+    ///
+    /// If `reader` or `file` belongs to another pool, or `reader` already
+    /// holds its declared peak of guards.
+    #[inline]
+    pub fn session_file<'pool>(
+        &'pool self,
+        reader: &'pool ReaderCtx,
+        file: FileId,
+    ) -> Result<FileSession<'pool>, GetError> {
+        let ReadSession {
+            pin,
+            translation,
+            arena,
+            clock,
+            file_live_generations,
+            identity,
+        } = self.session(reader);
+        let view = FileView::open(
+            pin.slot(),
+            translation,
+            arena,
+            clock,
+            file_live_generations,
+            identity,
+            file,
+        )?;
+        Ok(FileSession { pin, view })
+    }
 }
 
 #[cfg(loom)]
@@ -104,81 +158,136 @@ impl<'pool> ReadSession<'pool> {
 }
 
 impl ReadSession<'_> {
-    /// Validates `file`'s pool identity and liveness once for the session's
-    /// reads of it.
+    /// Validates `file`'s pool identity and liveness once for the reads of the
+    /// returned view.
     ///
     /// # Errors
     ///
-    /// Returns [`GetError::StaleFile`] for a retired or reused file generation.
+    /// Returns [`GetError::StaleFile`] when [`Pool::retire_file`] was called
+    /// for `file` before this call, or when its slot holds another file.
     ///
     /// # Panics
     ///
     /// If `file` belongs to another pool.
     #[inline]
     pub fn file(&self, file: FileId) -> Result<SessionFile<'_>, GetError> {
-        assert!(
-            file.driver() == self.identity,
-            "file identity used with a foreign pool"
-        );
-        let entries = self.translation.slot_entries(file);
-        let live_generation = &self.file_live_generations[file.slot() as usize];
-        let live_word = file_live_word(file);
-        if !live_word_is_live(live_generation, live_word) {
-            return Err(GetError::StaleFile {
-                page: PageId::new(file, 0),
-            });
-        }
         Ok(SessionFile {
             pin: &self.pin,
-            reader: self.pin.slot(),
-            entries,
-            live_generation,
-            live_word,
-            arena: self.arena,
-            clock: self.clock,
-            file,
+            view: FileView::open(
+                self.pin.slot(),
+                self.translation,
+                self.arena,
+                self.clock,
+                self.file_live_generations,
+                self.identity,
+                file,
+            )?,
         })
     }
 
     /// The session resolution of one page, shared with the Loom seam.
     #[cfg(loom)]
     pub(crate) fn read_page(&self, page: PageId) -> Result<SessionRead<'_>, GetError> {
-        self.file(page.file())?.resolve(page.granule_idx())
+        self.file(page.file())?
+            .view
+            .resolve(&self.pin, page.granule_idx())
     }
 }
 
-impl<'session> SessionFile<'session> {
-    /// Reads one granule of the file without submitting I/O.
+impl SessionFile<'_> {
+    /// Reads one granule of the file without submitting I/O: `Hit` with the
+    /// granule's bytes, borrowed until the session drops, or `Absent` when
+    /// the granule is not resident.
+    ///
+    /// If the file is retired after [`ReadSession::file`] returned this view,
+    /// reads keep returning that file's resident granules or `Absent` until
+    /// the session drops. They never return another file's or another
+    /// granule's bytes, including after the slot is registered again, because
+    /// the slot is not reused while this session is open. Retirement removes
+    /// the file's resident granules, so most reads after it return `Absent`,
+    /// and the [`Pool::get`] that resolves one returns
+    /// [`GetError::StaleFile`]. A live resident lease, miss waiters, or a miss
+    /// submitted before retirement can keep a granule of the file resident
+    /// until the next progress pass; its bytes come from the file's own
+    /// handle.
     ///
     /// # Errors
     ///
-    /// Returns [`GetError::StaleFile`] when the file generation is no longer
-    /// live and [`GetError::BeyondFileBound`] for a granule at or above
+    /// Returns [`GetError::BeyondFileBound`] for a granule at or above
     /// `file_granules_max`.
     #[inline]
     pub fn page(&self, granule_idx: u32) -> Result<SessionRead<'_>, GetError> {
-        self.resolve(granule_idx)
+        self.view.resolve(self.pin, granule_idx)
+    }
+}
+
+impl FileSession<'_> {
+    /// Reads one granule of the file as [`SessionFile::page`] does, with the
+    /// same semantics for a file retired after [`Pool::session_file`]
+    /// returned this session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GetError::BeyondFileBound`] for a granule at or above
+    /// `file_granules_max`.
+    #[inline]
+    pub fn page(&self, granule_idx: u32) -> Result<SessionRead<'_>, GetError> {
+        self.view.resolve(&self.pin, granule_idx)
+    }
+}
+
+impl<'pool> FileView<'pool> {
+    /// Asserts `file`'s pool identity, then loads the file-generation mirror
+    /// once, after the session pin published the reader's epoch (INV-7).
+    #[inline]
+    fn open(
+        reader: &'pool ReaderSlot,
+        translation: &'pool Translation,
+        arena: SessionArena<'pool>,
+        clock: &'pool Clock,
+        file_live_generations: &'pool [AtomicU64],
+        identity: u64,
+        file: FileId,
+    ) -> Result<Self, GetError> {
+        assert!(
+            file.driver() == identity,
+            "file identity used with a foreign pool"
+        );
+        let entries = translation.slot_entries(file);
+        if !file_generation_is_live(&file_live_generations[file.slot() as usize], file) {
+            return Err(GetError::StaleFile {
+                page: PageId::new(file, 0),
+            });
+        }
+        Ok(Self {
+            reader,
+            entries,
+            arena,
+            clock,
+            file,
+        })
     }
 
-    /// Loads the entry, then the file-generation mirror (INV-7), then sets
-    /// the CLOCK reference of the frame it borrows.
+    /// Loads the entry, then sets the CLOCK reference of the frame it borrows
+    /// for as long as `pin` lives.
     #[inline]
-    fn resolve(&self, granule_idx: u32) -> Result<SessionRead<'session>, GetError> {
+    fn resolve<'session>(
+        &self,
+        pin: &'session SessionPin<'_>,
+        granule_idx: u32,
+    ) -> Result<SessionRead<'session>, GetError>
+    where
+        'pool: 'session,
+    {
         let Some(entry) = self.entries.get(granule_idx as usize) else {
             return Err(GetError::BeyondFileBound {
                 page: PageId::new(self.file, granule_idx),
             });
         };
-        let frame = entry_frame(entry);
-        if !live_word_is_live(self.live_generation, self.live_word) {
-            return Err(GetError::StaleFile {
-                page: PageId::new(self.file, granule_idx),
-            });
-        }
-        let Some(frame) = frame else {
+        let Some(frame) = entry_frame(entry) else {
             return Ok(SessionRead::Absent);
         };
-        let (reference_bit, bytes) = self.arena.frame(self.pin, frame);
+        let (reference_bit, bytes) = self.arena.frame(pin, frame);
         self.clock
             .reference_session(reference_bit, frame, self.reader);
         Ok(SessionRead::Hit(bytes))

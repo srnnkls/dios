@@ -1,5 +1,5 @@
 //! Session reads (FR-7, FR-8): one epoch pin for many resident-only reads,
-//! each validating the file-generation mirror after its translation entry.
+//! with file liveness validated once, when a view of the file opens.
 
 #![cfg(feature = "mock")]
 
@@ -15,6 +15,7 @@ const POLL_BOUND: u32 = 32;
 const FILLED: [u32; 4] = [0, 9, 18, 27];
 const FIRST_PRESSURE: u32 = 36;
 const SECOND_PRESSURE: u32 = 45;
+const SESSION_GRANULES_MAX: u32 = 64;
 
 fn session_pool() -> Pool<MockDriver> {
     let mock = MockDriver::builder()
@@ -29,18 +30,9 @@ fn session_pool() -> Pool<MockDriver> {
         .peak_guards_per_reader(1)
         .max_inflight_reads(1)
         .miss_headroom(3)
+        .file_granules_max(SESSION_GRANULES_MAX)
         .build_on(mock)
         .expect("valid session pool")
-}
-
-fn poll_until_closed(pool: &Pool<MockDriver>, file: FileId) {
-    for _ in 0..POLL_BOUND {
-        if pool.driver().is_closed(file) {
-            return;
-        }
-        pool.poll();
-    }
-    panic!("the retired file did not close within the bounded progress budget");
 }
 
 fn fill_of(granule_idx: u32) -> u8 {
@@ -67,6 +59,7 @@ fn clock_pool() -> (Pool<MockDriver>, FileId) {
         .peak_guards_per_reader(1)
         .max_inflight_reads(1)
         .miss_headroom(3)
+        .file_granules_max(SESSION_GRANULES_MAX)
         .build_on(mock)
         .expect("valid clock pool");
     pool.register_file(file);
@@ -131,74 +124,149 @@ fn first_victim(
     panic!("the pressure miss evicted nothing within the bounded progress budget");
 }
 
+/// A read through a view opened before its file retired: the file's own
+/// granule, or `Absent`, and never `StaleFile` (AT-D21).
+fn assert_own_bytes_or_absent(read: Result<SessionRead<'_>, GetError>, own_fill: u8) {
+    match read {
+        Ok(SessionRead::Hit(bytes)) => assert!(
+            bytes.iter().all(|&byte| byte == own_fill),
+            "a view opened before retirement returns only its own file's bytes"
+        ),
+        Ok(SessionRead::Absent) => {}
+        Err(error) => panic!(
+            "a view opened before retirement reads its own bytes or Absent until the session drops, not {error:?}"
+        ),
+    }
+}
+
 #[test]
-fn a_session_reads_resident_bytes_absent_pages_and_a_retired_or_reused_slot_as_stale() {
+fn a_session_reads_resident_and_absent_pages_and_rejects_only_a_file_retired_before_its_view() {
     let pool = session_pool();
     let live = pool
         .open(Path::new("session-live"), DirectIo::Disabled)
         .expect("mock open");
-    let retired = pool
-        .open(Path::new("session-retired"), DirectIo::Disabled)
+    let retired_early = pool
+        .open(Path::new("session-retired-early"), DirectIo::Disabled)
+        .expect("mock open");
+    let retired_late = pool
+        .open(Path::new("session-retired-late"), DirectIo::Disabled)
         .expect("mock open");
     pool.insert_resident_frame(PageId::new(live, 0), 0xA7);
+    pool.insert_resident_frame(PageId::new(retired_late, 0), 0xB4);
     let reader = pool.register_reader().expect("one reader slot");
-    let retired_page = PageId::new(retired, 0);
+    assert_eq!(pool.retire_file(retired_early), RetireStatus::Retiring);
 
-    let session = pool.session(&reader);
-    let live_view = session
-        .file(live)
-        .expect("a live file opens in the session");
-    let retired_view = session
-        .file(retired)
-        .expect("the file is live when the session opens it");
-    match live_view.page(0).expect("the file is live") {
-        SessionRead::Hit(bytes) => {
-            assert_eq!(
-                bytes.len(),
-                GRANULE as usize,
-                "a hit borrows the whole granule"
-            );
-            assert!(
-                bytes.iter().all(|&byte| byte == 0xA7),
-                "a hit returns the resident page's bytes"
-            );
+    {
+        let session = pool.session(&reader);
+        let live_view = session
+            .file(live)
+            .expect("a live file opens in the session");
+        match live_view.page(0).expect("the file is live") {
+            SessionRead::Hit(bytes) => {
+                assert_eq!(
+                    bytes.len(),
+                    GRANULE as usize,
+                    "a hit borrows the whole granule"
+                );
+                assert!(
+                    bytes.iter().all(|&byte| byte == 0xA7),
+                    "a hit returns the resident page's bytes"
+                );
+            }
+            SessionRead::Absent => panic!("a resident page must read as a hit"),
         }
-        SessionRead::Absent => panic!("a resident page must read as a hit"),
+        assert!(
+            matches!(live_view.page(1), Ok(SessionRead::Absent)),
+            "a page without an entry reads Absent"
+        );
+        assert!(
+            matches!(
+                session.file(retired_early),
+                Err(GetError::StaleFile { page }) if page.file() == retired_early
+            ),
+            "a file retired before its view opens is StaleFile"
+        );
+
+        let late_view = session
+            .file(retired_late)
+            .expect("the file is live when the session opens it");
+        assert!(
+            matches!(late_view.page(0), Ok(SessionRead::Hit(bytes)) if bytes[0] == 0xB4),
+            "the view reads its resident page before retirement"
+        );
+        assert_eq!(pool.retire_file(retired_late), RetireStatus::Retiring);
+        let successor = pool
+            .open(Path::new("session-successor"), DirectIo::Disabled)
+            .expect("a free file slot remains");
+        pool.insert_resident_frame(PageId::new(successor, 0), 0x5C);
+        for _ in 0..POLL_BOUND {
+            pool.poll();
+            assert_own_bytes_or_absent(late_view.page(0), 0xB4);
+            assert_own_bytes_or_absent(late_view.page(1), 0xB4);
+        }
     }
-    assert!(
-        matches!(live_view.page(1), Ok(SessionRead::Absent)),
-        "a page without an entry reads Absent"
-    );
 
-    let _ = pool.retire_file(retired);
-    poll_until_closed(&pool, retired);
-    assert_eq!(
-        pool.retire_file(retired),
-        RetireStatus::Retired,
-        "a file with no resident frames retires without waiting for the session"
-    );
-    assert!(
-        matches!(retired_view.page(0), Err(GetError::StaleFile { page }) if page == retired_page),
-        "a retired file reads StaleFile even where its entry is absent"
-    );
-
-    let successor = pool
-        .open(Path::new("session-successor"), DirectIo::Disabled)
-        .expect("the retired slot can be reused");
-    assert!(successor.aliases_slot(&retired));
-    pool.insert_resident_frame(PageId::new(successor, 0), 0x5C);
-    let successor_view = session.file(successor).expect("the successor is live");
-    assert!(
-        matches!(successor_view.page(0), Ok(SessionRead::Hit(bytes)) if bytes[0] == 0x5C),
-        "the successor's page is resident through the reused slot's entry"
-    );
-    assert!(
-        matches!(retired_view.page(0), Err(GetError::StaleFile { page }) if page == retired_page),
-        "after the epoch pin and before the entry load, slot reuse never admits the successor's bytes under the retired identity"
-    );
     assert!(
         pool.driver().read_attempts_in_order().is_empty(),
         "a session read submits no I/O"
+    );
+    let session = pool.session(&reader);
+    assert!(
+        matches!(
+            session.file(retired_late),
+            Err(GetError::StaleFile { page }) if page.file() == retired_late
+        ),
+        "a view opened after retirement is StaleFile"
+    );
+}
+
+#[test]
+fn a_file_session_rejects_a_file_retired_before_it_opens_and_reads_its_own_bytes_after() {
+    let pool = session_pool();
+    let retired_early = pool
+        .open(Path::new("file-session-retired-early"), DirectIo::Disabled)
+        .expect("mock open");
+    let retired_late = pool
+        .open(Path::new("file-session-retired-late"), DirectIo::Disabled)
+        .expect("mock open");
+    pool.insert_resident_frame(PageId::new(retired_late, 0), 0xC3);
+    let reader = pool.register_reader().expect("one reader slot");
+    assert_eq!(pool.retire_file(retired_early), RetireStatus::Retiring);
+
+    assert!(
+        matches!(
+            pool.session_file(&reader, retired_early),
+            Err(GetError::StaleFile { page }) if page.file() == retired_early
+        ),
+        "a file retired before its view opens is StaleFile"
+    );
+
+    {
+        let view = pool
+            .session_file(&reader, retired_late)
+            .expect("the file is live when its view opens");
+        assert!(
+            matches!(view.page(0), Ok(SessionRead::Hit(bytes)) if bytes[0] == 0xC3),
+            "the view reads its resident page before retirement"
+        );
+        assert_eq!(pool.retire_file(retired_late), RetireStatus::Retiring);
+        let successor = pool
+            .open(Path::new("file-session-successor"), DirectIo::Disabled)
+            .expect("a free file slot remains");
+        pool.insert_resident_frame(PageId::new(successor, 0), 0x5C);
+        for _ in 0..POLL_BOUND {
+            pool.poll();
+            assert_own_bytes_or_absent(view.page(0), 0xC3);
+            assert_own_bytes_or_absent(view.page(1), 0xC3);
+        }
+    }
+
+    assert!(
+        matches!(
+            pool.session_file(&reader, retired_late),
+            Err(GetError::StaleFile { page }) if page.file() == retired_late
+        ),
+        "a view opened after retirement is StaleFile"
     );
 }
 

@@ -528,6 +528,41 @@ fn real_pool_warm_session_reads_allocate_nothing() {
 }
 
 #[test]
+fn real_pool_warm_file_session_reads_allocate_nothing() {
+    const SESSION_READS: u32 = 16;
+    let path = temp_frames("real-pool-file-session", 1, 0xE5);
+    let pool = product_pool();
+    let file = pool
+        .open(&path, DirectIo::Disabled)
+        .expect("the real product pool opens the fixture");
+    let reader = pool
+        .register_reader()
+        .expect("the product pool has one reader slot");
+    drop(resolve_product_page(&pool, &reader, PageId::new(file, 0)));
+
+    let (allocations, (hits, folded)) = armed_allocations_result(|| {
+        let view = pool
+            .session_file(&reader, file)
+            .expect("the product file remains live");
+        let mut hits = 0u32;
+        let mut folded = 0u64;
+        for _ in 0..SESSION_READS {
+            if let Ok(SessionRead::Hit(bytes)) = view.page(0) {
+                hits += 1;
+                folded += u64::from(bytes[0]);
+            }
+        }
+        (hits, folded)
+    });
+    assert_eq!(hits, SESSION_READS, "every warmed FileSession read hits");
+    assert_eq!(folded, u64::from(SESSION_READS) * 0xE5);
+    assert_eq!(
+        allocations, 0,
+        "a FileSession over warmed pages and its reads allocate nothing"
+    );
+}
+
+#[test]
 fn shipping_prefetch_and_automatic_recycling_allocate_nothing() {
     let path = temp_frames("prefetch-recycling", 2304, 0xC4);
     let postures = [

@@ -310,7 +310,14 @@ fn dios_session_loop(
     let mut checksum = 0_u64;
     for _ in 0..repetitions {
         for chunk in requests.chunks_exact(SESSION_REQUESTS) {
+            #[cfg(dios_session_file)]
+            let view = match pool.session_file(reader, file) {
+                Ok(view) => view,
+                Err(failure) => dios_session_loop_stale(&failure),
+            };
+            #[cfg(not(dios_session_file))]
             let session = pool.session(reader);
+            #[cfg(not(dios_session_file))]
             let view = match session.file(file) {
                 Ok(view) => view,
                 Err(failure) => dios_session_loop_stale(&failure),

@@ -462,7 +462,17 @@ implementation_batches:
     fixes: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b5-chunks-fix1/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-chunks-fix2/native.yaml]
     rereviews: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b5-chunks-rereview1/peer-gpt6-astra.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-chunks-rereview2/peer-gpt6-astra.yaml]
     persists: []
-  gates: "AT-G1 passed on three layout builds at 377a0ad (ci95 upper 1.4880, 1.4867, 1.4676; bound 1.50), AT-G2 passed (1.0301; bound 1.10); the flat-loop ratio is reported at about 1.57. AT-G3 not captured: host profile open."
+  - subject: liveness once per view, grace period on slot reuse, fused open (AT-D18 to AT-D22)
+    reviewers: "general, architecture, compliance and abstractions, each by claude-opus and peer-gpt6-astra; seven of eight passed"
+    admitted: [F1 Pool::session_file restated Pool::session, F2 Loom register_file_resident copied make_file_resident, F3 Miri read_session ran an hour or more per liveness test (whole-slot retags under Stacked Borrows)]
+    fixes: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-fix1/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-fix2/native.yaml]
+    diagnosis: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-miri-diagnosis/report.md
+    rereview: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-rereview1/peer-gpt6-astra.yaml
+    residuals: ["io_mode expects a retiring file to hold its backend handle while progress_retirements takes the handle before is_closed confirms (claude-opus general); ordering predates this wave, no trigger shown"]
+    machine_code: "F1 changed register allocation in the fair dios_session_loop (439 to 450 lines, hit path same instruction count); not tuned (AT-D22); AT-G1 decides"
+    persists: []
+  gates: "AT-G1 passed on three layout builds at 377a0ad (ci95 upper 1.4880, 1.4867, 1.4676; bound 1.50), AT-G2 passed (1.0301; bound 1.10); the flat-loop ratio is reported at about 1.57. AT-G3 not captured: host profile open. Liveness wave: AT-G1 and AT-G2 to be recaptured."
+  liveness_local_gates: "mise run lint clean; cargo test --features bench,mock 418 passed; mise run loom 22 passed; mise run miri lib 53 passed (9 min wall), read_session 3 passed (4 s wall); mise run asan 284 passed, no sanitizer reports."
   local_gates: "mise run lint clean; cargo test --features bench,mock 410 passed; mise run loom 22 passed; mise run miri 53 passed; Python suite 25 tests OK. One run of the full suite showed a single failure of zero_allocation_validator_covers_both_g2_lane_shapes while a reviewer worked in the same tree; it did not repeat in three later runs."
 - batch: 6
   tasks: [AT9]

@@ -27,12 +27,13 @@ use super::prefetch::state::{Prefetch, Terminal};
 use super::prefetch::{PrefetchStats, Readahead, Source};
 use super::read_spans::{ReadSpan, ReadSpans};
 use super::retention::{RetainRefused, RetainedFrame, Retention};
-use super::session::{ReadSession, SessionRead};
+use super::session::{ReadSession, SessionFile, SessionRead};
 use super::{
     Clock, FrameState, Frames, GetError, InFlightFrame, PageId, PoolFile, PoolFileState,
-    ResidentFileLease, ResidentHint, ResidentLeaseError, ResidentLeaseState, SECTOR_BYTES,
-    Translation, acquire_resident_file_lease, begin_file_retirement, file_generation_is_live,
-    file_is_live, pin_with_resident_hint, publish_live_file,
+    ResidentFileLease, ResidentHint, ResidentLeaseError, ResidentLeaseState, RetirementGrace,
+    SECTOR_BYTES, Translation, acquire_resident_file_lease, begin_file_retirement,
+    file_generation_is_live, file_is_live, file_slot_is_vacant, pin_with_resident_hint,
+    publish_live_file, retirement_grace_elapsed,
 };
 
 struct Control {
@@ -796,19 +797,9 @@ impl PoolModel {
     /// Setup for the file-generation liveness model: installs one production
     /// live-file entry and makes its exact page resident in frame zero.
     pub fn make_file_resident(&self, file_generation: u32, page: u32, content_generation: u8) {
-        let mut control = self.control();
-        let id = FileId::new(0, 0, file_generation);
-        publish_live_file(
-            &mut control.files,
-            &self.file_live_generations[0],
-            &self.resident_lease_states[0],
-            id,
-            None,
-        );
-        self.install(
-            ReadFrameIdx::new(0),
-            PageId::new(id, page),
-            content_generation,
+        assert!(
+            self.register_file_resident(file_generation, page, content_generation),
+            "the model's file slot is vacant at setup"
         );
     }
 
@@ -924,7 +915,12 @@ impl PoolModel {
             .as_mut()
             .expect("the modeled file is registered");
         assert!(
-            begin_file_retirement(file, &self.file_live_generations[0], page.file()),
+            begin_file_retirement(
+                file,
+                &self.file_live_generations[0],
+                page.file(),
+                self.global_epoch.load(Ordering::Acquire),
+            ),
             "the modeled live file begins retirement"
         );
         self.retire_file_frame(&mut control, page);
@@ -945,7 +941,7 @@ impl PoolModel {
         let mut control = self.control();
         let retiring = control.files[0]
             .as_ref()
-            .filter(|file| file.state == PoolFileState::Retiring)
+            .filter(|file| matches!(file.state, PoolFileState::Retiring { .. }))
             .map(|file| PageId::new(file.id, page));
         if let Some(retiring_page) = retiring {
             self.retire_file_frame(&mut control, retiring_page);
@@ -1359,8 +1355,9 @@ impl PoolModel {
         );
     }
 
-    /// Retires the live `file_generation`, which holds no resident page, so
-    /// its slot is immediately free for reuse.
+    /// Begins retirement of the live `file_generation`, which holds no
+    /// resident page, through the production retirement record; the slot
+    /// stays retiring until [`Self::poll_retirement`] ends its grace period.
     ///
     /// # Panics
     ///
@@ -1375,10 +1372,56 @@ impl PoolModel {
                 file,
                 &self.file_live_generations[0],
                 FileId::new(0, 0, file_generation),
+                self.global_epoch.load(Ordering::Acquire),
             ),
             "the modeled live file begins retirement"
         );
-        file.state = PoolFileState::Retired;
+    }
+
+    /// One poll pass over the model's file slot: the production epoch
+    /// advance, then the production grace check, which retires the slot only
+    /// once the global epoch is two past the retirement record.
+    pub fn poll_retirement(&self) {
+        let mut control = self.control();
+        let global_epoch = advance_epoch(&self.global_epoch, self.readers.slots());
+        let Some(file) = control.files[0]
+            .as_mut()
+            .filter(|file| matches!(file.state, PoolFileState::Retiring { .. }))
+        else {
+            return;
+        };
+        if retirement_grace_elapsed(file, RetirementGrace::Epochs, global_epoch) {
+            file.state = PoolFileState::Retired;
+        }
+    }
+
+    /// Registers `file_generation` in the model's slot and publishes `page`
+    /// in frame 0; `false`, the `AtCapacity` outcome, while the slot's file is
+    /// live or retiring.
+    pub fn register_file_resident(
+        &self,
+        file_generation: u32,
+        page: u32,
+        content_generation: u8,
+    ) -> bool {
+        let mut control = self.control();
+        let id = FileId::new(0, 0, file_generation);
+        if !file_slot_is_vacant(&control.files, id) {
+            return false;
+        }
+        publish_live_file(
+            &mut control.files,
+            &self.file_live_generations[0],
+            &self.resident_lease_states[0],
+            id,
+            None,
+        );
+        self.install(
+            ReadFrameIdx::new(0),
+            PageId::new(id, page),
+            content_generation,
+        );
+        true
     }
 }
 
@@ -1387,7 +1430,36 @@ pub struct ModelSession<'pool> {
     session: ReadSession<'pool>,
 }
 
+/// A production [`SessionFile`] view of the model's file slot.
+pub struct ModelSessionFile<'session> {
+    file: SessionFile<'session>,
+}
+
+impl ModelSessionFile<'_> {
+    /// Reads `page` through the production [`SessionFile::page`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the production session read's [`GetError`].
+    pub fn page(&self, page: u32) -> Result<SessionRead<'_>, GetError> {
+        self.file.page(page)
+    }
+}
+
 impl ModelSession<'_> {
+    /// Opens the view of `file_generation` through the production
+    /// [`ReadSession::file`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the production [`GetError::StaleFile`] for a generation that
+    /// is not live when the view opens.
+    pub fn file(&self, file_generation: u32) -> Result<ModelSessionFile<'_>, GetError> {
+        Ok(ModelSessionFile {
+            file: self.session.file(FileId::new(0, 0, file_generation))?,
+        })
+    }
+
     /// Reads `page` of `file_generation` through the production session resolution.
     ///
     /// # Errors

@@ -695,3 +695,34 @@ pub fn pin_session_surface() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn file_session_surface_is_root_exported() {
+    let output = compile_api_probe(
+        "file-session-surface",
+        r"
+use dios::{FileId, FileSession, GetError, Pool, ReaderCtx, SessionRead};
+
+fn read_page<'view>(
+    view: &'view FileSession<'_>,
+    granule_idx: u32,
+) -> Result<SessionRead<'view>, GetError> {
+    view.page(granule_idx)
+}
+
+pub fn pin_file_session_surface() {
+    let session_file: for<'pool> fn(
+        &'pool Pool,
+        &'pool ReaderCtx,
+        FileId,
+    ) -> Result<FileSession<'pool>, GetError> = Pool::session_file;
+    std::hint::black_box((session_file, read_page));
+}
+",
+    );
+    assert!(
+        output.status.success(),
+        "file session surface probe failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

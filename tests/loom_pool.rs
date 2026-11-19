@@ -1026,8 +1026,18 @@ fn a_get_racing_empty_file_retirement_and_slot_reuse_never_admits_the_successor(
         });
 
         pool.retire_empty_file(OLD_FILE_GENERATION);
-        pool.make_file_resident(NEW_FILE_GENERATION, PAGE, NEW_CONTENT);
+        pool.poll_retirement();
+        pool.poll_retirement();
+        let reused = pool.register_file_resident(NEW_FILE_GENERATION, PAGE, NEW_CONTENT);
         reader.join().expect("reader thread");
+        if !reused {
+            pool.poll_retirement();
+            pool.poll_retirement();
+            assert!(
+                pool.register_file_resident(NEW_FILE_GENERATION, PAGE, NEW_CONTENT),
+                "two advancing polls after the get finishes free the slot"
+            );
+        }
 
         assert_eq!(
             pool.translation_entry(PAGE),
@@ -1136,8 +1146,21 @@ fn eviction_reclaim_and_reuse_racing_a_session_read_never_change_its_bytes() {
     });
 }
 
+/// A read through a view validated before retirement: `Absent` for the
+/// empty retired file, never the successor's bytes and never `StaleFile`.
+fn assert_held_view_reads_absent(read: Result<SessionRead<'_>, GetError>) {
+    match read {
+        Ok(SessionRead::Absent) => {}
+        Ok(SessionRead::Hit(bytes)) => panic!(
+            "the retired file held no page, so a hit is the successor's bytes: {:#x}",
+            bytes[0]
+        ),
+        Err(error) => panic!("a validated view reads Absent until its session drops: {error:?}"),
+    }
+}
+
 #[test]
-fn a_session_read_racing_empty_file_retirement_and_slot_reuse_never_admits_the_successor() {
+fn a_held_session_view_racing_retirement_two_advances_and_slot_reuse_never_reads_the_successor() {
     const OLD_FILE_GENERATION: u32 = 1;
     const NEW_FILE_GENERATION: u32 = 2;
     const PAGE: u32 = 7;
@@ -1146,23 +1169,41 @@ fn a_session_read_racing_empty_file_retirement_and_slot_reuse_never_admits_the_s
     loom::model(|| {
         let pool = PoolModel::new(1);
         pool.make_file_live(OLD_FILE_GENERATION);
+        let (attempted_tx, attempted_rx) = mpsc::channel();
 
         let reader_pool = pool.clone();
         let reader = thread::spawn(move || {
             let session = reader_pool.session();
-            match session.read(OLD_FILE_GENERATION, PAGE) {
-                Ok(SessionRead::Hit(bytes)) => panic!(
-                    "the retired file held no page, so a hit is the successor's bytes: {:#x}",
-                    bytes[0]
-                ),
-                Ok(SessionRead::Absent) | Err(GetError::StaleFile { .. }) => {}
+            let view = session.file(OLD_FILE_GENERATION);
+            if let Ok(view) = &view {
+                assert_held_view_reads_absent(view.page(PAGE));
+            }
+            attempted_rx
+                .recv()
+                .expect("the writer reports its retirement, polls and reuse attempt");
+            match &view {
+                Ok(view) => assert_held_view_reads_absent(view.page(PAGE)),
+                Err(GetError::StaleFile { .. }) => {}
                 Err(error) => panic!("unexpected session error: {error:?}"),
             }
         });
 
         pool.retire_empty_file(OLD_FILE_GENERATION);
-        pool.make_file_resident(NEW_FILE_GENERATION, PAGE, NEW_CONTENT);
+        pool.poll_retirement();
+        pool.poll_retirement();
+        let reused = pool.register_file_resident(NEW_FILE_GENERATION, PAGE, NEW_CONTENT);
+        attempted_tx
+            .send(())
+            .expect("the reader receives the attempts report in every arm");
         reader.join().expect("reader thread");
+        if !reused {
+            pool.poll_retirement();
+            pool.poll_retirement();
+            assert!(
+                pool.register_file_resident(NEW_FILE_GENERATION, PAGE, NEW_CONTENT),
+                "two advancing polls after the session drops free the slot"
+            );
+        }
 
         let session = pool.session();
         assert!(
@@ -1174,10 +1215,10 @@ fn a_session_read_racing_empty_file_retirement_and_slot_reuse_never_admits_the_s
         );
         assert!(
             matches!(
-                session.read(OLD_FILE_GENERATION, PAGE),
+                session.file(OLD_FILE_GENERATION),
                 Err(GetError::StaleFile { .. })
             ),
-            "the retired generation reads StaleFile whatever the entry holds (INV-7)"
+            "a view of the retired generation opened after reuse is StaleFile (INV-7)"
         );
     });
 }

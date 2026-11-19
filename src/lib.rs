@@ -670,10 +670,11 @@ pub use driver::{FileId, IoMode, RegistrationPolicy, RegistrationPosture, SyncMo
 pub use error::{FileRegistrationError, IoError};
 pub use open::DirectIo;
 pub use pool::{
-    FrameGuard, GRANULE_DEFAULT, Get, GetError, PageId, PendingToken, Pool, PoolBuildError,
-    PoolBuilder, PoolConfigError, PrefetchReport, PrefetchStats, ReadSession, Readahead, ReaderCtx,
-    ReadyResult, RegisterError, ResidentFileLease, ResidentHint, ResidentLeaseError, RetainRefused,
-    RetainRefusedReason, RetainedFrame, RetentionStats, SessionFile, SessionRead,
+    FileSession, FrameGuard, GRANULE_DEFAULT, Get, GetError, PageId, PendingToken, Pool,
+    PoolBuildError, PoolBuilder, PoolConfigError, PrefetchReport, PrefetchStats, ReadSession,
+    Readahead, ReaderCtx, ReadyResult, RegisterError, ResidentFileLease, ResidentHint,
+    ResidentLeaseError, RetainRefused, RetainRefusedReason, RetainedFrame, RetentionStats,
+    SessionFile, SessionRead,
 };
 pub use product::{
     PollReport, PoolCompletion, PoolCompletionBatch, PoolSubmitError, PoolToken, PoolWakeHandle,

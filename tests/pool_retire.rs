@@ -22,8 +22,9 @@ use dios::testing::{
     PoolBuilderTestingExt, PoolTestingExt, ReadFrameIdx,
 };
 use dios::{
-    DirectIo, FileId, Get, GetError, PageId, Pool, PoolCompletion, PoolCompletionBatch,
-    PoolSubmitError, PoolToken, ReadyResult, RetireStatus, SyncMode,
+    DirectIo, FileId, FileRegistrationError, Get, GetError, PageId, Pool, PoolCompletion,
+    PoolCompletionBatch, PoolSubmitError, PoolToken, ReadyResult, RetireStatus, SessionRead,
+    SyncMode,
 };
 
 const FRAMES: u32 = 4;
@@ -731,11 +732,102 @@ fn retirement_clears_its_slot_and_keeps_a_page_sharing_neighbor_resident() {
     );
 }
 
+fn single_slot_pool() -> Pool<MockDriver> {
+    let mock = MockDriver::builder()
+        .queue_capacity(4)
+        .frames(FRAMES)
+        .frame_bytes(GRANULE)
+        .build();
+    Pool::builder()
+        .frame_count(FRAMES)
+        .granule(GRANULE)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .registered_file_capacity(1)
+        .build_on(mock)
+        .expect("valid single-slot pool")
+}
+
+/// The retired file's slot is still taken: retirement is not reported done,
+/// the handle is open and registration finds no free slot.
+fn assert_slot_held(pool: &Pool<MockDriver>, retired: FileId, successor: &str) {
+    assert_eq!(
+        pool.retire_file(retired),
+        RetireStatus::Retiring,
+        "Retired waits for the grace period"
+    );
+    assert!(
+        !pool.driver().is_closed(retired),
+        "the handle stays open during the grace period"
+    );
+    assert!(
+        matches!(
+            pool.open(Path::new(successor), DirectIo::Disabled),
+            Err(FileRegistrationError::AtCapacity)
+        ),
+        "the retired slot is not free for registration during the grace period"
+    );
+}
+
+#[test]
+fn a_retired_slot_is_held_while_a_session_view_lives_and_for_two_advances_after_retirement() {
+    let pool = single_slot_pool();
+    let file = pool
+        .open(Path::new("grace-held"), DirectIo::Disabled)
+        .expect("the single slot is free");
+    let reader = pool.register_reader().expect("one reader slot");
+
+    {
+        let session = pool.session(&reader);
+        let view = session.file(file).expect("the file is live");
+        assert_eq!(pool.retire_file(file), RetireStatus::Retiring);
+        for _ in 0..POLL_BOUND {
+            pool.poll();
+            assert_slot_held(&pool, file, "grace-blocked");
+        }
+        assert!(
+            matches!(view.page(0), Ok(SessionRead::Absent)),
+            "the held view of the empty retired file reads Absent"
+        );
+    }
+    pool.poll();
+    let _ = pool.retire_file(file);
+    pool.poll();
+    assert_eq!(
+        pool.retire_file(file),
+        RetireStatus::Retired,
+        "two advancing polls after the session drops end the grace period"
+    );
+    assert!(pool.driver().is_closed(file));
+    let successor = pool
+        .open(Path::new("grace-successor"), DirectIo::Disabled)
+        .expect("the released slot registers again");
+    assert!(successor.aliases_slot(&file));
+
+    assert_eq!(pool.retire_file(successor), RetireStatus::Retiring);
+    pool.poll();
+    assert_slot_held(&pool, successor, "grace-third");
+    pool.poll();
+    assert_eq!(
+        pool.retire_file(successor),
+        RetireStatus::Retired,
+        "the epoch recorded when retirement began, not at a later retire_file call, starts the grace period"
+    );
+    let third = pool
+        .open(Path::new("grace-third"), DirectIo::Disabled)
+        .expect("the released slot registers again");
+    assert!(third.aliases_slot(&successor));
+}
+
 #[cfg(not(loom))]
 #[test]
-fn a_get_paused_between_pin_and_entry_load_rejects_a_reused_empty_slot() {
-    let (pool, retired, _observation) = pool_with_file("pool-retire-empty-reuse", 0xE1);
-    let pool = Arc::new(pool);
+fn a_get_paused_before_its_entry_load_returns_stale_and_holds_the_retired_slot_until_it_resumes() {
+    let pool = Arc::new(single_slot_pool());
+    let retired = pool
+        .open(Path::new("pool-retire-empty-reuse"), DirectIo::Disabled)
+        .expect("the single slot is free");
     let page = PageId::new(retired, 0);
     let pause = pool.pause_next_get_between_pin_and_entry();
     let getter_pool = Arc::clone(&pool);
@@ -752,23 +844,27 @@ fn a_get_paused_between_pin_and_entry_load_rejects_a_reused_empty_slot() {
         "the get parks after its epoch pin and before its translation entry load"
     );
 
-    let _ = pool.retire_file(retired);
-    poll_until_closed(&pool, retired);
-    assert_eq!(
-        pool.retire_file(retired),
-        RetireStatus::Retired,
-        "a file with no resident frames retires without waiting for the paused reader"
-    );
-    let successor = pool
-        .open(Path::new("pool-retire-empty-successor"), DirectIo::Disabled)
-        .expect("the retired slot can be reused");
-    assert!(successor.aliases_slot(&retired));
-    pool.insert_resident_frame(PageId::new(successor, 0), 0x5C);
+    assert_eq!(pool.retire_file(retired), RetireStatus::Retiring);
+    for _ in 0..POLL_BOUND {
+        pool.poll();
+        assert_slot_held(&pool, retired, "pool-retire-empty-successor");
+    }
     pause.release();
-
     assert_eq!(
         getter.join().expect("the paused get must not panic"),
         Err(GetError::StaleFile { page }),
-        "the mirror load after the entry load of the successor's frame rejects it under the retired identity"
+        "a get that resumes after retirement rejects the retired identity"
     );
+
+    pool.poll();
+    pool.poll();
+    assert_eq!(
+        pool.retire_file(retired),
+        RetireStatus::Retired,
+        "two advancing polls after the get resumes end the grace period"
+    );
+    let successor = pool
+        .open(Path::new("pool-retire-empty-successor"), DirectIo::Disabled)
+        .expect("the released slot registers again");
+    assert!(successor.aliases_slot(&retired));
 }

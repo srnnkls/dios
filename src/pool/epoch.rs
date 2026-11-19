@@ -334,6 +334,13 @@ pub(crate) fn advance_epoch(global_epoch: &AtomicU64, slots: &[ReaderSlot]) -> u
     advanced
 }
 
+/// Whether `global_epoch` has advanced twice past `tagged_epoch`: every reader
+/// that observed state unlinked at `tagged_epoch` has since unpinned.
+#[inline]
+pub(crate) fn epoch_matured(tagged_epoch: u64, global_epoch: u64) -> bool {
+    tagged_epoch.saturating_add(2) <= global_epoch
+}
+
 /// The fixed-capacity ring of frames awaiting reclamation, each tagged with the
 /// global epoch at eviction. Capacity is the frame count — the most frames that
 /// can be `Evicting` at once — so it never grows after construction.
@@ -396,7 +403,7 @@ impl EvictQueue {
     ) -> usize {
         let mut reclaimed = 0usize;
         while let Some(&(frame, tagged_epoch)) = self.entries.front() {
-            if tagged_epoch.saturating_add(2) > global_epoch {
+            if !epoch_matured(tagged_epoch, global_epoch) {
                 break;
             }
             assert!(

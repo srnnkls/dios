@@ -4,7 +4,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-use dios::{FrameGuard, PendingToken, ReadSession, ReaderCtx, RetainedFrame, SessionFile};
+use dios::{
+    FileSession, FrameGuard, PendingToken, ReadSession, ReaderCtx, RetainedFrame, SessionFile,
+};
 
 struct SecondImpl;
 
@@ -80,6 +82,12 @@ fn read_session_and_session_file_are_neither_send_nor_sync() {
     assert_not_sync!(ReadSession<'static>);
     assert_not_send!(SessionFile<'static>);
     assert_not_sync!(SessionFile<'static>);
+}
+
+#[test]
+fn file_session_is_neither_send_nor_sync() {
+    assert_not_send!(FileSession<'static>);
+    assert_not_sync!(FileSession<'static>);
 }
 
 fn compile_probe(name: &str, source: &str) -> std::process::Output {
@@ -368,5 +376,38 @@ pub fn reject_session_across_reader_drop(pool: &Pool, reader: ReaderCtx) {
         stderr.contains("E0505")
             && stderr.contains("cannot move out of `reader` because it is borrowed"),
         "the reader drop must fail because the session borrows the reader:\n{stderr}"
+    );
+}
+
+#[test]
+fn a_file_session_slice_cannot_outlive_its_file_session() {
+    let slice_escape = compile_probe(
+        "file-session-slice-escape",
+        r"use dios::{FileId, Pool, ReaderCtx, SessionRead};
+
+pub fn reject_slice_past_file_session<'pool>(
+    pool: &'pool Pool,
+    reader: &'pool ReaderCtx,
+    file: FileId,
+) -> &'pool [u8] {
+    let Ok(view) = pool.session_file(reader, file) else {
+        return &[];
+    };
+    match view.page(0) {
+        Ok(SessionRead::Hit(bytes)) => bytes,
+        Ok(SessionRead::Absent) | Err(_) => &[],
+    }
+}
+",
+    );
+    let stderr = String::from_utf8_lossy(&slice_escape.stderr);
+    assert!(
+        !slice_escape.status.success(),
+        "a FileSession slice unexpectedly outlived its FileSession"
+    );
+    assert_borrow_rejection(&stderr);
+    assert!(
+        stderr.contains("E0515") || stderr.contains("E0597"),
+        "the slice escape must fail because the slice borrows the FileSession:\n{stderr}"
     );
 }
