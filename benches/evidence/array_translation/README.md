@@ -137,3 +137,26 @@ capture.
   in the builds of fdada37 (single `perf stat` processes). The session read stands at
   5.99 to 6.11 ns against 3.95 to 4.22 ns for the chunked mmap arm; against the flat
   mmap loop the ratio is reported at 1.56 to 1.66.
+
+## AT-G7 at the AT9 tree (2026-11-19)
+
+Product code of 1dfecfd and c89d43a (identical in `src/`), 30 fresh-process pairs per lane,
+evidence in `at-g7-1dfecfd/`.
+
+| Lane | Geomean | CI95 upper | Bound | Result |
+|------|--------:|-----------:|------:|--------|
+| DRP-G2 warm | 0.9003 | 0.9021 | 1.01 | passed |
+| DRP-G2 cycling | 0.9904 | 1.0017 | 1.01 | passed |
+| DRP-G4 eight-thread | 0.2929 | 0.3104 | 1.00 | passed |
+| DRP-G4 scaling | 0.1572 | 0.1648 | 0.50 | passed |
+| RC-G1 cold, rerun | 0.8409 | 0.8433 | 1.00 | passed |
+| RC-G1 pressure, rerun | 0.6012 | 0.6038 | 1.00 | passed |
+| RC-G4 fragmented | 1.0013 | 1.0032 | 1.02 | passed, zero automatic admissions |
+| RC-G4 dependent | 1.0000 | 1.0004 | 1.02 | passed, zero automatic admissions |
+
+- The first RC-G1 capture could not start: AT4 had broken the frozen collector; fixed in
+  c89d43a. Its next capture aborted on the steady-interval witness: one interval of one
+  candidate row of the pressure case touched 34 read SQEs instead of at most 33; the cold
+  case had completed at 0.832 (`rc-g1/capture-aborted-c89d43a.log`). Twelve diagnostic
+  pressure captures, six at the current head and six at 5131d7d, completed with zero
+  violations (`rc-g1/diagnosis.log`). The owner authorized one rerun (AT-D23); it passes.

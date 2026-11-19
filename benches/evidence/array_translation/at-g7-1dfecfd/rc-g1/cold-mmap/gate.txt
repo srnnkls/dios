@@ -1,0 +1,66 @@
+[gate] $ cargo bench --features bench --bench compare -- benches/evidence/array_translation/at-g7-1dfecfd/rc-g1/cold-mmap/paired.csv 1.00
+   Compiling version_check v0.9.5
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.46
+   Compiling unicode-ident v1.0.24
+   Compiling serde_core v1.0.228
+   Compiling typenum v1.20.1
+   Compiling libc v0.2.186
+   Compiling generic-array v0.14.7
+   Compiling cfg-if v1.0.4
+   Compiling zmij v1.0.21
+   Compiling serde_json v1.0.150
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling crossbeam-utils v0.8.22
+   Compiling digest v0.10.7
+   Compiling crossbeam-epoch v0.9.20
+   Compiling itoa v1.0.18
+   Compiling zerocopy v0.8.54
+   Compiling memchr v2.8.3
+   Compiling cpufeatures v0.2.17
+   Compiling syn v2.0.118
+   Compiling sha2 v0.10.9
+   Compiling crossbeam-deque v0.8.7
+   Compiling autocfg v1.5.1
+   Compiling find-msvc-tools v0.1.9
+   Compiling shlex v2.0.1
+   Compiling serde v1.0.228
+   Compiling cc v1.2.66
+   Compiling num-traits v0.2.19
+   Compiling dios v0.1.0 (/Users/srnnkls/projects/dios)
+   Compiling rayon-core v1.13.0
+   Compiling either v1.16.0
+   Compiling alloca v0.4.0
+   Compiling ciborium-io v0.2.2
+   Compiling plotters-backend v0.3.7
+   Compiling zerocopy-derive v0.8.54
+   Compiling serde_derive v1.0.228
+   Compiling regex-syntax v0.8.11
+   Compiling anstyle v1.0.14
+   Compiling clap_lex v1.1.0
+   Compiling regex-automata v0.4.15
+   Compiling clap_builder v4.6.0
+   Compiling plotters-svg v0.3.7
+   Compiling itertools v0.13.0
+   Compiling cast v0.3.0
+   Compiling same-file v1.0.6
+   Compiling walkdir v2.5.0
+   Compiling tinytemplate v1.2.1
+   Compiling half v2.7.1
+   Compiling criterion-plot v0.8.2
+   Compiling clap v4.6.1
+   Compiling ciborium-ll v0.2.2
+   Compiling regex v1.13.0
+   Compiling ciborium v0.2.2
+   Compiling plotters v0.3.7
+   Compiling rayon v1.12.0
+   Compiling page_size v0.6.0
+   Compiling anes v0.1.6
+   Compiling oorandom v11.1.5
+   Compiling criterion v0.8.2
+    Finished `bench` profile [optimized + debuginfo] target(s) in 22.20s
+     Running benches/compare.rs (target/release/deps/compare-58da936688e8c316)
+gate paired: pairs 30, ratio geomean 0.8409, ci95 upper 0.8433, threshold 1.0000 -> PASS
+mbx[cache]: 0 hits, 107 misses, 5 bypassed; 0 B downloaded, 0 B uploaded, 226.4 MiB stored locally
+mbx[savings]: swept up 828.4 GiB logical so far. the broom is content-addressed.

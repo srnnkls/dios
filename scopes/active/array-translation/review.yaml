@@ -464,3 +464,22 @@ implementation_batches:
     persists: []
   gates: "AT-G1 passed on three layout builds at 377a0ad (ci95 upper 1.4880, 1.4867, 1.4676; bound 1.50), AT-G2 passed (1.0301; bound 1.10); the flat-loop ratio is reported at about 1.57. AT-G3 not captured: host profile open."
   local_gates: "mise run lint clean; cargo test --features bench,mock 410 passed; mise run loom 22 passed; mise run miri 53 passed; Python suite 25 tests OK. One run of the full suite showed a single failure of zero_allocation_validator_covers_both_g2_lane_shapes while a reviewer worked in the same tree; it did not repeat in three later runs."
+- batch: 6
+  tasks: [AT9]
+  reviewed_at: '2026-11-19T18:00:00Z'
+  status: passed
+  reports: .tropos/peer/array-translation/20261115T161731Z-fba2be/
+  waves:
+  - subject: get hit path inlined, every other outcome out of line
+    commit: f193292
+    reviewers: "general, architecture, compliance and abstractions, each by claude-opus and peer-gpt6-astra"
+    admitted: [first CLOCK reference after a sweep takes a call on a hit]
+    disposition: "owner decision AT-D17 amended FR-12 and AC-20 (50dc7e4); code unchanged"
+    persists: []
+  - subject: gate tooling found by the AT-G8 and AT-G7 captures
+    commits: [1dd0438, fdada37, c89d43a]
+    admitted: [H1 shared-runner harness inside the capture directory, H2 report KeyError and gate input left behind, H2 residual publication without rollback, H3 frozen RC-G1 collector no longer starts, H4 runner identified by the wrong source list, H4 residual base-tree code evaluated]
+    fixes: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b6-tooling-fix1/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-tooling-fix2/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-tooling-fix3/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-rc-g1-fix1/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-rc-g1-fix2/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-rc-g1-fix3/native.yaml]
+    rereviews: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b6-tooling-rereview1/peer-gpt6-astra.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-tooling-rereview2/peer-gpt6-astra.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-tooling-rereview3/peer-gpt6-astra.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-rc-g1-rereview1/peer-gpt6-astra.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-rc-g1-rereview2/peer-gpt6-astra.yaml]
+    persists: []
+  gates: "AT-G8 passed at f193292 against 8597238 (ci95 upper 0.5722, bound 0.85); AT-G7 passed on all eight lanes at the AT9 product code, RC-G1 on the owner-authorized rerun (AT-D23)."

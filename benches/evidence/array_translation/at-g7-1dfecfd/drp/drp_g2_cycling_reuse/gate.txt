@@ -1,0 +1,13 @@
+[gate] $ cargo bench --features bench --bench compare -- benches/evidence/array_translation/at-g7-1dfecfd/drp/drp_g2_cycling_reuse/paired.csv 1.01
+   Compiling serde_core v1.0.228
+   Compiling serde_json v1.0.150
+   Compiling serde v1.0.228
+   Compiling ciborium v0.2.2
+   Compiling dios v0.1.0 (/Users/srnnkls/projects/dios)
+   Compiling tinytemplate v1.2.1
+   Compiling criterion v0.8.2
+    Finished `bench` profile [optimized + debuginfo] target(s) in 4.76s
+     Running benches/compare.rs (target/release/deps/compare-58da936688e8c316)
+gate paired: pairs 30, ratio geomean 0.9904, ci95 upper 1.0017, threshold 1.0100 -> PASS
+mbx[cache]: 2 hits, 7 misses, 1 bypassed; 0 B downloaded, 0 B uploaded, 32.4 MiB stored locally
+mbx[savings]: 755.7 GiB logical of old files removed while you were busy compiling other things.

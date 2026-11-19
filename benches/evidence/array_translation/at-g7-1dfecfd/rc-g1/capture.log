@@ -1,0 +1,25 @@
+wake-nix: waking via alpine, waiting for nixos.tailb7c9ac.ts.net
+wake-nix: down — sending WoL to 00:D8:61:D5:5F:61...
+wake-nix: polling nixos.tailb7c9ac.ts.net:22 (timeout 150s)...
+wake-nix: nixos.tailb7c9ac.ts.net:22 up after 50s.
+wake-nix: up via ts
+c89d43a
+[bench-host-guard] $ if [ ! -e /etc/NIXOS ]; then
+bench_profile=active
+thp=always madvise [never]
+governors=performance
+mise WARN  mise version 2026.11.10 available
+mise WARN  To update, run mise self-update
+[bench-scan-geometry] $ ~/build/dios/.mise/tasks/bench-scan-geometry /dev/shm/d…
+cold-mmap: 0/30 pairs
+cold-mmap: 10/30 pairs
+cold-mmap: 20/30 pairs
+cold-mmap: 30/30 pairs
+cold-mmap: 0.8409080675582093
+pressure-mmap: 0/30 pairs
+pressure-mmap: 10/30 pairs
+pressure-mmap: 20/30 pairs
+pressure-mmap: 30/30 pairs
+pressure-mmap: 0.6011660365396626
+exit=0
+Finished in 40.09s

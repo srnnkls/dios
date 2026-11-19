@@ -1,0 +1,12 @@
+new run 1 exit=0 rows=64 
+old run 1 exit=0 rows=64 
+new run 2 exit=0 rows=64 
+old run 2 exit=0 rows=64 
+new run 3 exit=0 rows=64 
+old run 3 exit=0 rows=64 
+new run 4 exit=0 rows=64 
+old run 4 exit=0 rows=64 
+new run 5 exit=0 rows=64 
+old run 5 exit=0 rows=64 
+new run 6 exit=0 rows=64 
+old run 6 exit=0 rows=64 

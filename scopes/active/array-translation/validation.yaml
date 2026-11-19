@@ -237,6 +237,10 @@ owner_decisions:
     decided_at: 2026-11-19
     owner: Sören
     decision: "AT-G1 is pursued with the grace period (AT-D19) plus a fused session-and-file open, accepting about 0.10 ns of margin on layout 32 as the scratch campaign measured; the CLOCK reference bit in the translation entry is rejected (no measurable gain, would change INV-1). If a formal layout capture fails on placement, it returns to the owner; code layout is not tuned to pass. Evidence: scratch campaign on nix, 2026-11-19, five variants on three layouts (worktrees and outputs under ~/build/dios-scratch-liveness*)."
+  - id: AT-D23
+    decided_at: 2026-11-19
+    owner: Sören
+    decision: "One fresh 30-pair rerun of RC-G1 (cold and pressure) is authorized at the product code of c89d43a. The first capture aborted on the steady-interval witness: one interval of one candidate row in the 128 MiB pressure case touched 34 read SQEs (33 speculative plus one demand read of a covered page) instead of at most 33; the cold case had completed at 0.832. Twelve diagnostic pressure captures, six at the current head and six at 5131d7d, completed with zero violations in about 1,150 intervals. The aborted capture and the diagnostic runs are retained; the rerun decides RC-G1."
   - id: WRC-D1
     inherited_from: scopes/draft/warm-read-copy-out/validation.yaml
     decision: "Volatile-word exception, same-width atomic writers, one audited module, mirror-only liveness carry over; the bracket is amended by Q005 and A001."
