@@ -160,3 +160,24 @@ evidence in `at-g7-1dfecfd/`.
   case had completed at 0.832 (`rc-g1/capture-aborted-c89d43a.log`). Twelve diagnostic
   pressure captures, six at the current head and six at 5131d7d, completed with zero
   violations (`rc-g1/diagnosis.log`). The owner authorized one rerun (AT-D23); it passes.
+
+## AT-G1 and AT-G2 after the liveness wave (2026-11-19)
+
+Product code of 6ba0592 (AT-D18 to AT-D22: liveness once per view, grace period on slot
+reuse, `Pool::session_file`), manifests frozen in 3033037, host `nix`, bench profile
+active, THP `never`, 30 measured fresh-process AB/BA pairs per capture. The fdada37
+captures are retained in `at-g1-fdada37/` and `at-g2-fdada37/`.
+
+| Gate | Build | Geomean | CI95 upper | Bound | Result | Evidence |
+|------|-------|--------:|-----------:|------:|--------|----------|
+| AT-G1 | layout 16 | 1.3834 | 1.4000 | 1.50 | passed | `at-g1/layout-16/` |
+| AT-G1 | layout 32 | 1.4795 | 1.4909 | 1.50 | passed | `at-g1/layout-32/` |
+| AT-G1 | layout 64 | 1.5495 | 1.5537 | 1.50 | failed | `at-g1/layout-64/` |
+| AT-G2 | default | 1.0216 | 1.0250 | 1.10 | passed | `at-g2/` |
+
+- Nanoseconds per read, chunked mmap arm against session arm: 4.40 / 6.09 (layout 16),
+  3.94 / 5.82 (32), 3.92 / 6.08 (64); plain-array floor 4.49, 3.94, 3.94. Against the
+  flat mmap loop the ratio is reported at 1.45, 1.58 and 1.66 (CI95 upper).
+- The `get` loop's machine code in the runner of 6ba0592 matches the AT-G8 candidate
+  executable instruction for instruction; only code addresses differ.
+- At fdada37 layouts 16 and 32 failed and 64 passed; here 64 fails and 16 and 32 pass.

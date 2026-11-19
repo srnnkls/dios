@@ -1,0 +1,7 @@
+[gate] $ cargo bench --features bench --bench compare -- benches/evidence/array_translation/at-g1/layout-16/paired.csv 1.50
+   Compiling dios v0.1.0 (/Users/srnnkls/projects/dios)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 4.84s
+     Running benches/compare.rs (target/release/deps/compare-58da936688e8c316)
+gate paired: pairs 30, ratio geomean 1.3834, ci95 upper 1.4000, threshold 1.5000 -> PASS
+mbx[cache]: 0 hits, 4 misses, 1 bypassed; 0 B downloaded, 0 B uploaded, 21.7 KiB stored locally
+mbx[savings]: every checkout believes it owns 209.8 GiB of outputs. the disk keeps one copy and says nothing.

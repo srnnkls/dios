@@ -1,0 +1,13 @@
+[gate] $ cargo bench --features bench --bench compare -- benches/evidence/array_translation/at-g1/layout-32/paired.csv 1.50
+   Compiling serde_core v1.0.228
+   Compiling serde_json v1.0.150
+   Compiling serde v1.0.228
+   Compiling ciborium v0.2.2
+   Compiling dios v0.1.0 (/Users/srnnkls/projects/dios)
+   Compiling tinytemplate v1.2.1
+   Compiling criterion v0.8.2
+    Finished `bench` profile [optimized + debuginfo] target(s) in 5.73s
+     Running benches/compare.rs (target/release/deps/compare-58da936688e8c316)
+gate paired: pairs 30, ratio geomean 1.4795, ci95 upper 1.4909, threshold 1.5000 -> PASS
+mbx[cache]: 1 hits, 8 misses, 1 bypassed; 0 B downloaded, 0 B uploaded, 33.1 MiB stored locally
+mbx[savings]: rustc believes it compiled everything. it is down 1d 4h across 4227 builds. let it believe.
