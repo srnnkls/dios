@@ -217,6 +217,26 @@ owner_decisions:
     decided_at: 2026-11-18
     owner: Sören
     decision: "FR-12 and AC-20 are amended: a get hit on a frame whose CLOCK reference is already set executes no call into the crate; the first reference to a frame after a sweep cleared its bit takes one cold out-of-line call, as in the session read. Rejected inlining the first-reference work into every caller. Raised by the AT9 review (general-peer-gpt6-astra) against FR-12 as first written."
+  - id: AT-D18
+    decided_at: 2026-11-19
+    owner: Sören
+    decision: "AT-G1 fails on two of three layout builds at fdada37 (CI95 upper 1.5112, 1.5541, 1.4619; bound 1.50) with the session loop's machine code unchanged since 377a0ad, where all three passed. The bench plan's lever 'validate liveness once per file and delay slot reuse by a reclamation grace period' is approved in principle; its design follows research and is recorded as a scope amendment before any code."
+  - id: AT-D19
+    decided_at: 2026-11-19
+    owner: Sören
+    decision: "For the liveness lever (AT-D18): reuse of a retired file's slot and the OS close of its handle wait until the global epoch has advanced twice past the store that cleared the slot's mirror; meanwhile registration finding no free slot returns the existing AtCapacity error, and RetireStatus::Retired is reported only after that grace period. No new error variant or status. Design source: .tropos/peer/array-translation/20261115T161731Z-fba2be/research-liveness-hoisting/report.md, option (a)."
+  - id: AT-D20
+    decided_at: 2026-11-19
+    owner: Sören
+    decision: "Before the scope is amended, a scratch campaign in a throwaway worktree prices on the three layout builds: the grace period alone; with the CLOCK reference bit in the translation entry; with a fused session-and-file open; and their combination. The amendment takes the smallest combination that clears AT-G1 with about 0.2 ns margin; the CLOCK-bit variant changes INV-1 and returns to the owner if chosen. What a session returns for a file retired while it holds it is decided after a focused research pass (owner leaning: keep returning that file's own resident bytes or Absent until the session drops)."
+  - id: AT-D21
+    decided_at: 2026-11-19
+    owner: Sören
+    decision: "Mid-session retirement semantics (A): a SessionFile sees retirement only if it began before ReadSession::file; afterwards it keeps returning that file's own resident granules or Absent until its session drops, never another file's or granule's bytes; get, read_copy, lease_file, submissions and new sessions see retirement from the first retire_file call; RetireStatus::Retired is the barrier after which no reader can observe the file. The caller protocol 'retire the file and wait for Retired before changing it in place' is documented, and the edge cases (live leases, miss waiters, a pre-retirement miss publishing late, waiting for Retired while holding a session) are documented behaviour, not code. Contract wording: .tropos/peer/array-translation/20261115T161731Z-fba2be/research-session-retirement/report.md. Rejected: stale per read (B), retirement waiting for holders (C), StaleFile on Absent (D1) for now."
+  - id: AT-D22
+    decided_at: 2026-11-19
+    owner: Sören
+    decision: "AT-G1 is pursued with the grace period (AT-D19) plus a fused session-and-file open, accepting about 0.10 ns of margin on layout 32 as the scratch campaign measured; the CLOCK reference bit in the translation entry is rejected (no measurable gain, would change INV-1). If a formal layout capture fails on placement, it returns to the owner; code layout is not tuned to pass. Evidence: scratch campaign on nix, 2026-11-19, five variants on three layouts (worktrees and outputs under ~/build/dios-scratch-liveness*)."
   - id: WRC-D1
     inherited_from: scopes/draft/warm-read-copy-out/validation.yaml
     decision: "Volatile-word exception, same-width atomic writers, one audited module, mirror-only liveness carry over; the bracket is amended by Q005 and A001."
@@ -302,6 +322,26 @@ review_config:
   reviewers:
   - peer-gpt6-astra
   - peer-opus
+
+liveness_amendment_review_gate:
+  status: passed
+  amended_at: '2026-11-19'
+  subject: "Owner decisions AT-D18 to AT-D22: liveness once per view, grace period on slot reuse, fused open, mid-session semantics"
+  reviewers:
+  - peer-gpt6-astra
+  - peer-opus
+  effort: high
+  reports: .tropos/peer/scope-array-translation/20261119T140048Z-1b8b32/
+  blocking_resolved: 2
+  medium_resolved: 4
+  fix_rounds: 2
+  targeted_reviewer: peer-opus
+  reason: Two high and four medium findings named concrete defects and were folded; the
+    targeted re-review found three folds clean and one residual (a get paused after its
+    pin blocks the grace period, so the old deterministic slot-reuse window for get
+    cannot occur), which the second fold restates for get. The second fold was not
+    re-reviewed; two fix rounds are the limit. No product code, test or benchmark result
+    is claimed by the amendment.
 
 amendment_review_gate:
   status: passed

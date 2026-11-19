@@ -198,6 +198,17 @@ tasks:
   depends_on:
   - AT4
   files:
+  - build.rs
+  - benches/plans/array_translation.md
+  - benches/mmap_workloads/fair.rs
+  - tests/guard_compile_fail.rs
+  - tests/public_api.rs
+  - tests/read_session.rs
+  - tests/loom_pool.rs
+  - tests/pool_retire.rs
+  - src/driver.rs
+  - src/product.rs
+  - src/pool/loom_model.rs
   - src/pool/session.rs
   - src/pool/epoch.rs
   - src/pool/clock.rs
@@ -212,6 +223,19 @@ tasks:
     session-scoped lifetime; AT-G1 passes on the three layout builds (AC-21) and every
     gate reports ns per read with the floor arm. The pin head of pin_live and pin_owned
     is unified here (AT-D6).
+    Amended 2026-11-19 (AT-D18 to AT-D22), the session validates liveness once per view
+    after its pin and reads entries alone; retirement defers close, slot release and
+    Retired by two epoch advances (FR-5, INV-3, INV-7, AD-9); Pool::session_file and
+    FileSession open a one-file session in one call (AD-18) and the session arm of the
+    fair lanes uses it; AC-22 to AC-24 hold; the documentation of ReadSession::file,
+    SessionFile::page, Pool::retire_file and RetireStatus::Retired states the semantics
+    and the caller protocol of AT-D21; AT-G1 passes on three layout builds. The
+    session-arm tests of AT4 that expect StaleFile from a read through an open view are
+    superseded by AC-7 as amended, and the deterministic test of a get paused between
+    pin and entry load while its slot is reused is replaced by the AC-9 form; the Loom model's empty-file retirement runs through
+    the production retirement record and grace period; build.rs detects the fused open
+    in a product tree so the shared runner still builds against trees without it; the
+    bench plan's session arm opens its view with Pool::session_file.
 - id: AT6
   title: Pin the copy-out read with failing tests and bench arms
   status: pending

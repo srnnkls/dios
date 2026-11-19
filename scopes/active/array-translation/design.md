@@ -134,9 +134,11 @@ entries until it retires.
 
 ### Session read
 
-Decision: `Pool::session` performs the first-guard protocol once (publish the epoch,
-`SeqCst` fence) and holds it as one guard. `SessionFile::page` then loads the entry,
-loads the mirror, sets the CLOCK reference and returns a slice borrowed for the session.
+Decision: `Pool::session` and `Pool::session_file` perform the first-guard protocol once
+(publish the epoch, `SeqCst` fence) and hold it as one guard. Liveness is checked once,
+when the view of a file is opened ([File liveness](#file-liveness)). `SessionFile::page`
+and `FileSession::page` then load the entry, set the CLOCK reference and return a slice
+borrowed for the session.
 An absent entry returns `Absent`; the caller takes the ordinary `get` for the miss.
 
 Motivation: under a published epoch a frame evicted later cannot be reclaimed, and
@@ -152,28 +154,47 @@ during the session, exactly as with a held guard.
 
 ### File liveness
 
-Decision: every lock-free resolution, `get` included, loads the entry first and the
-file-generation mirror second, both `Acquire`, and accepts only when the mirror equals
-the requested generation's word. `SessionFile` computes that word once and
-`ReadSession::file` asserts pool identity and bounds the slot once.
+Decision (amended 2026-11-19, AT-D18 to AT-D22): a session validates liveness once, when
+it opens its view of a file: after the epoch pin, it loads the mirror (`Acquire`) and
+accepts only the requested generation's word. Reads through the view then load the
+entry alone. Retirement stores 0 into the mirror (`Release`) and records the global
+epoch under the control lock; the file's handle is closed, its slot released and
+`RetireStatus::Retired` reported only once the global epoch has advanced twice past that
+record. The record is taken once, on the transition from live to retiring; a repeated
+`retire_file` leaves it unchanged. Until then the slot is not free, and registration that finds no other free slot
+returns `AtCapacity`. `get` and the copy read, which hold no session, keep entry then
+mirror on every call. `Pool::session_file` opens a one-file session in one call.
 
-Motivation: the hash key carried the file generation, so a probe for a retired file
-could not match a successor's cell. An array entry is keyed by slot and granule alone.
-A retired file with no resident frames completes retirement without waiting for
-readers, so its slot can be registered again, and a successor's page published, between
-any two steps of a read. Registration stores the successor's mirror word before any of
-its entries is set, both under the control lock, so a reader that observed a successor
-entry cannot afterwards observe the predecessor's mirror word. The mirror load after
-the entry therefore proves the entry belonged to the requested generation.
+Motivation: entries are keyed by slot and granule alone, so a reused slot can carry a
+successor's entries. A reader that validated the mirror after publishing its epoch
+blocks the second epoch advance until it unpins; with the existing `SeqCst` pair, if
+the first advance missed the reader's publish, the reader's mirror load sees 0. So no
+slot a held view refers to is reused while the view lives, which is the frame
+reclamation argument with the mirror store as the unlink. Registration still stores the
+mirror before any entry, which keeps the per-call check of `get` and the copy read
+sound.
 
-Alternatives: loading the mirror before the entry, as `get` does today ahead of its
-pin, which admits the successor's page under the old identity once the key carries no
-generation. Validating once and delaying slot reuse by a reclamation grace period
-removes a load per read and changes registration to an operation that can be refused;
-it is recorded as the second AT-G1 lever.
+Semantics: a view opened before retirement keeps returning that file's own resident
+granules, or `Absent`, until its session drops. Retirement clears the entries of the
+file's resident frames in the same lock hold, so most reads return `Absent` at once and
+the `get` that resolves one reports `StaleFile`. `Retired` is the barrier after which no
+reader can observe the file; the caller protocol for changing a file in place is to
+retire it and wait for `Retired` first. A live resident lease, miss waiters, or a miss
+submitted before retirement can keep a frame of the retired file mapped until the next
+progress pass; its bytes come from the file's own handle. A thread that waits for
+`Retired` while it holds a session on that file never sees it.
 
-Tradeoff: one independent, cache-resident load per read; the spike measures 0.3 to
-0.4 ns for it on M1 once identity is hoisted.
+Alternatives: liveness on every session read (this scope's first design; about 4
+instructions and one branch per read); a generation tag in the entry's spare bits (still
+a compare per read, wraps after two or four reuses, needs the grace period anyway); a
+per-file holder count (two locked operations per view on a shared line, more than it
+saves); retirement waiting for or refused while sessions hold the file (deadlocks a
+thread that retires while it holds a session). Research:
+`.tropos/peer/array-translation/20261115T161731Z-fba2be/research-liveness-hoisting/report.md`,
+`.tropos/peer/array-translation/20261115T161731Z-fba2be/research-session-retirement/report.md`.
+
+Tradeoff: a session that never drops blocks slot reuse exactly as it already blocks
+frame reclamation, and registration can return `AtCapacity` during a grace period.
 
 ### Copy acceptance
 
@@ -273,10 +294,10 @@ the Miri model limits for this scope are recorded in [audits](audits.md).
 | Get hit path | AT9 | The fair `get` loop holds no call into the crate on a hit; AT-G8 passes |
 | Campaign | AT8 | Evidence, translation-memory report and the sira handoff are recorded |
 
-AT-G1 levers, applied only after the failing arm is profiled and the owner approves the
-amendment: first, keep the CLOCK reference in the entry's spare bit so a read touches
-no second array (spike: 1.34 to 1.43 against 1.54 to 1.61 without liveness); second,
-validate liveness once per file and delay slot reuse by a reclamation grace period.
+AT-G1 escalation after the owner decisions of 2026-11-19: the liveness lever and the
+fused open are adopted (AT-D18 to AT-D22) and the CLOCK reference bit in the entry is
+rejected; a formal layout capture that fails after them returns to the owner, and code
+layout is not tuned to pass.
 
 ---
 
@@ -288,7 +309,9 @@ validate liveness once per file and delay slot reuse by a reclamation grace peri
 |------|-----------|----------|
 | Loom: publish racing a session read | INV-2 | A hit returns only fully published bytes |
 | Loom: evict, reclaim and reuse racing a session read | INV-2, INV-3 | No borrowed slice names a reclaimed frame |
-| Loom: retirement of an empty file and reuse of its slot, landing after the epoch pin and before the entry load, for `get`, a session read and an optimistic copy | INV-7 | `StaleFile` or fallback; never the new file's bytes |
+| Loom and `tests/pool_retire.rs`: a `get` paused after its epoch pin and before its entry load while its empty file is retired | INV-3, INV-7 | the resumed `get` returns `StaleFile`; the slot is not reused while it is paused and is reusable two advancing polls after it resumes |
+| Loom: retirement of an empty file and reuse of its slot, for an optimistic copy that holds no epoch pin | INV-7 | fallback; never the new file's bytes |
+| Loom: a session holding a validated view against retirement of its file, two advancing polls, registration of a successor and publication of its page, through the production retirement record | INV-3, INV-7 | the view returns the old file's bytes or `Absent`, never the successor's; fails with fewer than two advances |
 | Retire one of two files whose slots share an OS page | INV-2 | The other file's resident pages still hit |
 | Readahead window and explicit prefetch at the bound, for a middle slot and the last slot | INV-8 | Window ends below the bound; explicit page counted rejected before any lookup; no other slot's entry or frame is touched |
 | Loom: reuse of the same frame for another page and for the same page during a copy | INV-2, INV-4 | The copy is rejected or holds one publication of the requested page |

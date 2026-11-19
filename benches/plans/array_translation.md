@@ -85,8 +85,9 @@ whole-granule lane of AT-G2 (16,777,216 reads) and 2,048 times for the 64-byte l
 AT-G1, AT-G5, AT-G6 and AT-G8 (134,217,728 reads), so that the floor arm's timed region
 also meets F6.
 
-- AT-G1 reads one 64-byte projection per request. The session arm opens one session
-  and one `SessionFile` per 16 requests, the same chunking as `resident_access_epoch_batch`.
+- AT-G1 reads one 64-byte projection per request. The session arm opens one
+  `FileSession` with `Pool::session_file` per 16 requests (AD-18), the same chunking as
+  `resident_access_epoch_batch`.
   In every session lane (AT-G1, AT-G2, AT-G3) the `mmap_random` and `plain_array` arms
   iterate the same 16-request chunks with nothing at the chunk boundary, so the three
   arms differ only in the access expression and in opening and dropping the session
@@ -206,16 +207,15 @@ Characterization, reported and not gated:
 
 - Resident bytes of the translation mapping after each lane, with the arena size beside it.
 - Session length sweep at 1, 4, 16 and 64 requests on the AT-G1 lane.
-- The AT-G1 lane with the liveness check hoisted per file, to price that check.
 - `read_copy` fast and fallback counts and optimistic-only page eviction on the existing pressure-random workload.
 - A matched CPU profile of the session arm and the mmap arm for AT-G1.
 
 ## Escalation levers
 
 - AT-G1, AT-G2: profile the failing arm with the `flamegraph` skill and diff against
-  the mmap arm. Then, by owner-approved scope amendment and in this order: keep the
-  CLOCK reference in the entry's spare bit; validate liveness once per file and delay
-  slot reuse by a reclamation grace period.
+  the mmap arm. The liveness lever and the fused open are adopted and the CLOCK bit in
+  the entry is rejected (AT-D18 to AT-D22); a failure after them returns to the owner
+  with the profile, and code layout is not tuned to pass.
 - AT-G3: with a hugepage-backed arena and a failing ratio, profile both arms before
   any TLB reasoning. A confirmed failure is recorded as non-adoption of the
   beats-mmap claim and returns to the owner.
