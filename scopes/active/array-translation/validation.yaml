@@ -241,6 +241,10 @@ owner_decisions:
     decided_at: 2026-11-19
     owner: Sören
     decision: "One fresh 30-pair rerun of RC-G1 (cold and pressure) is authorized at the product code of c89d43a. The first capture aborted on the steady-interval witness: one interval of one candidate row in the 128 MiB pressure case touched 34 read SQEs (33 speculative plus one demand read of a covered page) instead of at most 33; the cold case had completed at 0.832. Twelve diagnostic pressure captures, six at the current head and six at 5131d7d, completed with zero violations in about 1,150 intervals. The aborted capture and the diagnostic runs are retained; the rerun decides RC-G1."
+  - id: AT-D24
+    decided_at: 2026-11-20
+    owner: Sören
+    decision: "AT-G1 is decided on the 90 measured pairs pooled across its three layout builds, bound 1.50 unchanged; each build is still captured under its own frozen manifest and its result reported beside the pooled one. Amends AT-D13 for AT-G1 only; AT-G5 and AT-G6 keep all three builds passing. Reason: code placement moves the ratio by about 0.15 across builds with unchanged hot-loop code, so all-three-pass decides on the worst placement. Evidence at 6ba0592: CI95 upper 1.4000, 1.4909 and 1.5537 on layouts 16, 32 and 64, pooled 1.4830 (informational, before this decision); at fdada37 layouts 16 and 32 failed and 64 passed; the session arm runs 78.5 instructions per read against 84.1 before the liveness wave at unchanged cycles, with branch mispredicts 90 to 98 per 1,000 reads against 81 at 377a0ad (benches/evidence/array_translation/README.md, 7730cf6, fe24b27)."
   - id: WRC-D1
     inherited_from: scopes/draft/warm-read-copy-out/validation.yaml
     decision: "Volatile-word exception, same-width atomic writers, one audited module, mirror-only liveness carry over; the bracket is amended by Q005 and A001."

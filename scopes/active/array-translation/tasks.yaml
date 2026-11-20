@@ -187,7 +187,7 @@ tasks:
 - id: AT5
   title: Implement the session read
   status: in_progress
-  blocked_on: "AT-G1 and AT-G2 recapture on nix after the liveness wave (reviewed, committed with this state), then AT-G3: the bench-thp-madvise host profile on nix (owner prerequisite of the bench plan). Earlier: AT-G1 passed on three layout builds and AT-G2 passed at 377a0ad on 2026-11-17 (3e373a9, 74099d6, 377a0ad)."
+  blocked_on: "AT-G1 decided on the pooled pairs of its three layout builds (AT-D24): validate.py pool-layouts (TDD wave), then the pooled compare over the retained 6ba0592 captures; AT-G2 passed at 6ba0592 (1.0250). Then AT-G3: the bench-thp-madvise host profile on nix (owner prerequisite of the bench plan). Earlier: AT-G1 passed on three layout builds and AT-G2 passed at 377a0ad on 2026-11-17 (3e373a9, 74099d6, 377a0ad)."
   evidence:
     implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-implementer-AT5/native.yaml
     lever: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-at-g1-lever/native.yaml
@@ -201,6 +201,8 @@ tasks:
   - build.rs
   - benches/plans/array_translation.md
   - benches/mmap_workloads/fair.rs
+  - benches/mmap_workloads/validate.py
+  - tests/mmap_workload_validation.py
   - tests/guard_compile_fail.rs
   - tests/public_api.rs
   - tests/read_session.rs

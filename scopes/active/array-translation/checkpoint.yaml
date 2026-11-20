@@ -10,7 +10,7 @@ checkpoint:
     tasks: [AT5]
     phase: bench
     status: in_progress
-    waiting_on: "Liveness wave committed. Next on nix: Linux suites, get disassembly check (AT-G8), AT-G1 three layout builds, AT-G2."
+    waiting_on: "Owner decision (AT-D22 escalation): AT-G1 fails on layout 64 at 6ba0592 (1.5537; 16: 1.4000, 32: 1.4909); AT-G2 passed 1.0250; Linux suite 447 passed; get loop code unchanged. Evidence 7730cf6, profile fe24b27."
 
   in_flight_mutations: []
 
