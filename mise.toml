@@ -112,7 +112,7 @@ if [ ! -x /etc/bench-profile ]; then
   echo "missing /etc/bench-profile; install the NixOS bench specialisation" >&2
   exit 1
 fi
-profile_status=$(/etc/bench-profile status)
+profile_status=$(/etc/bench-profile status "${DIOS_BENCH_HOST_PROFILE:-bench}")
 printf '%s\n' "$profile_status"
 printf '%s\n' "$profile_status" | grep -Fxq 'bench_profile=active' || {
   echo "activate benchmark mode with: ssh -t nix sudo /etc/bench-profile enter" >&2
