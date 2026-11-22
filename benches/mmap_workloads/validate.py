@@ -19,6 +19,8 @@ FAIR_CANDIDATE_ARMS = (SESSION_ARM, "dios_get")
 FLOOR_ARM = "plain_array"
 FLAT_ARM = "mmap_random_flat"
 TIMED_REGION_NS_MIN = 100_000_000
+POOLED_LAYOUTS = (16, 32, 64)
+PAIRED_HEADER = "base_ns,candidate_ns"
 PAGE_SIZE_FIELDS = (
     "anonhugepages_kib",
     "filepmdmapped_kib",
@@ -379,6 +381,51 @@ def warm_prepare_report(
     }
 
 
+def pool_layouts(pooled: Path) -> None:
+    """Pool the paired rows of one capture wave's three AT-G1 layout builds (AT-D24)."""
+    output = pooled / "paired.csv"
+    output.unlink(missing_ok=True)
+    rows = []
+    waves = set()
+    for layout in POOLED_LAYOUTS:
+        build = pooled / f"layout-{layout}"
+        if not build.is_dir():
+            raise ValueError(f"layout build {build.name} is missing")
+        manifest = json.loads((build / "manifest.json").read_text())
+        waves.add(pool_layouts_manifest(manifest, layout))
+        lines = (build / "paired.csv").read_text().splitlines()
+        if lines[:1] != [PAIRED_HEADER]:
+            raise ValueError(f"{build.name}/paired.csv has another header")
+        if len(lines) - 1 != manifest["measured_pairs"]:
+            raise ValueError(
+                f"{build.name}/paired.csv holds other than its {manifest['measured_pairs']} pairs"
+            )
+        rows += lines[1:]
+    if len(waves) != 1:
+        raise ValueError(f"layout builds record more than one commit and lane: {sorted(waves)}")
+    staged = []
+    try:
+        warm_prepare_stage(output, "\n".join([PAIRED_HEADER] + rows) + "\n", staged).replace(output)
+    except BaseException:
+        for path in staged:
+            path.unlink(missing_ok=True)
+        raise
+
+
+def pool_layouts_manifest(manifest: dict, layout: int) -> tuple[str, str]:
+    """The capture wave, as commit and lane, of one complete layout build."""
+    if manifest["status"] != "complete":
+        raise ValueError(f"layout-{layout} capture is {manifest['status']}")
+    if manifest["layout"] != layout:
+        raise ValueError(f"layout-{layout} records layout {manifest['layout']}")
+    lanes = {manifest["lane"]} | {
+        comparison["lane"]["name"] for comparison in manifest["comparisons"]
+    }
+    if len(lanes) != 1:
+        raise ValueError(f"layout-{layout} names lanes {sorted(lanes)}")
+    return manifest["git_head"], manifest["lane"]
+
+
 def counters(text: str | None) -> dict[str, int]:
     if text is None:
         return {}
@@ -395,8 +442,13 @@ def main() -> None:
     prepare.add_argument("capture", type=Path)
     prepare.add_argument("frozen", type=Path)
     prepare.add_argument("output", type=Path)
+    pool = commands.add_parser("pool-layouts", help=pool_layouts.__doc__)
+    pool.add_argument("pooled", type=Path)
     options = parser.parse_args()
-    warm_prepare(options.capture, options.frozen, options.output)
+    if options.command == "pool-layouts":
+        pool_layouts(options.pooled)
+    else:
+        warm_prepare(options.capture, options.frozen, options.output)
 
 
 if __name__ == "__main__":

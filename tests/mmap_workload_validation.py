@@ -551,7 +551,44 @@ def run_collector(options, run) -> Exception | None:
     return None
 
 
+RETAINED_AT_G1 = REPOSITORY / "benches/evidence/array_translation/at-g1"
+AT_G1_LAYOUTS = (16, 32, 64)
+
+
+def write_layout_builds(root: Path, layouts=AT_G1_LAYOUTS) -> Path:
+    """Copies the gate inputs of the retained AT-G1 layout builds into `root/at-g1`."""
+    pooled = root / "at-g1"
+    for layout in layouts:
+        build = pooled / f"layout-{layout}"
+        build.mkdir(parents=True)
+        for name in ("paired.csv", "manifest.json", "report.json"):
+            shutil.copyfile(RETAINED_AT_G1 / f"layout-{layout}" / name, build / name)
+    return pooled
+
+
+def rewrite_layout_manifest(pooled: Path, layout: int, change) -> None:
+    path = pooled / f"layout-{layout}" / "manifest.json"
+    manifest = json.loads(path.read_text())
+    change(manifest)
+    path.write_text(json.dumps(manifest))
+
+
+def run_pool_layouts(pooled: Path) -> None:
+    with unittest.mock.patch.object(sys, "argv", ["validate.py", "pool-layouts", str(pooled)]):
+        MODULE.main()
+
+
+def seed_previous_gate_input(pooled: Path) -> None:
+    (pooled / "paired.csv").write_text("base_ns,candidate_ns\n1,2\n")
+
+
 class MmapEvidenceContract(unittest.TestCase):
+    def accepts_layouts(self, pooled: Path) -> None:
+        try:
+            run_pool_layouts(pooled)
+        except (SystemExit, ValueError, KeyError) as error:
+            self.fail(f"pool-layouts refused the layout builds of one complete wave: {error!r}")
+
     def accepts_row(self, row: dict) -> None:
         try:
             MODULE.validate_row(row)
@@ -1502,6 +1539,164 @@ class MmapEvidenceContract(unittest.TestCase):
                 self.assertFalse(
                     manifest_paths[0].resolve().is_relative_to(capture),
                     "the harness lies outside every capture's output directory",
+                )
+
+    def test_pool_layouts_writes_the_ninety_pairs_of_the_three_builds_in_layout_order(
+        self,
+    ) -> None:
+        expected = ["base_ns,candidate_ns"]
+        for layout in AT_G1_LAYOUTS:
+            lines = (RETAINED_AT_G1 / f"layout-{layout}" / "paired.csv").read_text().splitlines()
+            self.assertEqual(lines[0], "base_ns,candidate_ns")
+            self.assertEqual(len(lines[1:]), MEASURED_PAIRS)
+            expected += lines[1:]
+        with tempfile.TemporaryDirectory() as temporary:
+            pooled = write_layout_builds(Path(temporary))
+            self.accepts_layouts(pooled)
+            self.assertEqual(
+                (pooled / "paired.csv").read_text().splitlines(),
+                expected,
+                "the pooled CSV holds the header, then layout 16, 32 and 64 rows unchanged",
+            )
+
+    def test_pool_layouts_rejects_builds_outside_one_complete_capture_wave(self) -> None:
+        def drop_last_pair(pooled: Path, layout: int = 32) -> None:
+            path = pooled / f"layout-{layout}" / "paired.csv"
+            path.write_text("\n".join(path.read_text().splitlines()[:-1]) + "\n")
+
+        def repeat_a_pair(pooled: Path) -> None:
+            path = pooled / "layout-32" / "paired.csv"
+            lines = path.read_text().splitlines()
+            path.write_text("\n".join(lines + lines[-1:]) + "\n")
+
+        def swap_header(pooled: Path) -> None:
+            path = pooled / "layout-64" / "paired.csv"
+            lines = path.read_text().splitlines()
+            path.write_text("\n".join(["candidate_ns,base_ns"] + lines[1:]) + "\n")
+
+        def repeat_a_layout(pooled: Path) -> None:
+            rewrite_layout_manifest(pooled, 32, lambda manifest: manifest.update(layout=16))
+
+        def swap_layout_manifests(pooled: Path) -> None:
+            sixteen = pooled / "layout-16" / "manifest.json"
+            thirty_two = pooled / "layout-32" / "manifest.json"
+            texts = sixteen.read_text(), thirty_two.read_text()
+            sixteen.write_text(texts[1])
+            thirty_two.write_text(texts[0])
+
+        def other_lane(manifest: dict) -> None:
+            lane = "resident_access_session_fold"
+            manifest["lane"] = lane
+            for comparison in manifest["comparisons"]:
+                comparison["lane"]["name"] = lane
+
+        def wave_of_another_lane_and_29_pairs(pooled: Path) -> None:
+            for layout in AT_G1_LAYOUTS:
+                rewrite_layout_manifest(pooled, layout, other_lane)
+                rewrite_layout_manifest(
+                    pooled, layout, lambda manifest: manifest.update(measured_pairs=29)
+                )
+                drop_last_pair(pooled, layout)
+
+        cases = {
+            "missing layout directory": ((16, 64), lambda pooled: None),
+            "29 pairs": (AT_G1_LAYOUTS, drop_last_pair),
+            "31 pairs": (AT_G1_LAYOUTS, repeat_a_pair),
+            "another header": (AT_G1_LAYOUTS, swap_header),
+            "two builds record one layout": (AT_G1_LAYOUTS, repeat_a_layout),
+            "recorded layout differs from the directory": (
+                AT_G1_LAYOUTS, swap_layout_manifests
+            ),
+            "capture still running": (
+                AT_G1_LAYOUTS,
+                lambda pooled: rewrite_layout_manifest(
+                    pooled, 64, lambda manifest: manifest.update(status="capturing")
+                ),
+            ),
+            "builds of two commits": (
+                AT_G1_LAYOUTS,
+                lambda pooled: rewrite_layout_manifest(
+                    pooled, 32, lambda manifest: manifest.update(git_head="0" * 40)
+                ),
+            ),
+            "builds of two lanes": (
+                AT_G1_LAYOUTS,
+                lambda pooled: rewrite_layout_manifest(pooled, 16, other_lane),
+            ),
+            "pairs differ from the recorded count": (
+                AT_G1_LAYOUTS,
+                lambda pooled: rewrite_layout_manifest(
+                    pooled, 32, lambda manifest: manifest.update(measured_pairs=29)
+                ),
+            ),
+        }
+        for case, change in {
+            "retained wave": lambda pooled: None,
+            "one wave of another lane and 29 pairs": wave_of_another_lane_and_29_pairs,
+        }.items():
+            with self.subTest(accepted=case), tempfile.TemporaryDirectory() as temporary:
+                pooled = write_layout_builds(Path(temporary))
+                change(pooled)
+                self.accepts_layouts(pooled)
+        for case, (layouts, change) in cases.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                pooled = write_layout_builds(Path(temporary), layouts)
+                change(pooled)
+                seed_previous_gate_input(pooled)
+                with self.assertRaises(ValueError):
+                    run_pool_layouts(pooled)
+                self.assertFalse(
+                    (pooled / "paired.csv").exists(),
+                    f"{case}: neither a pooled nor the previous CSV remains as gate input",
+                )
+
+    def test_pool_layouts_leaves_no_gate_input_when_a_write_or_the_rename_fails(self) -> None:
+        write_text = Path.write_text
+        writes = []
+
+        def counting_write(path: Path, data: str, *arguments, **keywords) -> int:
+            writes.append(path)
+            return write_text(path, data, *arguments, **keywords)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            pooled = write_layout_builds(Path(temporary))
+            with unittest.mock.patch.object(Path, "write_text", counting_write):
+                self.accepts_layouts(pooled)
+        self.assertGreaterEqual(len(writes), 1, "pool-layouts writes paired.csv")
+
+        def failing_write(failing_index: int) -> contextlib.AbstractContextManager:
+            calls = []
+
+            def partial_write(path: Path, data: str, *arguments, **keywords) -> int:
+                calls.append(path)
+                if len(calls) - 1 == failing_index:
+                    write_text(path, data[: len(data) // 2], *arguments, **keywords)
+                    raise OSError(28, "No space left on device", str(path))
+                return write_text(path, data, *arguments, **keywords)
+
+            return unittest.mock.patch.object(Path, "write_text", partial_write)
+
+        def failing_rename() -> contextlib.AbstractContextManager:
+            def refuse(source, target, *arguments, **keywords) -> None:
+                raise OSError(5, "Input/output error", str(source))
+
+            stack = contextlib.ExitStack()
+            for name in ("replace", "rename"):
+                stack.enter_context(unittest.mock.patch.object(os, name, refuse))
+            return stack
+
+        failures = {f"staging write {index}": failing_write(index) for index in range(len(writes))}
+        failures["final rename"] = failing_rename()
+        for failure, patch in failures.items():
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                pooled = write_layout_builds(Path(temporary))
+                seed_previous_gate_input(pooled)
+                with patch, self.assertRaises(OSError):
+                    run_pool_layouts(pooled)
+                self.assertEqual(
+                    sorted(path.name for path in pooled.iterdir()),
+                    [f"layout-{layout}" for layout in AT_G1_LAYOUTS],
+                    f"{failure}: neither paired.csv, the previous one, nor a staged file remains",
                 )
 
 

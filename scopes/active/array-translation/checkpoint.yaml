@@ -2,15 +2,15 @@ checkpoint:
   scope_name: array-translation
   scope_path: scopes/active/array-translation
   branch: feat/array-translation
-  last_commit: bbfcef8
-  updated_at: '2026-11-19T19:20:00Z'
+  last_commit: f6aa9db
+  updated_at: '2026-11-22T00:00:00Z'
 
   batch:
     number: 5
     tasks: [AT5]
-    phase: bench
+    phase: review
     status: in_progress
-    waiting_on: "Owner decision (AT-D22 escalation): AT-G1 fails on layout 64 at 6ba0592 (1.5537; 16: 1.4000, 32: 1.4909); AT-G2 passed 1.0250; Linux suite 447 passed; get loop code unchanged. Evidence 7730cf6, profile fe24b27."
+    waiting_on: "AT-D24 (f6aa9db): AT-G1 pooled across its three layout builds. pool-layouts GREEN (32 OK); four-role review b5-pool-review-* failed (F1 frozen-manifest bypass, F2 stale pooled CSV); fix round 1 b5-pool-fix1 narrowed by the owner to wave checks plus stale-CSV removal (tests first): RED 13, GREEN 32 OK, scratch pool 90 pairs; targeted re-review b5-pool-rereview1 (claude-opus; peer unavailable, bash 3.2 on PATH); then pooled compare over the retained 6ba0592 captures."
 
   in_flight_mutations: []
 
@@ -34,3 +34,4 @@ checkpoint:
         architecture: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-review-architecture
         compliance: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-review-compliance
         abstractions: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-review-abstractions
+        pool_layouts: {requirements: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-review, general: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-review-general, architecture: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-review-architecture, compliance: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-review-compliance, abstractions: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-review-abstractions, fix1_tester: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-fix1-tester, fix1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-fix1, rereview1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-rereview1}

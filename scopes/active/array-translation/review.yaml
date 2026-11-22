@@ -463,6 +463,7 @@ implementation_batches:
     rereviews: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b5-chunks-rereview1/peer-gpt6-astra.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-chunks-rereview2/peer-gpt6-astra.yaml]
     persists: []
   - subject: liveness once per view, grace period on slot reuse, fused open (AT-D18 to AT-D22)
+    commit: 6ba0592
     reviewers: "general, architecture, compliance and abstractions, each by claude-opus and peer-gpt6-astra; seven of eight passed"
     admitted: [F1 Pool::session_file restated Pool::session, F2 Loom register_file_resident copied make_file_resident, F3 Miri read_session ran an hour or more per liveness test (whole-slot retags under Stacked Borrows)]
     fixes: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-fix1/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-fix2/native.yaml]
@@ -470,6 +471,14 @@ implementation_batches:
     rereview: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-rereview1/peer-gpt6-astra.yaml
     residuals: ["io_mode expects a retiring file to hold its backend handle while progress_retirements takes the handle before is_closed confirms (claude-opus general); ordering predates this wave, no trigger shown"]
     machine_code: "F1 changed register allocation in the fair dios_session_loop (439 to 450 lines, hit path same instruction count); not tuned (AT-D22); AT-G1 decides"
+    persists: []
+  - subject: validate.py pool-layouts, AT-G1 pooled over its three layout builds (AT-D24)
+    reviewers: "general, architecture, compliance and abstractions, each by claude-opus and peer-gpt6-astra; compliance passed on both"
+    admitted: [F1 builds of another wave or an incomplete capture pooled; lane and pair count restated as constants, F2 a failed run left the previous pooled paired.csv as gate input]
+    not_admitted: ["re-deriving each build's paired.csv from raw rows and re-running frozen-manifest validation inside pool-layouts (peer-gpt6-astra, three roles): warm-prepare already validated each build on the host; owner narrowed the round to wave checks plus stale-CSV removal (2026-11-22)"]
+    fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-fix1/native.yaml
+    rereview: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-rereview1/claude-opus.yaml
+    rereview_note: "peer-gpt6-astra unavailable: peer needs bash 4+, only /bin/bash 3.2 on PATH"
     persists: []
   gates: "AT-G1 passed on three layout builds at 377a0ad (ci95 upper 1.4880, 1.4867, 1.4676; bound 1.50), AT-G2 passed (1.0301; bound 1.10); the flat-loop ratio is reported at about 1.57. AT-G3 not captured: host profile open. Liveness wave: AT-G1 and AT-G2 to be recaptured."
   liveness_local_gates: "mise run lint clean; cargo test --features bench,mock 418 passed; mise run loom 22 passed; mise run miri lib 53 passed (9 min wall), read_session 3 passed (4 s wall); mise run asan 284 passed, no sanitizer reports."

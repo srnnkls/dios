@@ -200,9 +200,11 @@ writes `target/array-translation/at-gN/layout-16`, `layout-32` or `layout-64`; t
 paired-sample step validates that directory against its own frozen manifest
 `manifests/at-gN-layout-16.json`, `-32.json` or `-64.json`, which records the alignment
 flag, and writes `paired.csv` and `report.json` inside it; the compare runs over each
-copied `at-gN/layout-NN/paired.csv` (F12); for AT-G1, `pool-layouts` first checks that
-each of the three copied builds holds 30 measured pairs under a distinct recorded layout
-and writes their pairs into `at-g1/paired.csv`, which the gate decides (AT-D24).
+copied `at-gN/layout-NN/paired.csv` (F12); for AT-G1, `pool-layouts` first removes any earlier
+`at-g1/paired.csv`, checks that the three copied builds are complete captures of one
+`git_head` and one lane under distinct recorded layouts, each `paired.csv` holding its
+manifest's measured pairs, and writes their pairs in layout order into `at-g1/paired.csv`,
+which the gate decides (AT-D24).
 `--shared-runner` builds this tree's runner sources against the base tree named by
 `--base-build` (F10).
 
