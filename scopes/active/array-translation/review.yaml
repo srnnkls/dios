@@ -480,7 +480,7 @@ implementation_batches:
     rereview: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-rereview1/claude-opus.yaml
     rereview_note: "peer-gpt6-astra unavailable: peer needs bash 4+, only /bin/bash 3.2 on PATH"
     persists: []
-  gates: "AT-G1 passed on three layout builds at 377a0ad (ci95 upper 1.4880, 1.4867, 1.4676; bound 1.50), AT-G2 passed (1.0301; bound 1.10); the flat-loop ratio is reported at about 1.57. AT-G3 not captured: host profile open. Liveness wave: AT-G1 and AT-G2 to be recaptured."
+  gates: "AT-G1 passed on three layout builds at 377a0ad (ci95 upper 1.4880, 1.4867, 1.4676; bound 1.50), AT-G2 passed (1.0301; bound 1.10); the flat-loop ratio is reported at about 1.57. AT-G3 not captured: host profile open. Liveness wave at 6ba0592: AT-G1 passed pooled over its three layout builds (AT-D24; 90 pairs, ci95 upper 1.4830; builds reported 1.4000, 1.4909, 1.5537), AT-G2 passed (1.0250)."
   liveness_local_gates: "mise run lint clean; cargo test --features bench,mock 418 passed; mise run loom 22 passed; mise run miri lib 53 passed (9 min wall), read_session 3 passed (4 s wall); mise run asan 284 passed, no sanitizer reports."
   local_gates: "mise run lint clean; cargo test --features bench,mock 410 passed; mise run loom 22 passed; mise run miri 53 passed; Python suite 25 tests OK. One run of the full suite showed a single failure of zero_allocation_validator_covers_both_g2_lane_shapes while a reviewer worked in the same tree; it did not repeat in three later runs."
 - batch: 6

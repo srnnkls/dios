@@ -173,7 +173,12 @@ captures are retained in `at-g1-fdada37/` and `at-g2-fdada37/`.
 | AT-G1 | layout 16 | 1.3834 | 1.4000 | 1.50 | passed | `at-g1/layout-16/` |
 | AT-G1 | layout 32 | 1.4795 | 1.4909 | 1.50 | passed | `at-g1/layout-32/` |
 | AT-G1 | layout 64 | 1.5495 | 1.5537 | 1.50 | failed | `at-g1/layout-64/` |
+| AT-G1 | pooled, 90 pairs (gated, AT-D24) | 1.4692 | 1.4830 | 1.50 | passed | `at-g1/paired.csv`, `at-g1/gate.txt` |
 | AT-G2 | default | 1.0216 | 1.0250 | 1.10 | passed | `at-g2/` |
+
+AT-G1 is decided on the pooled row (AT-D24, 2026-11-20); the three build rows are
+reported. `validate.py pool-layouts` (a3f439c) wrote `at-g1/paired.csv` from the three
+builds' pairs in layout order.
 
 - Nanoseconds per read, chunked mmap arm against session arm: 4.40 / 6.09 (layout 16),
   3.94 / 5.82 (32), 3.92 / 6.08 (64); plain-array floor 4.49, 3.94, 3.94. Against the

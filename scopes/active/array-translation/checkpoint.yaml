@@ -2,7 +2,7 @@ checkpoint:
   scope_name: array-translation
   scope_path: scopes/active/array-translation
   branch: feat/array-translation
-  last_commit: f6aa9db
+  last_commit: a3f439c
   updated_at: '2026-11-22T00:00:00Z'
 
   batch:
@@ -10,7 +10,7 @@ checkpoint:
     tasks: [AT5]
     phase: review
     status: in_progress
-    waiting_on: "AT-D24 (f6aa9db): AT-G1 pooled across its three layout builds. pool-layouts GREEN (32 OK); four-role review b5-pool-review-* failed (F1 frozen-manifest bypass, F2 stale pooled CSV); fix round 1 b5-pool-fix1 narrowed by the owner to wave checks plus stale-CSV removal (tests first): RED 13, GREEN 32 OK, scratch pool 90 pairs; targeted re-review b5-pool-rereview1 (claude-opus; peer unavailable, bash 3.2 on PATH); then pooled compare over the retained 6ba0592 captures."
+    waiting_on: "AT-G1 passed pooled at 6ba0592 (1.4830, AT-D24); AT-G2 passed (1.0250). AT5 open on AT-G3: owner bench-thp-madvise host profile on nix."
 
   in_flight_mutations: []
 
