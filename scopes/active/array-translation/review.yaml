@@ -502,3 +502,18 @@ implementation_batches:
     rereviews: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b6-tooling-rereview1/peer-gpt6-astra.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-tooling-rereview2/peer-gpt6-astra.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-tooling-rereview3/peer-gpt6-astra.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-rc-g1-rereview1/peer-gpt6-astra.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-rc-g1-rereview2/peer-gpt6-astra.yaml]
     persists: []
   gates: "AT-G8 passed at f193292 against 8597238 (ci95 upper 0.5722, bound 0.85); AT-G7 passed on all eight lanes at the AT9 product code, RC-G1 on the owner-authorized rerun (AT-D23)."
+- batch: 7
+  tasks: [AT6]
+  reviewed_at: '2026-11-23T00:00:00Z'
+  status: passed
+  reports: .tropos/peer/array-translation/20261115T161731Z-fba2be/
+  waves:
+  - subject: copy-out read RED, scaffolds, test and mock hooks, copy bench lanes (AT-D25 applied)
+    reviewers: "general, architecture, compliance and abstractions by claude-opus; peer-gpt6-astra unavailable (peer needs bash 4+, only /bin/bash 3.2 on PATH); architecture passed"
+    admitted: [F1 Loom model payload could not tear so the same-page case could not fail, F2 no test bounded the fallback at one get under Busy, F3 Miri hook re-derived the seam's payload address, F4 COPY_LANES doc named a gate column, F5 mock get counter was an unconditional fetch_add on the get path of bench+mock (pair-bench) builds]
+    fixes: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b7-fix1/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-fix2/native.yaml]
+    rereview: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-rereview1/claude-opus.yaml
+    f5_disposition: "count_get increments only after the hook was armed; a never-armed hit adds a plain load of the hook's Arc pointer, a relaxed byte load and a taken branch (aarch64 disassembly in b7-fix2/native.yaml); the Arc pointer load beyond the finding's bound accepted by the orchestrator (mock builds only, sub-ns)"
+    residuals: ["PoolModel::make_file_resident lacks a # Panics doc under cfg(loom) clippy since 6ba0592; mise run lint does not build cfg(loom); fold into AT7", "tests/drp009_gate_contract.rs converter_binds_the_host_topology_to_the_lane failed once in a full run during fix round 2 and passed three reruns; unrelated to the copy path"]
+    persists: []
+  local_gates: "mise run lint clean; cargo test --features bench,mock RED only in the AT6 cases, each by assertion (confinement, three read_copy cases, warm-copy zero-alloc); Loom 23 passed with the three AT6 copy cases failing by assertion; Miri AC-13 case reports the race against the non-atomic Frames::fill until AT7; Python suite 33 OK."

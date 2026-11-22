@@ -177,7 +177,7 @@ fn sample<const TRACE: bool>(
         .max()
         .expect("worker exists");
     sample_check_workers(&workers, expected_checksum)?;
-    let (io_mode, registration) = if arm == Arm::PlainArray {
+    let (io_mode, registration) = if arm.reads_private_array() {
         ("none".to_owned(), "none".to_owned())
     } else {
         sample_posture(pool.as_ref())

@@ -19,6 +19,7 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(dios_registration_posture)");
     println!("cargo::rustc-check-cfg=cfg(dios_read_session)");
     println!("cargo::rustc-check-cfg=cfg(dios_session_file)");
+    println!("cargo::rustc-check-cfg=cfg(dios_read_copy)");
     println!("cargo::rustc-check-cfg=cfg(pfr_product_retention)");
     println!("cargo::rerun-if-env-changed=CARGO_FEATURE_BENCH");
     if env::var_os("CARGO_FEATURE_BENCH").is_some() {
@@ -82,6 +83,14 @@ fn main() {
     }
     if session.contains("pub fn session_file") {
         println!("cargo::rustc-cfg=dios_session_file");
+    }
+    let read_copy_path = product.join("src/pool/read_copy.rs");
+    println!("cargo::rerun-if-changed={}", read_copy_path.display());
+    if fs::read_to_string(read_copy_path)
+        .unwrap_or_default()
+        .contains("pub fn read_copy")
+    {
+        println!("cargo::rustc-cfg=dios_read_copy");
     }
 }
 

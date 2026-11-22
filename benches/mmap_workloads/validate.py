@@ -15,8 +15,9 @@ import tempfile
 HUGEPAGE_LANES = ("resident_access_session_fold_256m",)
 HUGEPAGE_PROFILE = "bench-thp-madvise"
 SESSION_ARM = "dios_session"
-FAIR_CANDIDATE_ARMS = (SESSION_ARM, "dios_get")
+FAIR_CANDIDATE_ARMS = (SESSION_ARM, "dios_get", "dios_copy")
 FLOOR_ARM = "plain_array"
+PRIVATE_ARRAY_ARMS = (FLOOR_ARM, "optimistic_floor")
 FLAT_ARM = "mmap_random_flat"
 TIMED_REGION_NS_MIN = 100_000_000
 POOLED_LAYOUTS = (16, 32, 64)
@@ -68,7 +69,7 @@ def validate_row(row: dict) -> None:
         raise ValueError("minor targets had present PTEs")
     if row["arm"].startswith("mmap_"):
         validate_mmap(row, totals)
-    elif row["arm"] == "plain_array":
+    elif row["arm"] in PRIVATE_ARRAY_ARMS:
         validate_plain(row, totals)
     else:
         validate_dios(row, totals)

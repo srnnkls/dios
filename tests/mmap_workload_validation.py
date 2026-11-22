@@ -278,6 +278,22 @@ FAIR_LANES = {
         ("resident_access_fair_get", "dios_get", 64, 2_048, 1024),
     )
 }
+COPY_LANES = {
+    lane: dict(
+        name=lane,
+        arms=[base_arm, "dios_copy"],
+        floor_arm="plain_array",
+        cache="resident",
+        operations=SEQUENCE_REQUESTS * 2_048,
+        workers=1,
+        useful_bytes_per_read=64,
+        frames=1024,
+    )
+    for lane, base_arm in (
+        ("resident_access_copy", "mmap_copy"),
+        ("resident_access_copy_floor", "optimistic_floor"),
+    )
+}
 SESSION_LANES = {
     name: FAIR_LANES[name]
     for name in ("resident_access_session_projection", "resident_access_session_fold")
@@ -427,7 +443,7 @@ def write_fair_capture(
     executable_sha256 = hashlib.sha256(executable.read_bytes()).hexdigest()
     product_arm = lane["arms"][1]
     elapsed = {
-        "mmap_random": MMAP_ELAPSED_NS,
+        lane["arms"][0]: MMAP_ELAPSED_NS,
         product_arm: PRODUCT_ELAPSED_NS,
         lane["floor_arm"]: FLOOR_ELAPSED_NS,
         "mmap_random_flat": FLAT_ELAPSED_NS,
@@ -1154,6 +1170,100 @@ class MmapEvidenceContract(unittest.TestCase):
                         )
                     self.assertFalse((root / "paired.csv").exists())
                     self.assertFalse((root / "report.json").exists())
+
+    def test_warm_prepare_takes_copy_lane_captures_with_their_floor_and_rejects_unequal_work(
+        self,
+    ) -> None:
+        def rewrite_candidate_row(root: Path, manifest: dict, pair: int, change) -> None:
+            comparison = manifest["comparisons"][0]
+            reference = next(
+                row for row in comparison["rows"]
+                if row["pair"] == pair and row["position"] == 1
+            )
+            path = root / "capture" / comparison["name"] / reference["raw"]
+            row = json.loads(path.read_text())
+            change(row)
+            raw = json.dumps(row).encode()
+            path.write_bytes(raw)
+            reference["sha256"] = hashlib.sha256(raw).hexdigest()
+            (root / "capture/manifest.json").write_text(json.dumps(manifest))
+
+        def without_floor(root: Path, manifest: dict) -> None:
+            manifest["comparisons"] = [
+                comparison for comparison in manifest["comparisons"]
+                if comparison["arms"][0] != "plain_array"
+            ]
+            (root / "capture/manifest.json").write_text(json.dumps(manifest))
+
+        def double_work(row: dict) -> None:
+            doubled = 2 * row["operations"]
+            row["operations"] = doubled
+            row["useful_bytes"] = doubled * 64
+            row["workers"][0].update(operations=doubled, hits=doubled)
+
+        def other_checksum(row: dict) -> None:
+            row["expected_checksum"] = 72
+            row["workers"][0]["checksum"] = 72
+
+        corruptions = (
+            ("floor", without_floor),
+            ("work", lambda root, manifest: rewrite_candidate_row(root, manifest, 3, double_work)),
+            (
+                "checksum",
+                lambda root, manifest: rewrite_candidate_row(root, manifest, 4, other_checksum),
+            ),
+        )
+        for lane in COPY_LANES.values():
+            base_arm = lane["arms"][0]
+            operations = lane["operations"]
+            with (
+                self.subTest(lane=lane["name"]),
+                tempfile.TemporaryDirectory() as temporary,
+                unittest.mock.patch.object(subprocess, "run", fake_summarize),
+            ):
+                root = Path(temporary) / "complete"
+                write_fair_capture(root, lane)
+                self.accepts_capture(root)
+                self.assertEqual(
+                    (root / "paired.csv").read_text().splitlines(),
+                    ["base_ns,candidate_ns"]
+                    + [f"{MMAP_ELAPSED_NS},{PRODUCT_ELAPSED_NS}"] * MEASURED_PAIRS,
+                    f"paired.csv pairs {base_arm} as base against dios_copy",
+                )
+                report = json.loads((root / "report.json").read_text())
+                ns_per_read = {
+                    tuple(comparison["arms"]): comparison["ns_per_read"]
+                    for comparison in report["comparisons"]
+                }
+                self.assertEqual(
+                    ns_per_read,
+                    {
+                        (base_arm, "dios_copy"): dict(
+                            base=dict(arm=base_arm, ns_per_read=MMAP_ELAPSED_NS / operations),
+                            candidate=dict(
+                                arm="dios_copy", ns_per_read=PRODUCT_ELAPSED_NS / operations
+                            ),
+                        ),
+                        ("plain_array", "dios_copy"): dict(
+                            base=dict(arm="plain_array", ns_per_read=FLOOR_ELAPSED_NS / operations),
+                            candidate=dict(
+                                arm="dios_copy", ns_per_read=PRODUCT_ELAPSED_NS / operations
+                            ),
+                        ),
+                    },
+                    "report.json holds the gated and the floor comparison of the copy lane",
+                )
+
+                for pattern, corrupt in corruptions:
+                    with self.subTest(lane=lane["name"], rejected=pattern):
+                        root = Path(temporary) / pattern
+                        corrupt(root, write_fair_capture(root, lane))
+                        with self.assertRaisesRegex(ValueError, pattern):
+                            MODULE.warm_prepare(
+                                root / "capture", root / "frozen.json", root / "paired.csv"
+                            )
+                        self.assertFalse((root / "paired.csv").exists())
+                        self.assertFalse((root / "report.json").exists())
 
     def test_warm_prepare_reports_both_builds_of_a_base_build_capture_with_equal_arms(
         self,

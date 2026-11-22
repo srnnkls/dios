@@ -279,7 +279,17 @@ pub(crate) struct Frames {
     count: u32,
     granule: u32,
     id: ArenaId,
+    /// The Loom model's labeled payload: the first words of each frame as
+    /// Loom atomics, because Loom schedules only at its own synchronization
+    /// and never between the arena's byte writes.
+    #[cfg(loom)]
+    model_payload: Box<[[AtomicU64; MODEL_PAYLOAD_WORDS]]>,
 }
+
+/// Payload words per frame the Loom model labels: the copied range of its
+/// copy-out cases, two words so a copy can tear between them.
+#[cfg(loom)]
+pub(crate) const MODEL_PAYLOAD_WORDS: usize = 2;
 
 // SAFETY: `base` addresses a heap allocation owned solely by this `Frames`. A
 // byte write needs `&mut InFlightFrame`, which exists only while the frame is
@@ -305,6 +315,10 @@ impl Frames {
         let pages = ExactPageCells::try_preallocated(count)?;
         let arena = crate::allocation::MappedArena::try_map(span, arena_alignment(span, granule))?;
         advise_hugepage(arena.base(), span);
+        #[cfg(loom)]
+        let model_payload = crate::allocation::try_boxed_slice_with(count, || {
+            std::array::from_fn(|_| AtomicU64::new(0))
+        })?;
         Some(Self {
             base: arena.base(),
             arena,
@@ -313,6 +327,8 @@ impl Frames {
             count,
             granule,
             id: ArenaId::next(),
+            #[cfg(loom)]
+            model_payload,
         })
     }
 
@@ -418,6 +434,34 @@ impl Frames {
     /// completion writing the frame's contents.
     pub(crate) fn fill(&self, token: &mut InFlightFrame, byte: u8) {
         self.transfer_mut(token, 0, self.granule).fill(byte);
+    }
+
+    /// Fills the Loom model's labeled payload of the token's frame with
+    /// `byte`: one `Release` fence after the claim, then each word as its own
+    /// relaxed store (FR-11).
+    #[cfg(loom)]
+    pub(crate) fn fill_model_payload(&self, token: &mut InFlightFrame, byte: u8) {
+        let index = self.owned_index(token);
+        let word = u64::from_ne_bytes([byte; size_of::<u64>()]);
+        crate::sync::fence(Ordering::Release);
+        for cell in &self.model_payload[index] {
+            cell.store(word, Ordering::Relaxed);
+        }
+    }
+
+    /// Word `word_index` of the Loom model's labeled payload of `frame`.
+    ///
+    /// # Panics
+    ///
+    /// If `frame` or `word_index` is out of range.
+    #[cfg(loom)]
+    pub(crate) fn model_payload_word(&self, frame: ReadFrameIdx, word_index: u32) -> u64 {
+        let index = self.checked_index(frame);
+        assert!(
+            (word_index as usize) < MODEL_PAYLOAD_WORDS,
+            "the word lies in the labeled payload"
+        );
+        self.model_payload[index][word_index as usize].load(Ordering::Relaxed)
     }
 
     /// The exclusive destination range `[offset, offset + len)` of the token's
@@ -588,6 +632,29 @@ impl Frames {
         let copied = out.len().min(source.len());
         out[..copied].copy_from_slice(&source[..copied]);
         copied
+    }
+
+    /// The first payload word of `frame`, the one source of the copy-out
+    /// read's volatile word loads; aligned because the arena base is
+    /// page-aligned and the granule a sector multiple.
+    ///
+    /// # Panics
+    ///
+    /// If `frame` is out of range for the configured count.
+    #[cfg_attr(
+        not(all(feature = "mock", not(loom))),
+        expect(dead_code, reason = "the scaffolded copy attempt reads no payload")
+    )]
+    #[must_use]
+    pub(crate) fn optimistic_payload_ptr(&self, frame: ReadFrameIdx) -> *const u64 {
+        let index = self.checked_index(frame);
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "the arena base is page-aligned and the granule a sector multiple, as asserted"
+        )]
+        let first = self.granule_ptr(index).cast_const().cast::<u64>();
+        assert!(first.is_aligned(), "a frame's payload starts word-aligned");
+        first
     }
 
     /// The residency state of `frame`.

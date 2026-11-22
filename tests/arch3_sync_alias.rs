@@ -138,3 +138,138 @@ fn the_guard_catches_a_rustfmt_wrapped_use_group() {
         .collect();
     assert_eq!(offending, vec![1, 5]);
 }
+
+const VOLATILE_OWNER: &str = "src/pool/read_copy.rs";
+const SEAM_HOME: &str = "src/pool/frames.rs";
+const SEAM: &str = "optimistic_payload_ptr";
+
+fn dense(item: &str) -> String {
+    item.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+fn defines_the_seam(item: &str) -> bool {
+    dense(item).contains(&format!("fn{SEAM}("))
+}
+
+fn volatile_confinement_offenders(sources: &[(String, String)]) -> Vec<String> {
+    let mut offenders = Vec::new();
+    for (path, source) in sources {
+        if path == VOLATILE_OWNER {
+            continue;
+        }
+        for (line, item) in comment_stripped_items(source) {
+            let code = dense(&item);
+            if code.contains("read_volatile") {
+                offenders.push(format!("{path}:{line}: volatile read: {}", item.trim()));
+            }
+            if code.contains(SEAM) && !(path == SEAM_HOME && defines_the_seam(&item)) {
+                offenders.push(format!("{path}:{line}: seam use: {}", item.trim()));
+            }
+        }
+    }
+    offenders
+}
+
+fn crate_sources() -> Vec<(String, String)> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut paths = Vec::new();
+    pool_sources(&root.join("src"), &mut paths);
+    paths
+        .into_iter()
+        .map(|path| {
+            let relative = path
+                .strip_prefix(root)
+                .expect("a walked source lies under the manifest directory")
+                .components()
+                .map(|part| part.as_os_str().to_str().expect("utf-8 path"))
+                .collect::<Vec<_>>()
+                .join("/");
+            let source = fs::read_to_string(&path).expect("read a crate source");
+            (relative, source)
+        })
+        .collect()
+}
+
+fn fixture(path: &str, source: &str) -> Vec<(String, String)> {
+    vec![(path.to_owned(), source.to_owned())]
+}
+
+#[test]
+fn volatile_payload_reads_and_the_optimistic_seam_stay_in_read_copy() {
+    let volatile_read = "let word = unsafe { std::ptr::read_volatile(payload.add(index)) };";
+    let method_volatile_read = "let word = unsafe { payload.add(index).read_volatile() };";
+    let seam_use = "let payload = frames.optimistic_payload_ptr(frame);";
+    let seam_definition = "pub(crate) fn optimistic_payload_ptr(&self, frame: ReadFrameIdx) -> *const u64 {\n    self.base.wrapping_add(frame.get() as usize)\n}";
+    for path in ["src/pool/miss.rs", "src/mock.rs"] {
+        for source in [volatile_read, method_volatile_read] {
+            assert_eq!(
+                volatile_confinement_offenders(&fixture(path, source)).len(),
+                1,
+                "a volatile read in {path} is rejected: {source}"
+            );
+        }
+        assert_eq!(
+            volatile_confinement_offenders(&fixture(path, seam_use)).len(),
+            1,
+            "a seam call in {path} is rejected"
+        );
+    }
+    assert_eq!(
+        volatile_confinement_offenders(&fixture(SEAM_HOME, seam_use)).len(),
+        1,
+        "frames.rs holds the seam's definition, not a call of it"
+    );
+    assert_eq!(
+        volatile_confinement_offenders(&fixture("src/mock.rs", seam_definition)).len(),
+        1,
+        "the seam is defined only in frames.rs"
+    );
+    assert!(
+        volatile_confinement_offenders(&fixture(SEAM_HOME, seam_definition)).is_empty(),
+        "the seam's one definition in frames.rs is accepted"
+    );
+    for source in [volatile_read, method_volatile_read, seam_use] {
+        assert!(
+            volatile_confinement_offenders(&fixture(VOLATILE_OWNER, source)).is_empty(),
+            "read_copy.rs owns the volatile reads and the seam calls: {source}"
+        );
+    }
+    assert!(
+        volatile_confinement_offenders(&fixture(
+            "src/mock.rs",
+            "// never std::ptr::read_volatile or optimistic_payload_ptr here\n/// See `optimistic_payload_ptr`.\nfn fill() {}"
+        ))
+        .is_empty(),
+        "prose naming the volatile read or the seam is not code"
+    );
+
+    let sources = crate_sources();
+    assert!(
+        sources.iter().any(|(path, _)| path == "src/mock.rs")
+            && sources.iter().any(|(path, _)| path == "src/driver.rs"),
+        "the walk covers sources outside src/pool"
+    );
+    let offenders = volatile_confinement_offenders(&sources);
+    assert!(
+        offenders.is_empty(),
+        "volatile payload reads and the optimistic seam live only in {VOLATILE_OWNER} (TR-6, INV-9):\n{}",
+        offenders.join("\n")
+    );
+    let owner_code: String = sources
+        .iter()
+        .filter(|(path, _)| path == VOLATILE_OWNER)
+        .flat_map(|(_, source)| comment_stripped_items(source))
+        .map(|(_, item)| dense(&item))
+        .collect();
+    assert!(
+        owner_code.contains("read_volatile") && owner_code.contains(SEAM),
+        "{VOLATILE_OWNER} copies through volatile word reads behind the {SEAM} seam"
+    );
+    let definitions = sources
+        .iter()
+        .filter(|(path, _)| path == SEAM_HOME)
+        .flat_map(|(_, source)| comment_stripped_items(source))
+        .filter(|(_, item)| defines_the_seam(item))
+        .count();
+    assert_eq!(definitions, 1, "{SEAM_HOME} defines the {SEAM} seam once");
+}

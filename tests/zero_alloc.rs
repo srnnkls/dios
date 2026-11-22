@@ -30,7 +30,7 @@ use dios::driver::{CompletionBatch, Driver, FileHandle};
 use dios::testing::{DriverReadTestingExt, PoolTestingExt, ReadFrameIdx};
 use dios::{
     DirectIo, FrameGuard, Get, PageId, Pool, PoolCompletion, PoolCompletionBatch, PoolToken,
-    PoolWriteArena, ReaderCtx, ReadyResult, RetireStatus, SessionRead, SyncMode,
+    PoolWriteArena, ReadCopy, ReaderCtx, ReadyResult, RetireStatus, SessionRead, SyncMode,
 };
 
 const FRAME_BYTES: u32 = 4096;
@@ -559,6 +559,42 @@ fn real_pool_warm_file_session_reads_allocate_nothing() {
     assert_eq!(
         allocations, 0,
         "a FileSession over warmed pages and its reads allocate nothing"
+    );
+}
+
+#[test]
+fn real_pool_warm_copies_allocate_nothing() {
+    const COPIES: u32 = 16;
+    const COPY_BYTES: usize = 64;
+    let path = temp_frames("real-pool-copy", 1, 0xE7);
+    let pool = product_pool();
+    let file = pool
+        .open(&path, DirectIo::Disabled)
+        .expect("the real product pool opens the fixture");
+    let reader = pool
+        .register_reader()
+        .expect("the product pool has one reader slot");
+    let page = PageId::new(file, 0);
+    drop(resolve_product_page(&pool, &reader, page));
+    let mut output = [0u8; COPY_BYTES];
+
+    let (allocations, (copied, folded)) = armed_allocations_result(|| {
+        let mut copied = 0u32;
+        let mut folded = 0u64;
+        for _ in 0..COPIES {
+            output.fill(0);
+            if let Ok(ReadCopy::Copied) = pool.read_copy(&reader, page, 64, &mut output) {
+                copied += 1;
+                folded += output.iter().map(|&byte| u64::from(byte)).sum::<u64>();
+            }
+        }
+        (copied, folded)
+    });
+    assert_eq!(copied, COPIES, "every warmed copy succeeds");
+    assert_eq!(folded, u64::from(COPIES) * COPY_BYTES as u64 * 0xE7);
+    assert_eq!(
+        allocations, 0,
+        "a successful copy of a warmed page allocates nothing"
     );
 }
 

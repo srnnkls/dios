@@ -148,6 +148,56 @@ fn session_lanes_name_the_flat_reference_arm_and_the_get_lane_names_none() {
     }
 }
 
+/// Copy lanes: name and base arm; each times `dios_copy` against its base.
+const COPY_LANES: [(&str, &str); 2] = [
+    ("resident_access_copy", "mmap_copy"),
+    ("resident_access_copy_floor", "optimistic_floor"),
+];
+
+#[test]
+fn copy_lanes_pair_their_base_arm_with_dios_copy_and_carry_the_plain_array_floor() {
+    let catalog = mmap_workloads::lane_catalog();
+    for (name, base_arm) in COPY_LANES {
+        let lane = catalog
+            .iter()
+            .find(|lane| lane["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is cataloged"));
+        assert_eq!(
+            lane["arms"],
+            serde_json::json!([base_arm, "dios_copy"]),
+            "{name} pairs {base_arm} as base against dios_copy"
+        );
+        assert_eq!(
+            lane["floor_arm"], "plain_array",
+            "{name} carries the plain_array floor arm"
+        );
+        assert!(lane["flat_arm"].is_null(), "{name} has no flat arm");
+        assert_eq!(lane["cache"], "resident", "{name} is a resident lane");
+        assert_eq!(
+            lane["operations"],
+            65_536 * 2_048,
+            "{name} times the 65,536-request sequence 2,048 times"
+        );
+        assert_eq!(
+            lane["useful_bytes_per_read"], 64,
+            "{name} copies 64 bytes per request"
+        );
+        assert_eq!(lane["frames"], 1_024, "{name} reads the 1,024-page set");
+        for arm in [base_arm, "dios_copy", "plain_array"] {
+            let error = sample_without_fixture(name, arm, "plain", "copy-lane");
+            assert!(
+                !error.starts_with("unknown") && error != "arm does not belong to this comparison",
+                "{name} must accept the {arm} arm: {error}"
+            );
+            let error = sample_without_fixture(name, arm, "trace", "copy-trace");
+            assert!(
+                error.contains("trace"),
+                "{name} refuses trace mode on {arm} before the fixture is read: {error}"
+            );
+        }
+    }
+}
+
 #[test]
 fn fair_lanes_refuse_trace_mode_on_every_arm() {
     for (name, product_arm, _, _) in FAIR_LANES {

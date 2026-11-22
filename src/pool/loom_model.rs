@@ -25,6 +25,8 @@ use super::epoch::{
 use super::miss::{MissEntry, MissInterests, MissOutcome, MissSlot, MissTable};
 use super::prefetch::state::{Prefetch, Terminal};
 use super::prefetch::{PrefetchStats, Readahead, Source};
+pub use super::read_copy::OptimisticCopy;
+use super::read_copy::{copy_payload_words, optimistic_copy};
 use super::read_spans::{ReadSpan, ReadSpans};
 use super::retention::{RetainRefused, RetainedFrame, Retention};
 use super::session::{ReadSession, SessionFile, SessionRead};
@@ -692,6 +694,7 @@ impl PoolModel {
             .frames
             .claim(frame, page)
             .expect("the model installs into a Free frame");
+        self.frames.fill_model_payload(&mut token, generation);
         self.frames.fill(&mut token, generation);
         self.frames.publish(token);
         self.translation.publish(page, frame);
@@ -1332,6 +1335,38 @@ impl PoolModel {
                 0,
             ),
         }
+    }
+
+    /// Copies `output.len()` bytes of `page` of `file_generation` from offset
+    /// zero through the production optimistic attempt: no epoch pin, no CLOCK
+    /// reference and no fallback `get`.
+    pub fn optimistic_copy(
+        &self,
+        file_generation: u32,
+        page: u32,
+        output: &mut [u8],
+    ) -> OptimisticCopy {
+        optimistic_copy(
+            &self.translation,
+            &self.frames,
+            &self.file_live_generations,
+            Self::file_page_id(file_generation, page),
+            0,
+            output,
+        )
+    }
+
+    /// Copies `output.len()` bytes of `frame`'s payload from offset zero
+    /// through the copy step of the optimistic attempt alone: no entry, stamp
+    /// or mirror load, no fence, no epoch pin and no CLOCK reference.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless the frame is in range and the output fits the labeled
+    /// payload.
+    pub fn unbracketed_copy(&self, frame: u32, output: &mut [u8]) {
+        assert!(frame < self.frames.count(), "copied frame is in range");
+        copy_payload_words(&self.frames, ReadFrameIdx::new(frame), output);
     }
 
     /// Observes the translation entry of `page` in the model's file slot.

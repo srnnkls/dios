@@ -4,8 +4,11 @@
 
 use std::fs;
 use std::hint::black_box;
+use std::sync::atomic::{AtomicU64, Ordering, fence};
 use std::time::Instant;
 
+#[cfg(dios_read_copy)]
+use dios::ReadCopy;
 use dios::{FileId, Get, GetError, PageId, Pool, ReaderCtx};
 use serde_json::{Value, json};
 
@@ -19,6 +22,13 @@ use super::os::{self, Mapping};
 /// the `mmap_random` and `plain_array` arms of a session lane iterate the same
 /// chunks (AT-D16).
 const SESSION_REQUESTS: usize = 16;
+
+/// Bytes every arm of a copy lane copies into its caller buffer per request.
+const COPY_BYTES: usize = 64;
+
+/// The packed version word of every page of the optimistic floor's array,
+/// which no writer changes.
+const FLOOR_VERSION: u64 = 2;
 
 /// One measured fair-lane process: the worker row and the F6 and F7 witnesses.
 pub(super) struct Measured {
@@ -40,24 +50,41 @@ pub(super) fn measure(work: Work<'_>) -> Result<Measured, String> {
         Source::Dios(pool, _) => Some(pool.register_reader().map_err(error)?),
     };
     let storage = match work.source {
-        Source::Mmap(mapping) if work.arm == Arm::PlainArray => {
+        Source::Mmap(mapping) if work.arm.reads_private_array() => {
             plain_array(mapping, work.lane.warm_pages())
         }
         _ => Vec::new(),
     };
     let array = plain_array_pages(&storage);
+    let versions: Vec<AtomicU64> = if work.arm == Arm::OptimisticFloor {
+        (0..work.lane.warm_pages())
+            .map(|_| AtomicU64::new(FLOOR_VERSION))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let bytes = match work.source {
-        Source::Mmap(_) if work.arm == Arm::PlainArray => array,
+        Source::Mmap(_) if work.arm.reads_private_array() => array,
         Source::Mmap(mapping) => mapping.bytes(),
         Source::Dios(..) => &[],
     };
     let address = mapping_address(work, reader.as_ref(), array)?;
     let setup_ns = nanoseconds(setup_started.elapsed());
     let useful_bytes = work.lane.useful_bytes() as usize;
+    assert!(!work.lane.copy() || useful_bytes == COPY_BYTES);
     let read = |repetitions: u32| match (work.source, work.arm) {
         (Source::Mmap(_), Arm::MmapRandom | Arm::PlainArray) if work.lane.session() => {
             Ok(chunked_loop(bytes, &requests, repetitions, useful_bytes))
         }
+        (Source::Mmap(_), Arm::MmapCopy | Arm::PlainArray) if work.lane.copy() => {
+            Ok(copy_loop(bytes, &requests, repetitions))
+        }
+        (Source::Mmap(_), Arm::OptimisticFloor) => Ok(optimistic_floor_loop(
+            bytes,
+            &versions,
+            &requests,
+            repetitions,
+        )),
         (Source::Mmap(_), Arm::MmapRandom | Arm::MmapRandomFlat | Arm::PlainArray) => {
             Ok(flat_loop(bytes, &requests, repetitions, useful_bytes))
         }
@@ -147,7 +174,7 @@ fn measure_worker(
             counters.hits = reads;
             counters.guard_acquisitions = reads;
         }
-        Arm::DiosSession => counters.hits = reads,
+        Arm::DiosSession | Arm::DiosCopy => counters.hits = reads,
         _ => {}
     }
     worker
@@ -189,7 +216,7 @@ fn mapping_address(
     array: &[u8],
 ) -> Result<usize, String> {
     match work.source {
-        Source::Mmap(_) if work.arm == Arm::PlainArray => Ok(array.as_ptr().addr()),
+        Source::Mmap(_) if work.arm.reads_private_array() => Ok(array.as_ptr().addr()),
         Source::Mmap(mapping) => Ok(mapping.page(PageNumber(0)).as_ptr().addr()),
         Source::Dios(pool, file) => {
             let reader = reader.expect("Dios reader");
@@ -230,6 +257,10 @@ fn read_pool(
         )),
         #[cfg(not(dios_read_session))]
         Arm::DiosSession => Err("the product tree lacks the session read".to_owned()),
+        #[cfg(dios_read_copy)]
+        Arm::DiosCopy => Ok(dios_copy_loop(pool, reader, file, requests, repetitions)),
+        #[cfg(not(dios_read_copy))]
+        Arm::DiosCopy => Err("the product tree lacks the copy-out read".to_owned()),
         _ => Err(format!("{arm:?} is not a fair-lane pool arm")),
     }
 }
@@ -265,6 +296,91 @@ fn chunked_loop(bytes: &[u8], requests: &[u32], repetitions: u32, useful_bytes: 
         }
     }
     checksum
+}
+
+/// The copy loop of the mmap-copy arm and of a copy lane's floor arm, over
+/// the file mapping or the floor array: each request copies its bytes into
+/// the caller buffer and folds that buffer.
+#[inline(never)]
+fn copy_loop(bytes: &[u8], requests: &[u32], repetitions: u32) -> u64 {
+    let mut output = [0_u8; COPY_BYTES];
+    let mut checksum = 0_u64;
+    for _ in 0..repetitions {
+        for &page in requests {
+            let page = black_box(page);
+            let start = page as usize * GRANULE as usize;
+            black_box(&mut output).copy_from_slice(&bytes[start..start + COPY_BYTES]);
+            checksum = checksum.wrapping_add(black_box(consume(&output)));
+        }
+    }
+    checksum
+}
+
+/// The optimistic floor of AT-G6 over the floor array: load the page's
+/// version word, copy, take the `Acquire` fence and recheck the word, with no
+/// translation and no concurrent writer.
+#[inline(never)]
+fn optimistic_floor_loop(
+    bytes: &[u8],
+    versions: &[AtomicU64],
+    requests: &[u32],
+    repetitions: u32,
+) -> u64 {
+    let mut output = [0_u8; COPY_BYTES];
+    let mut checksum = 0_u64;
+    for _ in 0..repetitions {
+        for &page in requests {
+            let page = black_box(page);
+            let version = &versions[page as usize];
+            let before = version.load(Ordering::Acquire);
+            let start = page as usize * GRANULE as usize;
+            black_box(&mut output).copy_from_slice(&bytes[start..start + COPY_BYTES]);
+            fence(Ordering::Acquire);
+            if version.load(Ordering::Acquire) != before {
+                optimistic_floor_loop_torn(page);
+            }
+            checksum = checksum.wrapping_add(black_box(consume(&output)));
+        }
+    }
+    checksum
+}
+
+#[cold]
+#[inline(never)]
+fn optimistic_floor_loop_torn(page: u32) -> ! {
+    panic!("the optimistic floor's version word of page {page} changed without a writer")
+}
+
+#[cfg(dios_read_copy)]
+#[inline(never)]
+fn dios_copy_loop(
+    pool: &Pool,
+    reader: &ReaderCtx,
+    file: FileId,
+    requests: &[u32],
+    repetitions: u32,
+) -> u64 {
+    let mut output = [0_u8; COPY_BYTES];
+    let mut checksum = 0_u64;
+    for _ in 0..repetitions {
+        for &page in requests {
+            let page = black_box(page);
+            match pool.read_copy(reader, PageId::new(file, page), 0, black_box(&mut output)) {
+                Ok(ReadCopy::Copied) => {
+                    checksum = checksum.wrapping_add(black_box(consume(&output)));
+                }
+                outcome => dios_copy_loop_missed(&outcome),
+            }
+        }
+    }
+    checksum
+}
+
+#[cfg(dios_read_copy)]
+#[cold]
+#[inline(never)]
+fn dios_copy_loop_missed(outcome: &Result<ReadCopy, GetError>) -> ! {
+    panic!("a resident fair-lane copy was not copied: {outcome:?}")
 }
 
 #[inline(never)]

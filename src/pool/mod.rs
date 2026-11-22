@@ -41,6 +41,7 @@ mod frames;
 pub mod loom_model;
 mod miss;
 mod prefetch;
+mod read_copy;
 mod read_spans;
 mod retention;
 mod session;
@@ -59,6 +60,9 @@ pub(crate) use frames::{Frames, InFlightFrame};
 pub(crate) use miss::PoolBackend;
 pub(crate) use miss::sealed::Sealed as PoolBackendSealed;
 pub use prefetch::{PrefetchReport, PrefetchStats, Readahead};
+#[cfg(all(feature = "mock", not(loom)))]
+pub(crate) use read_copy::OptimisticCopyFailures;
+pub use read_copy::ReadCopy;
 pub use retention::{RetainRefused, RetainRefusedReason, RetainedFrame, RetentionStats};
 pub use session::{FileSession, ReadSession, SessionFile, SessionRead};
 pub use translation::Translation;
@@ -1184,6 +1188,8 @@ pub struct Pool<D = Driver> {
     pin_entry_pause: Mutex<Option<Arc<ColdGetPauseState>>>,
     #[cfg(all(feature = "mock", not(loom)))]
     pin_entry_pause_armed: crate::sync::AtomicBool,
+    #[cfg(all(feature = "mock", not(loom)))]
+    optimistic_copy_failures: Arc<OptimisticCopyFailures>,
     drop_hook: fn(&mut Pool<D>),
 }
 
@@ -1394,6 +1400,8 @@ impl<D: PoolBackend> Pool<D> {
             pin_entry_pause: Mutex::new(None),
             #[cfg(all(feature = "mock", not(loom)))]
             pin_entry_pause_armed: crate::sync::AtomicBool::new(false),
+            #[cfg(all(feature = "mock", not(loom)))]
+            optimistic_copy_failures: Arc::default(),
             drop_hook: Self::shutdown_for_drop,
         })
     }
@@ -1775,6 +1783,8 @@ impl<D: PoolBackend> Pool<D> {
         reader: &'pool ReaderCtx,
         page: PageId,
     ) -> Result<Get<'pool>, GetError> {
+        #[cfg(all(feature = "mock", not(loom)))]
+        self.optimistic_copy_failures.count_get();
         self.assert_reader_owner(reader);
         let reader_slot = reader.slot();
         assert!(

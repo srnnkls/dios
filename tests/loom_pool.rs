@@ -66,6 +66,28 @@
 //!   }
 //! ```
 //!
+//! Copy-out seam (AT6), delegating to the production optimistic attempt of
+//! `src/pool/read_copy.rs` with a labeled payload abstraction in place of the
+//! volatile word loads, which Loom cannot model (audits.md, Miri model limits,
+//! row "Loom vector fill"). A model fill stores the copied range as at least
+//! two separately scheduled atomic words behind the writer's `Release` fence
+//! after the claim (FR-11); a model copy loads it word by word, so a copy can
+//! observe a fill half done.
+//!
+//! ```text
+//!   pub enum OptimisticCopy { Accepted, Fallback }
+//!   impl PoolModel {
+//!     // entry, stamp, entry, copy into `output` from offset zero, Acquire fence,
+//!     // stamp, mirror; no epoch pin, no CLOCK reference, no fallback get.
+//!     pub fn optimistic_copy(&self, file_generation: u32, page: u32, output: &mut [u8])
+//!         -> OptimisticCopy;
+//!     // the payload abstraction alone: loads `output.len()` bytes of `frame`'s
+//!     // payload from offset zero word by word, with no entry, stamp or mirror
+//!     // load and no fence.
+//!     pub fn unbracketed_copy(&self, frame: u32, output: &mut [u8]);
+//!   }
+//! ```
+//!
 //! Deferred boundary: dead-thread reader-slot deregistration racing epoch advance
 //! (design.md:124-125) is unmodeled — the bounded one-slot seam has no dereg
 //! thread; the RAII/TLS-destructor drop path is T007 single-threaded coverage, and
@@ -74,7 +96,7 @@
 
 #![cfg(loom)]
 
-use dios::loom_model::{DrainSource, PoolModel};
+use dios::loom_model::{DrainSource, OptimisticCopy, PoolModel};
 use dios::{GetError, ResidentLeaseError, RetainRefusedReason, SessionRead};
 use loom::model::Builder;
 use loom::sync::atomic::{AtomicBool, Ordering};
@@ -1219,6 +1241,184 @@ fn a_held_session_view_racing_retirement_two_advances_and_slot_reuse_never_reads
                 Err(GetError::StaleFile { .. })
             ),
             "a view of the retired generation opened after reuse is StaleFile (INV-7)"
+        );
+    });
+}
+
+const COPY_FILE_GENERATION: u32 = 1;
+const COPY_FRAME: u32 = 0;
+const COPY_BYTES: usize = 16;
+const REPUBLISHED_GEN: u8 = 3;
+
+fn optimistic_copy(pool: &PoolModel, file_generation: u32, page: u32) -> Option<[u8; COPY_BYTES]> {
+    let mut output = [0u8; COPY_BYTES];
+    match pool.optimistic_copy(file_generation, page, &mut output) {
+        OptimisticCopy::Accepted => Some(output),
+        OptimisticCopy::Fallback => None,
+    }
+}
+
+fn evict_and_refill(pool: &PoolModel, refill_page: u32, refill_gen: u8) {
+    pool.evict_file(COPY_FILE_GENERATION, HELD_PAGE);
+    let first = pool.poll_file_pass(COPY_FILE_GENERATION, refill_page, refill_gen);
+    let second = pool.poll_file_pass(COPY_FILE_GENERATION, refill_page, refill_gen);
+    assert_eq!(
+        first.matured_freed + second.matured_freed,
+        1,
+        "the optimistic attempt holds no epoch pin, so two advances reclaim and refill its frame"
+    );
+}
+
+#[test]
+fn an_optimistic_copy_racing_eviction_and_reuse_for_another_page_copies_only_its_page() {
+    loom::model(|| {
+        let pool = PoolModel::new(1);
+        pool.make_file_resident(COPY_FILE_GENERATION, HELD_PAGE, HELD_GEN);
+        assert_eq!(
+            optimistic_copy(&pool, COPY_FILE_GENERATION, HELD_PAGE),
+            Some([HELD_GEN; COPY_BYTES]),
+            "a stable resident page copies optimistically"
+        );
+
+        let reader_pool = pool.clone();
+        let reader = thread::spawn(move || {
+            if let Some(output) = optimistic_copy(&reader_pool, COPY_FILE_GENERATION, HELD_PAGE) {
+                assert_eq!(
+                    output, [HELD_GEN; COPY_BYTES],
+                    "an accepted copy holds only the requested page's bytes, never the refill's"
+                );
+            }
+        });
+        evict_and_refill(&pool, INTRUDER_PAGE, INTRUDER_GEN);
+        reader.join().expect("reader thread");
+
+        assert_eq!(
+            optimistic_copy(&pool, COPY_FILE_GENERATION, HELD_PAGE),
+            None,
+            "an evicted page falls back"
+        );
+        assert_eq!(
+            optimistic_copy(&pool, COPY_FILE_GENERATION, INTRUDER_PAGE),
+            Some([INTRUDER_GEN; COPY_BYTES]),
+            "the refilled page copies from the reused frame"
+        );
+    });
+}
+
+fn unbracketed_copy(pool: &PoolModel) -> [u8; COPY_BYTES] {
+    let mut output = [0u8; COPY_BYTES];
+    pool.unbracketed_copy(COPY_FRAME, &mut output);
+    output
+}
+
+#[test]
+fn an_unbracketed_word_by_word_read_racing_a_same_page_refill_can_see_two_publications() {
+    let mix_seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let model_mix_seen = std::sync::Arc::clone(&mix_seen);
+    loom::model(move || {
+        let pool = PoolModel::new(1);
+        pool.make_file_resident(COPY_FILE_GENERATION, HELD_PAGE, HELD_GEN);
+        assert_eq!(
+            unbracketed_copy(&pool),
+            [HELD_GEN; COPY_BYTES],
+            "the payload abstraction reads the resident fill"
+        );
+
+        let reader_pool = pool.clone();
+        let reader_mix_seen = std::sync::Arc::clone(&model_mix_seen);
+        let reader = thread::spawn(move || {
+            let output = unbracketed_copy(&reader_pool);
+            for word in output.chunks_exact(8) {
+                assert!(
+                    word == [HELD_GEN; 8] || word == [REPUBLISHED_GEN; 8],
+                    "every payload word holds one whole fill: {output:?}"
+                );
+            }
+            if output.contains(&HELD_GEN) && output.contains(&REPUBLISHED_GEN) {
+                reader_mix_seen.store(true, Ordering::Relaxed);
+            }
+        });
+        evict_and_refill(&pool, HELD_PAGE, REPUBLISHED_GEN);
+        reader.join().expect("reader thread");
+
+        assert_eq!(
+            unbracketed_copy(&pool),
+            [REPUBLISHED_GEN; COPY_BYTES],
+            "the payload abstraction reads the refill"
+        );
+    });
+    assert!(
+        mix_seen.load(Ordering::Relaxed),
+        "in some schedule an unbracketed read holds words of two fills, so the payload abstraction can tear"
+    );
+}
+
+/// The payload abstraction can tear (the unbracketed check above), so only the
+/// stamps around the copy reject a mix here; an entry-only bracket fails.
+#[test]
+fn an_optimistic_copy_racing_reuse_of_its_frame_for_the_same_page_holds_one_publication() {
+    loom::model(|| {
+        let pool = PoolModel::new(1);
+        pool.make_file_resident(COPY_FILE_GENERATION, HELD_PAGE, HELD_GEN);
+
+        let reader_pool = pool.clone();
+        let reader = thread::spawn(move || {
+            if let Some(output) = optimistic_copy(&reader_pool, COPY_FILE_GENERATION, HELD_PAGE) {
+                assert!(
+                    output == [HELD_GEN; COPY_BYTES] || output == [REPUBLISHED_GEN; COPY_BYTES],
+                    "an accepted copy holds one publication of the page, never words of two fills: {output:?}"
+                );
+            }
+        });
+        evict_and_refill(&pool, HELD_PAGE, REPUBLISHED_GEN);
+        reader.join().expect("reader thread");
+
+        assert_eq!(
+            optimistic_copy(&pool, COPY_FILE_GENERATION, HELD_PAGE),
+            Some([REPUBLISHED_GEN; COPY_BYTES]),
+            "the republished page copies optimistically"
+        );
+    });
+}
+
+#[test]
+fn an_optimistic_copy_racing_empty_file_retirement_and_slot_reuse_never_copies_the_successor() {
+    const OLD_FILE_GENERATION: u32 = 1;
+    const NEW_FILE_GENERATION: u32 = 2;
+    const PAGE: u32 = 7;
+    const NEW_CONTENT: u8 = 0x72;
+
+    loom::model(|| {
+        let pool = PoolModel::new(1);
+        pool.make_file_live(OLD_FILE_GENERATION);
+
+        let reader_pool = pool.clone();
+        let reader = thread::spawn(move || {
+            assert_eq!(
+                optimistic_copy(&reader_pool, OLD_FILE_GENERATION, PAGE),
+                None,
+                "the retired file held no page, so an accepted copy is the successor's bytes"
+            );
+        });
+
+        pool.retire_empty_file(OLD_FILE_GENERATION);
+        pool.poll_retirement();
+        pool.poll_retirement();
+        assert!(
+            pool.register_file_resident(NEW_FILE_GENERATION, PAGE, NEW_CONTENT),
+            "the optimistic attempt holds no epoch pin, so two advancing polls free the slot"
+        );
+        reader.join().expect("reader thread");
+
+        assert_eq!(
+            optimistic_copy(&pool, NEW_FILE_GENERATION, PAGE),
+            Some([NEW_CONTENT; COPY_BYTES]),
+            "the successor's page copies through the reused slot"
+        );
+        assert_eq!(
+            optimistic_copy(&pool, OLD_FILE_GENERATION, PAGE),
+            None,
+            "a copy of the retired generation falls back (INV-7)"
         );
     });
 }

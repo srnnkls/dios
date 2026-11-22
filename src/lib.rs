@@ -375,6 +375,14 @@ pub mod testing {
         fn pause_next_cold_get(&self) -> ColdGetPauseObservation;
         #[cfg(not(loom))]
         fn pause_next_get_between_pin_and_entry(&self) -> PinEntryPauseObservation;
+        /// Arms the forced failure of every optimistic copy attempt until
+        /// [`OptimisticCopyObservation::release`].
+        #[cfg(not(loom))]
+        fn force_optimistic_copy_failures(&self) -> OptimisticCopyObservation;
+        /// Loads every payload word of `frame` with a relaxed atomic load,
+        /// taking no lock; `words` holds one entry per payload word.
+        #[cfg(not(loom))]
+        fn load_payload_words_atomic(&self, frame: ReadFrameIdx, words: &mut [u64]);
     }
 
     #[cfg(feature = "mock")]
@@ -417,6 +425,46 @@ pub mod testing {
             PinEntryPauseObservation {
                 state: self.pause_next_get_between_pin_and_entry_internal(),
             }
+        }
+
+        #[cfg(not(loom))]
+        fn force_optimistic_copy_failures(&self) -> OptimisticCopyObservation {
+            OptimisticCopyObservation {
+                state: self.force_optimistic_copy_failures_internal(),
+            }
+        }
+
+        #[cfg(not(loom))]
+        fn load_payload_words_atomic(&self, frame: ReadFrameIdx, words: &mut [u64]) {
+            self.load_payload_words_atomic_internal(frame, words);
+        }
+    }
+
+    /// Mock-only control of the forced optimistic copy failure, with the
+    /// attempt and fallback counts since it was armed.
+    #[cfg(all(feature = "mock", not(loom)))]
+    #[derive(Debug, Clone)]
+    pub struct OptimisticCopyObservation {
+        state: Arc<crate::pool::OptimisticCopyFailures>,
+    }
+
+    #[cfg(all(feature = "mock", not(loom)))]
+    impl OptimisticCopyObservation {
+        /// Optimistic attempts since the hook was armed.
+        #[must_use]
+        pub fn optimistic_attempts(&self) -> u64 {
+            self.state.attempts()
+        }
+
+        /// Entries into the ordinary `get` path since the hook was armed.
+        #[must_use]
+        pub fn fallback_gets(&self) -> u64 {
+            self.state.fallback_gets()
+        }
+
+        /// Disarms the forced failure; the counts keep running.
+        pub fn release(&self) {
+            self.state.release();
         }
     }
 
@@ -671,8 +719,8 @@ pub use error::{FileRegistrationError, IoError};
 pub use open::DirectIo;
 pub use pool::{
     FileSession, FrameGuard, GRANULE_DEFAULT, Get, GetError, PageId, PendingToken, Pool,
-    PoolBuildError, PoolBuilder, PoolConfigError, PrefetchReport, PrefetchStats, ReadSession,
-    Readahead, ReaderCtx, ReadyResult, RegisterError, ResidentFileLease, ResidentHint,
+    PoolBuildError, PoolBuilder, PoolConfigError, PrefetchReport, PrefetchStats, ReadCopy,
+    ReadSession, Readahead, ReaderCtx, ReadyResult, RegisterError, ResidentFileLease, ResidentHint,
     ResidentLeaseError, RetainRefused, RetainRefusedReason, RetainedFrame, RetentionStats,
     SessionFile, SessionRead,
 };

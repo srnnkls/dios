@@ -240,7 +240,11 @@ tasks:
     bench plan's session arm opens its view with Pool::session_file.
 - id: AT6
   title: Pin the copy-out read with failing tests and bench arms
-  status: pending
+  status: done
+  evidence:
+    tester: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-tester-AT6/native.yaml
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-implementer-AT6/native.yaml
+    review: scopes/active/array-translation/review.yaml#implementation_batches
   domain: pool
   depends_on:
   - AT3

@@ -2,15 +2,15 @@ checkpoint:
   scope_name: array-translation
   scope_path: scopes/active/array-translation
   branch: feat/array-translation
-  last_commit: e7f80f9
+  last_commit: 940b0e9
   updated_at: '2026-11-22T00:00:00Z'
 
   batch:
-    number: 5
-    tasks: [AT5]
+    number: 7
+    tasks: [AT6]
     phase: review
     status: complete
-    waiting_on: "AT5 done: AT-G1 pooled 1.4830, AT-G2 1.0250, AT-G3 0.9124. Next batch: AT6 (copy-out RED)."
+    waiting_on: "AT6 done (RED verified, reviewed, fix rounds 1 and 2). Next batch: AT7 copy-out read."
 
   in_flight_mutations: []
 
@@ -35,3 +35,4 @@ checkpoint:
         compliance: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-review-compliance
         abstractions: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-review-abstractions
         pool_layouts: {requirements: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-review, general: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-review-general, architecture: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-review-architecture, compliance: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-review-compliance, abstractions: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-review-abstractions, fix1_tester: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-fix1-tester, fix1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-fix1, rereview1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-rereview1}
+      AT6: {requirements: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-review, general: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-review-general, architecture: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-review-architecture, compliance: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-review-compliance, abstractions: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-review-abstractions, fix1_tester: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-fix1-tester, fix1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-fix1, rereview1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-rereview1, fix2: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-fix2}

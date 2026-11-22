@@ -726,3 +726,44 @@ pub fn pin_file_session_surface() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn copy_out_surface_is_root_exported() {
+    let output = compile_api_probe(
+        "copy-out-surface",
+        r"
+use dios::{GetError, PageId, PendingToken, Pool, ReadCopy, ReaderCtx};
+
+pub struct OwnedOutcome {
+    pub copy: ReadCopy,
+}
+
+fn inspect_read_copy(copy: ReadCopy) -> Option<PendingToken> {
+    match copy {
+        ReadCopy::Copied => None,
+        ReadCopy::Pending(token) => Some(token),
+        ReadCopy::Busy => None,
+    }
+}
+
+pub fn pin_copy_out_surface() {
+    let read_copy: for<'pool, 'reader, 'output> fn(
+        &'pool Pool,
+        &'reader ReaderCtx,
+        PageId,
+        u32,
+        &'output mut [u8],
+    ) -> Result<ReadCopy, GetError> = Pool::read_copy;
+    let copied = OwnedOutcome {
+        copy: ReadCopy::Copied,
+    };
+    std::hint::black_box((read_copy, inspect_read_copy, copied));
+}
+",
+    );
+    assert!(
+        output.status.success(),
+        "copy-out surface probe failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

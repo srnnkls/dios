@@ -181,7 +181,7 @@ Every axis resolves to a provider rule, a decision stated here, or `n/a`. The ex
 | `Pool::session_file` | `fn session_file<'pool>(&'pool self, reader: &'pool ReaderCtx, file: FileId) -> Result<FileSession<'pool>, GetError>` | Pin the epoch and validate one file in one call |
 | `FileSession::page` | `fn(&self, granule_idx: u32) -> Result<SessionRead<'_>, GetError>` | As `SessionFile::page` |
 | `SessionFile::page` | `fn(&self, granule_idx: u32) -> Result<SessionRead<'_>, GetError>` | `SessionRead::Hit(&[u8])` or `SessionRead::Absent` |
-| `Pool::read_copy` | `fn(&self, reader: &ReaderCtx, page: PageId, offset_bytes: u32, output: &mut [u8]) -> Result<ReadCopy<'_>, GetError>` | `ReadCopy::Copied`, `Pending(PendingToken)` or `Busy` |
+| `Pool::read_copy` | `fn(&self, reader: &ReaderCtx, page: PageId, offset_bytes: u32, output: &mut [u8]) -> Result<ReadCopy, GetError>` | `ReadCopy::Copied`, `Pending(PendingToken)` or `Busy`; no lifetime (AT-D25) |
 | `GetError::BeyondFileBound` | `{ page: PageId }` | Granule index at or above the build bound |
 | `PoolConfigError::FileGranulesMaxNotPowerOfTwo` | `{ requested: u32 }` | Zero or non-power-of-two bound |
 | `PoolConfigError::FrameCountAboveTranslationLimit` | `{ requested: u32, limit: u32 }` | Frame count above `2^30` |
