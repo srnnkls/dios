@@ -23,9 +23,9 @@ Each AT-G3 row records, before the first and after the last timed iteration (rul
 
 - `transparent_hugepage`: the bracketed mode read from `/sys/kernel/mm/transparent_hugepage/enabled`.
 - `anonhugepages_kib`: the `AnonHugePages` line of the arena mapping in the process's own `/proc/self/smaps`.
-- `arena_kib`: the `Size` line of that mapping.
+- `mapping_kib`: the `Size` line of that mapping.
 
-A gated run is valid only when `anonhugepages_kib` equals `arena_kib` at both points;
+A gated run is valid only when `anonhugepages_kib` equals `mapping_kib` at both points;
 an equal-reach run is valid only when `anonhugepages_kib` is 0 at both points. An
 invalid run is excluded and recorded, never counted as a failure or a pass. Each
 AT-G3 manifest pins its expected THP mode.
@@ -194,3 +194,24 @@ builds' pairs in layout order.
   1,000 reads: session 90 to 98 (377a0ad 81, fdada37 98 to 101), mmap 75. On layout 64,
   55 % of the session loop's mispredicts fall on the chunk-loop bound, 8 % on the
   reference-bit test and 6 % on the entry test.
+
+## AT-G3 under the bench-thp-madvise profile (2026-11-22)
+
+Runner of 6ba0592 (`c1c162b4`), manifests frozen in e7f80f9, captures at e7f80f9 on
+`nix`, 30 measured fresh-process AB/BA pairs each, lane `resident_access_session_fold_256m`
+(65,536 resident pages, a 4 KiB fold per request). The gated row runs under THP `madvise`
+(`bench-thp-madvise`, guard `DIOS_BENCH_HOST_PROFILE`), the equal-reach row under the
+ordinary profile.
+
+| Row | THP | Geomean | CI95 upper | Bound | Result | Evidence |
+|-----|-----|--------:|-----------:|------:|--------|----------|
+| AT-G3, dios arena on 2 MiB pages | `madvise` | 0.9104 | 0.9124 | 1.00 | passed | `at-g3/` |
+| equal reach, arena on 4 KiB pages | `never` | 1.1305 | 1.1330 | | reported (AT-D12) | `at-g3-equal-reach/` |
+
+- Nanoseconds per fold, mmap against session: 406.7 / 370.2 (gated), 399.5 / 451.7
+  (equal reach). Plain-array floor 408.0 and 398.7; flat mmap loop 400.3 and 400.4.
+- Witness: in every gated row the dios arena holds 262,144 KiB of `AnonHugePages` of
+  262,144 KiB before and after the timed loop; the ext4 mapping, the flat loop and the
+  floor array stay on 4 KiB pages (`AnonHugePages` 0, `FilePmdMapped` 0). Every
+  equal-reach row holds no huge page.
+

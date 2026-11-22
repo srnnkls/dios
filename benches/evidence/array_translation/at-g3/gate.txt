@@ -1,0 +1,1 @@
+gate paired: pairs 30, ratio geomean 0.9104, ci95 upper 0.9124, threshold 1.0000 -> PASS

@@ -2,15 +2,15 @@ checkpoint:
   scope_name: array-translation
   scope_path: scopes/active/array-translation
   branch: feat/array-translation
-  last_commit: a3f439c
+  last_commit: e7f80f9
   updated_at: '2026-11-22T00:00:00Z'
 
   batch:
     number: 5
     tasks: [AT5]
     phase: review
-    status: in_progress
-    waiting_on: "AT-G1 passed pooled at 6ba0592 (1.4830, AT-D24); AT-G2 passed (1.0250). AT5 open on AT-G3: owner bench-thp-madvise host profile on nix."
+    status: complete
+    waiting_on: "AT5 done: AT-G1 pooled 1.4830, AT-G2 1.0250, AT-G3 0.9124. Next batch: AT6 (copy-out RED)."
 
   in_flight_mutations: []
 
