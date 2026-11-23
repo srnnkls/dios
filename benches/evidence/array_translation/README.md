@@ -83,11 +83,11 @@ chunks (AT-D16); the flat column is the reported, ungated ratio over `mmap_rando
 | AT-G1 | layout 16 | 3e373a9, flat base | 1.9131 | 1.9359 | 1.50 | failed | | `at-g1-failed-3e373a9/` |
 | AT-G1 | layout 32 | 3e373a9, flat base | 1.9666 | 1.9850 | 1.50 | failed | | `at-g1-failed-3e373a9/` |
 | AT-G1 | layout 64 | 3e373a9, flat base | 1.9107 | 1.9234 | 1.50 | failed | | `at-g1-failed-3e373a9/` |
-| AT-G1 | layout 16 | 377a0ad | 1.4698 | 1.4880 | 1.50 | passed | 1.5612 / 1.5750 | `at-g1/layout-16/` |
-| AT-G1 | layout 32 | 377a0ad | 1.4694 | 1.4867 | 1.50 | passed | 1.5682 / 1.5889 | `at-g1/layout-32/` |
-| AT-G1 | layout 64 | 377a0ad | 1.4607 | 1.4676 | 1.50 | passed | 1.5670 / 1.5870 | `at-g1/layout-64/` |
+| AT-G1 | layout 16 | 377a0ad | 1.4698 | 1.4880 | 1.50 | passed | 1.5612 / 1.5750 | `at-g1-377a0ad/layout-16/` |
+| AT-G1 | layout 32 | 377a0ad | 1.4694 | 1.4867 | 1.50 | passed | 1.5682 / 1.5889 | `at-g1-377a0ad/layout-32/` |
+| AT-G1 | layout 64 | 377a0ad | 1.4607 | 1.4676 | 1.50 | passed | 1.5670 / 1.5870 | `at-g1-377a0ad/layout-64/` |
 | AT-G2 | default | 3e373a9, flat base | 1.0479 | 1.0507 | 1.10 | passed | | `at-g2-3e373a9/` |
-| AT-G2 | default | 377a0ad | 1.0236 | 1.0301 | 1.10 | passed | 1.0245 / 1.0319 | `at-g2/` |
+| AT-G2 | default | 377a0ad | 1.0236 | 1.0301 | 1.10 | passed | 1.0245 / 1.0319 | `at-g2-377a0ad/` |
 
 ns per read at 377a0ad, from `report.json`:
 
@@ -118,10 +118,10 @@ capture.
 | Gate | Build | Candidate | Geomean | CI95 upper | Bound | Result | Evidence |
 |------|-------|-----------|--------:|-----------:|------:|--------|----------|
 | AT-G8 | default, shared runner | f193292 against 8597238 | 0.5454 | 0.5722 | 0.85 | passed | `at-g8/` |
-| AT-G1 | layout 16 | fdada37 | 1.4881 | 1.5112 | 1.50 | failed | `at-g1/layout-16/` |
-| AT-G1 | layout 32 | fdada37 | 1.5487 | 1.5541 | 1.50 | failed | `at-g1/layout-32/` |
-| AT-G1 | layout 64 | fdada37 | 1.4491 | 1.4619 | 1.50 | passed | `at-g1/layout-64/` |
-| AT-G2 | default | fdada37 | 1.0232 | 1.0273 | 1.10 | passed | `at-g2/` |
+| AT-G1 | layout 16 | fdada37 | 1.4881 | 1.5112 | 1.50 | failed | `at-g1-fdada37/layout-16/` |
+| AT-G1 | layout 32 | fdada37 | 1.5487 | 1.5541 | 1.50 | failed | `at-g1-fdada37/layout-32/` |
+| AT-G1 | layout 64 | fdada37 | 1.4491 | 1.4619 | 1.50 | passed | `at-g1-fdada37/layout-64/` |
+| AT-G2 | default | fdada37 | 1.0232 | 1.0273 | 1.10 | passed | `at-g2-fdada37/` |
 
 - AT-G8: `get` reads 23.0 ns per hit on the base, in its two stack-alignment modes
   (`at-g8/get-stack-alignment.md`), and 12.4 ns after the hit-path change; the difference
@@ -170,14 +170,14 @@ captures are retained in `at-g1-fdada37/` and `at-g2-fdada37/`.
 
 | Gate | Build | Geomean | CI95 upper | Bound | Result | Evidence |
 |------|-------|--------:|-----------:|------:|--------|----------|
-| AT-G1 | layout 16 | 1.3834 | 1.4000 | 1.50 | passed | `at-g1/layout-16/` |
-| AT-G1 | layout 32 | 1.4795 | 1.4909 | 1.50 | passed | `at-g1/layout-32/` |
-| AT-G1 | layout 64 | 1.5495 | 1.5537 | 1.50 | failed | `at-g1/layout-64/` |
-| AT-G1 | pooled, 90 pairs (gated, AT-D24) | 1.4692 | 1.4830 | 1.50 | passed | `at-g1/paired.csv`, `at-g1/gate.txt` |
-| AT-G2 | default | 1.0216 | 1.0250 | 1.10 | passed | `at-g2/` |
+| AT-G1 | layout 16 | 1.3834 | 1.4000 | 1.50 | passed | `at-g1-6ba0592/layout-16/` |
+| AT-G1 | layout 32 | 1.4795 | 1.4909 | 1.50 | passed | `at-g1-6ba0592/layout-32/` |
+| AT-G1 | layout 64 | 1.5495 | 1.5537 | 1.50 | failed | `at-g1-6ba0592/layout-64/` |
+| AT-G1 | pooled, 90 pairs (gated, AT-D24) | 1.4692 | 1.4830 | 1.50 | passed | `at-g1-6ba0592/paired.csv`, `at-g1-6ba0592/gate.txt` |
+| AT-G2 | default | 1.0216 | 1.0250 | 1.10 | passed | `at-g2-6ba0592/` |
 
 AT-G1 is decided on the pooled row (AT-D24, 2026-11-20); the three build rows are
-reported. `validate.py pool-layouts` (a3f439c) wrote `at-g1/paired.csv` from the three
+reported. `validate.py pool-layouts` (a3f439c) wrote `at-g1-6ba0592/paired.csv` from the three
 builds' pairs in layout order.
 
 - Nanoseconds per read, chunked mmap arm against session arm: 4.40 / 6.09 (layout 16),
@@ -186,7 +186,7 @@ builds' pairs in layout order.
 - The `get` loop's machine code in the runner of 6ba0592 matches the AT-G8 candidate
   executable instruction for instruction; only code addresses differ.
 - At fdada37 layouts 16 and 32 failed and 64 passed; here 64 fails and 16 and 32 pass.
-- Single `perf stat` processes per build (`at-g1/profile/counters.txt`): the session arm
+- Single `perf stat` processes per build (`at-g1-6ba0592/profile/counters.txt`): the session arm
   executes 78.5 instructions and 15.4 branches per read, against 84.1 and 16.4 at fdada37
   and 377a0ad; the chunked mmap arm 63.2 and 12.2. Cycles per read stay where they were:
   26.3 to 27.9 for the session arm (377a0ad 26.5 to 26.6, fdada37 27.9 to 28.3), 17.5
@@ -205,8 +205,8 @@ ordinary profile.
 
 | Row | THP | Geomean | CI95 upper | Bound | Result | Evidence |
 |-----|-----|--------:|-----------:|------:|--------|----------|
-| AT-G3, dios arena on 2 MiB pages | `madvise` | 0.9104 | 0.9124 | 1.00 | passed | `at-g3/` |
-| equal reach, arena on 4 KiB pages | `never` | 1.1305 | 1.1330 | | reported (AT-D12) | `at-g3-equal-reach/` |
+| AT-G3, dios arena on 2 MiB pages | `madvise` | 0.9104 | 0.9124 | 1.00 | passed | `at-g3-6ba0592/` |
+| equal reach, arena on 4 KiB pages | `never` | 1.1305 | 1.1330 | | reported (AT-D12) | `at-g3-equal-reach-6ba0592/` |
 
 - Nanoseconds per fold, mmap against session: 406.7 / 370.2 (gated), 399.5 / 451.7
   (equal reach). Plain-array floor 408.0 and 398.7; flat mmap loop 400.3 and 400.4.
