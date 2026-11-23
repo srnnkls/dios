@@ -8,10 +8,10 @@
     "dios_copy"
   ],
   "executables": [
-    "dc7798e0e7f7e2220e77eef8d870cd1f36402a2cb2ade22d0829d640d9ccd5ab",
-    "dc7798e0e7f7e2220e77eef8d870cd1f36402a2cb2ade22d0829d640d9ccd5ab"
+    "623e2a10c1d0a9fb073027fd916dc0f6b85130dcda7191cae3f5181021f926d9",
+    "623e2a10c1d0a9fb073027fd916dc0f6b85130dcda7191cae3f5181021f926d9"
   ],
-  "executable_sha256": "dc7798e0e7f7e2220e77eef8d870cd1f36402a2cb2ade22d0829d640d9ccd5ab",
+  "executable_sha256": "623e2a10c1d0a9fb073027fd916dc0f6b85130dcda7191cae3f5181021f926d9",
   "fixture_sha256": "54ae45ec997182e04336fd1f928503fc1b8ac46f070c796332ca0133b03f1d2f",
   "qualification_pairs": 2,
   "measured_pairs": 30,
@@ -85,7 +85,7 @@
     "src/pool/prefetch/state.rs": "223d70a4a3bcaf268a0ea13b9d1f74eece23d9f86f09145656010843c066f530",
     "src/pool/prefetch/tests.rs": "e293f1f2abb2c9750db3f2e2cd495aca3ace1e871691ef503ce51e325a1c9818",
     "src/pool/prefetch.rs": "66b64ade3102fbeef9d5655f27cf6953c0a29efdd8ecf4ca9dd8a273a813244c",
-    "src/pool/read_copy.rs": "6d4027b87d84206363425238a792fe6b5eea630996d4f582dac58a032cbf5bdc",
+    "src/pool/read_copy.rs": "ae6913573b2625ef0a3361524bb5cbfea9b806332fc5a45b87019fb4e10fe58d",
     "src/pool/read_spans.rs": "8cc9d39cb270d5a6ace073701c4a24b729990587f706db6d2a29836153c6149a",
     "src/pool/retention.rs": "a93731063a78a223bd5d5cc674c75b4d727876c62cac4687bb131c3ab22adf06",
     "src/pool/session.rs": "0468e1700cc551525f4f3707e1ec8f3a331d2318222f60a1688e0b51ee74e585",
