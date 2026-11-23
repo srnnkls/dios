@@ -31,15 +31,21 @@ for both targets with the rustc version and replaces any row that differs.
 
 | Step | Rust | x86-64 | aarch64 |
 |------|------|--------|---------|
-| First entry load | `AtomicU32::load(Acquire)` | `mov` | `ldar` |
-| First stamp load | `AtomicU64::load(Acquire)` | `mov` | `ldar` |
-| Second entry load | `AtomicU32::load(Acquire)` | `mov` | `ldar` |
-| Payload copy | `read_volatile::<u64>` per word | `mov` | `ldr` |
+| First entry load | `AtomicU32::load(Acquire)` | `mov` | `ldapr` |
+| First stamp load | `AtomicU64::load(Acquire)` | `mov` | `ldapr` |
+| Second entry load | `AtomicU32::load(Acquire)` | `mov` | `ldapr` |
+| Payload copy | `read_volatile::<u64>` per word, one 16-byte store per pair | `movsd`, `movsd`, `movlhps`, `movups` per pair; `mov` for a lone word | `ldr`, `ldr`, `stp` per pair; `ldr` for a lone word |
 | Fence | `fence(Acquire)` | none | `dmb ishld` |
-| Second stamp load | `AtomicU64::load(Acquire)` | `mov` | `ldar` |
-| Mirror load | `AtomicU64::load(Acquire)` | `mov` | `ldar` |
+| Second stamp load | `AtomicU64::load(Acquire)` | `mov` | `ldapr` |
+| Mirror load | `AtomicU64::load(Acquire)` | `mov` | `ldapr` |
 | Writer fence after claim | `fence(Release)` | none | `dmb ish` |
 | Writer payload store | `AtomicU64::store(Relaxed)` | `mov` | `str` |
+
+Recorded with rustc 1.96.0 (ac68faa20, LLVM 22.1.2): x86-64 from `dios_copy_loop` in
+the AT-G5 `mmap_workloads` release runner, which holds no writer, so its writer rows
+follow the source; aarch64 from `Pool::read_copy` and `Frames::fill` in the release
+`read_copy` test binary for `aarch64-apple-darwin`, whose RCpc target lowers an
+`Acquire` load to `ldapr`.
 
 - Stamp: each stamp load is `Acquire`, so the second entry load and the payload loads
   cannot move above the first stamp load on either target or in the compiler.
@@ -49,7 +55,7 @@ for both targets with the rustc version and replaces any row that differs.
 - Volatile: an `Acquire` load orders only what follows it, so the volatile payload
   loads need the `Acquire` fence to stay before the second stamp load. On x86-64 TSO
   never reorders loads with loads and the fence is a compiler barrier only; on aarch64
-  `dmb ishld` orders the preceding `ldr`s before the following `ldar`.
+  `dmb ishld` orders the preceding `ldr`s before the following `ldapr`.
 - Compiler: volatile accesses are neither elided nor reordered with each other, and
   LLVM does not move a load across an `Acquire` fence or an `Acquire` load in the
   direction that would empty the bracket. Volatile loads carry no synchronization of
