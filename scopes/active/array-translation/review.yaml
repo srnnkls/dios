@@ -517,3 +517,19 @@ implementation_batches:
     residuals: ["PoolModel::make_file_resident lacks a # Panics doc under cfg(loom) clippy since 6ba0592; mise run lint does not build cfg(loom); fold into AT7", "tests/drp009_gate_contract.rs converter_binds_the_host_topology_to_the_lane failed once in a full run during fix round 2 and passed three reruns; unrelated to the copy path"]
     persists: []
   local_gates: "mise run lint clean; cargo test --features bench,mock RED only in the AT6 cases, each by assertion (confinement, three read_copy cases, warm-copy zero-alloc); Loom 23 passed with the three AT6 copy cases failing by assertion; Miri AC-13 case reports the race against the non-atomic Frames::fill until AT7; Python suite 33 OK."
+- batch: 8
+  tasks: [AT7]
+  reviewed_at: '2026-11-23T00:00:00Z'
+  status: review_passed_gates_open
+  reports: .tropos/peer/array-translation/20261115T161731Z-fba2be/
+  waves:
+  - subject: copy-out read (AD-7 attempt, one get fallback, atomic payload writers)
+    reviewers: "general, architecture, compliance and abstractions by claude-opus; peer-gpt6-astra unavailable (bash 3.2); general, compliance and abstractions passed"
+    admitted: [F1 three borrowing transfer helpers dead on the Linux bench+mock lint after the writers moved to the raw-pointer forms]
+    fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b8-fix1/native.yaml
+    rereview: "orchestrator verification: x86_64-linux clippy --lib and mise run lint on nix clean (b8-fix1/gate-orchestrator.txt); a cfg-only fix whose falsifier is the Linux lint"
+    out_of_list_edit: "src/driver/read_vector.rs (mock vector fills, named by audits.md)"
+    orchestrator_edits: ["mise.toml: mise run miri also runs tests/read_copy.rs"]
+    open: ["audits.md: record the generated instructions of read_copy.rs on x86-64 and aarch64 (with the AT-G5/AT-G6 captures)"]
+    persists: []
+  local_gates: "mise run lint clean on macOS and nix; RUSTFLAGS=--cfg loom clippy --lib clean; cargo test --features bench,mock all green; Loom 26/26; Miri read_copy 3 passed, 1 ignored; implementer: mise run miri, mise run asan 290, docs clean; Python 33 OK."

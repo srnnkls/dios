@@ -799,6 +799,10 @@ impl PoolModel {
 
     /// Setup for the file-generation liveness model: installs one production
     /// live-file entry and makes its exact page resident in frame zero.
+    ///
+    /// # Panics
+    ///
+    /// If the model's file slot is already occupied.
     pub fn make_file_resident(&self, file_generation: u32, page: u32, content_generation: u8) {
         assert!(
             self.register_file_resident(file_generation, page, content_generation),

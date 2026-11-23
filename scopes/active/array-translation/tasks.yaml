@@ -276,7 +276,11 @@ tasks:
     warm-prepare covers them (AC-18, AC-19).
 - id: AT7
   title: Implement the copy-out read
-  status: pending
+  status: in_progress
+  blocked_on: "AT-G5 and AT-G6 on nix, three layout builds each (AC-21, all three pass)."
+  evidence:
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b8-implementer-AT7/native.yaml
+    review: scopes/active/array-translation/review.yaml#implementation_batches
   domain: pool
   depends_on:
   - AT6

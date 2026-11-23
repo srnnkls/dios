@@ -433,7 +433,65 @@ impl Frames {
     /// Fills the token's whole granule with `byte`, standing in for a read
     /// completion writing the frame's contents.
     pub(crate) fn fill(&self, token: &mut InFlightFrame, byte: u8) {
-        self.transfer_mut(token, 0, self.granule).fill(byte);
+        let destination = self.transfer_ptr(token, 0, self.granule);
+        // SAFETY: `transfer_ptr` keeps the granule inside the arena and
+        // `token` is its frame's unique write authority for this call.
+        unsafe { Self::store_payload_bytes(destination, self.granule as usize, byte) };
+    }
+
+    /// Stores `byte` over the payload range `[destination, destination +
+    /// len)` as same-width relaxed atomic word stores behind one `Release`
+    /// fence (FR-11), so an optimistic copy that observes a store observes
+    /// the claim before it. A word the range covers in part is loaded,
+    /// merged and stored whole.
+    ///
+    /// # Safety
+    ///
+    /// The range lies inside this arena's frames, and the caller holds the
+    /// write token of every frame it touches for the whole call.
+    #[cfg(not(loom))]
+    pub(crate) unsafe fn store_payload_bytes(destination: *mut u8, len: usize, byte: u8) {
+        const WORD_BYTES: usize = size_of::<u64>();
+        let pattern = u64::from_ne_bytes([byte; WORD_BYTES]);
+        let mut skip = destination.addr() % WORD_BYTES;
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "rounding down to a word boundary aligns the pointer"
+        )]
+        let mut word = destination.wrapping_sub(skip).cast::<u64>();
+        let mut remaining = len;
+        crate::sync::fence(Ordering::Release);
+        while remaining > 0 {
+            let count = (WORD_BYTES - skip).min(remaining);
+            // SAFETY: frame bases are word-aligned, so the aligned word
+            // covering a byte of the range lies in that byte's frame, whose
+            // token the caller holds; every other access to it is atomic.
+            let cell = unsafe { AtomicU64::from_ptr(word) };
+            let value = if count == WORD_BYTES {
+                pattern
+            } else {
+                let mut bytes = cell.load(Ordering::Relaxed).to_ne_bytes();
+                bytes[skip..skip + count].fill(byte);
+                u64::from_ne_bytes(bytes)
+            };
+            cell.store(value, Ordering::Relaxed);
+            remaining -= count;
+            skip = 0;
+            word = word.wrapping_add(1);
+        }
+    }
+
+    /// Loom does not model the arena's bytes; the labeled payload of
+    /// [`Frames::fill_model_payload`] carries the writer's ordering.
+    ///
+    /// # Safety
+    ///
+    /// The range lies inside this arena's frames, and the caller holds the
+    /// write token of every frame it touches for the whole call.
+    #[cfg(loom)]
+    pub(crate) unsafe fn store_payload_bytes(destination: *mut u8, len: usize, byte: u8) {
+        // SAFETY: the caller's token excludes every other access to the range.
+        unsafe { std::ptr::write_bytes(destination, byte, len) };
     }
 
     /// Fills the Loom model's labeled payload of the token's frame with
@@ -470,6 +528,7 @@ impl Frames {
     /// # Panics
     ///
     /// If the range leaves the frame.
+    #[cfg(any(not(target_os = "linux"), test))]
     pub(crate) fn transfer_mut<'token>(
         &'token self,
         token: &'token mut InFlightFrame,
@@ -642,10 +701,14 @@ impl Frames {
     ///
     /// If `frame` is out of range for the configured count.
     #[cfg_attr(
-        not(all(feature = "mock", not(loom))),
-        expect(dead_code, reason = "the scaffolded copy attempt reads no payload")
+        loom,
+        expect(
+            dead_code,
+            reason = "the Loom build copies the labeled model payload instead"
+        )
     )]
     #[must_use]
+    #[inline]
     pub(crate) fn optimistic_payload_ptr(&self, frame: ReadFrameIdx) -> *const u64 {
         let index = self.checked_index(frame);
         #[expect(

@@ -5,15 +5,17 @@
 #[cfg(all(feature = "mock", not(loom)))]
 use std::sync::Arc;
 
-use crate::sync::AtomicU64;
 #[cfg(all(feature = "mock", not(loom)))]
-use crate::sync::{AtomicBool, Ordering};
+use crate::sync::AtomicBool;
+use crate::sync::{AtomicU64, Ordering, fence};
 
-#[cfg(any(loom, feature = "mock"))]
-use super::ReadFrameIdx;
 #[cfg(loom)]
 use super::frames::MODEL_PAYLOAD_WORDS;
-use super::{Frames, GetError, PageId, PendingToken, Pool, PoolBackend, ReaderCtx, Translation};
+use super::translation::entry_frame;
+use super::{
+    Frames, Get, GetError, PageId, PendingToken, Pool, PoolBackend, ReadFrameIdx, ReaderCtx,
+    Translation, file_generation_is_live,
+};
 
 /// Outcome of [`Pool::read_copy`]; the output holds the requested bytes only
 /// on `Copied`.
@@ -40,10 +42,6 @@ pub enum ReadCopy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptimisticCopy {
     /// The output holds the requested bytes of one publication of the page.
-    #[cfg_attr(
-        not(loom),
-        expect(dead_code, reason = "the scaffolded attempt always falls back")
-    )]
     Accepted,
     /// The attempt proved nothing; the caller takes one ordinary `get`.
     Fallback,
@@ -80,6 +78,13 @@ impl<D: PoolBackend> Pool<D> {
             "file identity used with a foreign pool"
         );
         copy_range_assert(self.granule, offset_bytes, output.len());
+        #[cfg(all(feature = "mock", not(loom)))]
+        if self
+            .optimistic_copy_failures
+            .record_attempt_forced_to_fail()
+        {
+            return self.read_copy_fallback(reader, page, offset_bytes, output);
+        }
         match optimistic_copy(
             &self.table,
             &self.frames,
@@ -89,7 +94,28 @@ impl<D: PoolBackend> Pool<D> {
             output,
         ) {
             OptimisticCopy::Accepted => Ok(ReadCopy::Copied),
-            OptimisticCopy::Fallback => Ok(ReadCopy::Busy),
+            OptimisticCopy::Fallback => self.read_copy_fallback(reader, page, offset_bytes, output),
+        }
+    }
+
+    /// The one ordinary `get` behind a failed optimistic attempt.
+    #[cold]
+    #[inline(never)]
+    fn read_copy_fallback(
+        &self,
+        reader: &ReaderCtx,
+        page: PageId,
+        offset_bytes: u32,
+        output: &mut [u8],
+    ) -> Result<ReadCopy, GetError> {
+        match self.get(reader, page)? {
+            Get::Hit(guard) => {
+                let start = offset_bytes as usize;
+                output.copy_from_slice(&guard[start..start + output.len()]);
+                Ok(ReadCopy::Copied)
+            }
+            Get::Pending(token) => Ok(ReadCopy::Pending(token)),
+            Get::Busy => Ok(ReadCopy::Busy),
         }
     }
 
@@ -132,17 +158,76 @@ impl<D: PoolBackend> Pool<D> {
 
 /// The optimistic attempt of FR-10 over the parts of a pool, shared with the
 /// Loom seam: it takes no epoch pin, sets no CLOCK reference and never falls
-/// back itself.
+/// back itself. An equal stamp around the copy holds one publication of the
+/// frame, and the entry loaded inside that bracket names it as `page`'s
+/// (AD-7, INV-2).
+#[inline]
 pub(crate) fn optimistic_copy(
-    _translation: &Translation,
+    translation: &Translation,
     frames: &Frames,
-    _file_live_generations: &[AtomicU64],
-    _page: PageId,
+    file_live_generations: &[AtomicU64],
+    page: PageId,
     offset_bytes: u32,
     output: &mut [u8],
 ) -> OptimisticCopy {
     copy_range_assert(frames.granule(), offset_bytes, output.len());
-    OptimisticCopy::Fallback
+    let Some(entry) = translation.bounded_entry(page) else {
+        return OptimisticCopy::Fallback;
+    };
+    let Some(frame) = entry_frame(entry) else {
+        return OptimisticCopy::Fallback;
+    };
+    let stamp = frames.state_word(frame);
+    if !Frames::word_is_resident(stamp) {
+        return OptimisticCopy::Fallback;
+    }
+    if entry_frame(entry) != Some(frame) {
+        return OptimisticCopy::Fallback;
+    }
+    copy_payload(frames, frame, offset_bytes, output);
+    fence(Ordering::Acquire);
+    if frames.state_word(frame) != stamp {
+        return OptimisticCopy::Fallback;
+    }
+    if !file_generation_is_live(
+        &file_live_generations[page.file().slot() as usize],
+        page.file(),
+    ) {
+        return OptimisticCopy::Fallback;
+    }
+    OptimisticCopy::Accepted
+}
+
+/// The copy step: one volatile load per payload word the range covers,
+/// through the `Frames::optimistic_payload_ptr` seam (TR-6).
+#[cfg(not(loom))]
+#[inline]
+fn copy_payload(frames: &Frames, frame: ReadFrameIdx, offset_bytes: u32, output: &mut [u8]) {
+    const WORD_BYTES: usize = size_of::<u64>();
+    let payload = frames.optimistic_payload_ptr(frame);
+    let offset = offset_bytes as usize;
+    let mut word_index = offset / WORD_BYTES;
+    let mut skip = offset % WORD_BYTES;
+    let mut copied = 0;
+    while copied < output.len() {
+        // SAFETY: the range assertion keeps every covered word inside the
+        // granule of the frame the seam bound-checked and aligned, in the
+        // arena that outlives `frames`. A writer racing this load stores
+        // whole words atomically behind its claim, and the stamp bracket
+        // rejects any copy it overlapped (audits.md, ordering audit).
+        let word = unsafe { payload.wrapping_add(word_index).read_volatile() }.to_ne_bytes();
+        let count = (WORD_BYTES - skip).min(output.len() - copied);
+        output[copied..copied + count].copy_from_slice(&word[skip..skip + count]);
+        copied += count;
+        word_index += 1;
+        skip = 0;
+    }
+}
+
+#[cfg(loom)]
+fn copy_payload(frames: &Frames, frame: ReadFrameIdx, offset_bytes: u32, output: &mut [u8]) {
+    assert_eq!(offset_bytes, 0, "the Loom model copies from offset zero");
+    copy_payload_words(frames, frame, output);
 }
 
 /// The copy step of the optimistic attempt over the Loom model's labeled
@@ -199,6 +284,16 @@ impl OptimisticCopyFailures {
 
     pub(crate) fn release(&self) {
         self.armed.store(false, Ordering::Release);
+    }
+
+    /// Counts one optimistic attempt once the hook was armed; `true` while
+    /// armed, when the attempt fails without running.
+    #[inline]
+    fn record_attempt_forced_to_fail(&self) -> bool {
+        if self.counting.load(Ordering::Relaxed) {
+            self.attempts.fetch_add(1, Ordering::Relaxed);
+        }
+        self.armed.load(Ordering::Acquire)
     }
 
     pub(crate) fn attempts(&self) -> u64 {
