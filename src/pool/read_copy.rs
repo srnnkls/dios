@@ -160,7 +160,7 @@ impl<D: PoolBackend> Pool<D> {
 /// Loom seam: it takes no epoch pin, sets no CLOCK reference and never falls
 /// back itself. An equal stamp around the copy holds one publication of the
 /// frame, and the entry loaded inside that bracket names it as `page`'s
-/// (AD-7, INV-2).
+/// (AD-7, INV-2). Outside Loom the caller has run [`copy_range_assert`].
 #[inline]
 pub(crate) fn optimistic_copy(
     translation: &Translation,
@@ -170,6 +170,7 @@ pub(crate) fn optimistic_copy(
     offset_bytes: u32,
     output: &mut [u8],
 ) -> OptimisticCopy {
+    #[cfg(loom)]
     copy_range_assert(frames.granule(), offset_bytes, output.len());
     let Some(entry) = translation.bounded_entry(page) else {
         return OptimisticCopy::Fallback;
@@ -214,25 +215,55 @@ fn copy_payload(frames: &Frames, frame: ReadFrameIdx, offset_bytes: u32, output:
         // covered word. A writer racing this load stores whole words
         // atomically behind its claim, and the stamp bracket rejects any
         // copy it overlapped (audits.md, ordering audit).
-        unsafe { payload.wrapping_add(word_index).read_volatile() }.to_ne_bytes()
+        unsafe { payload.wrapping_add(word_index).read_volatile() }
     };
     let mut rest = output;
     let skip = offset % WORD_BYTES;
     if skip != 0 {
         let count = (WORD_BYTES - skip).min(rest.len());
         let (head, tail) = rest.split_at_mut(count);
-        head.copy_from_slice(&load_word(word_index)[skip..skip + count]);
+        head.copy_from_slice(&load_word(word_index).to_ne_bytes()[skip..skip + count]);
         rest = tail;
         word_index += 1;
     }
+    let (pairs, rest) = rest.as_chunks_mut::<{ 2 * WORD_BYTES }>();
+    for pair in pairs {
+        copy_payload_store_pair(pair, load_word(word_index), load_word(word_index + 1));
+        word_index += 2;
+    }
     let mut words = rest.chunks_exact_mut(WORD_BYTES);
     for chunk in &mut words {
-        chunk.copy_from_slice(&load_word(word_index));
+        chunk.copy_from_slice(&load_word(word_index).to_ne_bytes());
         word_index += 1;
     }
     let last = words.into_remainder();
     if !last.is_empty() {
-        last.copy_from_slice(&load_word(word_index)[..last.len()]);
+        last.copy_from_slice(&load_word(word_index).to_ne_bytes()[..last.len()]);
+    }
+}
+
+/// Writes two loaded payload words with one 16-byte store, so a caller's
+/// vector load of the output forwards from it instead of stalling on two
+/// 8-byte stores.
+#[cfg(not(loom))]
+#[inline]
+fn copy_payload_store_pair(pair: &mut [u8; 16], low: u64, high: u64) {
+    cfg_select! {
+        target_arch = "x86_64" => {
+            use std::arch::x86_64::{__m128i, _mm_set_epi64x, _mm_storeu_si128};
+            // SAFETY: SSE2 is part of the x86-64 baseline.
+            let words = unsafe { _mm_set_epi64x(high.cast_signed(), low.cast_signed()) };
+            #[expect(
+                clippy::cast_ptr_alignment,
+                reason = "the unaligned store has no alignment precondition"
+            )]
+            let destination = pair.as_mut_ptr().cast::<__m128i>();
+            // SAFETY: `destination` names the 16 writable bytes of `pair`.
+            unsafe { _mm_storeu_si128(destination, words) };
+        }
+        _ => {
+            pair.copy_from_slice([low.to_ne_bytes(), high.to_ne_bytes()].as_flattened());
+        }
     }
 }
 
