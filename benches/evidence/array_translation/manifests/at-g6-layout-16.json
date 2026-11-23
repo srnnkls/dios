@@ -8,10 +8,10 @@
     "dios_copy"
   ],
   "executables": [
-    "568c641af9155a32b43c10c770d7c6ac4ea46eca5c9dbecf7f3abc6dc0535ce0",
-    "568c641af9155a32b43c10c770d7c6ac4ea46eca5c9dbecf7f3abc6dc0535ce0"
+    "1e8d60c6ba429d6e9d678031ab756b9004879a253250d437a01ab896a9514a70",
+    "1e8d60c6ba429d6e9d678031ab756b9004879a253250d437a01ab896a9514a70"
   ],
-  "executable_sha256": "568c641af9155a32b43c10c770d7c6ac4ea46eca5c9dbecf7f3abc6dc0535ce0",
+  "executable_sha256": "1e8d60c6ba429d6e9d678031ab756b9004879a253250d437a01ab896a9514a70",
   "fixture_sha256": "54ae45ec997182e04336fd1f928503fc1b8ac46f070c796332ca0133b03f1d2f",
   "qualification_pairs": 2,
   "measured_pairs": 30,
@@ -76,7 +76,7 @@
     "src/pool/epoch.rs": "ec1f58163c373eb7bbd7404367b7faea1b31ccab75440cd40a8591b3da163635",
     "src/pool/file_slots.rs": "dcdcf19ab1ddb77f487477594e9a8a5d181b5fff59a188dfd0b6fdb5b4c921db",
     "src/pool/frame_pages.rs": "630100a1d44942eb100e7cbde01b78543e2a37450cc8d25a8774d627a13d0c96",
-    "src/pool/frames.rs": "dd63aa1a6c094b065b69147481bd2ea6ba99ac71322ef77635668e0ca0f4530e",
+    "src/pool/frames.rs": "894bfcaaea0fcd331b764791df3ff29d935443855b245a0114a8980660381df3",
     "src/pool/loom_model.rs": "82592c1dccc965ce3b602cd20f05201e201258eeb6f43c02712293d7f1ae0274",
     "src/pool/miss.rs": "46ae879267fbc402a6fcabaef5b1667c75ac25344e8a69052a908d31879affee",
     "src/pool/mod.rs": "041fa4eda252115e5b62d78070716c0ea10021c2fcf8653f290ce72e84d95ee8",
@@ -85,7 +85,7 @@
     "src/pool/prefetch/state.rs": "223d70a4a3bcaf268a0ea13b9d1f74eece23d9f86f09145656010843c066f530",
     "src/pool/prefetch/tests.rs": "e293f1f2abb2c9750db3f2e2cd495aca3ace1e871691ef503ce51e325a1c9818",
     "src/pool/prefetch.rs": "66b64ade3102fbeef9d5655f27cf6953c0a29efdd8ecf4ca9dd8a273a813244c",
-    "src/pool/read_copy.rs": "35ede0c01ff8be45169e162f8ed1ef5beb0db10a543904b1509cffe0b191fa01",
+    "src/pool/read_copy.rs": "6d4027b87d84206363425238a792fe6b5eea630996d4f582dac58a032cbf5bdc",
     "src/pool/read_spans.rs": "8cc9d39cb270d5a6ace073701c4a24b729990587f706db6d2a29836153c6149a",
     "src/pool/retention.rs": "a93731063a78a223bd5d5cc674c75b4d727876c62cac4687bb131c3ab22adf06",
     "src/pool/session.rs": "0468e1700cc551525f4f3707e1ec8f3a331d2318222f60a1688e0b51ee74e585",
