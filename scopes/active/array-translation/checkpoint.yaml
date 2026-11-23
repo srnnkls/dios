@@ -10,7 +10,7 @@ checkpoint:
     tasks: [AT7]
     phase: bench
     status: in_progress
-    waiting_on: "AT7 reviewed and committed; AT-G5 and AT-G6 on nix (freeze six manifests, smoke, capture three layout builds each)."
+    waiting_on: "Owner: AT-G5 and AT-G6 failed at d1a6f9d (dios_copy 33.5 ns per copy, 512 instructions; memmove per word and out-of-line state_word); profile retained; owner decides the fix and a recapture."
 
   in_flight_mutations: []
 

@@ -1,0 +1,48 @@
+{
+  "comparisons": [
+    {
+      "name": "resident_access_copy",
+      "arms": [
+        "mmap_copy",
+        "dios_copy"
+      ],
+      "ns_per_read": {
+        "base": {
+          "arm": "mmap_copy",
+          "ns_per_read": 4.867502349615097
+        },
+        "candidate": {
+          "arm": "dios_copy",
+          "ns_per_read": 33.16421444391211
+        }
+      },
+      "difference_ns_per_read": {
+        "estimate": 28.29671209429701,
+        "ci95_lower": 28.106529090801875,
+        "ci95_upper": 28.55542296419541
+      }
+    },
+    {
+      "name": "resident_access_copy-plain_array",
+      "arms": [
+        "plain_array",
+        "dios_copy"
+      ],
+      "ns_per_read": {
+        "base": {
+          "arm": "plain_array",
+          "ns_per_read": 4.883105487624804
+        },
+        "candidate": {
+          "arm": "dios_copy",
+          "ns_per_read": 33.31493794942896
+        }
+      },
+      "difference_ns_per_read": {
+        "estimate": 28.431832461804152,
+        "ci95_lower": 28.29932802269856,
+        "ci95_upper": 28.568229073286055
+      }
+    }
+  ]
+}

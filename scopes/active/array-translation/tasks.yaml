@@ -277,7 +277,7 @@ tasks:
 - id: AT7
   title: Implement the copy-out read
   status: in_progress
-  blocked_on: "AT-G5 and AT-G6 on nix, three layout builds each (AC-21, all three pass)."
+  blocked_on: "AT-G5 and AT-G6 failed on all three layout builds at d1a6f9d (CI95 upper 6.84 to 6.86 against 1.50; 5.95 to 6.52 against 1.20). Result retained with the exact-arm profile (benches/evidence/array_translation/README.md, at-g5/profile/); returned to the owner per the plan lever."
   evidence:
     implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b8-implementer-AT7/native.yaml
     review: scopes/active/array-translation/review.yaml#implementation_batches

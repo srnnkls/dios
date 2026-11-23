@@ -215,3 +215,24 @@ ordinary profile.
   floor array stay on 4 KiB pages (`AnonHugePages` 0, `FilePmdMapped` 0). Every
   equal-reach row holds no huge page.
 
+## AT-G5 and AT-G6 at the AT7 tree (2026-11-23)
+
+Product and runner of d1a6f9d, manifests frozen in a369f25, host `nix`, bench profile, THP
+`never`, 30 measured fresh-process AB/BA pairs per build, three layout builds each (F12).
+
+| Gate | Build | Geomean | CI95 upper | Bound | Result | ns per copy, base / `dios_copy` | Evidence |
+|------|-------|--------:|-----------:|------:|--------|------------------|----------|
+| AT-G5 | layout 16 | 6.8130 | 6.8640 | 1.50 | failed | 4.87 (mmap_copy) / 33.16 | `at-g5/layout-16/` |
+| AT-G5 | layout 32 | 6.7600 | 6.8358 | 1.50 | failed | 4.95 (mmap_copy) / 33.44 | `at-g5/layout-32/` |
+| AT-G5 | layout 64 | 6.7776 | 6.8421 | 1.50 | failed | 4.93 (mmap_copy) / 33.42 | `at-g5/layout-64/` |
+| AT-G6 | layout 16 | 5.9261 | 5.9461 | 1.20 | failed | 5.60 (optimistic_floor) / 33.19 | `at-g6/layout-16/` |
+| AT-G6 | layout 32 | 6.4783 | 6.5217 | 1.20 | failed | 5.19 (optimistic_floor) / 33.62 | `at-g6/layout-32/` |
+| AT-G6 | layout 64 | 6.4228 | 6.4614 | 1.20 | failed | 5.21 (optimistic_floor) / 33.46 | `at-g6/layout-64/` |
+
+- Every `dios_copy` copy took the optimistic path: 134,217,728 hits, no guard, no fallback.
+- Exact-arm profile, layout 32 (`at-g5/profile/`): `dios_copy` executes 511.9
+  instructions, 112.4 branches and 144.9 cycles per copy against 69.6, 11.2 and 21.6 for
+  `mmap_copy` and 77.7, 13.2 and 22.9 for `optimistic_floor`. `read_copy` holds 61.9 % of
+  the cycles, an out-of-line `Frames::state_word` 8.5 % and `memmove` 11.5 %: the payload
+  loop copies each 8-byte word with a slice copy of run-time length, which calls
+  `memmove` once per word.

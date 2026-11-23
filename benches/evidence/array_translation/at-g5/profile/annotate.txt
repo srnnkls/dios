@@ -1,0 +1,27 @@
+hottest instructions of read_copy (percent of its samples):
+   45.14 :   af52f:  mov    %rax,0x30(%rsp)
+    5.57 :   af3b1:  cmp    0x7d8(%rsi),%rax
+    2.88 :   af43a:  mov    %rdi,0x80(%rsp)
+    2.38 :   af3fb:  mov    0x18(%rsp),%rax
+    2.31 :   af5a3:  mov    %rax,0x30(%rsp)
+    2.12 :   af5d6:  mov    %rbp,%rdi
+    2.09 :   af5b6:  mov    %rdx,%rbp
+    2.08 :   af5c2:  cmp    %r12,%rbp
+    1.92 :   af4a8:  test   %ebp,%ebp
+    1.88 :   af5d2:  add    $0x8,%r14
+    1.73 :   af630:  add    $0x88,%rsp
+    1.71 :   af47c:  shl    %cl,%r14
+    1.23 :   af551:  add    $0x30,%rsi
+    1.18 :   af5b9:  add    %rdi,%rbp
+    1.18 :   af383:  push   %r14
+    1.15 :   af5c5:  ja     af642 <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x2c2>
+    1.14 :   af619:  mov    0x70(%rsp),%rcx
+    1.14 :   af5ed:  cmp    0x60(%rsp),%rax
+    1.14 :   af39b:  mov    (%rdx),%rax
+    1.12 :   af5cf:  call   *%r13
+    1.12 :   af5ae:  cmp    $0x8,%rdx
+    1.12 :   af5a8:  mov    %r12,%rdx
+    1.11 :   af4d6:  je     af655 <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x2d5>
+    1.11 :   af3e4:  mov    %ebx,%esi
+    1.10 :   af5d9:  cmp    %r12,%rbp
+call or memmove sites in read_copy: 16
