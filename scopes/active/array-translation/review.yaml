@@ -532,4 +532,7 @@ implementation_batches:
     orchestrator_edits: ["mise.toml: mise run miri also runs tests/read_copy.rs"]
     open: ["audits.md: record the generated instructions of read_copy.rs on x86-64 and aarch64 (with the AT-G5/AT-G6 captures)"]
     persists: []
+  - subject: payload copy without a memmove per word, inlined stamp helpers (AT-D26, after AT-G5/AT-G6 failed at d1a6f9d)
+    fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b8-fix2-copyloop/native.yaml
+    rereview: "orchestrator: diff read in full (head word, 8-byte chunks, tail word; one volatile load per word; AD-7 order, fences and assertions unchanged); aarch64 disassembly before and after in b8-fix2-copyloop/ (12 calls to 0 on the accepted 64-byte aligned path, 131 dynamic instructions); gate in b8-fix2-copyloop/gate-orchestrator.txt"
   local_gates: "mise run lint clean on macOS and nix; RUSTFLAGS=--cfg loom clippy --lib clean; cargo test --features bench,mock all green; Loom 26/26; Miri read_copy 3 passed, 1 ignored; implementer: mise run miri, mise run asan 290, docs clean; Python 33 OK."

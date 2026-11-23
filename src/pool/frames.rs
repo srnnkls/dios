@@ -248,6 +248,7 @@ impl FrameState {
         }
     }
 
+    #[inline]
     fn from_tag(tag: u8) -> FrameState {
         match tag {
             0 => FrameState::Free,
@@ -258,6 +259,7 @@ impl FrameState {
         }
     }
 
+    #[inline]
     fn from_word(word: u64) -> FrameState {
         Self::from_tag((word & FRAME_STATE_MASK) as u8)
     }
@@ -731,10 +733,12 @@ impl Frames {
     }
 
     #[must_use]
+    #[inline]
     pub(crate) fn state_word(&self, frame: ReadFrameIdx) -> u64 {
         self.states[self.checked_index(frame)].load(Ordering::Acquire)
     }
 
+    #[inline]
     pub(crate) fn word_is_resident(word: u64) -> bool {
         FrameState::from_word(word) == FrameState::Resident
     }

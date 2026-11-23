@@ -207,20 +207,32 @@ fn copy_payload(frames: &Frames, frame: ReadFrameIdx, offset_bytes: u32, output:
     let payload = frames.optimistic_payload_ptr(frame);
     let offset = offset_bytes as usize;
     let mut word_index = offset / WORD_BYTES;
-    let mut skip = offset % WORD_BYTES;
-    let mut copied = 0;
-    while copied < output.len() {
+    let load_word = |word_index: usize| {
         // SAFETY: the range assertion keeps every covered word inside the
         // granule of the frame the seam bound-checked and aligned, in the
-        // arena that outlives `frames`. A writer racing this load stores
-        // whole words atomically behind its claim, and the stamp bracket
-        // rejects any copy it overlapped (audits.md, ordering audit).
-        let word = unsafe { payload.wrapping_add(word_index).read_volatile() }.to_ne_bytes();
-        let count = (WORD_BYTES - skip).min(output.len() - copied);
-        output[copied..copied + count].copy_from_slice(&word[skip..skip + count]);
-        copied += count;
+        // arena that outlives `frames`, and every caller below names a
+        // covered word. A writer racing this load stores whole words
+        // atomically behind its claim, and the stamp bracket rejects any
+        // copy it overlapped (audits.md, ordering audit).
+        unsafe { payload.wrapping_add(word_index).read_volatile() }.to_ne_bytes()
+    };
+    let mut rest = output;
+    let skip = offset % WORD_BYTES;
+    if skip != 0 {
+        let count = (WORD_BYTES - skip).min(rest.len());
+        let (head, tail) = rest.split_at_mut(count);
+        head.copy_from_slice(&load_word(word_index)[skip..skip + count]);
+        rest = tail;
         word_index += 1;
-        skip = 0;
+    }
+    let mut words = rest.chunks_exact_mut(WORD_BYTES);
+    for chunk in &mut words {
+        chunk.copy_from_slice(&load_word(word_index));
+        word_index += 1;
+    }
+    let last = words.into_remainder();
+    if !last.is_empty() {
+        last.copy_from_slice(&load_word(word_index)[..last.len()]);
     }
 }
 
@@ -250,6 +262,7 @@ pub(crate) fn copy_payload_words(frames: &Frames, frame: ReadFrameIdx, output: &
     }
 }
 
+#[inline]
 fn copy_range_assert(granule: u32, offset_bytes: u32, output_len: usize) {
     assert!(output_len > 0, "a copy names at least one byte");
     let len = u32::try_from(output_len).expect("a copy's length fits u32");
