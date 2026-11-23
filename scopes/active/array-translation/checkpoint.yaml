@@ -2,15 +2,15 @@ checkpoint:
   scope_name: array-translation
   scope_path: scopes/active/array-translation
   branch: feat/array-translation
-  last_commit: 36f9909
+  last_commit: aa3c316
   updated_at: '2026-11-22T00:00:00Z'
 
   batch:
-    number: 8
-    tasks: [AT7]
+    number: 9
+    tasks: [AT10]
     phase: bench
     status: in_progress
-    waiting_on: "AT-D28: new task AT10 (copy-out fast path, FR-13, AC-25); next batch AT10 RED."
+    waiting_on: "AT-D29: AT10 landed; refreeze and recapture AT-G5/AT-G6 once for the record, then close AT7 and AT10 and start AT8."
 
   in_flight_mutations: []
 

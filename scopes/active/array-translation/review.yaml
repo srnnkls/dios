@@ -540,3 +540,17 @@ implementation_batches:
     rereview: "orchestrator: diff read in full (pairs of 8-byte volatile loads per WRC-D1, one 16-byte unaligned store per pair, SSE2 on x86-64, plain copy elsewhere; range assertion at the public entry, Loom seam keeps its own); gate in b8-fix3-stlf/gate-orchestrator.txt"
     measured: "nix, layout-32 smoke runner, one process per arm: dios_copy 72.83 to 67.60 cycles, 255.68 to 251.69 instructions, 7.990 to 0.010 stli_other per copy; mmap_copy 21.58 cycles, 69.62 instructions; optimistic_floor 22.91, 77.67"
   local_gates: "mise run lint clean on macOS and nix; RUSTFLAGS=--cfg loom clippy --lib clean; cargo test --features bench,mock all green; Loom 26/26; Miri read_copy 3 passed, 1 ignored; implementer: mise run miri, mise run asan 290, docs clean; Python 33 OK."
+- batch: 9
+  tasks: [AT10]
+  reviewed_at: '2026-11-23T00:00:00Z'
+  status: passed
+  reports: .tropos/peer/array-translation/20261115T161731Z-fba2be/
+  waves:
+  - subject: read_copy accepted path inlined with one cold exit (FR-13), blocked at 2.38x mmap_copy and landed by owner decision AT-D29
+    reviewers: "general by claude-opus (targeted: AD-7 order, assertions once, one get fallback, public API); peer-gpt6-astra unavailable"
+    admitted: []
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b9-implementer-AT10/native.yaml
+    review: .tropos/peer/array-translation/20261115T161731Z-fba2be/b9-review/claude-opus.yaml
+    persists: []
+  local_gates: "mise run lint clean on macOS, x86_64-linux --lib and nix; cargo test --features bench,mock all green; Loom 26/26; Miri read_copy 3 passed, 1 ignored; implementer: mise run miri, mise run asan 290."
+  measured: "nix, layout-32 smoke runners, one process per arm: dios_copy 68.40/251.67 cycles/instructions per copy at aa3c316, 51.48/186.60 after; mmap_copy 21.61/69.63; optimistic_floor 22.83/77.67"

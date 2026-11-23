@@ -13,8 +13,8 @@ use crate::sync::{AtomicU64, Ordering, fence};
 use super::frames::MODEL_PAYLOAD_WORDS;
 use super::translation::entry_frame;
 use super::{
-    Frames, Get, GetError, PageId, PendingToken, Pool, PoolBackend, ReadFrameIdx, ReaderCtx,
-    Translation, file_generation_is_live,
+    FileId, Frames, Get, GetError, PageId, PendingToken, Pool, PoolBackend, ReadFrameIdx,
+    ReaderCtx, Translation, file_generation_is_live,
 };
 
 /// Outcome of [`Pool::read_copy`]; the output holds the requested bytes only
@@ -65,6 +65,7 @@ impl<D: PoolBackend> Pool<D> {
     ///
     /// If `reader` or `page` belongs to another pool, `output` is empty or
     /// longer than `u32::MAX`, or the range ends past the granule.
+    #[inline]
     pub fn read_copy(
         &self,
         reader: &ReaderCtx,
@@ -83,7 +84,13 @@ impl<D: PoolBackend> Pool<D> {
             .optimistic_copy_failures
             .record_attempt_forced_to_fail()
         {
-            return self.read_copy_fallback(reader, page, offset_bytes, output);
+            return self.read_copy_fallback(
+                reader,
+                page.file(),
+                page.granule_idx(),
+                offset_bytes,
+                output,
+            );
         }
         match optimistic_copy(
             &self.table,
@@ -94,21 +101,30 @@ impl<D: PoolBackend> Pool<D> {
             output,
         ) {
             OptimisticCopy::Accepted => Ok(ReadCopy::Copied),
-            OptimisticCopy::Fallback => self.read_copy_fallback(reader, page, offset_bytes, output),
+            OptimisticCopy::Fallback => self.read_copy_fallback(
+                reader,
+                page.file(),
+                page.granule_idx(),
+                offset_bytes,
+                output,
+            ),
         }
     }
 
-    /// The one ordinary `get` behind a failed optimistic attempt.
+    /// The one ordinary `get` behind a failed optimistic attempt. It takes
+    /// the page's parts, which fit registers, so the inlined fast path keeps
+    /// no page in memory for it.
     #[cold]
     #[inline(never)]
     fn read_copy_fallback(
         &self,
         reader: &ReaderCtx,
-        page: PageId,
+        file: FileId,
+        granule_idx: u32,
         offset_bytes: u32,
         output: &mut [u8],
     ) -> Result<ReadCopy, GetError> {
-        match self.get(reader, page)? {
+        match self.get(reader, PageId::new(file, granule_idx))? {
             Get::Hit(guard) => {
                 let start = offset_bytes as usize;
                 output.copy_from_slice(&guard[start..start + output.len()]);
@@ -175,6 +191,7 @@ pub(crate) fn optimistic_copy(
     let Some(entry) = translation.bounded_entry(page) else {
         return OptimisticCopy::Fallback;
     };
+    let live_generation = &file_live_generations[page.file().slot() as usize];
     let Some(frame) = entry_frame(entry) else {
         return OptimisticCopy::Fallback;
     };
@@ -190,10 +207,7 @@ pub(crate) fn optimistic_copy(
     if frames.state_word(frame) != stamp {
         return OptimisticCopy::Fallback;
     }
-    if !file_generation_is_live(
-        &file_live_generations[page.file().slot() as usize],
-        page.file(),
-    ) {
+    if !file_generation_is_live(live_generation, page.file()) {
         return OptimisticCopy::Fallback;
     }
     OptimisticCopy::Accepted
@@ -231,12 +245,14 @@ fn copy_payload(frames: &Frames, frame: ReadFrameIdx, offset_bytes: u32, output:
         copy_payload_store_pair(pair, load_word(word_index), load_word(word_index + 1));
         word_index += 2;
     }
-    let mut words = rest.chunks_exact_mut(WORD_BYTES);
-    for chunk in &mut words {
-        chunk.copy_from_slice(&load_word(word_index).to_ne_bytes());
-        word_index += 1;
-    }
-    let last = words.into_remainder();
+    let last = match rest.split_first_chunk_mut::<WORD_BYTES>() {
+        Some((word, tail)) => {
+            *word = load_word(word_index).to_ne_bytes();
+            word_index += 1;
+            tail
+        }
+        None => rest,
+    };
     if !last.is_empty() {
         last.copy_from_slice(&load_word(word_index).to_ne_bytes()[..last.len()]);
     }
@@ -293,16 +309,24 @@ pub(crate) fn copy_payload_words(frames: &Frames, frame: ReadFrameIdx, output: &
     }
 }
 
+/// Asserts that the copy names at least one byte and ends within the
+/// granule, which bounds its length to `u32`, behind one inline test.
 #[inline]
 fn copy_range_assert(granule: u32, offset_bytes: u32, output_len: usize) {
+    let end = u64::from(offset_bytes) + output_len as u64;
+    if output_len == 0 || end > u64::from(granule) {
+        copy_range_rejected(granule, offset_bytes, output_len);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn copy_range_rejected(granule: u32, offset_bytes: u32, output_len: usize) -> ! {
     assert!(output_len > 0, "a copy names at least one byte");
     let len = u32::try_from(output_len).expect("a copy's length fits u32");
-    assert!(
-        offset_bytes
-            .checked_add(len)
-            .is_some_and(|end| end <= granule),
+    panic!(
         "the copy range [{offset_bytes}, {offset_bytes} + {len}) ends within the {granule}-byte granule"
-    );
+    )
 }
 
 /// Mock test hook: while armed every optimistic attempt fails; the counts
