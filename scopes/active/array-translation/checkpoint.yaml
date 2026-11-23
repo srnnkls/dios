@@ -2,15 +2,15 @@ checkpoint:
   scope_name: array-translation
   scope_path: scopes/active/array-translation
   branch: feat/array-translation
-  last_commit: aa3c316
+  last_commit: b283244
   updated_at: '2026-11-22T00:00:00Z'
 
   batch:
     number: 9
     tasks: [AT10]
     phase: bench
-    status: in_progress
-    waiting_on: "AT-D29: AT10 landed; refreeze and recapture AT-G5/AT-G6 once for the record, then close AT7 and AT10 and start AT8."
+    status: complete
+    waiting_on: "AT7 and AT10 closed (copy-out read not adopted on performance, AT-D29). Next batch: AT8 binding campaign."
 
   in_flight_mutations: []
 

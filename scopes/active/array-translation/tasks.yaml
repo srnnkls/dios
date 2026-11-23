@@ -276,8 +276,8 @@ tasks:
     warm-prepare covers them (AC-18, AC-19).
 - id: AT7
   title: Implement the copy-out read
-  status: in_progress
-  blocked_on: "AT10 (AT-D28): AT-G5 and AT-G6 failed at d1a6f9d and a1a253b; after AT-D27 (36f9909) dios_copy is 67.6 cycles and 251.7 instructions per copy against 22.9 and 77.7 for the floor. AT-G5 and AT-G6 are refrozen and recaptured after AT10."
+  status: done
+  outcome: "Not adopted on performance (AT-D29): AT-G5 and AT-G6 fail on all three layout builds at e534f2a (CI95 upper 2.36 to 2.52 against 1.50; 2.23 to 2.33 against 1.20); read_copy stays in the tree, correct under Loom, Miri and ASAN. Earlier records at d1a6f9d and a1a253b retained."
   evidence:
     implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b8-implementer-AT7/native.yaml
     review: scopes/active/array-translation/review.yaml#implementation_batches
@@ -297,7 +297,12 @@ tasks:
     ns per read and the floor reported.
 - id: AT10
   title: Slim the copy-out read's accepted path
-  status: pending
+  status: done
+  outcome: "Accepted copy inlined with one cold exit (FR-13 structure); 2.38x mmap_copy, landed by owner decision AT-D29; AT-G5 and AT-G6 recaptured at e534f2a and fail."
+  evidence:
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b9-implementer-AT10/native.yaml
+    gates: benches/evidence/array_translation/README.md
+    review: scopes/active/array-translation/review.yaml#implementation_batches
   domain: pool
   depends_on:
   - AT7

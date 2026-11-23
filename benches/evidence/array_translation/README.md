@@ -256,3 +256,24 @@ Product and runner of a1a253b (AT-D26), manifests frozen in 1e72d1d (retained as
   the shared `consume` fold 36.8 %, about 27 cycles, more than a whole `mmap_copy`
   iteration; within `read_copy`, 46.9 % of its samples fall on the first 8-byte store of
   the payload loop.
+
+## AT-G5 and AT-G6 at the AT10 tree (2026-11-23)
+
+Product and runner of e534f2a (AT10, AT-D29), manifests frozen in b283244, host `nix`, bench profile, THP `never`, 30 measured fresh-process AB/BA pairs per build, three layout builds each. The record of the copy-out read's performance: AT-G5 and AT-G6 fail on every build, and the copy-out read is not adopted on performance (AT-D29).
+
+| Gate | Build | Geomean | CI95 upper | Bound | Result | ns per copy, base / `dios_copy` | Evidence |
+|------|-------|--------:|-----------:|------:|--------|------------------|----------|
+| AT-G5 | layout 16 | 2.5020 | 2.5245 | 1.50 | failed | 4.81 (mmap_copy) / 12.05 | `at-g5/layout-16/` |
+| AT-G5 | layout 32 | 2.3825 | 2.4028 | 1.50 | failed | 4.91 (mmap_copy) / 11.68 | `at-g5/layout-32/` |
+| AT-G5 | layout 64 | 2.3365 | 2.3551 | 1.50 | failed | 5.10 (mmap_copy) / 11.92 | `at-g5/layout-64/` |
+| AT-G6 | layout 16 | 2.3125 | 2.3313 | 1.20 | failed | 5.21 (optimistic_floor) / 12.04 | `at-g6/layout-16/` |
+| AT-G6 | layout 32 | 2.2664 | 2.2738 | 1.20 | failed | 5.16 (optimistic_floor) / 11.70 | `at-g6/layout-32/` |
+| AT-G6 | layout 64 | 2.2062 | 2.2265 | 1.20 | failed | 5.42 (optimistic_floor) / 11.95 | `at-g6/layout-64/` |
+
+- `dios_copy` per 64-byte copy across the waves (layout 32): 33.44 ns at d1a6f9d, 16.57 at
+  a1a253b (no `memmove` per word, AT-D26), 11.68 at e534f2a (16-byte output stores,
+  AT-D27; accepted path inlined, AT10). 36f9909 was measured in smoke runners only.
+- At e534f2a the accepted copy makes no call into `dios`; the remaining cost is about 187
+  instructions per copy against 70 for `mmap_copy`: per-call reader, identity and range
+  checks, bounds-checked translation, stamp and mirror loads, and the run-time-length
+  copy loop (`b9-implementer-AT10/native.yaml`).

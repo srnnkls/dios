@@ -520,7 +520,7 @@ implementation_batches:
 - batch: 8
   tasks: [AT7]
   reviewed_at: '2026-11-23T00:00:00Z'
-  status: review_passed_gates_open
+  status: passed
   reports: .tropos/peer/array-translation/20261115T161731Z-fba2be/
   waves:
   - subject: copy-out read (AD-7 attempt, one get fallback, atomic payload writers)
@@ -554,3 +554,4 @@ implementation_batches:
     persists: []
   local_gates: "mise run lint clean on macOS, x86_64-linux --lib and nix; cargo test --features bench,mock all green; Loom 26/26; Miri read_copy 3 passed, 1 ignored; implementer: mise run miri, mise run asan 290."
   measured: "nix, layout-32 smoke runners, one process per arm: dios_copy 68.40/251.67 cycles/instructions per copy at aa3c316, 51.48/186.60 after; mmap_copy 21.61/69.63; optimistic_floor 22.83/77.67"
+  gates: "AT-G5 and AT-G6 at e534f2a fail on all three layout builds (CI95 upper 2.5245, 2.4028, 2.3551 against 1.50; 2.3313, 2.2738, 2.2265 against 1.20); copy-out read not adopted on performance (AT-D29)."
