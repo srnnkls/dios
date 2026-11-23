@@ -253,6 +253,10 @@ owner_decisions:
     decided_at: 2026-11-23
     owner: Sören
     decision: "AT-G5 and AT-G6 failed on all three layout builds at d1a6f9d (dios_copy 33.5 ns per 64-byte copy against 4.95 for mmap_copy and 5.2 for the optimistic floor; CI95 upper 6.84 to 6.86 and 5.95 to 6.52). The exact-arm profile shows 512 instructions per copy, one memmove call per payload word from a run-time-length slice copy, and an out-of-line Frames::state_word. AT7 takes one fix wave: the payload copy moves whole words as u64 values with the partial-word edges kept, and Frames::state_word inlines; no fence, FrameState, witness, bound or batching change (plan lever). The six manifests are refrozen at the fixed tree and AT-G5 and AT-G6 recaptured on three layout builds; the failing d1a6f9d captures stay retained (benches/evidence/array_translation/README.md, 340ed01)."
+  - id: AT-D27
+    decided_at: 2026-11-23
+    owner: Sören
+    decision: "AT-G5 and AT-G6 failed again at a1a253b after AT-D26 (dios_copy 16.6 ns per copy; CI95 upper 3.40 to 3.43 and 2.96 to 3.25). Diagnosis on nix: 7.98 non-forwardable store-to-load interlocks per copy (ls_bad_status2.stli_other) against 0.001 for mmap_copy and 0.002 for the floor; the caller's reads of the output cannot forward from read_copy's eight 8-byte stores. One more fix wave inside the word-load contract (WRC-D1: one volatile 8-byte load per word): write the output with stores wide enough for a reader's loads to forward, and remove the repeated range assertion; then refreeze and recapture. Plan lever unchanged (no fence, FrameState, witness, bound or batching change). AT-G6's bound against a translation-free floor may stay out of reach (benches/evidence/array_translation/at-g5/profile/, af20c5d)."
   - id: WRC-D1
     inherited_from: scopes/draft/warm-read-copy-out/validation.yaml
     decision: "Volatile-word exception, same-width atomic writers, one audited module, mirror-only liveness carry over; the bracket is amended by Q005 and A001."

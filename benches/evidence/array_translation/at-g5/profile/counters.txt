@@ -13,3 +13,9 @@ cycles by symbol, dios_copy:
 read_copy's hottest instructions: 46.9 % on the first 8-byte store of the payload loop
 (`mov %r9,(%rcx,%r8,1)`), then 3.0, 2.5 and 1.7 % on the next three word stores; full
 listing in read_copy.annotate.
+
+Store-to-load forwarding, same runner, one process per arm (stlf.sh):
+g5-32-dios_copy        cyc/read 73.48 stli_other/read 7.982 stlf_hits/read 29.370
+g5-32-mmap_copy        cyc/read 21.68 stli_other/read 0.001 stlf_hits/read 7.136
+g6-32-optimistic_floor cyc/read 22.87 stli_other/read 0.002 stlf_hits/read 6.623
+(`ls_bad_status2.stli_other`: loads that could not forward from an older store.)
