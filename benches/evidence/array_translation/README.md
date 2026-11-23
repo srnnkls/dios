@@ -236,3 +236,23 @@ Product and runner of d1a6f9d, manifests frozen in a369f25 (retained as `manifes
   the cycles, an out-of-line `Frames::state_word` 8.5 % and `memmove` 11.5 %: the payload
   loop copies each 8-byte word with a slice copy of run-time length, which calls
   `memmove` once per word.
+
+## AT-G5 and AT-G6 after the copy-loop fix (2026-11-23)
+
+Product and runner of a1a253b (AT-D26), manifests frozen in 1e72d1d, host `nix`, bench profile, THP `never`, 30 measured fresh-process AB/BA pairs per build, three layout builds each.
+
+| Gate | Build | Geomean | CI95 upper | Bound | Result | ns per copy, base / `dios_copy` | Evidence |
+|------|-------|--------:|-----------:|------:|--------|------------------|----------|
+| AT-G5 | layout 16 | 3.3722 | 3.4041 | 1.50 | failed | 4.86 (mmap_copy) / 16.38 | `at-g5/layout-16/` |
+| AT-G5 | layout 32 | 3.3518 | 3.3957 | 1.50 | failed | 4.95 (mmap_copy) / 16.57 | `at-g5/layout-32/` |
+| AT-G5 | layout 64 | 3.3934 | 3.4252 | 1.50 | failed | 4.92 (mmap_copy) / 16.68 | `at-g5/layout-64/` |
+| AT-G6 | layout 16 | 2.9257 | 2.9603 | 1.20 | failed | 5.69 (optimistic_floor) / 16.63 | `at-g6/layout-16/` |
+| AT-G6 | layout 32 | 3.2154 | 3.2196 | 1.20 | failed | 5.17 (optimistic_floor) / 16.61 | `at-g6/layout-32/` |
+| AT-G6 | layout 64 | 3.2156 | 3.2453 | 1.20 | failed | 5.20 (optimistic_floor) / 16.71 | `at-g6/layout-64/` |
+
+- `dios_copy` halved from 33.4 to 16.6 ns per copy. Exact-arm profile, layout 32
+  (`at-g5/profile/`): 255.7 instructions, 41.3 branches and 73.7 cycles per copy against
+  77.7, 13.2 and 23.0 for `optimistic_floor`. `read_copy` holds 55.3 % of the cycles and
+  the shared `consume` fold 36.8 %, about 27 cycles, more than a whole `mmap_copy`
+  iteration; within `read_copy`, 46.9 % of its samples fall on the first 8-byte store of
+  the payload loop.

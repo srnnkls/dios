@@ -2,7 +2,7 @@ checkpoint:
   scope_name: array-translation
   scope_path: scopes/active/array-translation
   branch: feat/array-translation
-  last_commit: 340ed01
+  last_commit: 1e72d1d
   updated_at: '2026-11-22T00:00:00Z'
 
   batch:
@@ -10,15 +10,9 @@ checkpoint:
     tasks: [AT7]
     phase: bench
     status: in_progress
-    waiting_on: "AT-D26: copy-loop fix wave b8-fix2-copyloop; then targeted review, refreeze six manifests, recapture AT-G5/AT-G6."
+    waiting_on: "Owner: AT-G5/AT-G6 still fail at a1a253b (dios_copy 16.6 ns; read_copy 41 cycles, consume 27 cycles after 8-byte word stores); profile retained."
 
-  in_flight_mutations:
-    - task: AT7
-      phase: fix_copyloop
-      agent: {role: fixer, agent: claude-opus, class: native}
-      report_dir: .tropos/peer/array-translation/20261115T161731Z-fba2be/b8-fix2-copyloop
-      status: running
-      evidence: {before: .tropos/peer/array-translation/20261115T161731Z-fba2be/b8-fix2-copyloop/baseline.git-status.txt, red: benches/evidence/array_translation/at-g5/profile/counters.txt}
+  in_flight_mutations: []
 
   routing_snapshot:
     epoch_id: 20261115T161731Z-fba2be
