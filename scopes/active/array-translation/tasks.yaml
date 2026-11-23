@@ -277,7 +277,7 @@ tasks:
 - id: AT7
   title: Implement the copy-out read
   status: in_progress
-  blocked_on: "AT-G5 and AT-G6 failed again at a1a253b after the AT-D26 copy-loop fix (CI95 upper 3.40 to 3.43 against 1.50; 2.96 to 3.25 against 1.20; dios_copy 16.6 ns per copy). Profile retained (at-g5/profile/); returned to the owner."
+  blocked_on: "AT10 (AT-D28): AT-G5 and AT-G6 failed at d1a6f9d and a1a253b; after AT-D27 (36f9909) dios_copy is 67.6 cycles and 251.7 instructions per copy against 22.9 and 77.7 for the floor. AT-G5 and AT-G6 are refrozen and recaptured after AT10."
   evidence:
     implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b8-implementer-AT7/native.yaml
     review: scopes/active/array-translation/review.yaml#implementation_batches
@@ -295,6 +295,35 @@ tasks:
     exact-arm profile and returned to the owner.
     Amended 2026-11-17, AT-G5 and AT-G6 pass on the three layout builds (AC-21) with
     ns per read and the floor reported.
+- id: AT10
+  title: Slim the copy-out read's accepted path
+  status: pending
+  domain: pool
+  depends_on:
+  - AT7
+  files:
+  - src/pool/read_copy.rs
+  - src/pool/mod.rs
+  - src/pool/translation.rs
+  - src/pool/frames.rs
+  - tests/read_copy.rs
+  - tests/public_api.rs
+  - tests/zero_alloc.rs
+  - tests/loom_pool.rs
+  - benches/evidence/array_translation/manifests/at-g5-layout-16.json
+  - benches/evidence/array_translation/manifests/at-g5-layout-32.json
+  - benches/evidence/array_translation/manifests/at-g5-layout-64.json
+  - benches/evidence/array_translation/manifests/at-g6-layout-16.json
+  - benches/evidence/array_translation/manifests/at-g6-layout-32.json
+  - benches/evidence/array_translation/manifests/at-g6-layout-64.json
+  acceptance: FR-13 and AC-25 (AT-D28). An accepted optimistic copy reaches its caller
+    without an out-of-line call into the crate and without an outcome returned through
+    memory; the get fallback, Pending, Busy and error outcomes leave through one
+    out-of-line path; each copy-path assertion of 36f9909 is made once; the AD-7 order,
+    fences and word-load contract (WRC-D1) are unchanged; the public API snapshot is
+    unchanged; the retained disassembly of the dios_copy loop shows no call into dios on
+    an accepted copy. AT-G5 and AT-G6 pass on nix on all three layout builds. Lint, Loom,
+    Miri and ASAN are clean.
 - id: AT8
   title: Run the binding campaign and record the evidence
   status: pending
@@ -302,6 +331,7 @@ tasks:
   depends_on:
   - AT5
   - AT7
+  - AT10
   - AT9
   files:
   - benches/evidence/array_translation/

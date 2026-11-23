@@ -257,6 +257,10 @@ owner_decisions:
     decided_at: 2026-11-23
     owner: Sören
     decision: "AT-G5 and AT-G6 failed again at a1a253b after AT-D26 (dios_copy 16.6 ns per copy; CI95 upper 3.40 to 3.43 and 2.96 to 3.25). Diagnosis on nix: 7.98 non-forwardable store-to-load interlocks per copy (ls_bad_status2.stli_other) against 0.001 for mmap_copy and 0.002 for the floor; the caller's reads of the output cannot forward from read_copy's eight 8-byte stores. One more fix wave inside the word-load contract (WRC-D1: one volatile 8-byte load per word): write the output with stores wide enough for a reader's loads to forward, and remove the repeated range assertion; then refreeze and recapture. Plan lever unchanged (no fence, FrameState, witness, bound or batching change). AT-G6's bound against a translation-free floor may stay out of reach (benches/evidence/array_translation/at-g5/profile/, af20c5d)."
+  - id: AT-D28
+    decided_at: 2026-11-23
+    owner: Sören
+    decision: "After AT-D26 and AT-D27, dios_copy takes 67.6 cycles and 251.7 instructions per 64-byte copy against 22.9 and 77.7 for the optimistic floor and 21.6 and 69.6 for mmap_copy (nix, layout-32 smoke runner of 36f9909; predicted ratios about 3.1 and 2.95). The remaining cost is per-call overhead spread over read_copy: identity and range checks, bounds-checked translation and stamp lookups, and a Result<ReadCopy, GetError> returned through memory, the shape get had before AT9. A new task AT10 gives read_copy an AT9-style fast path (FR-13, AC-25): an inlinable accepted optimistic copy with a register-sized private result, fallback and error outcomes out of line, every assertion kept once, public signature unchanged. AT7 stays open on AT10; AT-G5 and AT-G6 are refrozen and recaptured after AT10; no recapture of 36f9909. Plan lever unchanged."
   - id: WRC-D1
     inherited_from: scopes/draft/warm-read-copy-out/validation.yaml
     decision: "Volatile-word exception, same-width atomic writers, one audited module, mirror-only liveness carry over; the bracket is amended by Q005 and A001."
