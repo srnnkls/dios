@@ -44,15 +44,15 @@ Host `nix`, bench profile active, 30 measured fresh-process AB/BA pairs per lane
 |------|------|-----------|--------:|-----------:|------:|--------|----------|
 | AT-G4 | `resident_access_ordinary` | e1bbd2f | 0.9076 | 0.9189 | 0.85 | failed | `at-g4-failed-e1bbd2f/` |
 | AT-G4 | `resident_access_ordinary` | b8f95c1 | 0.7462 | 0.7539 | 0.85 | passed | `at-g4/` |
-| AT-G7 | `drp_g2_warm_ordinary` | 5131d7d | 0.9159 | 0.9181 | 1.01 | passed | `at-g7/drp/` |
-| AT-G7 | `drp_g2_cycling_reuse` | 5131d7d | 0.9974 | 0.9978 | 1.01 | passed | `at-g7/drp/` |
-| AT-G7 | `drp_g4_ordinary_base_8t` | 5131d7d | 0.3060 | 0.3236 | 1.00 | passed | `at-g7/drp/` |
-| AT-G7 | `drp_g4_ordinary_scaling` | 5131d7d | 0.1652 | 0.1741 | 0.50 | passed | `at-g7/drp/` |
-| AT-G7 | RC-G1 `cold-mmap` | 5131d7d | 0.8296 | 0.8318 | 1.00 | passed | `at-g7/rc-g1/` |
-| AT-G7 | RC-G1 `pressure-mmap` | 5131d7d | 0.5978 | 0.6015 | 1.00 | passed | `at-g7/rc-g1/` |
-| AT-G7 | RC-G4 `automatic_dependent` | 5131d7d | 0.9998 | 1.0004 | 1.02 | passed | `at-g7/rc-g4/` |
-| AT-G7 | RC-G4 `automatic_fragmented` | 5131d7d | 1.0251 | 1.0800 | 1.02 | failed | `at-g7/rc-g4/` |
-| AT-G7 | RC-G4 `automatic_fragmented`, rerun | 5131d7d | 0.9935 | 1.0023 | 1.02 | passed | `at-g7/rc-g4-rerun/` |
+| AT-G7 | `drp_g2_warm_ordinary` | 5131d7d | 0.9159 | 0.9181 | 1.01 | passed | `at-g7-5131d7d/drp/` |
+| AT-G7 | `drp_g2_cycling_reuse` | 5131d7d | 0.9974 | 0.9978 | 1.01 | passed | `at-g7-5131d7d/drp/` |
+| AT-G7 | `drp_g4_ordinary_base_8t` | 5131d7d | 0.3060 | 0.3236 | 1.00 | passed | `at-g7-5131d7d/drp/` |
+| AT-G7 | `drp_g4_ordinary_scaling` | 5131d7d | 0.1652 | 0.1741 | 0.50 | passed | `at-g7-5131d7d/drp/` |
+| AT-G7 | RC-G1 `cold-mmap` | 5131d7d | 0.8296 | 0.8318 | 1.00 | passed | `at-g7-5131d7d/rc-g1/` |
+| AT-G7 | RC-G1 `pressure-mmap` | 5131d7d | 0.5978 | 0.6015 | 1.00 | passed | `at-g7-5131d7d/rc-g1/` |
+| AT-G7 | RC-G4 `automatic_dependent` | 5131d7d | 0.9998 | 1.0004 | 1.02 | passed | `at-g7-5131d7d/rc-g4/` |
+| AT-G7 | RC-G4 `automatic_fragmented` | 5131d7d | 1.0251 | 1.0800 | 1.02 | failed | `at-g7-5131d7d/rc-g4/` |
+| AT-G7 | RC-G4 `automatic_fragmented`, rerun | 5131d7d | 0.9935 | 1.0023 | 1.02 | passed | `at-g7-5131d7d/rc-g4-rerun/` |
 
 - AT-G4 failed at e1bbd2f; `at-g4-failed-e1bbd2f/profile.md` holds the profile of the
   plan's lever, and b8f95c1 inlines the hit-path helpers it names. All 64 rows of the
@@ -65,7 +65,7 @@ Host `nix`, bench profile active, 30 measured fresh-process AB/BA pairs per lane
   pairs lie within 0.971 to 1.003. The owner authorized one rerun at the same commit
   and executables (AT-D8); its pairs range from 0.794 to 1.031. Both sets record zero
   automatic admissions.
-- `manifests/at-g7.json` was assembled from the as-run identities after the captures;
+- `manifests/at-g7-5131d7d.json` was assembled from the as-run identities after the captures;
   the per-lane `pre-run.json` of each DRP lane was written before its first pair.
 - RC-G1 raw rows are in `rows.tar.zst` per case; executables and the fixture stay on
   `nix` under `~/build/dios/target/array-translation/` and `~/build/dios-gates/`.
@@ -117,18 +117,18 @@ capture.
 
 | Gate | Build | Candidate | Geomean | CI95 upper | Bound | Result | Evidence |
 |------|-------|-----------|--------:|-----------:|------:|--------|----------|
-| AT-G8 | default, shared runner | f193292 against 8597238 | 0.5454 | 0.5722 | 0.85 | passed | `at-g8/` |
+| AT-G8 | default, shared runner | f193292 against 8597238 | 0.5454 | 0.5722 | 0.85 | passed | `at-g8-f193292/` |
 | AT-G1 | layout 16 | fdada37 | 1.4881 | 1.5112 | 1.50 | failed | `at-g1-fdada37/layout-16/` |
 | AT-G1 | layout 32 | fdada37 | 1.5487 | 1.5541 | 1.50 | failed | `at-g1-fdada37/layout-32/` |
 | AT-G1 | layout 64 | fdada37 | 1.4491 | 1.4619 | 1.50 | passed | `at-g1-fdada37/layout-64/` |
 | AT-G2 | default | fdada37 | 1.0232 | 1.0273 | 1.10 | passed | `at-g2-fdada37/` |
 
 - AT-G8: `get` reads 23.0 ns per hit on the base, in its two stack-alignment modes
-  (`at-g8/get-stack-alignment.md`), and 12.4 ns after the hit-path change; the difference
+  (`at-g8-f193292/get-stack-alignment.md`), and 12.4 ns after the hit-path change; the difference
   is 10.6 ns (9.4 to 11.8). Two earlier captures were rejected by the validator for
   tooling defects fixed in 1dd0438 and fdada37.
 - Reported, not gated: `get` against `mmap_random` on the fair lane at fdada37 is 3.31
-  (12.43 against 3.76 ns per read; floor 3.68), from `at-g8-mmap/`.
+  (12.43 against 3.76 ns per read; floor 3.68), from `at-g8-mmap-f193292/`.
 - AT-G1 passed on three layout builds at 377a0ad (`at-g1-377a0ad/`) and fails on two of
   three at fdada37, after the `get` hit-path change. The session loop's machine code is
   the same in both trees. Per read the session arm executes 84.1 instructions and the

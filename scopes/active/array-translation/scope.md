@@ -162,7 +162,7 @@ Every axis resolves to a provider rule, a decision stated here, or `n/a`. The ex
 - [ ] AC-13 (FR-11): Given the writer inventory, when Miri runs the in-process fills, then every read-frame payload write is a same-width atomic store.
 - [ ] AC-14 (TR-6): Given a volatile payload read or a seam call outside `src/pool/read_copy.rs` in a pool file and in `src/mock.rs`, when `tests/arch3_sync_alias.rs` runs, then both are rejected.
 - [ ] AC-15 (TR-1): Given warmed pools on both backends, when hits, session reads and successful copies run under the zero-alloc harness, then no allocation is recorded.
-- [ ] AC-16 (TR-7): Given the frozen manifests, when the campaign runs on `nix`, then AT-G1 to AT-G8 pass and the evidence is retained.
+- [ ] AC-16 (TR-7): Given the frozen manifests, when the campaign runs on `nix`, then AT-G1 to AT-G4, AT-G7 and AT-G8 pass, AT-G5 and AT-G6 carry their recorded failure with the copy-out read not adopted on performance (AT-D29), and the evidence is retained.
 - [ ] AC-17 (TR-8): Given the public API snapshot, when it is regenerated, then it shows exactly the additions and the removal of TR-8.
 - [ ] AC-18 (TR-9): Given a capture of a fair lane, when `warm-prepare` validates it, then unequal runner hashes across product versions, a missing warm pass, a timed region under 100 ms, a fault in the timed region of a resident lane, a missing page-size witness or a missing floor comparison each reject the set, and `report.json` shows ns per read per arm and their difference with its interval.
 - [ ] AC-19 (TR-9): Given the legacy resident lanes, when their loop functions are compared with `604410a`, then they are unchanged, and the session, copy, fair `get` and floor arms run in the fair-lane module.

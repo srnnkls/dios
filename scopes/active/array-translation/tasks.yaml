@@ -342,7 +342,7 @@ tasks:
   - benches/evidence/array_translation/
   - benches/plans/array_translation.md
   - scopes/active/array-translation/validation.yaml
-  acceptance: AC-16. All eight gates run under the frozen manifests on nix, AT-G4 as
+  acceptance: AC-16 (amended by AT-D29). All eight gates run under the frozen manifests on nix; AT-G5 and AT-G6 carry their recorded failure; AT-G4 as
     the shared-runner recapture at-g4-campaign, with
     every pair retained. The translation-memory report, session length sweep,
     liveness pricing, pressure fast and fallback counts and the AT-G1 profile are

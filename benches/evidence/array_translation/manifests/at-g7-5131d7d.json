@@ -1,0 +1,60 @@
+{
+  "gate": "at-g7",
+  "candidate_commit": "5131d7de2b3a1223a1875c91699667dec912b79a",
+  "drp": {
+    "protocol": "DRP owner amendment of 2026-09-14",
+    "runner": {
+      "source_sha256": "f2391d5c8e69146aeaaf77e8d112f0b42115dc2c926dd8dd9b452ea8727a76b1",
+      "build_sha256": "da29d3b493f6440a8a86dd3a695260f9e714d12a7d820c6dc2194ba0b1e088a7"
+    },
+    "converter": {
+      "source_sha256": "377fb6f2f5efc2de19b611440e54936e8356a37391d0d1bcc741d742ac2cf1ce"
+    },
+    "toolchain": {
+      "rust": "rustc 1.96.0",
+      "mise": "2026.8.0"
+    },
+    "binding_input_sha256": "915341006e824c0212e82abc923d5999e34ede24e102ebd821dcc3d4494af37a",
+    "products": {
+      "g2_base": {
+        "arm": "base",
+        "source_commit": "a94860f31e9f1649fcb73eccf8c3798c739c64fe",
+        "executable_sha256": "36d8f2227ceb4eb4f3cddf0677014b4e54c62c7a598daad997e46e5060d66d36",
+        "cargo_lock_sha256": "68fcc97026a9a5ef3c8a2ec1c55e0786464301ec7e772ff6744b16ee8359ed2b"
+      },
+      "g4_base": {
+        "arm": "base",
+        "source_commit": "1004a2e6fcae0bcc9552dc3211c2416e388a250d",
+        "executable_sha256": "82a7ecc6e7fa7e9b613e152c381c6e880549cd85a48034f6b5915bc78bc66563",
+        "cargo_lock_sha256": "ccbd0d132f8d0c00f7df428247338ea117222dd71b0dfaf9555c610e21dc6466"
+      },
+      "candidate": {
+        "arm": "candidate",
+        "source_commit": "5131d7de2b3a1223a1875c91699667dec912b79a",
+        "executable_sha256": "69b6d8a5f1483ac4e4e0922b498f414c13f87a1bcc8ff7c3d413a4ef39960eb9",
+        "cargo_lock_sha256": "757e1121240aa29eed42c2de39f8ed0b257f161be4903e240fa8f43057b3f423"
+      }
+    },
+    "lanes": {
+      "drp_g2_warm_ordinary": 1.01,
+      "drp_g2_cycling_reuse": 1.01,
+      "drp_g4_ordinary_base_8t": 1.0,
+      "drp_g4_ordinary_scaling": 0.5
+    },
+    "pre_run_manifests": "at-g7/drp/LANE/pre-run.json, written before the first pair of each lane"
+  },
+  "rc": {
+    "frozen_executable_sha256": "cc1e1ca41309c8115729ca07000b462c5f1a86cedf395414f5d487a9b4bff57c",
+    "candidate_executable_sha256": "6eab566ed56b4e87512de2b92c54341c5404563e4f336b849937124075571a6b",
+    "fixture_sha256": "54ae45ec997182e04336fd1f928503fc1b8ac46f070c796332ca0133b03f1d2f",
+    "rc_g1": {
+      "cold-mmap": 1.0,
+      "pressure-mmap": 1.0
+    },
+    "rc_g4": {
+      "automatic_fragmented": 1.02,
+      "automatic_dependent": 1.02
+    },
+    "rc_g4_executable_sha256": "6eab566ed56b4e87512de2b92c54341c5404563e4f336b849937124075571a6b"
+  }
+}
