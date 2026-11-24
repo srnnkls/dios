@@ -277,3 +277,37 @@ Product and runner of e534f2a (AT10, AT-D29), manifests frozen in b283244, host 
   instructions per copy against 70 for `mmap_copy`: per-call reader, identity and range
   checks, bounds-checked translation, stamp and mirror loads, and the run-time-length
   copy loop (`b9-implementer-AT10/native.yaml`).
+
+## AT8 binding campaign (2026-11-23 to 2026-11-24)
+
+Campaign tree 81a2f18 for AT-G1, AT-G2, AT-G3, AT-G7 and AT-G8 (product sources identical
+to e534f2a, where AT-G5 and AT-G6 were captured); AT-G4 at d36cd36, whose runner gains only
+the F10 build-script cfg for `paired_difference` (960a7d0) so it builds against main at
+ade5310. Host `nix`, bench profile THP `never` except the gated AT-G3 row under
+`bench-thp-madvise`, 30 measured fresh-process pairs per capture, each under its frozen
+manifest.
+
+| Gate | Captured | CI95 upper | Bound | Result | Evidence |
+|------|----------|-----------:|------:|--------|----------|
+| AT-G1, pooled over three layout builds (gated, AT-D24) | 81a2f18 | 1.4259 | 1.50 | passed | `at-g1/` |
+| AT-G1 per build (reported): 16, 32, 64 | 81a2f18 | 1.4345, 1.4418, 1.4159 | 1.50 | passed | `at-g1/layout-NN/` |
+| AT-G2 | 81a2f18 | 1.0127 | 1.10 | passed | `at-g2/` |
+| AT-G3, arena on 2 MiB pages | 81a2f18 | 0.9192 | 1.00 | passed | `at-g3/` |
+| AT-G3 equal reach (reported) | 81a2f18 | 1.1216 | | reported | `at-g3-equal-reach/` |
+| AT-G4, shared runner | d36cd36 | 0.6500 | 0.85 | passed | `at-g4-campaign/` |
+| AT-G5, three layout builds | e534f2a | 2.5245, 2.4028, 2.3551 | 1.50 | failed, not adopted (AT-D29) | `at-g5/` |
+| AT-G6, three layout builds | e534f2a | 2.3313, 2.2738, 2.2265 | 1.20 | failed, not adopted (AT-D29) | `at-g6/` |
+| AT-G7 DRP-G2 warm, cycling | 81a2f18 | 0.9065, 0.9985 | 1.01 | passed | `at-g7/drp/` |
+| AT-G7 DRP-G4 8-thread, scaling | 81a2f18 | 0.3079, 0.1499 | 1.00, 0.50 | passed | `at-g7/drp/` |
+| AT-G7 RC-G1 cold, pressure (rerun, AT-D30) | 81a2f18 | 0.8370, 0.6026 | 1.00 | passed | `at-g7/rc-g1/` |
+| AT-G7 RC-G4 fragmented | 81a2f18 | 1.0015 | 1.02 | passed | `at-g7/rc-g4/` |
+| AT-G7 RC-G4 dependent (rerun, AT-D30) | 81a2f18 | 1.0002 | 1.02 | passed | `at-g7/rc-g4-rerun/` |
+| AT-G8 | 81a2f18 | 0.4918 | 0.85 | passed | `at-g8/` |
+| AT-G8 mmap pair (reported) | 81a2f18 | 3.1889 | | reported | `at-g8-mmap/` |
+
+- Retained beside the reruns: RC-G4 dependent's first capture failed at 1.0484 on one pair at
+  1.605 (median 1.0004; `at-g7/rc-g4/`), and RC-G1's first capture aborted on the
+  steady-interval witness in the pressure case (`at-g7/rc-g1-aborted/`).
+- AT-G3 ns per fold, mmap / session: 403.9 / 370.5; the dios arena was fully
+  hugepage-backed in every gated row (warm-prepare's posture check).
+
