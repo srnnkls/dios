@@ -355,16 +355,26 @@ fn summarize(path: &Path) -> Result<(), String> {
 }
 
 /// The shared harness's ratio and paired difference candidate minus base in
-/// nanoseconds per process.
+/// nanoseconds per process; a product tree without the paired difference
+/// omits its fields (F10).
 fn summarize_samples(samples: &dios::bench::PairedSamples) -> serde_json::Value {
     let gate = dios::bench::ratio_gate(samples, 10_000);
-    let difference = dios::bench::paired_difference(samples, 10_000);
-    json!({"ratio_orientation": "candidate/base", "pairs": samples.base_ns.len(),
+    #[cfg_attr(
+        not(dios_paired_difference),
+        expect(unused_mut, reason = "only the paired difference extends the summary")
+    )]
+    let mut summary = json!({"ratio_orientation": "candidate/base",
+        "pairs": samples.base_ns.len(),
         "ratio_geomean": gate.ratio_geomean, "ci95_upper": gate.ratio_ci95_upper,
-        "difference_ns_mean": difference.difference_ns_mean,
-        "difference_ns_ci95_lower": difference.difference_ns_ci95_lower,
-        "difference_ns_ci95_upper": difference.difference_ns_ci95_upper,
-        "kind": "characterization", "adopted_bound": null})
+        "kind": "characterization", "adopted_bound": null});
+    #[cfg(dios_paired_difference)]
+    {
+        let difference = dios::bench::paired_difference(samples, 10_000);
+        summary["difference_ns_mean"] = json!(difference.difference_ns_mean);
+        summary["difference_ns_ci95_lower"] = json!(difference.difference_ns_ci95_lower);
+        summary["difference_ns_ci95_upper"] = json!(difference.difference_ns_ci95_upper);
+    }
+    summary
 }
 
 fn snapshot() -> serde_json::Value {
