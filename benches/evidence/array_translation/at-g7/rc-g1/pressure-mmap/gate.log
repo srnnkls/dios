@@ -1,0 +1,4 @@
+gate paired: pairs 30, ratio geomean 0.5999, ci95 upper 0.6026, threshold 1.0000 -> PASS
+[gate] $ cargo bench --features bench --bench compare -- /dev/shm/dios-at-g7-rc…
+    Finished `bench` profile [optimized + debuginfo] target(s) in 0.05s
+     Running benches/compare.rs (target/release/deps/compare-3acde5287bdce0a9)

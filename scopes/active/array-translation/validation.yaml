@@ -265,6 +265,10 @@ owner_decisions:
     decided_at: 2026-11-23
     owner: Sören
     decision: "AT10 lands although it does not reach its bound: an accepted copy now inlines into the caller with no call into dios and one cold exit, 51.5 cycles and 186.6 instructions per 64-byte copy against 21.6 and 69.6 for mmap_copy (2.38x; nix, layout-32 smoke runner). With every copy-path assertion kept once, per-call validation and WRC-D1, the accepted path stays near 130 instructions; the bounds 1.50 (AT-G5) and 1.20 (AT-G6) are not reachable for a per-call copy, and batching is excluded by the plan lever. AT-G5 and AT-G6 are refrozen and recaptured once on three layout builds for the record; their failure records the copy-out read as not adopted on performance (read_copy stays in the tree; sira keeps its own copy path, WRC-D2). AT7 and AT10 close on that record; AT8 follows."
+  - id: AT-D30
+    decided_at: 2026-11-24
+    owner: Sören
+    decision: "AT8 campaign at 81a2f18: one fresh 30-pair rerun each of RC-G1 (cold and pressure) and RC-G4 automatic_dependent under the frozen at-g7.json is authorized. RC-G4 automatic_dependent failed at CI95 upper 1.0484 (bound 1.02) on one outlier pair at 1.605 (median 1.0004, the other 29 pairs 0.993 to 1.003), as the fragmented lane did at 5131d7d before its authorized rerun; RC-G1 aborted on the steady-interval witness in the pressure case with the cold case complete, the AT-D23 pattern. The failed and aborted captures are retained; the reruns decide."
   - id: WRC-D1
     inherited_from: scopes/draft/warm-read-copy-out/validation.yaml
     decision: "Volatile-word exception, same-width atomic writers, one audited module, mirror-only liveness carry over; the bracket is amended by Q005 and A001."
