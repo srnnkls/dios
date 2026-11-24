@@ -1,0 +1,19 @@
+nix, campaign runners of 81a2f18 (at-g1/layout-NN), one sample process per arm pinned to CPU 0, 134,283,264 reads, THP never.
+
+new-16-session             cyc/read 25.04 ins/read 78.48 br/read 15.37 miss/1k-reads 83.74
+new-16-mmap                cyc/read 17.57 ins/read 63.22 br/read 12.20 miss/1k-reads 75.36
+new-32-session             cyc/read 25.93 ins/read 78.47 br/read 15.37 miss/1k-reads 96.76
+new-32-mmap                cyc/read 17.56 ins/read 63.21 br/read 12.20 miss/1k-reads 75.18
+new-64-session             cyc/read 27.13 ins/read 78.47 br/read 15.37 miss/1k-reads 89.30
+new-64-mmap                cyc/read 22.21 ins/read 63.23 br/read 12.21 miss/1k-reads 75.48
+== mispredicts by instruction (new layout-64, session arm)
+    43.09%  [.] mmap_workloads::mmap_workloads::catalog::consume                                              
+    34.55%  [.] mmap_workloads::mmap_workloads::fair::dios_session_loop                                       
+     0.17%  [.] dios::pool::prefetch::notifications::DirtyFrames::drain                                       
+     0.12%  [.] mmap_workloads::mmap_workloads::fixture::prepare                                              
+     0.10%  [.] _ZN4dios6driver11read_vector51_$LT$impl$u20$dios..driver..DriverCore$LT$E$GT$$GT$14flush_defer
+ 49.3 | 97131:  cmp    $0x40,%r14                            || prev: 9712c:  add    0x18(%rsp),%r15
+  7.5 | 970a6:  mov    0x10(%rsp),%rax                       || prev: 970a1:  mov    0x18(%rsp),%rcx
+  5.6 | 97159:  test   %eax,%eax                             || prev: 97155:  mov    0x0(%rbp,%rsi,4),%eax
+  4.3 | 9710e:  test   %al,%al                               || prev: 9710a:  movzbl (%rax,%rdx,1),%eax
+  4.1 | 96f1a:  mov    0x8(%rbx),%rcx                        || prev: 96f14:  lock orl $0x0,-0x40(%rsp)
