@@ -1,16 +1,15 @@
 //! T009 loom seam (`cfg(loom)`, doc-hidden): a bounded control plane over the REAL
 //! lock-free pool machinery. Every op delegates to the production primitives —
 //! `ReaderSlot::begin_pin` (with its `SeqCst` fence), `commit_pin`/`abort_pin`/
-//! `release_guard`, `epoch::advance_epoch`, `FrameState::advance`, the `PageTable`
-//! seqlock (`insert_shared`/`remove_shared`/`lookup`), and `Clock::reference` —
+//! `release_guard`, `epoch::advance_epoch`, `FrameState::advance`, the
+//! `Translation` entries (`publish`/`clear`/`lookup`), and `Clock::reference` —
 //! all routed through the `cfg(loom)` sync alias so loom explores their real
 //! interleavings. A bespoke reimplementation would prove nothing.
 //!
 //! Frame convention the proofs rely on: `make_resident` installs in frame 0,
-//! `remap` in frame 1, so a coupled (frame, generation) pair exposes a torn
-//! seqlock read directly. Generation is the frame's content byte, published before
-//! the seqlock write and read back after, so the seqlock's Release/Acquire pairing
-//! is what excludes the torn coupling.
+//! `remap` in frame 1. Generation is the frame's content byte, published before
+//! the entry is set and read back after its lookup, so the entry's
+//! Release/Acquire pairing is what makes a resolved frame's bytes complete.
 
 use std::num::NonZeroU64;
 
@@ -26,13 +25,17 @@ use super::epoch::{
 use super::miss::{MissEntry, MissInterests, MissOutcome, MissSlot, MissTable};
 use super::prefetch::state::{Prefetch, Terminal};
 use super::prefetch::{PrefetchStats, Readahead, Source};
+pub use super::read_copy::OptimisticCopy;
+use super::read_copy::{copy_payload_words, optimistic_copy};
 use super::read_spans::{ReadSpan, ReadSpans};
 use super::retention::{RetainRefused, RetainedFrame, Retention};
+use super::session::{ReadSession, SessionFile, SessionRead};
 use super::{
-    Clock, FrameState, Frames, InFlightFrame, PageId, PageTable, PoolFile, PoolFileState,
-    ResidentFileLease, ResidentHint, ResidentLeaseError, ResidentLeaseState, SECTOR_BYTES,
-    acquire_resident_file_lease, begin_file_retirement, file_generation_is_live, file_is_live,
-    pin_with_resident_hint, publish_live_file,
+    Clock, FrameState, Frames, GetError, InFlightFrame, PageId, PoolFile, PoolFileState,
+    ResidentFileLease, ResidentHint, ResidentLeaseError, ResidentLeaseState, RetirementGrace,
+    SECTOR_BYTES, Translation, acquire_resident_file_lease, begin_file_retirement,
+    file_generation_is_live, file_is_live, file_slot_is_vacant, pin_with_resident_hint,
+    publish_live_file, retirement_grace_elapsed,
 };
 
 struct Control {
@@ -115,11 +118,27 @@ pub struct DrainReport {
     pub first: Option<DrainSource>,
 }
 
+/// Granule bound of the model's single file slot, above every modeled page.
+const MODEL_FILE_GRANULES_MAX: u32 = 64;
+
+/// Whether a model pin validates the file-generation mirror after its entry load.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Liveness {
+    Unchecked,
+    Mirror,
+}
+
+enum ModelPin<'pool> {
+    Hit(Guard<'pool>),
+    Absent,
+    StaleFile,
+}
+
 /// One shared control plane, `N` frames, and two reader slots — the bounded
 /// entry the Loom models drive.
 pub struct PoolModel {
     frames: std::sync::Arc<Frames>,
-    table: PageTable,
+    translation: Translation,
     clock: Clock,
     global_epoch: AtomicU64,
     readers: std::sync::Arc<ReaderRegistry>,
@@ -172,7 +191,11 @@ impl PoolModel {
         let registered_file_capacity = 1;
         Arc::new(Self {
             frames: std::sync::Arc::new(Frames::preallocated(frames, SECTOR_BYTES)),
-            table: PageTable::with_frame_count(frames),
+            translation: Translation::try_reserve(
+                registered_file_capacity,
+                MODEL_FILE_GRANULES_MAX,
+            )
+            .expect("loom translation reservation succeeds"),
             clock: Clock::with_frame_count(frames),
             global_epoch: AtomicU64::new(0),
             readers: std::sync::Arc::new(
@@ -319,7 +342,7 @@ impl PoolModel {
                     .checked_add(u32::try_from(ordinal).expect("bounded ordinal"))
                     .expect("modeled page range fits u32"),
             );
-            assert!(self.table.lookup(page).is_none());
+            assert!(self.translation.lookup(page).is_none());
             assert!(readahead.miss.find_pending(page).is_none());
             vector.push(
                 self.frames
@@ -391,7 +414,7 @@ impl PoolModel {
             .checked_sub(1)
             .expect("one terminal read credit");
         assert_eq!(self.frames.publish(write), entry.frame());
-        self.table.insert_shared(entry.page(), entry.frame());
+        self.translation.publish(entry.page(), entry.frame());
         if self.clock.is_speculative(entry.frame()) {
             self.clock.completed.notify(entry.frame());
         } else {
@@ -414,7 +437,7 @@ impl PoolModel {
         let page = Self::page_id(page);
         let mut control = self.control();
         let readahead = control.readahead.as_mut().expect("readahead model enabled");
-        let interest = if self.table.lookup(page).is_some() {
+        let interest = if self.translation.lookup(page).is_some() {
             None
         } else {
             let index = readahead
@@ -522,7 +545,7 @@ impl PoolModel {
         }
         assert_eq!(self.frames.state(frame), FrameState::Free);
         let page = Self::page_id(page);
-        assert!(self.table.lookup(page).is_none());
+        assert!(self.translation.lookup(page).is_none());
         let mut write = self
             .frames
             .claim(frame, page)
@@ -535,7 +558,7 @@ impl PoolModel {
             .prefetch
             .admit_model_automatic(&self.clock, reader, page, frame);
         self.frames.publish(write);
-        self.table.insert_shared(page, frame);
+        self.translation.publish(page, frame);
         self.clock.completed.notify(frame);
     }
 
@@ -559,7 +582,7 @@ impl PoolModel {
                 .miss
                 .prepare_eviction(frame, self.miss_interests())
         );
-        assert_eq!(self.table.remove_shared(page), Some(frame));
+        assert_eq!(self.translation.clear(page), frame);
         readahead
             .prefetch
             .finish(&self.clock, frame, Terminal::Evicted);
@@ -602,7 +625,7 @@ impl PoolModel {
     fn pin_readahead_page(&self, reader: u32, page: PageId) -> Option<PoolFrameGuard<'_>> {
         let slot = &self.readers.slots()[reader as usize];
         let begun = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
-        let Some(frame) = self.table.lookup(page) else {
+        let Some(frame) = self.translation.lookup(page) else {
             slot.abort_pin(begun);
             return None;
         };
@@ -665,15 +688,16 @@ impl PoolModel {
     }
 
     /// Makes `page` resident in `frame` filled with content-generation
-    /// `generation`, mapped through the seqlock — the shared install path.
+    /// `generation`, published through its translation entry — the shared install path.
     fn install(&self, frame: ReadFrameIdx, page: PageId, generation: u8) {
         let mut token = self
             .frames
             .claim(frame, page)
             .expect("the model installs into a Free frame");
+        self.frames.fill_model_payload(&mut token, generation);
         self.frames.fill(&mut token, generation);
         self.frames.publish(token);
-        self.table.insert_shared(page, frame);
+        self.translation.publish(page, frame);
         let _ = self.clock.reference(frame);
         debug_assert!(
             self.frames.state(frame) == FrameState::Resident,
@@ -722,6 +746,16 @@ impl PoolModel {
     }
 
     fn pin_page(&self, reader: u32, page: PageId) -> Option<Guard<'_>> {
+        match self.pin_page_checked(reader, page, Liveness::Unchecked) {
+            ModelPin::Hit(guard) => Some(guard),
+            ModelPin::Absent => None,
+            ModelPin::StaleFile => unreachable!("an unchecked pin never loads the mirror"),
+        }
+    }
+
+    /// The production `get` order: the entry first, then the file-generation
+    /// mirror, so a successor's entry in a reused slot is never admitted.
+    fn pin_page_checked(&self, reader: u32, page: PageId, liveness: Liveness) -> ModelPin<'_> {
         let reader = reader as usize;
         assert!(
             reader < self.readers.slots().len(),
@@ -730,11 +764,17 @@ impl PoolModel {
         let slot = &self.readers.slots()[reader];
         let begun = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
         let frame = if begun.is_first() {
-            let mapped = self.table.lookup(page);
+            let mapped = self.translation.lookup(page);
             let Some(frame) = mapped else {
                 slot.abort_pin(begun);
-                return None;
+                return ModelPin::Absent;
             };
+            if liveness == Liveness::Mirror
+                && !file_generation_is_live(&self.file_live_generations[0], page.file())
+            {
+                slot.abort_pin(begun);
+                return ModelPin::StaleFile;
+            }
             self.held_frames[reader].set(frame.get());
             frame
         } else {
@@ -746,7 +786,7 @@ impl PoolModel {
         );
         let _ = self.clock.reference(frame);
         let pin = slot.commit_pin(begun, frame);
-        Some(Guard {
+        ModelPin::Hit(Guard {
             inner: PoolFrameGuard::new(
                 self.frames.frame_bytes(&pin),
                 slot,
@@ -759,20 +799,14 @@ impl PoolModel {
 
     /// Setup for the file-generation liveness model: installs one production
     /// live-file entry and makes its exact page resident in frame zero.
+    ///
+    /// # Panics
+    ///
+    /// If the model's file slot is already occupied.
     pub fn make_file_resident(&self, file_generation: u32, page: u32, content_generation: u8) {
-        let mut control = self.control();
-        let id = FileId::new(0, 0, file_generation);
-        publish_live_file(
-            &mut control.files,
-            &self.file_live_generations[0],
-            &self.resident_lease_states[0],
-            id,
-            None,
-        );
-        self.install(
-            ReadFrameIdx::new(0),
-            PageId::new(id, page),
-            content_generation,
+        assert!(
+            self.register_file_resident(file_generation, page, content_generation),
+            "the model's file slot is vacant at setup"
         );
     }
 
@@ -780,11 +814,10 @@ impl PoolModel {
     /// authoritative control-locked recheck after a page miss.
     pub fn get_file(&self, file_generation: u32, page: u32) -> Option<Guard<'_>> {
         let page = Self::file_page_id(file_generation, page);
-        if !file_generation_is_live(&self.file_live_generations[0], page.file()) {
-            return None;
-        }
-        if let Some(guard) = self.pin_page(0, page) {
-            return Some(guard);
+        match self.pin_page_checked(0, page, Liveness::Mirror) {
+            ModelPin::Hit(guard) => return Some(guard),
+            ModelPin::StaleFile => return None,
+            ModelPin::Absent => {}
         }
         let control = self.control();
         self.locked_get_checks.fetch_add(1, Ordering::Relaxed);
@@ -792,7 +825,10 @@ impl PoolModel {
             return None;
         }
         drop(control);
-        self.pin_page(0, page)
+        match self.pin_page_checked(0, page, Liveness::Mirror) {
+            ModelPin::Hit(guard) => Some(guard),
+            ModelPin::Absent | ModelPin::StaleFile => None,
+        }
     }
 
     /// Observes a generation-exact hint for a currently resident page.
@@ -803,7 +839,7 @@ impl PoolModel {
     #[must_use]
     pub fn resident_hint(&self, file_generation: u32, page: u32) -> Option<ResidentHint> {
         let page = Self::file_page_id(file_generation, page);
-        let frame = self.table.lookup(page)?;
+        let frame = self.translation.lookup(page)?;
         let stamp = self.frames.state_word(frame);
         if !Frames::word_is_resident(stamp) {
             return None;
@@ -886,7 +922,12 @@ impl PoolModel {
             .as_mut()
             .expect("the modeled file is registered");
         assert!(
-            begin_file_retirement(file, &self.file_live_generations[0], page.file()),
+            begin_file_retirement(
+                file,
+                &self.file_live_generations[0],
+                page.file(),
+                self.global_epoch.load(Ordering::Acquire),
+            ),
             "the modeled live file begins retirement"
         );
         self.retire_file_frame(&mut control, page);
@@ -907,7 +948,7 @@ impl PoolModel {
         let mut control = self.control();
         let retiring = control.files[0]
             .as_ref()
-            .filter(|file| file.state == PoolFileState::Retiring)
+            .filter(|file| matches!(file.state, PoolFileState::Retiring { .. }))
             .map(|file| PageId::new(file.id, page));
         if let Some(retiring_page) = retiring {
             self.retire_file_frame(&mut control, retiring_page);
@@ -945,7 +986,6 @@ impl PoolModel {
         content_generation: u8,
     ) {
         self.frames.advance(frame, FrameState::Free);
-        self.install(frame, PageId::new(id, page), content_generation);
         files[0]
             .as_mut()
             .expect("the modeled retiring file remains registered")
@@ -957,15 +997,17 @@ impl PoolModel {
             id,
             None,
         );
+        self.install(frame, PageId::new(id, page), content_generation);
     }
 
     fn retire_file_frame(&self, control: &mut Control, page: PageId) {
         if self.resident_lease_states[0].count() > 0 {
             return;
         }
-        let Some(frame) = self.table.remove_shared(page) else {
+        if self.translation.lookup(page).is_none() {
             return;
-        };
+        }
+        let frame = self.translation.clear(page);
         self.frames.advance(frame, FrameState::Evicting);
         control
             .evict_queue
@@ -1018,10 +1060,7 @@ impl PoolModel {
 
     fn evict_page(&self, page: PageId) {
         let mut control = self.control();
-        let frame = self
-            .table
-            .remove_shared(page)
-            .expect("evict targets a mapped page");
+        let frame = self.translation.clear(page);
         debug_assert!(
             frame.get() < self.frames.count(),
             "an evicted frame index is within the frame arena"
@@ -1060,39 +1099,43 @@ impl PoolModel {
         let Control {
             evict_queue,
             release_cursor,
+            files,
             ..
         } = &mut *control;
         let report = self.advance_and_reclaim(evict_queue, release_cursor, |frame| {
             self.frames.advance(frame, FrameState::Free);
+            self.publish_refill_generation(files, file_generation);
             self.install(
                 frame,
                 Self::file_page_id(file_generation, refill_page),
                 refill_gen,
             );
         });
-        if (report.released > 0 || report.matured_freed > 0)
-            && control.files[0]
-                .as_ref()
-                .is_some_and(|file| file.id.generation() != file_generation)
-        {
-            control.files[0]
-                .as_mut()
-                .expect("the modeled file remains registered")
-                .state = PoolFileState::Retired;
-            let id = FileId::new(0, 0, file_generation);
-            publish_live_file(
-                &mut control.files,
-                &self.file_live_generations[0],
-                &self.resident_lease_states[0],
-                id,
-                None,
-            );
-        }
         debug_assert!(
             report.matured_freed <= self.frames.count(),
             "a poll pass reclaims at most every frame"
         );
         report
+    }
+
+    /// Publishes the refill's generation live before its entry is set, as
+    /// registration does, so the mirror never names the predecessor while a
+    /// successor's entry is visible.
+    fn publish_refill_generation(&self, files: &mut [Option<PoolFile>], file_generation: u32) {
+        let replaced = files[0]
+            .as_mut()
+            .filter(|file| file.id.generation() != file_generation);
+        let Some(file) = replaced else {
+            return;
+        };
+        file.state = PoolFileState::Retired;
+        publish_live_file(
+            files,
+            &self.file_live_generations[0],
+            &self.resident_lease_states[0],
+            FileId::new(0, 0, file_generation),
+            None,
+        );
     }
 
     /// Advances the epoch without consuming either reclaim queue.
@@ -1265,29 +1308,205 @@ impl PoolModel {
         self.frames.state(ReadFrameIdx::new(frame)) == FrameState::Evicting
     }
 
-    /// Writer under the control lock: remap `page` to a fresh frame (frame 1)
-    /// carrying `generation` as one seqlock transaction.
+    /// Writer under the control lock: publishes absent `page` in a fresh frame
+    /// (frame 1) carrying `generation`.
     pub fn remap(&self, page: u32, generation: u8) {
-        let _control = self.control();
-        self.install(ReadFrameIdx::new(1), Self::page_id(page), generation);
+        self.remap_file(0, page, generation);
     }
 
-    /// Reader: a lock-free seqlock read of `page`'s cell coupled with the frame's
-    /// content generation, read under a pin on reader 0. `None` = unmapped.
-    pub fn probe(&self, page: u32) -> Option<Snapshot> {
-        let slot = &self.readers.slots()[0];
-        let begun = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
-        let Some(frame) = self.table.lookup(Self::page_id(page)) else {
-            slot.abort_pin(begun);
-            return None;
-        };
-        let pin = slot.commit_pin(begun, frame);
-        let generation = self.frames.frame_bytes(&pin)[0];
-        slot.release_guard();
-        Some(Snapshot {
-            frame: frame.get(),
+    /// Writer under the control lock: publishes absent `page` of the live
+    /// `file_generation` in a fresh frame (frame 1) carrying `generation`.
+    pub fn remap_file(&self, file_generation: u32, page: u32, generation: u8) {
+        let _control = self.control();
+        self.install(
+            ReadFrameIdx::new(1),
+            Self::file_page_id(file_generation, page),
             generation,
+        );
+    }
+
+    /// Reader 0's session over the production session resolution.
+    #[must_use]
+    pub fn session(&self) -> ModelSession<'_> {
+        ModelSession {
+            session: ReadSession::new(
+                &self.readers.slots()[0],
+                &self.global_epoch,
+                &self.translation,
+                &self.frames,
+                &self.clock,
+                &self.file_live_generations,
+                0,
+            ),
+        }
+    }
+
+    /// Copies `output.len()` bytes of `page` of `file_generation` from offset
+    /// zero through the production optimistic attempt: no epoch pin, no CLOCK
+    /// reference and no fallback `get`.
+    pub fn optimistic_copy(
+        &self,
+        file_generation: u32,
+        page: u32,
+        output: &mut [u8],
+    ) -> OptimisticCopy {
+        optimistic_copy(
+            &self.translation,
+            &self.frames,
+            &self.file_live_generations,
+            Self::file_page_id(file_generation, page),
+            0,
+            output,
+        )
+    }
+
+    /// Copies `output.len()` bytes of `frame`'s payload from offset zero
+    /// through the copy step of the optimistic attempt alone: no entry, stamp
+    /// or mirror load, no fence, no epoch pin and no CLOCK reference.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless the frame is in range and the output fits the labeled
+    /// payload.
+    pub fn unbracketed_copy(&self, frame: u32, output: &mut [u8]) {
+        assert!(frame < self.frames.count(), "copied frame is in range");
+        copy_payload_words(&self.frames, ReadFrameIdx::new(frame), output);
+    }
+
+    /// Observes the translation entry of `page` in the model's file slot.
+    #[must_use]
+    pub fn translation_entry(&self, page: u32) -> Option<u32> {
+        self.translation
+            .lookup(Self::page_id(page))
+            .map(ReadFrameIdx::get)
+    }
+
+    /// Setup: publishes `file_generation` live in the model's file slot with
+    /// no resident page.
+    pub fn make_file_live(&self, file_generation: u32) {
+        let mut control = self.control();
+        publish_live_file(
+            &mut control.files,
+            &self.file_live_generations[0],
+            &self.resident_lease_states[0],
+            FileId::new(0, 0, file_generation),
+            None,
+        );
+    }
+
+    /// Begins retirement of the live `file_generation`, which holds no
+    /// resident page, through the production retirement record; the slot
+    /// stays retiring until [`Self::poll_retirement`] ends its grace period.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless the named generation is registered and live.
+    pub fn retire_empty_file(&self, file_generation: u32) {
+        let mut control = self.control();
+        let file = control.files[0]
+            .as_mut()
+            .expect("the modeled file is registered");
+        assert!(
+            begin_file_retirement(
+                file,
+                &self.file_live_generations[0],
+                FileId::new(0, 0, file_generation),
+                self.global_epoch.load(Ordering::Acquire),
+            ),
+            "the modeled live file begins retirement"
+        );
+    }
+
+    /// One poll pass over the model's file slot: the production epoch
+    /// advance, then the production grace check, which retires the slot only
+    /// once the global epoch is two past the retirement record.
+    pub fn poll_retirement(&self) {
+        let mut control = self.control();
+        let global_epoch = advance_epoch(&self.global_epoch, self.readers.slots());
+        let Some(file) = control.files[0]
+            .as_mut()
+            .filter(|file| matches!(file.state, PoolFileState::Retiring { .. }))
+        else {
+            return;
+        };
+        if retirement_grace_elapsed(file, RetirementGrace::Epochs, global_epoch) {
+            file.state = PoolFileState::Retired;
+        }
+    }
+
+    /// Registers `file_generation` in the model's slot and publishes `page`
+    /// in frame 0; `false`, the `AtCapacity` outcome, while the slot's file is
+    /// live or retiring.
+    pub fn register_file_resident(
+        &self,
+        file_generation: u32,
+        page: u32,
+        content_generation: u8,
+    ) -> bool {
+        let mut control = self.control();
+        let id = FileId::new(0, 0, file_generation);
+        if !file_slot_is_vacant(&control.files, id) {
+            return false;
+        }
+        publish_live_file(
+            &mut control.files,
+            &self.file_live_generations[0],
+            &self.resident_lease_states[0],
+            id,
+            None,
+        );
+        self.install(
+            ReadFrameIdx::new(0),
+            PageId::new(id, page),
+            content_generation,
+        );
+        true
+    }
+}
+
+/// A production [`ReadSession`] over the model's file slot.
+pub struct ModelSession<'pool> {
+    session: ReadSession<'pool>,
+}
+
+/// A production [`SessionFile`] view of the model's file slot.
+pub struct ModelSessionFile<'session> {
+    file: SessionFile<'session>,
+}
+
+impl ModelSessionFile<'_> {
+    /// Reads `page` through the production [`SessionFile::page`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the production session read's [`GetError`].
+    pub fn page(&self, page: u32) -> Result<SessionRead<'_>, GetError> {
+        self.file.page(page)
+    }
+}
+
+impl ModelSession<'_> {
+    /// Opens the view of `file_generation` through the production
+    /// [`ReadSession::file`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the production [`GetError::StaleFile`] for a generation that
+    /// is not live when the view opens.
+    pub fn file(&self, file_generation: u32) -> Result<ModelSessionFile<'_>, GetError> {
+        Ok(ModelSessionFile {
+            file: self.session.file(FileId::new(0, 0, file_generation))?,
         })
+    }
+
+    /// Reads `page` of `file_generation` through the production session resolution.
+    ///
+    /// # Errors
+    ///
+    /// Returns the production session read's [`GetError`].
+    pub fn read(&self, file_generation: u32, page: u32) -> Result<SessionRead<'_>, GetError> {
+        self.session
+            .read_page(PoolModel::file_page_id(file_generation, page))
     }
 }
 
@@ -1327,23 +1546,5 @@ impl<'pool> Guard<'pool> {
     /// Returns the production retention refusal with the original guard preserved.
     pub fn into_retained(self) -> Result<RetainedFrame<'pool>, RetainRefused<'pool>> {
         self.inner.into_retained()
-    }
-}
-
-/// One committed seqlock read of a `page → (frame, generation)` cell.
-pub struct Snapshot {
-    frame: u32,
-    generation: u8,
-}
-
-impl Snapshot {
-    #[must_use]
-    pub fn frame(&self) -> u32 {
-        self.frame
-    }
-
-    #[must_use]
-    pub fn generation(&self) -> u8 {
-        self.generation
     }
 }

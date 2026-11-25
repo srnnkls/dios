@@ -1,0 +1,11 @@
+{
+  "adopted_bound": null,
+  "ci95_upper": 0.9124307180529974,
+  "difference_ns_ci95_lower": -157190519.63333333,
+  "difference_ns_ci95_upper": -148328646.16666666,
+  "difference_ns_mean": -152820166.46666667,
+  "kind": "characterization",
+  "pairs": 30,
+  "ratio_geomean": 0.9104305650517472,
+  "ratio_orientation": "candidate/base"
+}

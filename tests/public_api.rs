@@ -34,13 +34,17 @@ use dios::{
 const GRANULE: u32 = 4096;
 
 fn compile_api_probe(name: &str, source: &str) -> Output {
+    compile_api_probe_with_features(name, &[], source)
+}
+
+fn compile_api_probe_with_features(name: &str, features: &[&str], source: &str) -> Output {
     let probe = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
     fs::create_dir_all(probe.join("src")).expect("create the isolated API probe");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     fs::write(
         probe.join("Cargo.toml"),
         format!(
-            "[package]\nname = \"dios-{name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\ndios = {{ path = \"{manifest_dir}\" }}\n"
+            "[package]\nname = \"dios-{name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[dependencies]\ndios = {{ path = \"{manifest_dir}\", features = {features:?} }}\n"
         ),
     )
     .expect("write the API probe manifest");
@@ -48,7 +52,7 @@ fn compile_api_probe(name: &str, source: &str) -> Output {
 
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     Command::new(cargo)
-        .args(["check", "--offline", "--quiet"])
+        .args(["check", "--offline", "--quiet", "--color", "never"])
         .current_dir(&probe)
         .env(
             "CARGO_TARGET_DIR",
@@ -171,7 +175,7 @@ fn default_pool_write_slot<'pool>(pool: &'pool Pool) -> Option<PoolWriteSlot<'po
 
 fn inspect_get_error(error: &GetError) {
     match error {
-        GetError::StaleFile { page } => {
+        GetError::StaleFile { page } | GetError::BeyondFileBound { page } => {
             let page: PageId = *page;
             std::hint::black_box(page);
         }
@@ -563,4 +567,203 @@ fn completion_batches_reject_zero_capacity_at_construction() {
 #[test]
 fn zero_capacity_pool_completion_batches_construct_without_panicking() {
     let _batch = PoolCompletionBatch::with_capacity(0);
+}
+
+#[test]
+fn translation_bound_surface_is_root_exported() {
+    let output = compile_api_probe(
+        "translation-bound-surface",
+        r"
+use dios::{GetError, PageId, PoolBuilder, PoolConfigError};
+
+fn inspect_get_error(error: GetError) -> PageId {
+    match error {
+        GetError::StaleFile { page } => page,
+        GetError::BeyondFileBound { page } => page,
+    }
+}
+
+fn translation_config_errors() -> [PoolConfigError; 3] {
+    [
+        PoolConfigError::FileGranulesMaxNotPowerOfTwo { requested: 3 },
+        PoolConfigError::FrameCountAboveTranslationLimit {
+            requested: (1 << 30) + 1,
+            limit: 1 << 30,
+        },
+        PoolConfigError::TranslationUnrepresentable {
+            registered_file_capacity: 1 << 31,
+            file_granules_max: 1 << 31,
+        },
+    ]
+}
+
+fn pin_translation_bound() {
+    let file_granules_max: fn(PoolBuilder, u32) -> PoolBuilder = PoolBuilder::file_granules_max;
+    std::hint::black_box((file_granules_max, inspect_get_error, translation_config_errors));
+}
+",
+    );
+    assert!(
+        output.status.success(),
+        "translation bound surface probe failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn hash_page_table_and_page_hash_are_unreachable_through_testing() {
+    let output = compile_api_probe_with_features(
+        "hash-page-table-removed",
+        &["mock", "bench"],
+        r"
+pub fn translation_stays_reachable() -> &'static str {
+    std::any::type_name::<dios::testing::Translation>()
+}
+
+pub fn page_table_reachable() -> &'static str {
+    std::any::type_name::<dios::testing::PageTable>()
+}
+
+pub fn page_hash_reachable() -> u64 {
+    dios::testing::current_page_hash(0, 0, 0, 0)
+}
+",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let errors: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.starts_with("error["))
+        .collect();
+    assert!(
+        errors.iter().any(|line| line.contains("`PageTable`")),
+        "dios::testing::PageTable must not resolve:\n{stderr}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|line| line.contains("`current_page_hash`")),
+        "dios::testing::current_page_hash must not resolve:\n{stderr}"
+    );
+    assert_eq!(
+        errors.len(),
+        2,
+        "only the two removed items fail; the testing module and Translation stay reachable:\n{stderr}"
+    );
+}
+
+#[test]
+fn session_read_surface_is_root_exported() {
+    let output = compile_api_probe(
+        "session-read-surface",
+        r"
+use dios::{FileId, GetError, Pool, ReadSession, ReaderCtx, SessionFile, SessionRead};
+
+fn open_file<'session>(
+    session: &'session ReadSession<'_>,
+    file: FileId,
+) -> Result<SessionFile<'session>, GetError> {
+    session.file(file)
+}
+
+fn read_page<'view>(
+    view: &'view SessionFile<'_>,
+    granule_idx: u32,
+) -> Result<SessionRead<'view>, GetError> {
+    view.page(granule_idx)
+}
+
+fn inspect_session_read(read: SessionRead<'_>) -> usize {
+    match read {
+        SessionRead::Hit(bytes) => {
+            let bytes: &[u8] = bytes;
+            bytes.len()
+        }
+        SessionRead::Absent => 0,
+    }
+}
+
+pub fn pin_session_surface() {
+    let session: for<'pool> fn(&'pool Pool, &'pool ReaderCtx) -> ReadSession<'pool> =
+        Pool::session;
+    std::hint::black_box((session, open_file, read_page, inspect_session_read));
+}
+",
+    );
+    assert!(
+        output.status.success(),
+        "session read surface probe failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn file_session_surface_is_root_exported() {
+    let output = compile_api_probe(
+        "file-session-surface",
+        r"
+use dios::{FileId, FileSession, GetError, Pool, ReaderCtx, SessionRead};
+
+fn read_page<'view>(
+    view: &'view FileSession<'_>,
+    granule_idx: u32,
+) -> Result<SessionRead<'view>, GetError> {
+    view.page(granule_idx)
+}
+
+pub fn pin_file_session_surface() {
+    let session_file: for<'pool> fn(
+        &'pool Pool,
+        &'pool ReaderCtx,
+        FileId,
+    ) -> Result<FileSession<'pool>, GetError> = Pool::session_file;
+    std::hint::black_box((session_file, read_page));
+}
+",
+    );
+    assert!(
+        output.status.success(),
+        "file session surface probe failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn copy_out_surface_is_root_exported() {
+    let output = compile_api_probe(
+        "copy-out-surface",
+        r"
+use dios::{GetError, PageId, PendingToken, Pool, ReadCopy, ReaderCtx};
+
+pub struct OwnedOutcome {
+    pub copy: ReadCopy,
+}
+
+fn inspect_read_copy(copy: ReadCopy) -> Option<PendingToken> {
+    match copy {
+        ReadCopy::Copied => None,
+        ReadCopy::Pending(token) => Some(token),
+        ReadCopy::Busy => None,
+    }
+}
+
+pub fn pin_copy_out_surface() {
+    let read_copy: for<'pool, 'reader, 'output> fn(
+        &'pool Pool,
+        &'reader ReaderCtx,
+        PageId,
+        u32,
+        &'output mut [u8],
+    ) -> Result<ReadCopy, GetError> = Pool::read_copy;
+    let copied = OwnedOutcome {
+        copy: ReadCopy::Copied,
+    };
+    std::hint::black_box((read_copy, inspect_read_copy, copied));
+}
+",
+    );
+    assert!(
+        output.status.success(),
+        "copy-out surface probe failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

@@ -1,0 +1,34 @@
+[remote] $ ~/projects/dios/.mise/tasks/remote env MISE_EXE=/home/srnnkls/build/dios-gates/tools/mise-v2026.8.0-linux-x64 /home/srnnkls/build/dios-gates/tools/mise-v2026.8.0-linux-x64 run bench-host-guard
+[bench-host-guard] $ if [ ! -e /etc/NIXOS ]; then
+bench_profile=active
+thp=always madvise [never]
+governors=performance
+mise WARN  mise version 2026.11.9 available
+mise WARN  To update, run mise self-update
+[remote] $ ~/projects/dios/.mise/tasks/remote /home/srnnkls/build/dios-gates/tools/mise-v2026.8.0-linux-x64 exec uv@0.12.12 -- uv run --python 3.12 benches/evidence/array_translation/at-g7/collect_drp.py 5131d7d
+drp_g2_warm_ordinary completed pairs 5
+drp_g2_warm_ordinary completed pairs 10
+drp_g2_warm_ordinary completed pairs 15
+drp_g2_warm_ordinary completed pairs 20
+drp_g2_warm_ordinary completed pairs 25
+drp_g2_warm_ordinary completed pairs 30
+drp_g2_cycling_reuse completed pairs 5
+drp_g2_cycling_reuse completed pairs 10
+drp_g2_cycling_reuse completed pairs 15
+drp_g2_cycling_reuse completed pairs 20
+drp_g2_cycling_reuse completed pairs 25
+drp_g2_cycling_reuse completed pairs 30
+drp_g4_ordinary_base_8t completed pairs 5
+drp_g4_ordinary_base_8t completed pairs 10
+drp_g4_ordinary_base_8t completed pairs 15
+drp_g4_ordinary_base_8t completed pairs 20
+drp_g4_ordinary_base_8t completed pairs 25
+drp_g4_ordinary_base_8t completed pairs 30
+drp_g4_ordinary_scaling completed pairs 5
+drp_g4_ordinary_scaling completed pairs 10
+drp_g4_ordinary_scaling completed pairs 15
+drp_g4_ordinary_scaling completed pairs 20
+drp_g4_ordinary_scaling completed pairs 25
+drp_g4_ordinary_scaling completed pairs 30
+All fresh process pairs and shared conversions completed.
+exit=0

@@ -1,0 +1,14 @@
+nix, layout-32 runner of d1a6f9d (3e66f545), one `sample` process per arm pinned to CPU 0, 134,217,728 copies of 64 bytes, THP never.
+
+g5-32-dios_copy        cyc/read 144.85 ins/read 511.90 br/read 112.39 miss/1k 22.87 l1miss/read 1.153
+g5-32-mmap_copy        cyc/read 21.64 ins/read 69.63 br/read 11.15 miss/1k 12.95 l1miss/read 0.071
+g6-32-optimistic_floor cyc/read 22.93 ins/read 77.67 br/read 13.16 miss/1k 13.86 l1miss/read 1.097
+g5-32-plain_array      cyc/read 21.70 ins/read 69.66 br/read 11.15 miss/1k 13.80 l1miss/read 1.073
+
+cycles by symbol, dios_copy:
+    61.87%  dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy
+     8.86%  mmap_workloads::mmap_workloads::fair::dios_copy_loop
+     8.53%  dios::pool::frames::Frames::state_word
+     6.70%  __memmove_avx_unaligned_erms
+     4.81%  __memmove_avx_unaligned
+     3.82%  mmap_workloads::mmap_workloads::catalog::consume

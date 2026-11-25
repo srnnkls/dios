@@ -160,18 +160,6 @@ impl<T: FileOwned> FileSlots<T> {
     pub(super) fn is_empty(&self) -> bool {
         self.slots.is_empty()
     }
-
-    #[cfg(feature = "bench")]
-    pub(super) fn populate(&mut self) {
-        assert!(
-            self.heads.iter().all(|head| head.0 == 0),
-            "population starts vacant"
-        );
-        for slot in self.slots.iter_mut() {
-            slot.previous = SlotLink(0);
-            slot.next = SlotLink(0);
-        }
-    }
 }
 
 impl<T: FileOwned> Index<usize> for FileSlots<T> {

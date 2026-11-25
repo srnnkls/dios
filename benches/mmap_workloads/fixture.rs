@@ -147,7 +147,10 @@ pub(super) fn pool(path: &Path, lane: Lane, arm: Arm) -> Result<(Pool, FileId), 
     let pool = builder.build().map_err(error)?;
     let file = pool.open(path, DirectIo::Required).map_err(error)?;
     let reader = pool.register_reader().map_err(error)?;
-    warm_page(&pool, &reader, PageId::new(file, PAGES))?;
+    // The spare page would evict a lane page when every frame holds one.
+    if lane.frames() > lane.warm_pages() {
+        warm_page(&pool, &reader, PageId::new(file, PAGES))?;
+    }
     for number in 0..lane.warm_pages() {
         warm_page(&pool, &reader, PageId::new(file, number))?;
     }

@@ -1,0 +1,43 @@
+{
+  "schema": "dios-drp009-pre-run-v1",
+  "toolchain": {
+    "rust": "rustc 1.96.0",
+    "mise": "2026.8.0"
+  },
+  "runner": {
+    "source_sha256": "f2391d5c8e69146aeaaf77e8d112f0b42115dc2c926dd8dd9b452ea8727a76b1",
+    "build_sha256": "51168c38be1ed1313bc8603aa886e5e41a1a2961a425a136a3cc5847c7163505"
+  },
+  "converter": {
+    "source_sha256": "377fb6f2f5efc2de19b611440e54936e8356a37391d0d1bcc741d742ac2cf1ce"
+  },
+  "host": {
+    "cpu": "AMD Ryzen Threadripper 3970X 32-Core Processor",
+    "cpu_set": "0",
+    "governor": "performance",
+    "kernel": "6.6.64",
+    "topology": "CCX-0 CPUs 0-3,32-35",
+    "nvme": "Samsung SSD 970 PRO",
+    "direct_io": "verified",
+    "transparent_hugepage": "never",
+    "cache_protocol": "resident-prefill-or-cycling-warmup"
+  },
+  "benchmark_arguments": [
+    "run",
+    "drp_g2_warm_ordinary"
+  ],
+  "products": [
+    {
+      "arm": "base",
+      "source_commit": "a94860f31e9f1649fcb73eccf8c3798c739c64fe",
+      "executable_sha256": "b6ce0ea0d6205c6bcd43833fd99f341b399eb5ac95266f1aa400958f0248a192",
+      "cargo_lock_sha256": "68fcc97026a9a5ef3c8a2ec1c55e0786464301ec7e772ff6744b16ee8359ed2b"
+    },
+    {
+      "arm": "candidate",
+      "source_commit": "1dfecfd3ed8130f6e21d117570a4b6615775ee6e",
+      "executable_sha256": "5ec256c9c4afdcbbdf05931178b5c624239ac33df04348349ef8e3a0f8697eb7",
+      "cargo_lock_sha256": "757e1121240aa29eed42c2de39f8ed0b257f161be4903e240fa8f43057b3f423"
+    }
+  ]
+}

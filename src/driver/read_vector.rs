@@ -169,6 +169,7 @@ impl ReadVector {
             .expect("admission prepared stable descriptors")
     }
 
+    #[cfg(any(not(target_os = "linux"), loom))]
     pub(crate) fn transfer_prefix(&mut self, bytes: u32, fill: impl FnMut(u32, &mut [u8])) {
         assert!(
             bytes <= self.remaining(),
@@ -177,6 +178,19 @@ impl ReadVector {
         // SAFETY: this bundle owns all descriptor targets, exclusively borrowed
         // for this synchronous transfer; admission keeps their iovecs live.
         unsafe { self.io().transfer_prefix(bytes, fill) };
+    }
+
+    /// [`ReadVector::transfer_prefix`] handing each destination as a raw
+    /// range, for an in-process writer that stores payload words atomically
+    /// and so must not borrow the frame.
+    #[cfg(feature = "mock")]
+    pub(crate) fn transfer_prefix_raw(&mut self, bytes: u32, fill: impl FnMut(u32, *mut u8, u32)) {
+        assert!(
+            bytes <= self.remaining(),
+            "transfer fits the retained vector"
+        );
+        // SAFETY: as in `transfer_prefix`.
+        unsafe { self.io().transfer_prefix_raw(bytes, fill) };
     }
 }
 
@@ -235,7 +249,31 @@ impl VectorIo {
     /// # Safety
     /// The op retains its descriptor allocation and every destination token;
     /// no other transfer or reader may access the destinations until return.
+    #[cfg(any(not(target_os = "linux"), loom))]
     pub(crate) unsafe fn transfer_prefix(self, bytes: u32, mut fill: impl FnMut(u32, &mut [u8])) {
+        let borrow = |transferred, destination: *mut u8, length: u32| {
+            // SAFETY: the caller retains the unique write token for this
+            // exact range, and `length` does not exceed this descriptor's
+            // allocation.
+            let destination =
+                unsafe { std::slice::from_raw_parts_mut(destination, length as usize) };
+            fill(transferred, destination);
+        };
+        // SAFETY: forwarded from this function's contract.
+        unsafe { self.transfer_prefix_raw(bytes, borrow) };
+    }
+
+    /// [`VectorIo::transfer_prefix`] handing each destination as a raw range
+    /// `(offset, start, length)` instead of a borrow.
+    ///
+    /// # Safety
+    /// The op retains its descriptor allocation and every destination token;
+    /// no other transfer may write the destinations until return.
+    pub(crate) unsafe fn transfer_prefix_raw(
+        self,
+        bytes: u32,
+        mut fill: impl FnMut(u32, *mut u8, u32),
+    ) {
         assert!(
             bytes <= self.bytes,
             "the backend fills only its reported prefix"
@@ -249,12 +287,7 @@ impl VectorIo {
             let descriptor = unsafe { self.pointer.wrapping_add(index as usize).read() };
             let length = (bytes - transferred)
                 .min(u32::try_from(descriptor.len).expect("bounded descriptor length"));
-            // SAFETY: the caller retains the unique write token for this exact
-            // range, and `length` does not exceed this descriptor's allocation.
-            let destination = unsafe {
-                std::slice::from_raw_parts_mut(descriptor.base.cast::<u8>(), length as usize)
-            };
-            fill(transferred, destination);
+            fill(transferred, descriptor.base.cast::<u8>(), length);
             transferred += length;
         }
         assert_eq!(transferred, bytes, "every reported byte has a destination");

@@ -1,0 +1,601 @@
+---
+synthesized_report:
+  subject: scope-array-translation
+  run: 20261115T154925Z-8f003b
+  reviewers: [peer-gpt6-astra, peer-opus]
+  reports: .tropos/peer/scope-array-translation/20261115T154925Z-8f003b/review/
+  gates:
+    completeness: {status: fail, failed_by: [peer-gpt6-astra, peer-opus]}
+    consistency: {status: fail, failed_by: [peer-gpt6-astra, peer-opus]}
+    feasibility: {status: fail, failed_by: [peer-gpt6-astra, peer-opus]}
+    clarity: {status: fail, failed_by: [peer-gpt6-astra, peer-opus]}
+    design_depth: {status: pass, failed_by: []}
+    assumptions: {status: fail, failed_by: [peer-gpt6-astra, peer-opus]}
+  issues:
+    - id: C1
+      severity: critical
+      gate: assumptions
+      area: behavior
+      description: "Liveness was checked before the entry load. The hash key carried the file generation and the array entry does not, so get and the session read could return a successor file's page after an empty file retired and its slot was reused."
+      found_by: [peer-opus, peer-gpt6-astra]
+      disposition: fixed
+      fix: "INV-7, AD-9, FR-1, FR-7, AC-9 and design File liveness now require entry then mirror on every lock-free resolution, get included; AT2 carries the paused retire-and-reuse falsifier."
+    - id: H1
+      severity: high
+      gate: feasibility
+      area: constraints
+      description: "The default 64 GiB reservation, mapped with commit accounting, is refused by Linux heuristic overcommit on hosts with less RAM plus swap."
+      found_by: [peer-opus]
+      disposition: owner_decision
+      fix: "AD-12: MAP_NORESERVE reservation, default bound 2^22 (1 GiB of address space); FR-2, FR-3, AC-3 and design Reservation and release updated."
+    - id: H2
+      severity: high
+      gate: feasibility
+      area: design
+      description: "Acquire loads alone do not order the payload loads before the second stamp load on aarch64; the inherited contract barred a fence without an owner disposition."
+      found_by: [peer-opus]
+      disposition: owner_decision
+      fix: "AD-13: Acquire fence before the second stamp load and Release fence after the claim in in-process writers; FR-10, FR-11 and design Copy acceptance updated."
+    - id: H3
+      severity: high
+      gate: completeness
+      area: edge_cases
+      description: "Explicit prefetch and automatic readahead windows could address granules at or above the bound and alias the next slot's entries."
+      found_by: [peer-opus, peer-gpt6-astra]
+      disposition: fixed
+      fix: "FR-4 and AC-4 cover rejected explicit prefetch, windows ending below the bound and a writer assertion; AT2 gains the cases."
+    - id: M1
+      severity: medium
+      gate: completeness
+      area: data_model
+      description: "Releasing a slot smaller than or unaligned to an OS page could discard a neighbor's live entries."
+      found_by: [peer-opus, peer-gpt6-astra]
+      disposition: fixed
+      fix: "FR-5, AC-5, Constraints and design: release covers whole OS pages inside the slot only."
+    - id: M2
+      severity: medium
+      gate: consistency
+      area: data_model
+      description: "The named MappedSlice takes a u32 length and the entry index overflows u32."
+      found_by: [peer-opus]
+      disposition: fixed
+      fix: "Data Model and Constraints state a u64 length and index; design names the wider reservation call."
+    - id: M3
+      severity: medium
+      gate: consistency
+      area: integration
+      description: "Pool::session's elided lifetime let a session outlive the reader, and a raw slice cannot be thread-confined."
+      found_by: [peer-opus, peer-gpt6-astra]
+      disposition: fixed
+      fix: "API Contract binds pool and reader to one lifetime; TR-4 and AC-10 confine the session types and bound slices by lifetime only."
+    - id: M4
+      severity: medium
+      gate: consistency
+      area: integration
+      description: "TR-8 and AC-17 claimed an exact API delta that omitted new methods and PoolConfigError variants."
+      found_by: [peer-opus]
+      disposition: fixed
+      fix: "TR-8 and the API Contract list every type, method and variant."
+    - id: M5
+      severity: medium
+      gate: clarity
+      area: behavior
+      description: "FR-10 gave the acceptance order without the first entry load."
+      found_by: [peer-opus]
+      disposition: fixed
+      fix: "FR-10 states the full order with the fence."
+    - id: M6
+      severity: medium
+      gate: consistency
+      area: constraints
+      description: "The bench plan's zero-I/O, single-reader and main-baseline rules contradicted the inherited AT-G7 lanes."
+      found_by: [peer-gpt6-astra]
+      disposition: fixed
+      fix: "Those rules apply to AT-G1 to AT-G6; AT-G7 inherits its own plans' contracts and baselines."
+    - id: M7
+      severity: medium
+      gate: feasibility
+      area: scope
+      description: "AT4/AT6 and AT5/AT7 could run concurrently over shared files."
+      found_by: [peer-opus, peer-gpt6-astra]
+      disposition: fixed
+      fix: "AT6 depends on AT5."
+  fix_rounds: 2
+  rereviews:
+    - round: 1
+      reviewer: peer-opus
+      report: .tropos/peer/scope-array-translation/20261115T154925Z-8f003b/fix1/peer-opus.yaml
+      resolved: [C1, H1, H2, M1, M2, M3, M4, M5, M6, M7]
+      persists: [H3]
+      residual_folded:
+        - "AC-3's host-size case could not falsify FR-3 at the 1 GiB default; it now sizes the reservation above host RAM plus swap."
+        - "design.md named the wrong helper for the u32 length."
+        - "FR-7 left StaleFile against Absent undecided for a retired file; StaleFile now takes precedence."
+    - round: 2
+      reviewer: peer-opus
+      report: .tropos/peer/scope-array-translation/20261115T154925Z-8f003b/fix2/peer-opus.yaml
+      resolved: [H3]
+      persists: []
+  round_2_fix:
+    H3: "FR-4 places the bound check before explicit prefetch's protection and classification lookups and asserts the bound at every lookup; AC-4, AT2 and the design test table add the middle-slot and last-slot cases."
+  recommendation: ready_to_implement
+implementation_batches:
+- batch: 1
+  tasks: [AT1]
+  reviewed_at: '2026-11-15T16:39:37Z'
+  status: passed
+  reports: .tropos/peer/array-translation/20261115T161731Z-fba2be/
+  synthesized_report:
+    reviewers:
+    - general-claude-opus
+    - architecture-claude-opus
+    - compliance-claude-opus
+    - abstractions-claude-opus
+    - general-peer-gpt6-astra
+    - architecture-peer-gpt6-astra
+    - compliance-peer-gpt6-astra
+    - abstractions-peer-gpt6-astra
+    gates:
+      correctness: {status: fail, failed_by: [general-claude-opus, general-peer-gpt6-astra]}
+      security: {status: pass, failed_by: []}
+      performance: {status: pass, failed_by: []}
+      architecture: {status: fail, failed_by: [architecture-claude-opus, architecture-peer-gpt6-astra]}
+      style: {status: pass, failed_by: []}
+      abstractions: {status: fail, failed_by: [abstractions-claude-opus]}
+    issues:
+    - id: H1
+      severity: high
+      gate: correctness
+      area: validation
+      location: benches/plans/array_translation.md (Capture contract, AT-G4 row)
+      trigger: "AT3 runs the frozen AT-G4 capture through pair-bench with the mmap_workloads sample mode."
+      wrong_outcome: "pair-bench reads nanoseconds from stdout; sample prints none and writes its row with create_new, so the second process fails and no pair exists. The row also skipped the manifest and rich-row validation and the qualification pairs."
+      found_by: [general-claude-opus, general-peer-gpt6-astra, architecture-claude-opus, architecture-peer-gpt6-astra, abstractions-claude-opus]
+      verified: "Read .mise/tasks/pair-bench and benches/mmap_workloads/mod.rs (sample, sample_write)."
+      disposition: owner_decision
+      fix: "AT-D5: rich-row capture through the collector's --base-build option and warm-prepare; AT2 and AT3 gain the collector, validator and validation test in tasks.yaml."
+    - id: M1
+      severity: medium
+      gate: architecture
+      area: coupling
+      location: benches/plans/array_translation.md (Capture contract preamble and columns)
+      trigger: "An operator follows a row from the workstation: capture through mise run remote, paired-sample and compare steps unprefixed."
+      wrong_outcome: "The remote task excludes target/ and copies nothing back, so the local steps read paths that exist only on nix; no step named the copy into the evidence directory."
+      found_by: [architecture-claude-opus]
+      verified: "Read .mise/tasks/remote (rsync --exclude=/target, no return copy)."
+      disposition: fixed
+      fix: "Every step has one location; the rsync into benches/evidence/array_translation/at-gN/ is named; compare runs over the copied paired.csv."
+    - id: M2
+      severity: medium
+      gate: abstractions
+      area: duplication
+      location: benches/evidence/array_translation/README.md (Prerequisite for AT-G7)
+      trigger: "The DRP prerequisite's owner or preparing task changes."
+      wrong_outcome: "Plan and README both stated owner and task; the plan test accepts either, so a one-sided edit leaves them disagreeing undetected."
+      found_by: [abstractions-claude-opus]
+      verified: "Read both locations and tests/array_translation_plan.rs."
+      disposition: fixed
+      fix: "The README section links to the plan's line, which is the single owner."
+    residual:
+    - gate: correctness
+      location: benches/plans/array_translation.md (Paired samples column)
+      note: "The paired-sample steps run uv on nix through mise exec; uv is declared on the bench-mmap-workloads task only, not as a project tool. Unverified while nix is offline; AT3 settles it when it first runs warm-prepare there."
+      found_by: [rereview-claude-opus]
+  fix_rounds: 1
+  rereviews:
+  - round: 1
+    reviewer: claude-opus
+    report: .tropos/peer/array-translation/20261115T161731Z-fba2be/b1-rereview1/claude-opus.yaml
+    resolved: [H1, M1, M2]
+    persists: []
+- batch: 2
+  tasks: [AT2]
+  reviewed_at: '2026-11-15T17:29:42Z'
+  status: passed
+  reports: .tropos/peer/array-translation/20261115T161731Z-fba2be/
+  completion_state: "RED by design: 12 Rust tests, 3 Loom cases and 2 Python tests fail by assertion against scaffolds; 387 Rust tests, 17 Loom cases and 12 Python tests pass; clippy and fmt clean."
+  synthesized_report:
+    reviewers:
+    - general-claude-opus
+    - architecture-claude-opus
+    - compliance-claude-opus
+    - abstractions-claude-opus
+    - general-peer-gpt6-astra
+    - architecture-peer-gpt6-astra
+    - compliance-peer-gpt6-astra
+    - abstractions-peer-gpt6-astra
+    gates:
+      correctness: {status: fail, failed_by: [general-claude-opus, general-peer-gpt6-astra]}
+      security: {status: pass, failed_by: []}
+      performance: {status: pass, failed_by: []}
+      architecture: {status: fail, failed_by: [architecture-claude-opus]}
+      style: {status: pass, failed_by: []}
+      abstractions: {status: pass, failed_by: []}
+    issues:
+    - id: H1
+      severity: high
+      gate: correctness
+      area: testing
+      location: tests/pool_retire.rs (INV-7 falsifier for get)
+      trigger: "AT3 keeps the mirror-before-pin order of get and fires the pause after the translation entry load."
+      wrong_outcome: "The paused get has already loaded the retired empty file's absent entry; after release the cold path returns StaleFile under the lock, so the test passes for the order design File liveness rejects."
+      found_by: [general-claude-opus]
+      verified: "Read Pool::get and the test's schedule."
+      disposition: fixed
+      fix: "The hook is pause_next_get_between_pin_and_entry: the get parks after its epoch pin and before the entry load, so the released get loads the successor's entry. design.md's INV-7 test row names the same point."
+    - id: M1
+      severity: medium
+      gate: architecture
+      area: coupling
+      location: src/pool/translation.rs (publish, clear, release_slot)
+      trigger: "AT3 implements the entries as AtomicU32 loaded through &Pool, so the writers take &self."
+      wrong_outcome: "The let mut bindings of tests/translation.rs become unused_mut under -D warnings in a test outside AT3's file list."
+      found_by: [architecture-claude-opus]
+      verified: "Read the scaffold receivers and the test bindings."
+      disposition: fixed
+      fix: "Scaffold writers take &self; the test bindings drop mut."
+    - id: M2
+      severity: medium
+      gate: correctness
+      area: testing
+      location: tests/mmap_workload_validation.py (base-build collection test)
+      trigger: "base_build_schedule returns the right steps while collect() ignores --base-build."
+      wrong_outcome: "The test passes without launching either build or observing a row."
+      found_by: [general-peer-gpt6-astra]
+      verified: "Read the test: it asserted argument parsing and the schedule only."
+      disposition: fixed
+      fix: "The test drives collect() through a faked process boundary and asserts 64 dios_serial samples across both executables in AB/BA order with distinct rows."
+    - id: M3
+      severity: medium
+      gate: correctness
+      area: testing
+      location: tests/pool_allocation_failure.rs (refused reservation)
+      trigger: "On Linux the 65,536-slot build constructs the io_uring driver, whose sparse file table exceeds RLIMIT_NOFILE."
+      wrong_outcome: "The build returns PoolBuildError::Driver, so a conformant AT3 fails the Allocation assertion."
+      found_by: [general-claude-opus]
+      verified: "Read src/backend/uring.rs: register_files_sparse(file_capacity) at ring construction, ahead of the pool's reservation."
+      disposition: fixed
+      fix: "The address-space refusal builds on MockDriver; the above-RAM-plus-swap case is its own Linux-only test on the real backend."
+    residual:
+    - gate: abstractions
+      location: benches/mmap_workloads/validate.py (warm_prepare)
+      note: "Filled to its pinned contract, warm_prepare would duplicate the pairing and CSV header that analyze.read_comparison owns. The scaffold encodes no rule yet; AT3's acceptance and file list now require the shared owner."
+      found_by: [abstractions-claude-opus]
+      owner: AT3
+    - gate: abstractions
+      location: benches/mmap_workloads/collect.py (base_build_schedule)
+      note: "Filled to its pinned contract, the schedule would re-encode the AB/BA order collect_comparison computes inline. AT3's acceptance requires one schedule iterated by both."
+      found_by: [abstractions-claude-opus]
+      owner: AT3
+    - gate: correctness
+      location: tests/public_api.rs
+      note: "PageTable's removal from the public API is not pinned by AT2; AT3 removes the type and regenerates the snapshot for AC-17."
+      found_by: [tester]
+      owner: AT3
+    - gate: correctness
+      location: tests/loom_pool.rs (a_seqlock_read_racing_the_single_writer_never_returns_a_torn_snapshot)
+      note: "The case remaps a resident page and will trip the absent-before-publish writer assertion once the seqlock table is gone; AT3 reworks or retires it with PageTable."
+      found_by: [tester]
+      owner: AT3
+    - gate: correctness
+      location: tests/pool_allocation_failure.rs, tests/translation.rs
+      note: "The Linux-only branches (reservation above RAM plus swap, resident bytes after release) have not run; the bench host is offline."
+      found_by: [tester, general-claude-opus]
+      owner: AT3
+  fix_rounds: 1
+  rereviews:
+  - round: 1
+    reviewer: claude-opus
+    report: .tropos/peer/array-translation/20261115T161731Z-fba2be/b2-rereview1/claude-opus.yaml
+    resolved: [H1, M1, M2, M3]
+    persists: []
+- batch: 3
+  tasks: [AT3]
+  reviewed_at: '2026-11-16T10:19:54Z'
+  status: passed
+  reports: .tropos/peer/array-translation/20261115T161731Z-fba2be/
+  local_gates: "macOS, eager backend, on the fixed tree: mise run lint clean; cargo test --features bench,mock 391 passed; mise run loom 19 passed; mise run miri 52 passed, 1 ignored; mise run asan 274 passed; Python suites pass."
+  host_gates: "nix, 2026-11-17: mise run test 419 passed and mise run asan 274 passed, io_uring suites and both Linux-only reservation cases included; AT-G4 passed at b8f95c1 (0.7462, ci95 upper 0.7539, bound 0.85); AT-G7 passed at 5131d7d on all eight lanes, the RC-G4 fragmented lane on the owner-authorized rerun (AT-D8). Results: benches/evidence/array_translation/README.md."
+  host_waves:
+  - subject: warm-prepare row fixture and capture commands (fix round 2)
+    commit: e1bbd2f
+    fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix2-python/native.yaml
+    rereview: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-rereview2/peer-gpt6-astra.yaml
+    resolved: [H1, M1]
+    note: "The capture commands gained MISE_EXE for bench-host-guard and the retained mise for uv after this re-review, by orchestrator edit of the plan."
+  - subject: AT-G4 gate lever, inlined hit-path helpers
+    commit: b8f95c1
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-at-g4-lever/native.yaml
+    review: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-at-g4-lever-review/peer-gpt6-astra.yaml
+    reviewers: [peer-gpt6-astra]
+    findings: []
+  - subject: DRP frozen-runner revision (AT-D7)
+    commits: [ca7e6d0, 5131d7d]
+    tester: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-tester/native.yaml
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-implementer/native.yaml
+    review: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-review/peer-gpt6-astra.yaml
+    reviewers: [peer-gpt6-astra, claude-opus]
+    review_shape: "both reviewers, the four roles in one pass each"
+    admitted: [M1 topology, M2 gate and lane, M3 describe path, M4 old-CPU falsifier, H1 base build]
+    fixes: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-fix1/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-fix2/native.yaml]
+    rereviews: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-rereview1/peer-gpt6-astra.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-drp-runner-rereview2/peer-gpt6-astra.yaml]
+    persists: []
+  synthesized_report:
+    reviewers:
+    - general-claude-opus
+    - architecture-claude-opus
+    - compliance-claude-opus
+    - abstractions-claude-opus
+    - general-peer-gpt6-astra
+    - architecture-peer-gpt6-astra
+    - compliance-peer-gpt6-astra
+    - abstractions-peer-gpt6-astra
+    gates:
+      correctness: {status: fail, failed_by: [general-peer-gpt6-astra]}
+      security: {status: pass, failed_by: []}
+      performance: {status: pass, failed_by: []}
+      architecture: {status: pass, failed_by: []}
+      style: {status: pass, failed_by: []}
+      abstractions: {status: fail, failed_by: [abstractions-claude-opus]}
+    issues:
+    - id: H1
+      severity: high
+      gate: correctness
+      area: validation
+      location: benches/mmap_workloads/validate.py (warm_prepare)
+      trigger: "A complete capture whose top-level fields match the frozen AT-G4 manifest while its comparison declaration and candidate rows name mmap_random."
+      wrong_outcome: "Nothing tied the measured lane, arms and fixture to the frozen contract; the validator emitted 30 pairs for a Dios against mmap comparison under the get against get contract."
+      found_by: [general-peer-gpt6-astra]
+      verified: "Read warm_prepare and analyze.read_comparison: rows were checked against the comparison's own declarations only."
+      disposition: fixed
+      fix: "warm_prepare refuses a comparison whose lane or arms differ from the frozen manifest and any measured row whose fixture differs; two rejection cases assert no CSV is written."
+    - id: M1
+      severity: medium
+      gate: abstractions
+      area: duplication
+      location: src/pool/mod.rs (PoolBuilder::validate_translation)
+      trigger: "The entry encoding changes in translation.rs."
+      wrong_outcome: "The builder's own 1 << 30 limit and u32 byte arithmetic do not follow, so builder and Translation disagree on admissible geometry."
+      found_by: [abstractions-claude-opus]
+      verified: "Read both definitions."
+      disposition: fixed
+      fix: "translation.rs owns FRAME_COUNT_MAX and entry_bytes; try_reserve and the builder both use them."
+    - id: M2
+      severity: medium
+      gate: correctness
+      area: testing
+      location: tests/translation.rs (release case, Linux branch)
+      trigger: "On Linux the test reads the released pages before calling resident_bytes."
+      wrong_outcome: "The reads map the shared zero page, which mincore counts as resident, so the drop assertion fails on a correct release."
+      found_by: [general-peer-gpt6-astra]
+      verified: "Read the test order; the assertion is compiled out on macOS."
+      disposition: fixed
+      fix: "resident_bytes is sampled right after release_slot. Unexecuted until nix runs it."
+    - id: M3
+      severity: medium
+      gate: abstractions
+      area: duplication
+      location: benches/mmap_workloads/frozen.py (compare)
+      trigger: "The paired AB/BA schedule changes."
+      wrong_outcome: "frozen.compare kept its own range, order and row names beside base_build_schedule."
+      found_by: [abstractions-claude-opus]
+      verified: "Read both loops."
+      disposition: fixed
+      fix: "frozen.compare iterates base_build_schedule(2, 30). No test runs frozen.compare."
+    - id: M4
+      severity: medium
+      gate: abstractions
+      area: duplication
+      location: src/pool/mod.rs (pin_live, pin_owned)
+      trigger: "The lock-free pin protocol changes: epoch source, abort on absent, guard construction."
+      wrong_outcome: "Two heads of one protocol drift; the Loom model proves it as one function."
+      found_by: [abstractions-claude-opus]
+      verified: "Read both functions; ready calls pin_owned under the control lock with the miss record protecting the frame, so INV-7 holds there."
+      disposition: owner_decision
+      fix: "AT-D6: deferred to AT5, where the session read is the third resolution path."
+      owner: AT5
+    residual:
+    - gate: correctness
+      location: src/pool/prefetch.rs (prefetch_classify)
+      note: "Automatic readahead successors at or above the bound are built as page identities and classified Rejected before any lookup; nothing is read and no entry is touched. AC-4's test passes."
+      found_by: [architecture-claude-opus, general-claude-opus]
+    - gate: style
+      location: src/pool/mod.rs
+      note: "Pool keeps the field name table for a Translation; prefetch_protect uses a compound guard where prefetch_classify splits the same checks. Below the finding bar."
+      found_by: [compliance-claude-opus]
+    - gate: correctness
+      location: benches/mmap_workloads/validate.py
+      note: "The fixture check covers measured rows; read_comparison drops qualification rows before returning."
+      found_by: [fixer]
+  fix_rounds: 1
+  rereviews:
+  - round: 1
+    reviewer: peer-gpt6-astra
+    report: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-rereview1/peer-gpt6-astra.yaml
+    resolved: [H1, M1, M2, M3]
+    persists: []
+- batch: 4
+  tasks: [AT4]
+  reviewed_at: '2026-11-17T18:30:00Z'
+  status: passed
+  reports: .tropos/peer/array-translation/20261115T161731Z-fba2be/
+  waves:
+  - subject: session tests, scaffolds and bench arms
+    commit: 7d59f2b
+    reviewers: "general, architecture, compliance and abstractions, each by claude-opus and peer-gpt6-astra"
+    admitted: [H1 work count, H2 arm symmetry, H3 Loom eviction case, M1 characterization fold, M2 AT-G3 command, M3 remap duplication]
+    fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-fix1/native.yaml
+    rereview: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-rereview1/peer-gpt6-astra.yaml
+    persists: []
+  - subject: fair lanes under the bench fairness contract (AT-D9 to AT-D13)
+    reviewers: "general, architecture, compliance and abstractions, each by claude-opus and peer-gpt6-astra"
+    admitted: [H1 mmap loop harness helper, M1 hand-rolled difference interval, M2 report keys, M3 hugepage constants, M4 fair-lane list, M5 function length]
+    fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-fix2/native.yaml
+    rereview: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-rereview2/peer-gpt6-astra.yaml
+    persists: []
+  local_gates: "Python suite 25 tests OK; mise run lint clean here and clippy clean on nix; cargo test --features bench,mock 405 passed with only the four AT4 session tests failing by assertion; mise run loom 19 passed with the three AT4 session cases failing; mmap_workload_contract on nix 18 passed; legacy lane files hash to 604410a; the refactored ratio_gate reproduces five retained gate outputs character for character."
+  characterization: "nix, single processes on resident_access_fair_get, 134,217,728 reads, THP never: mmap_random 3.649, plain_array 3.793, dios_get 24.904 ns per read. Not gate evidence."
+  carried_to_AT5: "ReadSession::read_page returns a lifetime longer than the session; the dios_session arms have not run to completion; rows written before the fair flag no longer validate with the current validator."
+- batch: 5
+  tasks: [AT5]
+  reviewed_at: '2026-11-17T21:30:00Z'
+  status: passed
+  reports: .tropos/peer/array-translation/20261115T161731Z-fba2be/
+  waves:
+  - subject: session read
+    commit: 3e373a9
+    reviewers: "general, architecture, compliance and abstractions, each by claude-opus and peer-gpt6-astra"
+    admitted: [M1 whole-reservation borrow in slot_entries, M2 restated liveness predicate]
+    fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-fix1/native.yaml
+    rereview: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-rereview1/claude-opus.yaml
+    persists: []
+  - subject: AT-G1 lever, session hit path
+    commit: 74099d6
+    reviewers: "general, architecture, compliance and abstractions, each by claude-opus and peer-gpt6-astra"
+    admitted: [M1 Miri does not reach the session path]
+    fix: "mise.toml: mise run miri also runs tests/read_session.rs (orchestrator edit, not re-reviewed)"
+    persists: []
+  - subject: one loop shape for all arms of a session lane (AT-D16)
+    commit: 377a0ad
+    reviewers: "general, architecture, compliance and abstractions, each by claude-opus and peer-gpt6-astra"
+    admitted: [M1 duplicate loop functions, M2 session lanes listed a third time, M3 floor array not page-aligned, M4 capture-controlled waiver of reference comparisons]
+    fixes: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b5-chunks-fix1/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-chunks-fix2/native.yaml]
+    rereviews: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b5-chunks-rereview1/peer-gpt6-astra.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-chunks-rereview2/peer-gpt6-astra.yaml]
+    persists: []
+  - subject: liveness once per view, grace period on slot reuse, fused open (AT-D18 to AT-D22)
+    commit: 6ba0592
+    reviewers: "general, architecture, compliance and abstractions, each by claude-opus and peer-gpt6-astra; seven of eight passed"
+    admitted: [F1 Pool::session_file restated Pool::session, F2 Loom register_file_resident copied make_file_resident, F3 Miri read_session ran an hour or more per liveness test (whole-slot retags under Stacked Borrows)]
+    fixes: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-fix1/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-fix2/native.yaml]
+    diagnosis: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-miri-diagnosis/report.md
+    rereview: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-rereview1/peer-gpt6-astra.yaml
+    residuals: ["io_mode expects a retiring file to hold its backend handle while progress_retirements takes the handle before is_closed confirms (claude-opus general); ordering predates this wave, no trigger shown"]
+    machine_code: "F1 changed register allocation in the fair dios_session_loop (439 to 450 lines, hit path same instruction count); not tuned (AT-D22); AT-G1 decides"
+    persists: []
+  - subject: validate.py pool-layouts, AT-G1 pooled over its three layout builds (AT-D24)
+    reviewers: "general, architecture, compliance and abstractions, each by claude-opus and peer-gpt6-astra; compliance passed on both"
+    admitted: [F1 builds of another wave or an incomplete capture pooled; lane and pair count restated as constants, F2 a failed run left the previous pooled paired.csv as gate input]
+    not_admitted: ["re-deriving each build's paired.csv from raw rows and re-running frozen-manifest validation inside pool-layouts (peer-gpt6-astra, three roles): warm-prepare already validated each build on the host; owner narrowed the round to wave checks plus stale-CSV removal (2026-11-22)"]
+    fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-fix1/native.yaml
+    rereview: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-rereview1/claude-opus.yaml
+    rereview_note: "peer-gpt6-astra unavailable: peer needs bash 4+, only /bin/bash 3.2 on PATH"
+    persists: []
+  gates: "AT-G1 passed on three layout builds at 377a0ad (ci95 upper 1.4880, 1.4867, 1.4676; bound 1.50), AT-G2 passed (1.0301; bound 1.10); the flat-loop ratio is reported at about 1.57. AT-G3 passed on 2026-11-22 under bench-thp-madvise (0.9124; bound 1.00), equal-reach row reported at 1.1330. Liveness wave at 6ba0592: AT-G1 passed pooled over its three layout builds (AT-D24; 90 pairs, ci95 upper 1.4830; builds reported 1.4000, 1.4909, 1.5537), AT-G2 passed (1.0250)."
+  liveness_local_gates: "mise run lint clean; cargo test --features bench,mock 418 passed; mise run loom 22 passed; mise run miri lib 53 passed (9 min wall), read_session 3 passed (4 s wall); mise run asan 284 passed, no sanitizer reports."
+  local_gates: "mise run lint clean; cargo test --features bench,mock 410 passed; mise run loom 22 passed; mise run miri 53 passed; Python suite 25 tests OK. One run of the full suite showed a single failure of zero_allocation_validator_covers_both_g2_lane_shapes while a reviewer worked in the same tree; it did not repeat in three later runs."
+- batch: 6
+  tasks: [AT9]
+  reviewed_at: '2026-11-19T18:00:00Z'
+  status: passed
+  reports: .tropos/peer/array-translation/20261115T161731Z-fba2be/
+  waves:
+  - subject: get hit path inlined, every other outcome out of line
+    commit: f193292
+    reviewers: "general, architecture, compliance and abstractions, each by claude-opus and peer-gpt6-astra"
+    admitted: [first CLOCK reference after a sweep takes a call on a hit]
+    disposition: "owner decision AT-D17 amended FR-12 and AC-20 (50dc7e4); code unchanged"
+    persists: []
+  - subject: gate tooling found by the AT-G8 and AT-G7 captures
+    commits: [1dd0438, fdada37, c89d43a]
+    admitted: [H1 shared-runner harness inside the capture directory, H2 report KeyError and gate input left behind, H2 residual publication without rollback, H3 frozen RC-G1 collector no longer starts, H4 runner identified by the wrong source list, H4 residual base-tree code evaluated]
+    fixes: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b6-tooling-fix1/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-tooling-fix2/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-tooling-fix3/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-rc-g1-fix1/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-rc-g1-fix2/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-rc-g1-fix3/native.yaml]
+    rereviews: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b6-tooling-rereview1/peer-gpt6-astra.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-tooling-rereview2/peer-gpt6-astra.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-tooling-rereview3/peer-gpt6-astra.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-rc-g1-rereview1/peer-gpt6-astra.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-rc-g1-rereview2/peer-gpt6-astra.yaml]
+    persists: []
+  gates: "AT-G8 passed at f193292 against 8597238 (ci95 upper 0.5722, bound 0.85); AT-G7 passed on all eight lanes at the AT9 product code, RC-G1 on the owner-authorized rerun (AT-D23)."
+- batch: 7
+  tasks: [AT6]
+  reviewed_at: '2026-11-23T00:00:00Z'
+  status: passed
+  reports: .tropos/peer/array-translation/20261115T161731Z-fba2be/
+  waves:
+  - subject: copy-out read RED, scaffolds, test and mock hooks, copy bench lanes (AT-D25 applied)
+    reviewers: "general, architecture, compliance and abstractions by claude-opus; peer-gpt6-astra unavailable (peer needs bash 4+, only /bin/bash 3.2 on PATH); architecture passed"
+    admitted: [F1 Loom model payload could not tear so the same-page case could not fail, F2 no test bounded the fallback at one get under Busy, F3 Miri hook re-derived the seam's payload address, F4 COPY_LANES doc named a gate column, F5 mock get counter was an unconditional fetch_add on the get path of bench+mock (pair-bench) builds]
+    fixes: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b7-fix1/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-fix2/native.yaml]
+    rereview: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-rereview1/claude-opus.yaml
+    f5_disposition: "count_get increments only after the hook was armed; a never-armed hit adds a plain load of the hook's Arc pointer, a relaxed byte load and a taken branch (aarch64 disassembly in b7-fix2/native.yaml); the Arc pointer load beyond the finding's bound accepted by the orchestrator (mock builds only, sub-ns)"
+    residuals: ["PoolModel::make_file_resident lacks a # Panics doc under cfg(loom) clippy since 6ba0592; mise run lint does not build cfg(loom); fold into AT7", "tests/drp009_gate_contract.rs converter_binds_the_host_topology_to_the_lane failed once in a full run during fix round 2 and passed three reruns; unrelated to the copy path"]
+    persists: []
+  local_gates: "mise run lint clean; cargo test --features bench,mock RED only in the AT6 cases, each by assertion (confinement, three read_copy cases, warm-copy zero-alloc); Loom 23 passed with the three AT6 copy cases failing by assertion; Miri AC-13 case reports the race against the non-atomic Frames::fill until AT7; Python suite 33 OK."
+- batch: 8
+  tasks: [AT7]
+  reviewed_at: '2026-11-23T00:00:00Z'
+  status: passed
+  reports: .tropos/peer/array-translation/20261115T161731Z-fba2be/
+  waves:
+  - subject: copy-out read (AD-7 attempt, one get fallback, atomic payload writers)
+    reviewers: "general, architecture, compliance and abstractions by claude-opus; peer-gpt6-astra unavailable (bash 3.2); general, compliance and abstractions passed"
+    admitted: [F1 three borrowing transfer helpers dead on the Linux bench+mock lint after the writers moved to the raw-pointer forms]
+    fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b8-fix1/native.yaml
+    rereview: "orchestrator verification: x86_64-linux clippy --lib and mise run lint on nix clean (b8-fix1/gate-orchestrator.txt); a cfg-only fix whose falsifier is the Linux lint"
+    out_of_list_edit: "src/driver/read_vector.rs (mock vector fills, named by audits.md)"
+    orchestrator_edits: ["mise.toml: mise run miri also runs tests/read_copy.rs"]
+    open: ["audits.md: record the generated instructions of read_copy.rs on x86-64 and aarch64 (with the AT-G5/AT-G6 captures)"]
+    persists: []
+  - subject: payload copy without a memmove per word, inlined stamp helpers (AT-D26, after AT-G5/AT-G6 failed at d1a6f9d)
+    fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b8-fix2-copyloop/native.yaml
+    rereview: "orchestrator: diff read in full (head word, 8-byte chunks, tail word; one volatile load per word; AD-7 order, fences and assertions unchanged); aarch64 disassembly before and after in b8-fix2-copyloop/ (12 calls to 0 on the accepted 64-byte aligned path, 131 dynamic instructions); gate in b8-fix2-copyloop/gate-orchestrator.txt"
+  - subject: output written in 16-byte stores so a caller's loads forward; range assertion once per call (AT-D27)
+    fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b8-fix3-stlf/native.yaml
+    rereview: "orchestrator: diff read in full (pairs of 8-byte volatile loads per WRC-D1, one 16-byte unaligned store per pair, SSE2 on x86-64, plain copy elsewhere; range assertion at the public entry, Loom seam keeps its own); gate in b8-fix3-stlf/gate-orchestrator.txt"
+    measured: "nix, layout-32 smoke runner, one process per arm: dios_copy 72.83 to 67.60 cycles, 255.68 to 251.69 instructions, 7.990 to 0.010 stli_other per copy; mmap_copy 21.58 cycles, 69.62 instructions; optimistic_floor 22.91, 77.67"
+  local_gates: "mise run lint clean on macOS and nix; RUSTFLAGS=--cfg loom clippy --lib clean; cargo test --features bench,mock all green; Loom 26/26; Miri read_copy 3 passed, 1 ignored; implementer: mise run miri, mise run asan 290, docs clean; Python 33 OK."
+- batch: 9
+  tasks: [AT10]
+  reviewed_at: '2026-11-23T00:00:00Z'
+  status: passed
+  reports: .tropos/peer/array-translation/20261115T161731Z-fba2be/
+  waves:
+  - subject: read_copy accepted path inlined with one cold exit (FR-13), blocked at 2.38x mmap_copy and landed by owner decision AT-D29
+    reviewers: "general by claude-opus (targeted: AD-7 order, assertions once, one get fallback, public API); peer-gpt6-astra unavailable"
+    admitted: []
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b9-implementer-AT10/native.yaml
+    review: .tropos/peer/array-translation/20261115T161731Z-fba2be/b9-review/claude-opus.yaml
+    persists: []
+  local_gates: "mise run lint clean on macOS, x86_64-linux --lib and nix; cargo test --features bench,mock all green; Loom 26/26; Miri read_copy 3 passed, 1 ignored; implementer: mise run miri, mise run asan 290."
+  measured: "nix, layout-32 smoke runners, one process per arm: dios_copy 68.40/251.67 cycles/instructions per copy at aa3c316, 51.48/186.60 after; mmap_copy 21.61/69.63; optimistic_floor 22.83/77.67"
+  gates: "AT-G5 and AT-G6 at e534f2a fail on all three layout builds (CI95 upper 2.5245, 2.4028, 2.3551 against 1.50; 2.3313, 2.2738, 2.2265 against 1.20); copy-out read not adopted on performance (AT-D29)."
+- batch: 10
+  tasks: [AT8]
+  reviewed_at: '2026-11-25T00:00:00Z'
+  status: passed
+  reports: .tropos/peer/array-translation/20261115T161731Z-fba2be/
+  waves:
+  - subject: AT-G4 campaign runner builds against ade5310 (cfg dios_paired_difference, F10)
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b10-implementer-at-g4-runner/native.yaml
+    rereview: "orchestrator: diff read in full; shared-runner build on nix verified by the implementer's build-only check through the collector; the campaign capture then built and passed"
+    persists: []
+  - subject: characterization harness (translation memory, session-length sweep; pressure copy counts built and dropped by AT-D32)
+    reviewers: "general by claude-opus (targeted); peer-gpt6-astra unavailable"
+    admitted: [F1 translation_memory required on every dios row aborted base-build captures]
+    fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b10-char-fix1/native.yaml
+    rereview: "orchestrator: one-guard fix read in full; Python 35 OK, lint clean, full suite green"
+    persists: []
+  gates: "AT8 binding campaign recorded in benches/evidence/array_translation/README.md: every gate passes except AT-G5 and AT-G6 (not adopted, AT-D29)."
+integration_review:
+  required: true
+  status: completed
+  reviewers: [general-claude-opus, architecture-claude-opus]
+  execution: "claude-opus native; peer-gpt6-astra unavailable (peer needs bash 4+, only /bin/bash 3.2 on PATH)"
+  base: ade5310
+  head_reviewed: b5cda14
+  reports: [.tropos/peer/array-translation/20261115T161731Z-fba2be/integration-review-general/claude-opus.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/integration-review-architecture/claude-opus.yaml]
+  acceptance_criteria_met: true
+  acceptance_note: "AC-16, AC-21 and AC-25 carry the recorded AT-G5 and AT-G6 failure (owner decision AT-D29); every other criterion has an implementation and a pinning test or recorded gate."
+  cross_batch_validation: pass
+  issues:
+    - id: I1
+      finding: "bench::pool_translation handed bench-feature code &Translation of a live pool; its public publish, clear and release_slot then wrote translation state without the control lock (INV-1, INV-2)"
+      found_by: [architecture-claude-opus]
+      severity: medium
+      status: resolved
+      resolution: "pool_translation returns (mapping_bytes, resident_bytes); fix .tropos/peer/array-translation/20261115T161731Z-fba2be/integration-fix1/native.yaml"
+    - id: I2
+      finding: "the mock pin-to-entry pause hook did an unconditional AcqRel swap on every get hit of mock builds (batch 7 F5 class, from AT3)"
+      found_by: [general-claude-opus]
+      severity: medium
+      status: resolved
+      resolution: "relaxed load and early return before the swap; fix .tropos/peer/array-translation/20261115T161731Z-fba2be/integration-fix1/native.yaml"
+  fix_verification: "orchestrator: diff read in full; mise run lint clean; cargo test --features bench,mock green; fixer: x86_64-linux bench+mock clippy clean, Loom 26/26, translation-memory contract test green on nix"
+  recommendation: ready_to_merge
+

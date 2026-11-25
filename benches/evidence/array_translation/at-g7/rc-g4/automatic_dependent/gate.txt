@@ -1,0 +1,1 @@
+gate paired: pairs 30, ratio geomean 1.0159, ci95 upper 1.0484, threshold 1.0200 -> FAIL

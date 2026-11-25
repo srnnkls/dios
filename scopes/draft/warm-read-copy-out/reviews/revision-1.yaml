@@ -1,0 +1,296 @@
+---
+synthesized_report:
+  reviewers:
+  - peer-gpt6-astra
+  - peer-opus
+  gates:
+    completeness:
+      status: fail
+      failed_by:
+      - peer-gpt6-astra
+      - peer-opus
+    feasibility:
+      status: fail
+      failed_by:
+      - peer-gpt6-astra
+      - peer-opus
+    consistency:
+      status: pass
+      basis: Root-verified editorial corrections recorded below; original reviewer
+        reports remain unchanged.
+    clarity:
+      status: pass
+      basis: Root-verified editorial corrections recorded below; original reviewer
+        reports remain unchanged.
+    design_depth:
+      status: pass
+      failed_by: []
+  issues:
+  - id: WRC-D1
+    status: open
+    owner: Sören
+    blocking: true
+    requirement: 'Audited all-backend copy and exact-identity proof preserving the
+      requested no-pin/no-fence path, or separately approved ownership/storage amendment.
+      Resolve file-capability lifetime: mirror-only check versus ResidentFileLease.'
+  - id: WRC-D2
+    status: open
+    owner: Sören with sira owner
+    blocking: true
+    requirement: Authentic n=1 integration harness and explicit 24 ns measurement/assertion
+      boundary beside unchanged 1.02 parity.
+  - id: WRC-D3
+    status: open
+    owner: Sören
+    blocking: true
+    requirement: Record DRP-G4 longer-region or eight-physical-core protocol amendment
+      before binding warm-scope campaigns; bounds unchanged.
+  recommendation: address_issues
+  implementation_allowed: false
+  editorial_dispositions:
+    editorial_fixes:
+    - 4 KiB granule and 4 MiB footprint
+    - floor excludes probe, same fixture bytes/checksum
+    - planning task separated from implementation entry prerequisites
+    - public API scaffold mutation path
+    - named non-gating pressure/CLOCK artifact
+    - file-capability question included in WRC-D1
+    residual:
+    - finding: WRC-G1 1.50 requires owner re-derivation because old guarded arms exceed
+        it
+      reason: design_as_defect
+      evidence: Owner explicitly selected this bound for a different copy-out mechanism.
+        Historical ratios now recorded; failing it blocks adoption, never silently
+        changes the bound.
+  limitation: Raw initial verdicts retained. Root verified editorial amendments; no
+    repeated review while the three owner decisions remain unresolved.
+reviewer_reports:
+- route: peer-gpt6-astra
+  raw_sha256: cebad73ce72be6108023b6fa020aeb3889c9b66d6d632bfb93bc7c7cee56411f
+  report:
+    reviewer: peer-gpt6-astra
+    gates:
+      completeness:
+        status: fail
+        issues:
+        - WRC-D2
+      consistency:
+        status: pass
+        issues: []
+      feasibility:
+        status: fail
+        issues:
+        - WRC-D1
+      clarity:
+        status: pass
+        issues: []
+      design_depth:
+        status: pass
+        issues: []
+    issues:
+    - severity: high
+      gate: feasibility
+      area: design
+      description: WRC-D1 is a concrete implementation blocker. The proposed unpinned
+        copy and exact-identity reads lack an ownership and ordering proof compatible
+        with every existing writer. A successful version recheck cannot make an otherwise
+        invalid memory access sound.
+      suggestion: 'needs decision: Resolve WRC-D1 through an audited all-backend proof
+        satisfying the fast-path constraints, or an explicitly approved ownership/storage
+        amendment with its cost model. Keep implementation blocked until that decision
+        is incorporated and reviewed.'
+    - severity: high
+      gate: completeness
+      area: integration
+      description: WRC-D2 is a concrete acceptance blocker. WRC-G3 requires an authentic
+        fresh-process sira comparison and a separate 24 ns acquisition assertion,
+        but the runner, acquisition measurement boundary, and integration adapter
+        ownership remain unpinned. The whole-lookup ratio cannot establish the separate
+        acquisition budget.
+      suggestion: Resolve WRC-D2 by recording the authentic runner and source/build/fixture
+        identities, adapter owner and authorized scope, capture commands, and exact
+        measurement boundary and shared assertion for the 24 ns requirement before
+        implementation.
+    clarifying_questions: []
+    strengths:
+    - '"Preserves the shipped mirror, reader alignment, and Loom baseline without
+      introducing duplicate prerequisite work."'
+    - '"Defines bounded attempts, fallback behavior, output validity, exact identity
+      requirements, and the deliberate CLOCK consequence."'
+    - '"Explains the memory-safety problem and alternative costs without presenting
+      an unproved protocol as sound."'
+    - '"Pins workload parity and statistical controls, preserves failed evidence,
+      and explicitly withholds implementation readiness."'
+- route: peer-opus
+  raw_sha256: 8ba82a1b36ff8694a3f3401205227e3364de63b51622a7ee9cf2d124ad517afd
+  report:
+    reviewer: peer-opus
+    gates:
+      completeness:
+        status: fail
+        issues:
+        - pressure/CLOCK characterization has no owning task or artifact
+        - new public surface omitted from the public-API contract test
+      consistency:
+        status: fail
+        issues:
+        - optimistic-floor work definition contradicts tasks.yaml
+        - dependencies.yaml batch-1 prerequisites are circular and contradict the
+          draft-only authorization
+      feasibility:
+        status: fail
+        issues:
+        - WRC-D1/WRC-D2 confirmed blockers
+        - WRC-G1 1.50 unreconciled with recorded resident_projection evidence
+        - WRC-G4 refreezes a lane the owner recorded as undecidable at 30 pairs
+      clarity:
+        status: fail
+        issues:
+        - '"actual 512 KiB default" unqualified and fixture granule unpinned'
+      design_depth:
+        status: pass
+        issues: []
+    issues:
+    - severity: critical
+      gate: feasibility
+      area: design
+      description: 'WRC-D1 and WRC-D2 are both concrete, correctly-stated blockers;
+        verified against the baseline (src/pool/frames.rs:509 Acquire state_word,
+        2 state bits / 62 generation bits, generation advanced only on publication
+        to Resident with panic-before-ABA at frames.rs:618-627), nothing in the shipped
+        protocol supplies the ownership witness the unpinned copy needs, and the sira
+        24 ns budget is not algebraically derivable from 1.02 of a ~254 ns lookup.
+        One concrete omission inside WRC-D1''s requirement text: the proposed `read_copy(reader,
+        page, offset_bytes, output)` carries no file capability, while the existing
+        unguarded observation path (`resident_hint` / `get_with_hint`, src/pool/mod.rs:1804,1872,
+        asserted by `assert_lease_owner` at 2405) requires a `ResidentFileLease`.
+        The draft never says whether the Acquire generation-mirror check alone is
+        proposed to replace that capability.'
+      suggestion: needs decision — add the file-capability question (lease versus
+        mirror-only liveness) to WRC-D1's recorded requirement so the owner decision
+        covers it; keep review_gate.status pending and implementation_allowed false.
+        Not implementation-ready.
+    - severity: high
+      gate: feasibility
+      area: constraints
+      description: 'WRC-G1 (candidate/mmap upper <= 1.50 on the 64-byte resident projection)
+        is stated without any relation to the measured starting point. benches/evidence/mmap_workloads/resident-results.md
+        records the same lane: ordinary guarded get 8.148 / 8.300 (46.2 ns vs mmap
+        5.7 ns per read), hinted 6.406, epoch-batch 7.368, page-batch 1.643 / 1.668,
+        retained 1.170. Every arm that preserves per-request independence sits 4-8x
+        above the bound; the only arms near it amortize across a batch or a retained
+        handle, and page-batch still exceeds 1.50 — while scope.md''s Boundaries forbid
+        implicit batching and retained-cache substitutes. The candidate would have
+        to reach roughly 8.5 ns per independent request including a page-table probe,
+        and the plan''s escalation lever ("retain the result and profile the exact
+        failed arms") names no in-scope lever that could recover a failure.'
+      suggestion: Record these measured ratios as the plan's baseline row and pre-register
+        what a WRC-G1 failure means (owner re-bound decision versus scope abandonment)
+        before any binding campaign.
+    - severity: high
+      gate: feasibility
+      area: integration
+      description: 'WRC-G4 freezes DRP-G4 ordinary eight-thread <= 1.00 at the shared
+        30-pair protocol, but benches/plans/dios_r1_r7_read_performance.md ("Owner
+        follow-up: DRP-G4 resolution") records that this ~3 ms lane has two placement
+        modes and a ~7% confidence half-width at 30 pairs that cannot resolve a tie;
+        RC6 cleared it only through a single pre-registered 400-pair exception that
+        the WRC plan itself says does not carry forward. The same DRP entry directs
+        that the longer-region / physical-core amendment be carried into the warm-path
+        bench plan as an owner decision before any new binding campaign. The draft
+        mentions the amendment in prose but registers no needs_decision entry, while
+        WRC4''s acceptance still requires all four gate groups to pass — an acceptance
+        condition with no defined passing protocol.'
+      suggestion: Register the DRP-G4 protocol amendment as a third open decision
+        (WRC-D3) in validation.yaml and make WRC-G4 conditional on its resolution.
+    - severity: medium
+      gate: consistency
+      area: constraints
+      description: The optimistic floor arm is defined two incompatible ways. The
+        plan defines it as a packed version-word load, the same 64-byte copy, and
+        a recheck, over "a stable private buffer with no concurrent writer"; tasks.yaml
+        WRC2 acceptance requires "floor and mmap do identical work", which the version
+        word and recheck contradict. Neither document says whether the floor performs
+        the page-table probe the candidate must perform, nor whether its source region
+        is the same 1,024-page fixture — and that single choice decides whether WRC-G2
+        <= 1.20 measures verb overhead or probe plus cache footprint.
+      suggestion: State the floor's exact step list (probe included or excluded) and
+        its source region in the plan, and restate WRC2's acceptance as "floor and
+        candidate read the same fixture and emit the same checksum" rather than "identical
+        work".
+    - severity: medium
+      gate: consistency
+      area: scope
+      description: 'dependencies.yaml lists copy_soundness_owner_decision, sira_harness_and_budget_boundary
+        and explicit_implementation_approval as prerequisites of the whole scope,
+        so they gate batch 1 — yet WRC1''s acceptance is precisely to produce the
+        WRC-D1/WRC-D2 decisions, and WRC1 is a documentation-only task under validation.yaml''s
+        `authorization: scope draft and review only`. As written, the first task cannot
+        start until its own output exists and until implementation is approved, which
+        the draft elsewhere forbids.'
+      suggestion: Attach the two decision prerequisites and explicit_implementation_approval
+        to batch 3 (WRC3); leave batch 1 depending on RC6_adopted and scope_review_passed
+        only.
+    - severity: medium
+      gate: completeness
+      area: edge_cases
+      description: 'The CLOCK consequence is recorded as deliberate and scope.md requires
+        characterizing fallback under pressure, but no artifact owns it: WRC-G1/G2
+        are fully resident lanes, WRC-G3 is sira, WRC-G4 is the frozen DRP regression
+        set, and WRC4''s acceptance is only "all WRC gates pass". The scope''s own
+        named risk — optimistic-only pages never mark a reference bit and stay eviction
+        candidates — has no measurement and no deferral record.'
+      suggestion: Name the pressure characterization artifact in WRC4's acceptance
+        as a recorded non-gating result reusing the existing mmap_workloads pressure
+        lane, or record it as explicitly deferred.
+    - severity: medium
+      gate: completeness
+      area: integration
+      description: The proposal adds a public verb and a public result enum (`Pool::read_copy`,
+        `ReadCopy`), but WRC2 and WRC3 file lists omit tests/public_api.rs, the repository's
+        public-surface contract test that pins root exports, trait bounds and exhaustive
+        matching for exactly these types (for example `inspect_get_error`, `resident_hint_callable_scaffold_is_root_exported`).
+        No task covers the surface the scope proposes.
+      suggestion: Add tests/public_api.rs to the WRC2 and WRC3 file lists.
+    - severity: medium
+      gate: clarity
+      area: terminology
+      description: scope.md pins the baseline "with the actual 512 KiB default" without
+        saying which default; 512 KiB is RC6's speculative readahead byte budget (src/pool/prefetch.rs:85,110),
+        whereas GRANULE_DEFAULT is 4096 (src/pool/mod.rs:121). The bench plan then
+        specifies a "1,024-page resident fixture" without stating page size, leaving
+        the working set anywhere between 4 MiB and 512 MiB — the difference between
+        an L3-resident comparison and a memory-bound one, in a plan that requires
+        freezing fixture identity before any run.
+      suggestion: Say "512 KiB readahead byte budget" in scope.md and pin granule
+        = 4 KiB in the plan, matching benches/plans/mmap_workloads.md resident_projection.
+    clarifying_questions:
+    - Is the candidate's page-table probe intended to be inside or outside the cost
+      the WRC-G2 floor represents? The answer changes both the floor's construction
+      and whether 1.20 is the right bound.
+    - Was WRC-G1's 1.50 chosen against the recorded 8.148 ordinary-get ratio, or inherited
+      from the roadmap as an aspiration? If the latter, the bound needs an owner re-derivation
+      before WRC1 freezes capture commands.
+    strengths:
+    - Every baseline claim I checked holds at 5edb6a7 — the Acquire file-generation
+      mirror, 64-byte `ReaderSlot` alignment (src/pool/epoch.rs:56), `mirror_get_racing_retire_and_slot_reuse_never_admits_reused_bytes`
+      (tests/loom_pool.rs:335), 20 total Loom cases (17 in tests/loom_pool.rs plus
+      3 in src/pool), and the 62-bit generation with Resident-only increment and panic-before-ABA.
+      The draft preserves the shipped work instead of re-landing the stale roadmap
+      version.
+    - 'The soundness section refuses to launder the requested race: it correctly separates
+      volatile access from atomic synchronization, notes UnsafeCell relaxes immutability
+      and not exclusivity, extends the writer-compatibility requirement to mock and
+      eager paths, and states that a post-copy version mismatch cannot retroactively
+      legitimize the read.'
+    - Alternatives are priced rather than surveyed — guarded copy, shadow atomic payload,
+      retained handles and epoch batching each get a cost and a reason it is not the
+      authorized local fix.
+    - 'The sira integration is honest about its own evidence: 253.701737 / 305.527327
+      ns and the 1.2045 / 1.2229 failure are marked historical, each new pair must
+      execute an authentic paired locator with unchanged CRC/decode/key verification,
+      and the non-reproducible runner is named as a pre-implementation deliverable
+      rather than substituted with a decoder benchmark.'
+    - Output-validity semantics are specified per branch, including that a discarded
+      attempt may have written the caller buffer — the detail most such proposals
+      leave implicit.

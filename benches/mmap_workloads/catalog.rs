@@ -29,6 +29,13 @@ pub(super) enum Lane {
     ResidentAccessEpochBatch,
     ResidentAccessRetained,
     ResidentAccessPageBatch,
+    ResidentAccessSessionProjection,
+    ResidentAccessSessionFold,
+    #[serde(rename = "resident_access_session_fold_256m")]
+    ResidentAccessSessionFold256m,
+    ResidentAccessFairGet,
+    ResidentAccessCopy,
+    ResidentAccessCopyFloor,
     PrefetchFragmented,
     PrefetchFragmentedWhole,
     PrefetchScan,
@@ -46,6 +53,7 @@ pub(super) enum Lane {
 #[serde(rename_all = "snake_case")]
 pub(super) enum Arm {
     MmapRandom,
+    MmapRandomFlat,
     MmapNormal,
     MmapSequential,
     DiosSerial,
@@ -54,6 +62,12 @@ pub(super) enum Arm {
     DiosEpochBatch,
     DiosRetained,
     DiosPageBatch,
+    DiosSession,
+    DiosGet,
+    DiosCopy,
+    MmapCopy,
+    OptimisticFloor,
+    PlainArray,
     DiosPrefetch,
     DiosPrefetchWhole,
     DiosAutomatic,
@@ -71,7 +85,7 @@ pub(super) enum Cache {
 }
 
 impl Lane {
-    pub(super) const ALL: [Self; 29] = [
+    pub(super) const ALL: [Self; 35] = [
         Self::ResidentProjection,
         Self::ResidentDecode,
         Self::MinorProjection,
@@ -90,6 +104,12 @@ impl Lane {
         Self::ResidentAccessEpochBatch,
         Self::ResidentAccessRetained,
         Self::ResidentAccessPageBatch,
+        Self::ResidentAccessSessionProjection,
+        Self::ResidentAccessSessionFold,
+        Self::ResidentAccessSessionFold256m,
+        Self::ResidentAccessFairGet,
+        Self::ResidentAccessCopy,
+        Self::ResidentAccessCopyFloor,
         Self::PrefetchFragmented,
         Self::PrefetchFragmentedWhole,
         Self::PrefetchScan,
@@ -130,6 +150,12 @@ impl Lane {
             Self::ResidentAccessEpochBatch => "resident_access_epoch_batch",
             Self::ResidentAccessRetained => "resident_access_retained",
             Self::ResidentAccessPageBatch => "resident_access_page_batch",
+            Self::ResidentAccessSessionProjection => "resident_access_session_projection",
+            Self::ResidentAccessSessionFold => "resident_access_session_fold",
+            Self::ResidentAccessSessionFold256m => "resident_access_session_fold_256m",
+            Self::ResidentAccessFairGet => "resident_access_fair_get",
+            Self::ResidentAccessCopy => "resident_access_copy",
+            Self::ResidentAccessCopyFloor => "resident_access_copy_floor",
             Self::PrefetchFragmented => "prefetch_fragmented",
             Self::PrefetchFragmentedWhole => "prefetch_fragmented_whole",
             Self::PrefetchScan => "prefetch_scan",
@@ -175,6 +201,7 @@ impl Lane {
         }
     }
 
+    /// Requests in the lane's fixed sequence.
     pub(super) fn operations(self) -> u32 {
         if self.resident_access() {
             return 65_536;
@@ -193,6 +220,60 @@ impl Lane {
         }
     }
 
+    /// Times one timed process replays the fixed sequence; a fair lane's count
+    /// keeps the timed region of its floor arm at or above 100 ms.
+    pub(super) fn repetitions(self) -> u32 {
+        match self {
+            Self::ResidentAccessSessionProjection
+            | Self::ResidentAccessFairGet
+            | Self::ResidentAccessCopy
+            | Self::ResidentAccessCopyFloor => 2_048,
+            Self::ResidentAccessSessionFold => 256,
+            Self::ResidentAccessSessionFold256m => 64,
+            _ => 1,
+        }
+    }
+
+    /// Reads one timed process performs.
+    pub(super) fn timed_operations(self) -> u32 {
+        self.operations() * self.repetitions()
+    }
+
+    /// Lanes of the fairness contract, served by the fair-lane module.
+    pub(super) fn fair(self) -> bool {
+        matches!(
+            self,
+            Self::ResidentAccessSessionProjection
+                | Self::ResidentAccessSessionFold
+                | Self::ResidentAccessSessionFold256m
+                | Self::ResidentAccessFairGet
+                | Self::ResidentAccessCopy
+                | Self::ResidentAccessCopyFloor
+        )
+    }
+
+    /// The reported, never gated floor arm of a fair lane.
+    pub(super) fn floor_arm(self) -> Option<Arm> {
+        self.fair().then_some(Arm::PlainArray)
+    }
+
+    /// The reported, never gated flat-loop reference arm of a session lane.
+    pub(super) fn flat_arm(self) -> Option<Arm> {
+        self.session().then_some(Arm::MmapRandomFlat)
+    }
+
+    /// A lane whose product arm is the session read; every arm of it iterates
+    /// session-sized chunks (AT-D16).
+    pub(super) fn session(self) -> bool {
+        self.arms()[1] == Arm::DiosSession
+    }
+
+    /// A lane whose every arm copies the requested bytes into a caller buffer
+    /// and folds that buffer (AT-G5, AT-G6).
+    pub(super) fn copy(self) -> bool {
+        self.arms()[1] == Arm::DiosCopy
+    }
+
     pub(super) fn workers(self) -> u32 {
         match self {
             Self::FaultingReaders | Self::PressureRandom => 4,
@@ -201,6 +282,12 @@ impl Lane {
     }
 
     pub(super) fn useful_bytes(self) -> u32 {
+        if matches!(
+            self,
+            Self::ResidentAccessSessionFold | Self::ResidentAccessSessionFold256m
+        ) {
+            return GRANULE;
+        }
         if self.resident_access() {
             return 64;
         }
@@ -216,6 +303,9 @@ impl Lane {
     }
 
     pub(super) fn warm_pages(self) -> u32 {
+        if self == Self::ResidentAccessSessionFold256m {
+            return PAGES;
+        }
         if self.resident_access() {
             return 1024;
         }
@@ -236,6 +326,14 @@ impl Lane {
         }
         if self == Self::PrefetchPollution {
             return 1024;
+        }
+        if matches!(
+            self,
+            Self::ResidentAccessSessionFold256m
+                | Self::ResidentAccessCopy
+                | Self::ResidentAccessCopyFloor
+        ) {
+            return self.warm_pages();
         }
         if self.cache() == Cache::Pressure {
             16_384
@@ -259,6 +357,8 @@ impl Lane {
                 return [Arm::MmapSequential, Arm::DiosPrefetch];
             }
             Self::PrefetchPollution => return [Arm::DiosSerial, Arm::DiosWrongHints],
+            Self::ResidentAccessCopy => return [Arm::MmapCopy, Arm::DiosCopy],
+            Self::ResidentAccessCopyFloor => return [Arm::OptimisticFloor, Arm::DiosCopy],
             _ => {}
         }
         let mmap = match self {
@@ -271,6 +371,10 @@ impl Lane {
             Self::ResidentAccessEpochBatch => Arm::DiosEpochBatch,
             Self::ResidentAccessRetained => Arm::DiosRetained,
             Self::ResidentAccessPageBatch => Arm::DiosPageBatch,
+            Self::ResidentAccessSessionProjection
+            | Self::ResidentAccessSessionFold
+            | Self::ResidentAccessSessionFold256m => Arm::DiosSession,
+            Self::ResidentAccessFairGet => Arm::DiosGet,
             Self::ColdGather
             | Self::ColdGatherNormal
             | Self::ScanDecode
@@ -285,6 +389,9 @@ impl Lane {
 
     pub(super) fn page(self, seed: u32, index: u32) -> PageNumber {
         assert!(index < self.operations());
+        if self == Self::ResidentAccessSessionFold {
+            return PageNumber(index % self.warm_pages());
+        }
         if self.resident_access() {
             let index = if self == Self::ResidentAccessPageBatch {
                 index / 16
@@ -321,6 +428,12 @@ impl Lane {
                 | Self::ResidentAccessEpochBatch
                 | Self::ResidentAccessRetained
                 | Self::ResidentAccessPageBatch
+                | Self::ResidentAccessSessionProjection
+                | Self::ResidentAccessSessionFold
+                | Self::ResidentAccessSessionFold256m
+                | Self::ResidentAccessFairGet
+                | Self::ResidentAccessCopy
+                | Self::ResidentAccessCopyFloor
         )
     }
 
@@ -337,6 +450,7 @@ impl Arm {
     pub(super) fn parse(name: &str) -> Result<Self, String> {
         match name {
             "mmap_random" => Ok(Self::MmapRandom),
+            "mmap_random_flat" => Ok(Self::MmapRandomFlat),
             "mmap_normal" => Ok(Self::MmapNormal),
             "mmap_sequential" => Ok(Self::MmapSequential),
             "dios_serial" => Ok(Self::DiosSerial),
@@ -345,6 +459,12 @@ impl Arm {
             "dios_epoch_batch" => Ok(Self::DiosEpochBatch),
             "dios_retained" => Ok(Self::DiosRetained),
             "dios_page_batch" => Ok(Self::DiosPageBatch),
+            "dios_session" => Ok(Self::DiosSession),
+            "dios_get" => Ok(Self::DiosGet),
+            "dios_copy" => Ok(Self::DiosCopy),
+            "mmap_copy" => Ok(Self::MmapCopy),
+            "optimistic_floor" => Ok(Self::OptimisticFloor),
+            "plain_array" => Ok(Self::PlainArray),
             "dios_prefetch" => Ok(Self::DiosPrefetch),
             "dios_prefetch_whole" => Ok(Self::DiosPrefetchWhole),
             "dios_automatic" => Ok(Self::DiosAutomatic),
@@ -363,8 +483,22 @@ impl Arm {
     pub(super) fn is_mmap(self) -> bool {
         matches!(
             self,
-            Self::MmapRandom | Self::MmapNormal | Self::MmapSequential
+            Self::MmapRandom
+                | Self::MmapRandomFlat
+                | Self::MmapNormal
+                | Self::MmapSequential
+                | Self::MmapCopy
         )
+    }
+
+    /// Whether the arm reads the floor's private copy of the lane's pages.
+    pub(super) fn reads_private_array(self) -> bool {
+        matches!(self, Self::PlainArray | Self::OptimisticFloor)
+    }
+
+    /// Whether the arm reads through a pool built over the fixture.
+    pub(super) fn reads_pool(self) -> bool {
+        !self.is_mmap() && !self.reads_private_array()
     }
 
     pub(super) fn explicit_hints(self) -> bool {

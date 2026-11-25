@@ -56,6 +56,30 @@ impl PinCommit {
     }
 }
 
+/// A committed pin that holds the reader's published epoch as one live guard
+/// without naming a frame: every frame a set translation entry names after the
+/// pin cannot be reclaimed until it drops (INV-2, INV-3). Thread-bound like
+/// the reader that minted it.
+#[must_use]
+#[derive(Debug)]
+pub(crate) struct SessionPin<'reader> {
+    slot: &'reader ReaderSlot,
+    _thread_bound: PhantomData<*const ()>,
+}
+
+impl<'reader> SessionPin<'reader> {
+    pub(crate) fn slot(&self) -> &'reader ReaderSlot {
+        self.slot
+    }
+}
+
+impl Drop for SessionPin<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        self.slot.release_guard();
+    }
+}
+
 /// One registered reader's epoch state. A `ReaderCtx` is thread-bound (`!Send`),
 /// so only its owning thread writes `local_epoch`/`guard_count`; the atomics
 /// carry those values across the shared slot table without a warm-path RMW (a
@@ -167,6 +191,7 @@ impl ReaderSlot {
         self.occupied.store(false, Ordering::Release);
     }
 
+    #[inline]
     fn guard_count(&self) -> u64 {
         self.guard_count.load(Ordering::Relaxed)
     }
@@ -175,6 +200,7 @@ impl ReaderSlot {
     /// on its FIRST live guard — a nested pin finds a non-zero count and keeps the
     /// epoch already published by the outer guard. The returned witness must be
     /// committed or aborted on this slot.
+    #[inline]
     pub(crate) fn begin_pin(&self, global_epoch: u64) -> PinBegun {
         assert!(
             global_epoch != QUIESCENT,
@@ -199,11 +225,32 @@ impl ReaderSlot {
 
     /// Commits a pin on the frame it validated, counting one more live guard
     /// for this reader.
+    #[inline]
+    pub(crate) fn commit_pin(&self, begun: PinBegun, frame: ReadFrameIdx) -> PinCommit {
+        self.commit_guard(begun);
+        PinCommit {
+            frame,
+            _thread_bound: PhantomData,
+        }
+    }
+
+    /// Commits a pin that holds the published epoch for a session's many
+    /// reads instead of one frame, counting one live guard until it drops.
+    #[inline]
+    pub(crate) fn commit_session(&self, begun: PinBegun) -> SessionPin<'_> {
+        self.commit_guard(begun);
+        SessionPin {
+            slot: self,
+            _thread_bound: PhantomData,
+        }
+    }
+
+    #[inline]
     #[expect(
         clippy::needless_pass_by_value,
         reason = "the begun witness is linear: committing consumes it so it cannot also be aborted"
     )]
-    pub(crate) fn commit_pin(&self, begun: PinBegun, frame: ReadFrameIdx) -> PinCommit {
+    fn commit_guard(&self, begun: PinBegun) {
         let taken = self
             .guard_count()
             .checked_add(1)
@@ -215,10 +262,6 @@ impl ReaderSlot {
         self.guard_count.store(taken, Ordering::Relaxed);
         let PinBegun { first, .. } = begun;
         debug_assert_eq!(first, taken == 1, "the first pin commits the first guard");
-        PinCommit {
-            frame,
-            _thread_bound: PhantomData,
-        }
     }
 
     /// Abandons a pin whose validation failed: no guard was minted, so a
@@ -228,6 +271,7 @@ impl ReaderSlot {
         clippy::needless_pass_by_value,
         reason = "the begun witness is linear: aborting consumes it so it cannot also be committed"
     )]
+    #[inline]
     pub(crate) fn abort_pin(&self, begun: PinBegun) {
         let PinBegun { first, .. } = begun;
         if first {
@@ -238,6 +282,7 @@ impl ReaderSlot {
 
     /// Drops one live guard; the reader goes quiescent on its last guard so a
     /// published epoch never outlives the guards that justified it.
+    #[inline]
     pub(crate) fn release_guard(&self) {
         let count = self.guard_count();
         assert!(count > 0, "a released guard was previously committed");
@@ -287,6 +332,13 @@ pub(crate) fn advance_epoch(global_epoch: &AtomicU64, slots: &[ReaderSlot]) -> u
         "a single advance pass moves the epoch by at most one"
     );
     advanced
+}
+
+/// Whether `global_epoch` has advanced twice past `tagged_epoch`: every reader
+/// that observed state unlinked at `tagged_epoch` has since unpinned.
+#[inline]
+pub(crate) fn epoch_matured(tagged_epoch: u64, global_epoch: u64) -> bool {
+    tagged_epoch.saturating_add(2) <= global_epoch
 }
 
 /// The fixed-capacity ring of frames awaiting reclamation, each tagged with the
@@ -351,7 +403,7 @@ impl EvictQueue {
     ) -> usize {
         let mut reclaimed = 0usize;
         while let Some(&(frame, tagged_epoch)) = self.entries.front() {
-            if tagged_epoch.saturating_add(2) > global_epoch {
+            if !epoch_matured(tagged_epoch, global_epoch) {
                 break;
             }
             assert!(
@@ -389,10 +441,12 @@ impl ReaderCtx {
         }
     }
 
+    #[inline]
     pub(crate) fn slot(&self) -> &ReaderSlot {
         &self.registry.slots[self.slot as usize]
     }
 
+    #[inline]
     pub(crate) fn belongs_to(&self, registry: &Arc<ReaderRegistry>) -> bool {
         Arc::ptr_eq(&self.registry, registry)
     }
@@ -497,6 +551,7 @@ pub struct FrameGuard<'pool> {
 }
 
 impl<'pool> FrameGuard<'pool> {
+    #[inline]
     pub(crate) fn new(
         bytes: &'pool [u8],
         slot: &'pool ReaderSlot,
@@ -524,6 +579,7 @@ impl Deref for FrameGuard<'_> {
 }
 
 impl Drop for FrameGuard<'_> {
+    #[inline]
     fn drop(&mut self) {
         self.slot.release_guard();
     }

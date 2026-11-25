@@ -1,0 +1,20 @@
+[remote] $ ~/projects/dios/.mise/tasks/remote env MISE_EXE=/home/srnnkls/build/dios-gates/tools/mise-v2026.8.0-linux-x64 /home/srnnkls/build/dios-gates/tools/mise-v2026.8.0-linux-x64 run bench-scan-geometry /dev/shm/dios-at-g7-rc-g1 --input target/array-translation/at-g4/input --experiment coalescing --mode run --cases cold-mmap,pressure-mmap --frozen-binary /home/srnnkls/build/dios-readv-budget-20260914/target/budget-archives/mmap_workloads
+[bench-host-guard] $ if [ ! -e /etc/NIXOS ]; then
+bench_profile=active
+thp=always madvise [never]
+governors=performance
+mise WARN  mise version 2026.11.9 available
+mise WARN  To update, run mise self-update
+[bench-scan-geometry] $ ~/build/dios/.mise/tasks/bench-scan-geometry /dev/shm/d…
+cold-mmap: 0/30 pairs
+cold-mmap: 10/30 pairs
+cold-mmap: 20/30 pairs
+cold-mmap: 30/30 pairs
+cold-mmap: 0.8295945679123728
+pressure-mmap: 0/30 pairs
+pressure-mmap: 10/30 pairs
+pressure-mmap: 20/30 pairs
+pressure-mmap: 30/30 pairs
+pressure-mmap: 0.5978258039805255
+Finished in 48.57s
+exit=0

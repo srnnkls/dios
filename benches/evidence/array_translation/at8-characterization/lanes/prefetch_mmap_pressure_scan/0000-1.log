@@ -1,0 +1,8 @@
+Running as unit: dios-mmap-10901-0000-1.service; invocation ID: 020758e5fa3f4f60ab56700e2e14631c
+dios: arena lock refused (errno 12: 67112960 bytes against RLIMIT_MEMLOCK 8388608); continuing unlocked — grant CAP_IPC_LOCK, raise the limit, or call require_locked() for a typed refusal
+Finished with result: success
+Main processes terminated with: code=exited/status=0
+Service runtime: 854ms
+CPU time consumed: 848ms
+Memory peak: 256.0K
+Memory swap peak: 0B

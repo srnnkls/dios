@@ -1,0 +1,70 @@
+{
+  "comparisons": [
+    {
+      "name": "resident_access_session_fold_256m",
+      "arms": [
+        "mmap_random",
+        "dios_session"
+      ],
+      "ns_per_read": {
+        "base": {
+          "arm": "mmap_random",
+          "ns_per_read": 406.68432862758635
+        },
+        "candidate": {
+          "arm": "dios_session",
+          "ns_per_read": 370.24916168053943
+        }
+      },
+      "difference_ns_per_read": {
+        "estimate": -36.435166947046916,
+        "ci95_lower": -37.477140339215595,
+        "ci95_upper": -35.36430505911509
+      }
+    },
+    {
+      "name": "resident_access_session_fold_256m-plain_array",
+      "arms": [
+        "plain_array",
+        "dios_session"
+      ],
+      "ns_per_read": {
+        "base": {
+          "arm": "plain_array",
+          "ns_per_read": 408.003605000178
+        },
+        "candidate": {
+          "arm": "dios_session",
+          "ns_per_read": 369.74876609643303
+        }
+      },
+      "difference_ns_per_read": {
+        "estimate": -38.25483890374502,
+        "ci95_lower": -38.89368014335632,
+        "ci95_upper": -37.544310839970905
+      }
+    },
+    {
+      "name": "resident_access_session_fold_256m-mmap_random_flat",
+      "arms": [
+        "mmap_random_flat",
+        "dios_session"
+      ],
+      "ns_per_read": {
+        "base": {
+          "arm": "mmap_random_flat",
+          "ns_per_read": 400.3461652437846
+        },
+        "candidate": {
+          "arm": "dios_session",
+          "ns_per_read": 370.52444870471953
+        }
+      },
+      "difference_ns_per_read": {
+        "estimate": -29.821716539065044,
+        "ci95_lower": -31.046475728352863,
+        "ci95_upper": -28.52667841911316
+      }
+    }
+  ]
+}

@@ -1,0 +1,715 @@
+[remote] $ ~/projects/dios/.mise/tasks/remote mise run test
+[test] $ cargo test --features bench,mock
+   Compiling dios v0.1.0 (/home/srnnkls/build/dios)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.11s
+     Running unittests src/lib.rs (target/debug/deps/dios-e090230f59b4a779)
+
+running 66 tests
+test allocation::mapped_arena_tests::a_mapping_honors_an_alignment_above_the_page_size ... ok
+test allocation::mapped_arena_tests::a_mapping_below_the_page_size_still_maps_whole_pages ... ok
+test allocation::mapped_arena_tests::a_mapping_is_zeroed_and_writable ... ok
+test allocation::mapped_arena_tests::a_zero_sized_element_table_keeps_its_length ... ok
+test allocation::mapped_arena_tests::a_span_beyond_the_address_space_is_refused_not_fatal ... ok
+test backend::uring::tests::registered_posture_issues_fixed_buffer_opcodes ... ok
+test backend::uring::tests::unregistered_posture_issues_plain_opcodes ... ok
+test bench::tests::run_paired_captures_the_requested_rep_count ... ok
+test bench::tests::splitmix64_matches_vigna_reference_vectors_for_seed_1234567 ... ok
+test driver::tests::a_lock_refused_for_another_reason_leaves_auto_to_the_kernel ... ok
+test driver::read_vector::tests::dropping_a_submitted_vector_leaves_its_frames_in_flight ... ok
+test bench::tests::read_samples_rejects_a_bad_header ... ok
+test bench::tests::samples_round_trip_through_csv ... ok
+test driver::tests::a_retiring_slot_is_not_reused_until_its_file_is_retired ... ok
+test driver::tests::a_zero_inflight_close_retires_through_finish_retire_not_a_direct_flip ... ok
+test driver::tests::an_auto_posture_skips_registration_when_the_lock_hit_the_memlock_limit ... ok
+test driver::tests::an_explicit_registered_posture_still_reaches_the_kernel_after_a_refused_lock ... ok
+test open::tests::direct_alignment_uses_the_stricter_statx_memory_or_offset_requirement ... ok
+test driver::tests::a_teardown_budget_past_the_clock_range_drains_without_panicking ... ok
+test pool::file_slots::tests::links_fit_the_existing_page_flag_and_padding ... ok
+test open::tests::a_direct_arena_must_be_a_whole_multiple_of_the_device_alignment ... ok
+test mock::sync_mode_tests::ring_sync_retries_preserve_data_and_full_modes ... ok
+test pool::file_slots::tests::sparse_membership_unlinks_head_middle_tail_and_reuses_slots ... ok
+test pool::frame_pages::tests::canonical_identity_distinguishes_drivers_and_generations_sharing_a_slot ... ok
+test pool::frame_pages::tests::mapped_frame_record_fits_twenty_bytes ... ok
+test pool::frames::alignment_tests::a_small_arena_still_honors_a_granule_above_the_sector_floor ... ok
+test pool::frame_pages::tests::canonical_identity_survives_eviction_until_unlink_and_reuse ... ok
+test pool::frames::free_frames_tests::claims_start_at_frame_zero_and_freed_frames_return_last_in_first_out ... ok
+test pool::frames::free_frames_tests::pushing_past_the_frame_count_is_a_programmer_error - should panic ... ok
+test pool::frames::tests::a_hugepage_sized_arena_is_hugepage_backed_when_thp_is_available ... ok
+test pool::frames::tests::a_hugepage_sized_arena_starts_2mib_aligned ... ok
+test pool::frames::token_tests::a_write_token_is_affine ... ok
+test pool::frames::token_tests::a_second_claim_of_the_same_frame_is_refused ... ok
+test pool::frames::token_tests::an_unidentified_claim_takes_the_frame_in_flight_without_a_page ... ok
+test pool::frames::token_tests::a_committed_pin_borrows_exactly_the_frame_it_validated ... ok
+test pool::frames::token_tests::advance_refuses_the_token_owned_edges - should panic ... ok
+test pool::frames::token_tests::publish_bumps_the_generation_and_abort_keeps_it ... ok
+test pool::frames::token_tests::one_arena_refuses_another_arenas_same_index_token - should panic ... ok
+test pool::frames::token_tests::the_identity_written_at_claim_is_the_published_identity ... ok
+test pool::frames::token_tests::borrowing_a_frame_a_token_is_writing_is_a_programmer_error - should panic ... ok
+test bench::tests::ratio_gate_recovers_an_exact_constant_ratio ... ok
+test pool::miss::tests::admitting_past_the_in_flight_bound_is_a_programmer_error - should panic ... ok
+test pool::miss::tests::zero_interest_success_mapping_clears_before_another_slot_reuses_the_frame ... ok
+test bench::tests::ratio_gate_upper_bound_sits_above_the_geomean_under_noise ... ok
+test pool::retention::tests::disabled_retention_has_no_release_drain_selection ... ok
+test pool::miss::tests::retirement_visits_only_the_files_miss_entries ... ok
+test pool::retention::tests::release_drain_selection_uses_current_slot_or_terminal_pending_hint ... ok
+test pool::retention::tests::promotion_at_count_ceiling_is_exhausted_without_mutation ... ok
+test pool::retention::tests::bounded_same_frame_refusal_is_attributed_only_to_contention ... ok
+test pool::retention::tests::release_ring_reuses_a_slot_only_after_consumer_turnover ... ok
+test pool::retention::tests::release_ring_stops_at_an_unpublished_ticket ... ok
+test product::ring_pending_tests::eager_wait_does_not_park_when_a_ring_release_is_pending ... ok
+test pool::retention::tests::release_ring_pops_frames_in_ticket_order ... ok
+test product::tests::caller_delivery_uses_logical_capacity_not_vec_spare_capacity ... ok
+test pool::prefetch::tests::replacement_admission_harvests_earlier_consumption_before_later_feedback ... ok
+test product::ring_pending_tests::platform_wait_is_not_armed_when_a_ring_release_is_pending ... ok
+test pool::retention::tests::release_published_after_pending_clear_is_reclaimed_before_the_same_scan ... ok
+test pool::prefetch::tests::automatic_request_is_revalidated_after_queued_feedback_resets_its_stream ... ok
+test product::ring_pending_tests::wait_until_parked_requires_entered_park_publication ... ok
+test pool::retirement_work_tests::retirement_visits_only_the_files_mapped_frames ... ok
+test product::ring_pending_tests::held_final_release_wakes_a_parker_with_one_generation_lock ... ok
+test pool::file_slots::tests::reference_model_covers_reuse_and_overlapping_terminal_generations ... ok
+test backend::uring::tests::fsync_pushed_and_reaped_through_the_core_completes_its_token ... ok
+test pool::miss::tests::pending_lookups_follow_admit_reslice_and_terminal_transitions ... ok
+test pool::retention::tests::held_release_consumed_before_pending_publication_does_not_poison_next_empty_wait ... ok
+test pool::frames::tests::a_fresh_arena_is_not_resident_until_touched ... ok
+
+test result: ok. 66 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+
+running 0 tests
+     Running unittests src/bin/drp_gate_artifacts.rs (target/debug/deps/drp_gate_artifacts-50278a2ea9ab216a)
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 2 tests
+     Running unittests src/bin/drp_product_harness.rs (target/debug/deps/drp_product_harness-9201f855de7820b3)
+test tests::generated_harness_exposes_bench_package_feature ... ok
+test tests::generated_harness_builds_with_release_based_profiling_profile ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.50s
+
+
+running 3 tests
+test the_guard_catches_a_brace_group_bypass_and_spares_prose ... ok
+test the_guard_catches_a_rustfmt_wrapped_use_group ... ok
+test pool_concurrency_primitives_route_through_the_sync_alias ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+running 6 tests
+test ambient_limit_selects_registered_when_the_arena_fits ... ok
+     Running tests/arch3_sync_alias.rs (target/debug/deps/arch3_sync_alias-31118d0758358632)
+     Running tests/arena_registration.rs (target/debug/deps/arena_registration-70ec700404e77ae2)
+test auto_degrades_to_unregistered_at_the_memlock_floor ... ok
+test explicit_registered_is_refused_typed_at_the_memlock_floor ... ok
+test explicit_unregistered_builds_at_the_memlock_floor ... ok
+test require_locked_is_refused_typed_at_the_memlock_floor ... ok
+test require_locked_succeeds_when_the_ambient_limit_admits_the_arena ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+
+running 3 tests
+test every_gate_pins_a_manifest_and_capture_command_and_the_evidence_records_the_hugepage_witness ... ok
+test scope_records_the_writer_inventory_ordering_audit_and_miri_model_limits ... ok
+test drp_prerequisite_names_its_owner_and_warm_read_copy_out_points_to_its_successor ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 29 tests
+     Running tests/array_translation_plan.rs (target/debug/deps/array_translation_plan-33466b2b8586a35c)
+     Running tests/driver.rs (target/debug/deps/driver-b4132902225bf690)
+test a_dropped_unsubmitted_write_slot_is_freed_immediately ... ok
+test a_consumed_write_slot_is_freed_only_at_completion_drain ... ok
+test a_reclaimed_slot_issues_a_fresh_non_aliasing_token ... ok
+test a_full_queue_hands_the_write_slot_back_in_the_error_arm ... ok
+test a_positive_short_write_resubmits_the_exact_unwritten_tail ... ok
+test a_short_read_is_surfaced_not_resubmitted_by_the_driver ... ok
+test a_foreign_driver_write_slot_panics_before_consumption ... ok
+test a_stale_handle_hands_the_write_slot_back_unchanged ... ok
+test blocking_metadata_wrappers_complete_and_surface_io_errors ... ok
+test a_zero_progress_write_stops_at_the_retry_bound ... ok
+test close_is_deferred_until_the_fds_in_flight_ops_drain ... ok
+test closed_generation_remains_closed_after_its_slot_is_reopened ... ok
+test eagain_is_resubmitted_on_reads ... ok
+test eagain_surfaces_as_an_error_on_writes_without_retry ... ok
+test eintr_is_resubmitted_inside_the_blocking_wrappers ... ok
+test different_seeds_produce_different_schedules ... ok
+test eintr_is_resubmitted_internally_on_fsync ... ok
+test eintr_is_resubmitted_internally_on_reads ... ok
+test eintr_beyond_the_retry_bound_surfaces_the_eintr_error ... ok
+test eintr_is_resubmitted_internally_on_writes ... ok
+test open_yields_a_live_generational_file_handle ... ok
+test queue_full_is_typed_backpressure_that_recovers_after_a_poll ... ok
+test seeded_completions_drain_out_of_submission_order ... ok
+test submit_on_a_stale_handle_is_rejected_while_the_reused_slot_still_works ... ok
+test write_and_fsync_completions_carry_their_op_kinds ... ok
+test submit_read_token_is_echoed_in_the_drained_completion ... ok
+test the_same_seed_reproduces_the_same_schedule ... ok
+test submit_does_not_wait_on_a_poller_parked_in_poll_wait ... ok
+test poll_is_non_blocking_and_poll_wait_bounds_its_idle_wait ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+
+running 3 tests
+test ring_teardown_finishes_vector_retries_before_retiring_its_file ... ok
+test refusal_returns_every_frame_and_partial_completion_holds_slot_and_file_until_drop ... ok
+test vector_destinations_preserve_slice_order_and_exact_short_prefix_after_slot_reuse ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+     Running tests/driver_vector_reads.rs (target/debug/deps/driver_vector_reads-49a2877ce4ee1c73)
+     Running tests/drp001_plan.rs (target/debug/deps/drp001_plan-6adc55d27cc7576d)
+test drp001_freezes_the_product_gates_and_ownership_handoff ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 8 tests
+     Running tests/drp009_gate_contract.rs (target/debug/deps/drp009_gate_contract-06d0668923b3c09e)
+test linux_flamegraph_bounds_perf_mmap_ring_for_eight_mib_memlock_host ... ok
+test zero_allocation_validator_covers_both_g2_lane_shapes ... ok
+test converter_rejects_stale_host_toolchain_and_lane_invocation_facts ... ok
+test converter_verifies_the_pre_run_manifest_and_runner_identity ... ok
+test converter_binds_pairs_and_actual_provenance ... ok
+test cycling_smoke_reports_the_production_reclamation_and_reuse_proof ... ok
+test converter_rejects_noncanonical_lane_relationships ... ok
+test every_frozen_lane_executes_a_product_backed_full_granule_smoke ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.49s
+
+
+running 1 test
+test direct_open_probe_encodes_alignment_or_falls_back_buffered ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/eager.rs (target/debug/deps/eager-2a6a562db5f52fe6)
+
+running 3 tests
+test an_embedding_owner_can_own_pool_reader_and_pending_token ... ok
+test dropping_an_owner_releases_live_capabilities_and_quiesces_once ... ok
+test a_pending_token_moves_to_another_thread_and_readies_with_a_fresh_reader ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out     Running tests/embedded_owner.rs (target/debug/deps/embedded_owner-f13f1c5decf75819)
+; finished in 0.00s
+
+
+running 10 tests
+test a_nested_pin_taken_at_an_advanced_epoch_does_not_republish_the_readers_local_epoch ... ok
+     Running tests/epoch_guards.rs (target/debug/deps/epoch_guards-16d9fd2a8299b1d0)
+test an_evicted_page_never_mints_a_guard_over_its_reclaimable_bytes ... ok
+test a_stalled_reader_blocks_reclamation_of_its_epochs_frames_until_it_drops ... ok
+test a_held_guard_keeps_its_frame_unreclaimed_and_its_bytes_stable_across_polls ... ok
+test first_guard_panics_when_declared_reader_peak_is_zero_in_release ... ok
+test taking_guard_above_declared_reader_peak_panics_in_release ... ok
+test nested_guards_share_one_epoch_and_release_only_on_the_last_drop ... ok
+test the_global_epoch_advances_at_poll_boundaries_not_per_pin ... ok
+test pin_of_a_resident_frame_borrows_the_whole_granule_of_its_content ... ok
+test reclamation_needs_two_epoch_advances_after_the_last_guard_drop ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 18 tests
+test a_bounded_reap_leaves_the_rest_for_the_next_poll ... ok
+test a_short_cqe_surfaces_its_partial_byte_count_without_reslicing ... ok
+test a_seeded_reorder_keeps_each_faults_result_bound_to_its_own_op_token ... ok
+test a_short_write_cqe_retains_the_slot_and_resubmits_the_exact_tail ... ok
+test an_error_cqe_frees_its_slab_slot_for_reuse ... ok
+test an_eagain_read_cqe_is_resubmitted_on_the_ring_and_completes_with_the_success ... ok
+test close_retires_exactly_once_only_after_the_final_in_flight_cqe_reaps ... ok
+test a_ghost_handle_stays_stale_through_a_concurrent_reopen_race ... ok
+test an_eintr_cqe_is_resubmitted_on_the_ring_and_completes_with_the_success ... ok
+test an_error_cqe_routes_to_a_typed_io_error_on_its_echoed_token ... ok
+test ring_retries_at_exactly_the_bound_still_complete_with_the_success ... ok
+test fd_table_exhaustion_surfaces_emfile_and_recovers_after_a_close ... ok
+test dropping_the_driver_with_ops_in_flight_quiesces_to_zero ... ok
+test different_seeds_produce_different_reap_schedules ... ok
+test ring_retries_exhaust_the_init_time_bound_and_surface_the_typed_error ... ok
+test seeded_ring_completions_reap_out_of_submission_order_by_echoed_user_data ... ok
+test the_same_seed_reproduces_the_same_reap_schedule ... ok
+test zero_progress_write_cqes_stop_at_the_ring_retry_bound ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 10 tests
+test frame_guard_is_neither_send_nor_sync ... ok
+test reader_ctx_is_neither_send_nor_sync ... ok
+test pending_token_is_send_but_affine ... ok
+test retained_frame_is_neither_send_sync_nor_clone ... ok
+     Running tests/faults.rs (target/debug/deps/faults-812adbc1b652cf0e)
+     Running tests/guard_compile_fail.rs (target/debug/deps/guard_compile_fail-40949d64fa173fe6)
+test a_retained_frame_cannot_remain_live_across_reader_drop ... ok
+test a_warm_hit_frame_guard_cannot_remain_live_across_reader_drop ... ok
+test a_frame_guard_cannot_remain_live_across_pool_drop ... ok
+test a_retained_frame_cannot_remain_live_across_pool_drop ... ok
+test a_frame_guard_cannot_remain_live_across_reader_drop ... ok
+test advanced_driver_vocabulary_does_not_import_from_the_crate_root ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.44s
+
+     Running tests/loom_pool.rs (target/debug/deps/loom_pool-794e1735db03f9bf)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 18 tests
+     Running tests/miss.rs (target/debug/deps/miss-295d2704308f0aab)
+test a_cross_pool_reader_panics_before_get_touches_the_target_pool ... ok
+test a_cold_get_misses_then_readies_its_seeded_content_and_a_warm_re_get_hits ... ok
+test a_short_read_at_eof_is_terminal_and_fans_err_to_all_waiters_and_frees_the_frame ... ok
+test a_faulted_miss_fans_the_error_to_all_waiters_then_a_fresh_read_of_the_same_page_succeeds ... ok
+test a_foreign_page_file_identity_panics_before_admission_or_frame_mutation ... ok
+test a_cross_pool_token_panics_before_the_target_pool_observes_its_page ... ok
+test a_short_read_with_remaining_extent_resubmits_the_remainder_as_a_distinct_read ... ok
+test a_granule_at_file_granules_max_is_refused_before_lookup_or_admission ... ok
+test dropping_one_failed_waiter_preserves_the_other_waiters_error ... ok
+test a_cross_pool_reader_panics_before_ready_pins_the_target_frame ... ok
+test dropping_a_pending_token_cancels_interest_only_and_the_read_still_completes ... ok
+test completions_route_each_pages_bytes_into_its_own_frame_across_offsets_and_files ... ok
+test a_stale_page_file_generation_returns_the_exact_error_before_reusing_its_live_slot ... ok
+test an_early_retry_cannot_steal_the_terminal_error_from_old_waiters ... ok
+test a_successful_unconsumed_token_protects_its_exact_frame_until_drop ... ok
+test repeated_not_yet_checks_preserve_exactly_one_waiter_interest ... ok
+test n_gets_for_one_missing_page_issue_exactly_one_read_under_a_single_slot_queue ... ok
+test retained_failures_saturate_the_fixed_miss_table_then_recover_after_interest_drops ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 15 tests
+     Running tests/mmap_workload_contract.rs (target/debug/deps/mmap_workload_contract-3cb22240ba77926f)
+test mmap_workload_cli_rejects_missing_and_unknown_arguments ... ok
+test mmap_workloads::probe::tests::adjacent_iovecs_are_a_distinct_probe_arm ... ok
+test mmap_workloads::probe::tests::duplicate_subrequest_cannot_publish_a_group - should panic ... ok
+test mmap_workloads::probe::tests::completed_data_cannot_be_overwritten_before_consumption - should panic ... ok
+test mmap_workloads::probe::tests::slot_waits_for_every_subrequest_before_reuse ... ok
+test mmap_workloads::probe::tests::old_completion_cannot_complete_a_reused_slot - should panic ... ok
+test mmap_workloads::scan_config::tests::unsupported_geometry_and_unreserved_demand_are_rejected_before_io ... ok
+test mmap_workloads::scan_config::tests::sweep_preserves_accepted_bytes_and_has_valid_reclamation_capacity ... ok
+test readv_probe_catalog_is_available_without_creating_a_fixture ... ok
+test scan_geometry_catalog_is_available_without_creating_a_fixture ... ok
+test mmap_workloads::probe::tests::layout_and_depth_have_fixed_bounds ... ok
+test mmap_workloads::probe::tests::stored_destinations_survive_consumption_and_reuse ... ok
+test mmap_workloads::catalog::tests::dependent_walk_follows_file_words_and_cold_permutation_is_unique ... ok
+test mmap_workloads::catalog::tests::prefetch_controls_preserve_the_scan_and_dependent_request_streams ... ok
+test mmap_workloads::catalog::tests::resident_controls_preserve_the_independent_request_stream ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+running 4 tests
+test max_reader_retry_bound_has_constraint_neutral_display ... ok
+     Running tests/pinned_frame_retention_config.rs (target/debug/deps/pinned_frame_retention_config-2f466eb5be72ae18)
+test rejects_unrepresentable_retained_frame_budget ... ok
+test retained_frame_budget_augments_the_frame_watermark ... ok
+test default_zero_retained_frame_budget_preserves_the_existing_watermark ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 7 tests
+test repetition_floor_requires_an_affirmative_bound_count ... ok
+test same_frame_refusal_gate_binds_a_non_vacuous_rate_threshold ... ok
+     Running tests/pinned_frame_retention_plan.rs (target/debug/deps/pinned_frame_retention_plan-8c246e751aad1458)
+test timed_wake_pair_requires_per_thread_fault_deltas_and_zero_faults ... ok
+test exact_r8_pair_uses_post_am4_executable_identity_and_separate_t7_provenance ... ok
+test same_frame_sampling_keeps_an_uncounted_anchor_in_both_arms ... ok
+test local_relations_reject_ungated_and_reversed_access_contracts ... ok
+test t1_plan_freezes_the_pinned_frame_retention_gate_contract ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+
+running 3 tests
+     Running tests/pinned_frame_retention_promotion.rs (target/debug/deps/pinned_frame_retention_promotion-5da160047d023448)
+test distinct_second_frame_refusal_returns_the_same_live_guard ... ok
+test nonzero_budget_promotes_live_guard_with_its_bytes ... ok
+test same_frame_promotions_are_independent_and_budget_recovers_after_both_drop ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 4 tests
+     Running tests/pinned_frame_retention_reclaim.rs (target/debug/deps/pinned_frame_retention_reclaim-547fed37bbd63133)
+test matured_eviction_waits_for_last_of_two_retained_handles ... ok
+test retention_stats_attribute_budget_retirement_and_held_eviction ... ok
+test plain_matured_eviction_still_reclaims_exactly_once ... ok
+test matured_eviction_stays_held_until_retained_handle_drops ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 19 tests
+test clock_only_unreferenced_frame_is_the_victim ... ok
+test clock_gives_a_referenced_frame_a_second_chance ... ok
+test clock_eviction_order_is_deterministic_for_a_constructed_state ... ok
+test clock_reference_reports_first_set_and_is_idempotent_on_repeat ... ok
+test granule_default_is_a_power_of_two_at_least_one_sector ... ok
+test frame_state_transition_matrix_permits_exactly_the_legal_edges ... ok
+     Running tests/pool.rs (target/debug/deps/pool-d9ecf7ccbc209f43)
+test frames_are_preallocated_sector_aligned_and_non_moving ... ok
+test pool_below_watermark_fails_open_with_a_typed_config_error ... ok
+test pool_miss_headroom_below_three_times_inflight_is_rejected ... ok
+test a_watermark_sized_pool_registers_a_reader ... ok
+test pool_rejects_a_granule_below_the_sector_floor ... ok
+test pool_rejects_a_non_power_of_two_granule ... ok
+test reader_counters_are_independent_across_readers ... ok
+test reader_counters_count_hits_and_evictions_locally ... ok
+test pool_accepts_a_valid_granule ... ok
+test write_slot_is_sector_aligned_granule_sized_and_deref_mut_roundtrips ... ok
+test translation_geometry_is_validated_before_any_reservation ... ok
+test write_arena_allocs_to_capacity_then_exhausts_then_frees_on_drop ... ok
+test watermark_is_readers_times_peak_plus_configured_headroom ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 4 tests
+test explicitly_sized_pool_allocation_failure_is_typed ... ok
+test file_table_allocation_failure_is_typed ... ok
+test translation_reservation_above_ram_plus_swap_builds ... ok
+     Running tests/pool_allocation_failure.rs (target/debug/deps/pool_allocation_failure-0ee6ef03652a43ce)
+test translation_reservation_is_refused_only_beyond_the_address_space ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 16 tests
+test composing_a_pool_over_a_differently_shaped_backend_is_a_configuration_error ... ok
+test a_bounded_pool_completion_batch_retains_the_remainder ... ok
+test a_raw_read_past_the_u32_granule_range_submits_instead_of_panicking ... ok
+test a_raw_driver_read_completes_without_being_routed_as_a_pool_miss ... ok
+test caller_completion_saturation_never_starves_an_internal_read ... ok
+test poll_report_counts_retry_cqes_before_the_terminal_product_result ... ok
+test matured_eviction_reports_reclamation_without_a_backend_completion ... ok
+test poll_report_counts_retryable_eagain_read_cqe_without_releasing_its_credit ... ok
+test an_external_wake_before_poll_wait_is_not_lost ... ok
+test an_external_wake_interrupts_a_parked_poll_wait_without_backend_io ... ok
+test read_credit_saturation_preserves_product_reservations_and_singleflight_joins ... ok
+     Running tests/pool_progress.rs (target/debug/deps/pool_progress-57641957fd73188a)
+test poll_report_separates_backend_completions_from_reclaimed_frames ... ok
+test completion_driven_poll_wait_does_not_hold_the_pool_control_lock ... ok
+test retained_caller_completions_do_not_block_eviction_reclamation ... ok
+test retry_cqe_early_return_is_progress_not_a_platform_wait_timeout ... ok
+test idle_product_poll_wait_tracks_distinct_deadlines_and_timeout_exits ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.02s
+
+     Running tests/pool_retire.rs (target/debug/deps/pool_retire-2c11b152d747b247)
+
+running 9 tests
+test a_waiter_dropped_before_retirement_leaves_dma_to_drain_before_close ... ok
+test a_cold_get_rechecks_the_exact_generation_after_concurrent_retirement ... ok
+test a_pending_token_admitted_before_retirement_readies_before_physical_close ... ok
+test an_already_resident_unpinned_page_retires_without_backend_progress ... ok
+test a_completed_unconsumed_token_finishes_after_retirement ... ok
+test a_live_frame_guard_delays_reclamation_and_file_close ... ok
+test a_get_paused_between_pin_and_entry_load_rejects_a_reused_empty_slot ... ok
+test retirement_drains_preaccepted_writes_rejects_new_io_and_preserves_generation_staleness ... ok
+test retirement_clears_its_slot_and_keeps_a_page_sharing_neighbor_resident ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 9 tests
+test an_injected_write_failure_keeps_the_following_fsync_result_separate ... ok
+test dropping_pool_drains_a_write_and_its_held_fsync_before_close ... ok
+test an_injected_fsync_failure_does_not_poison_the_preceding_write ... ok
+test product_writes_are_disabled_by_default_even_if_the_backend_has_staging ... ok
+test full_returns_the_unchanged_write_slot_and_retry_persists_its_payload ... ok
+test held_data_sync_preserves_its_mode_after_prior_write_completion ... ok
+test foreign_file_ids_panic_before_submit_admission_and_raii_reclaims_write_staging ... ok
+test foreign_slot_identity_precedes_file_identity_and_product_capacity_checks ... ok
+test writes_precede_their_fsync_barrier_under_adversarial_mock_schedules ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 21 tests
+test an_abandoned_automatic_window_returns_credits_without_demand_pressure ... ok
+test a_full_demand_queue_defers_speculation_without_consuming_credits ... ok
+test explicit_prefetch_at_the_bound_is_rejected_for_every_slot_before_any_lookup ... ok
+test a_joined_speculative_failure_reaches_demand_and_releases_resources_once ... ok
+test explicit_prefetch_is_queued_and_coalesces_with_demand ... ok
+     Running tests/pool_write.rs (target/debug/deps/pool_write-175dd797b870aa0f)
+     Running tests/prefetch.rs (target/debug/deps/prefetch-844f3c8515f43ad6)
+test skipping_ahead_in_a_resident_window_resets_automatic_training ... ok
+test retirement_drains_speculation_and_rejects_further_hints ... ok
+test another_reader_promotes_a_credit_without_advancing_the_originating_stream ... ok
+test reader_registration_and_file_changes_reset_training ... ok
+test a_failed_speculative_read_returns_its_credit_and_can_be_retried ... ok
+test abandoned_wrong_hints_preserve_a_hot_set_that_leaves_the_credit_budget_free ... ok
+test an_automatic_readahead_window_ends_below_the_bound ... ok
+test non_sequential_demand_does_not_train_a_sequential_stream ... ok
+test resident_hints_do_not_displace_existing_speculation ... ok
+test automatic_readahead_is_default_and_can_be_disabled ... ok
+test speculative_short_reads_complete_through_the_existing_reslice_path ... ok
+test speculative_credits_bound_windows_and_recover_after_abandonment ... ok
+test obsolete_automatic_reads_complete_before_their_credits_are_recovered ... ok
+test zero_credits_disable_explicit_and_automatic_admission ... ok
+test extending_a_partially_consumed_window_preserves_useful_lookahead_when_recycling ... ok
+test sequential_feedback_survives_batched_consumption_and_recycled_metadata_slots ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 11 tests
+test completion_batches_reject_zero_capacity_at_construction - should panic ... ok
+test pool_build_errors_distinguish_configuration_from_driver_initialization ... ok
+test product_tokens_batches_and_slots_are_not_advanced_driver_types ... ok
+test public_signatures_preserve_the_existing_residency_adt ... ok
+test retention_api_is_directly_callable ... ok
+test zero_capacity_pool_completion_batches_construct_without_panicking ... ok
+test required_direct_io_refuses_unsupported_files_while_preferred_falls_back ... ok
+test zero_budget_retention_refuses_with_live_guard_and_budget_stat ... ok
+     Running tests/public_api.rs (target/debug/deps/public_api-e85588353ab8efac)
+test translation_bound_surface_is_root_exported ... ok
+test hash_page_table_and_page_hash_are_unreachable_through_testing ... ok
+test resident_hint_callable_scaffold_is_root_exported ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.22s
+
+
+running 2 tests
+test forbidden_symbol_scanner_falsifies_each_symbol ... ok
+     Running tests/r7_source_manifest.rs (target/debug/deps/r7_source_manifest-e641d716b178e621)
+test r7_source_manifest_reconstructs_the_clean_extraction ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+
+running 1 test
+test a_warm_get_does_not_enter_the_control_plane ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 6 tests
+test original_slot_survives_full_backend_slab_and_retirement_across_later_shorts ... ok
+test mid_iovec_short_publishes_only_whole_pages_and_preserves_exact_suffix_bytes ... ok
+test eof_and_permanent_tail_error_preserve_prefix_and_return_each_page_credit ... ok
+test rc4::explicit_runs_split_at_resident_and_pending_holes_and_deduplicate ... ok
+     Running tests/read_protocol_atomic.rs (target/debug/deps/read_protocol_atomic-9e136c27cb3fccca)
+     Running tests/readahead_coalescing.rs (target/debug/deps/readahead_coalescing-e27a9de922a47b04)
+test rc4::consumption_after_the_last_completion_recovers_credits_and_idle_visits_are_zero ... ok
+test rc4::automatic_steady_refills_keep_full_vectors_with_the_actual_default_budget ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+
+
+running 3 tests
+test dropping_a_reader_context_reopens_its_registration_slot ... ok
+test registration_beyond_capacity_returns_the_typed_at_capacity_error ... ok
+test register_drop_reregister_cycles_to_capacity_without_leaking_slots ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 5 tests
+test portable_read_ranges::direct_io_unaligned_positive_short_read_is_terminal_without_remainder_submission ... ok
+     Running tests/reader_registration.rs (target/debug/deps/reader_registration-607cb09475bb1087)
+     Running tests/real_pool.rs (target/debug/deps/real_pool-af6157e2494f16a3)
+test portable_read_ranges::short_read_resubmits_the_exact_tail_at_the_filled_destination_offset ... ok
+test shipping_pool_external_wake_interrupts_the_actual_backend_park ... ok
+test real_pool_miss_borrows_the_exact_file_extent ... ok
+test shipping_pool_reserves_the_checked_sum_for_reads_and_product_writes ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 12 tests
+test at_capacity_precedes_mock_driver_policy_inspection ... ok
+test at_capacity_precedes_mock_ring_path_inspection ... ok
+test configured_capacity_above_64_reaches_mock_driver ... ok
+     Running tests/registered_file_lifecycle.rs (target/debug/deps/registered_file_lifecycle-71b8a53820aa93f6)
+test configured_capacity_above_64_reaches_mock_ring_driver ... ok
+test operating_emfile_with_a_logical_slot_free_is_io ... ok
+test negotiated_io_mode_tracks_exact_pool_file_generation ... ok
+test at_capacity_create_precedes_all_pathname_mutation ... ok
+test create_new_failure_preserves_content_and_releases_its_reservation ... ok
+test zero_capacity_builds_and_refuses_before_pathname_mutation ... ok
+test retiring_retained_file_owns_capacity_until_close_then_reuses_a_fresh_generation ... ok
+test configured_capacity_above_64_accepts_exactly_that_many_live_files ... ok
+test default_registered_file_capacity_is_64 ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+
+running 13 tests
+     Running tests/resident_hint.rs (target/debug/deps/resident_hint-b6cd0578154b910e)
+test a_lease_serializes_retirement_and_same_slot_reopen ... ok
+test a_same_granule_hint_from_another_file_falls_back_to_that_files_bytes ... ok
+test a_live_file_lease_is_owned_and_safe_to_drop_after_the_pool ... ok
+test an_opaque_resident_hint_is_niche_sized_and_mints_a_normal_guard ... ok
+test a_wrong_granule_hint_falls_back_without_releasing_an_outer_guard ... ok
+test guard_observation_tracks_the_guard_and_changes_after_reload ... ok
+test a_valid_hint_cannot_bypass_retirement_while_its_lease_keeps_the_frame_resident ... ok
+test lease_count_exhaustion_is_typed_and_does_not_mutate_the_count ... ok
+test packed_frame_word_changes_generation_only_when_residency_is_published ... ok
+test a_same_granule_hint_from_another_pool_falls_back_before_frame_indexing ... ok
+test guard_observation_rejects_a_different_page_in_the_same_pool - should panic ... ok
+test stale_and_missing_hints_fall_back_then_a_refreshed_hint_hits ... ok
+test guard_observation_rejects_a_foreign_guard_before_indexing - should panic ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 2 tests
+test zero_budget_matured_eviction_frees_without_held_attribution ... ok
+test budget_recovers_after_held_release_while_unrelated_eviction_reclaims ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 2 tests
+test retiring_refuses_the_same_live_guard_then_slot_reuse_allows_fresh_promotion ... ok
+test held_retained_frame_delays_retirement_until_release_progress_frees_it ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 6 tests
+test forgotten_retained_handle_panics_before_retiring_file_is_closed ... ok
+test held_release_published_before_mock_poll_wait_reclaims_without_parking ... ok
+test pool_teardown_drains_a_held_final_drop ... ok
+test pool_teardown_drains_a_held_release_before_product_shutdown_progress ... ok
+test held_release_wakes_parked_mock_poll_wait_and_reclaims ... ok
+test linux_shipping::held_release_wakes_shipping_platform_wait_and_reclaims ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+test deferred_close_through_the_ring_flips_is_closed_only_after_the_in_flight_read_drains ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+     Running tests/retention_acceptance.rs (target/debug/deps/retention_acceptance-d09d183075b823b5)
+     Running tests/retention_retirement.rs (target/debug/deps/retention_retirement-882d630883fe294d)
+     Running tests/retention_wake_teardown.rs (target/debug/deps/retention_wake_teardown-5143d386a172aee7)
+     Running tests/ring_close.rs (target/debug/deps/ring_close-1ba0d87d12f15acd)
+     Running tests/ring_teardown_budget.rs (target/debug/deps/ring_teardown_budget-d3d24a32ae20075d)
+test ring_drop_with_a_never_completing_read_blocks_for_the_init_budget_then_returns_without_panicking ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+
+
+running 7 tests
+     Running tests/scaffold.rs (target/debug/deps/scaffold-e0a503a336cc4d43)
+test alignment_check_accepts_multiples_of_the_alignment ... ok
+test alignment_check_rejects_unaligned_offsets_with_a_typed_error ... ok
+test io_error_carries_the_operating_failure ... ok
+test alignment_rejects_zero_and_non_powers_of_two ... ok
+test alignment_parses_powers_of_two ... ok
+test linux_selects_the_uring_backend ... ok
+test submit_error_full_is_a_backpressure_variant ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 4 tests
+test one_entry_publishes_resolves_and_clears_without_touching_its_neighbors ... ok
+test writers_assert_an_absent_entry_before_publish_and_a_set_entry_before_clear ... ok
+test releasing_a_slot_leaves_it_absent_and_keeps_page_sharing_neighbors ... ok
+test the_reservation_spans_every_slot_and_asserts_past_its_bounds ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 9 tests
+     Running tests/translation.rs (target/debug/deps/translation-572ec3154b47bbd9)
+     Running tests/uring.rs (target/debug/deps/uring-425f367877d38a25)
+test a_full_queue_backpressures_without_blocking_then_recovers_after_a_poll ... ok
+test a_short_read_at_eof_reports_the_partial_count_through_the_ring ... ok
+test a_misaligned_read_on_a_direct_handle_panics_before_an_op_issues - should panic ... ok
+test open_of_a_missing_path_surfaces_enoent ... ok
+test batched_submits_before_any_poll_all_reap_out_of_order_tolerated ... ok
+test an_async_write_uses_the_registered_write_arena ... ok
+test a_direct_read_lands_the_file_bytes_through_the_ring ... ok
+test a_blocking_write_then_ring_read_round_trips ... ok
+test an_async_fsync_completes_with_a_zero_byte_transfer ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+running 3 tests
+test poll_wait_reaps_a_ready_completion_without_burning_the_full_timeout ... ok
+     Running tests/uring_wait.rs (target/debug/deps/uring_wait-5af8de8088e37a1d)
+test poll_wait_returns_zero_without_events_after_its_timeout_expires ... ok
+test a_submit_from_another_thread_completes_while_a_poller_is_parked_in_poll_wait ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.00s
+
+
+running 2 tests
+test unknown_workloads_and_extra_arguments_fail_before_creating_artifacts ... ok
+     Running tests/workload_suite_contract.rs (target/debug/deps/workload_suite_contract-f2484a33944be45f)
+test real_pool_workloads_prove_equal_work_and_their_intended_paths ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.85s
+
+
+running 25 tests
+test a_deferred_close_retiring_during_a_poll_drain_allocates_nothing ... ok
+test a_warm_read_submit_and_poll_drain_allocate_nothing ... ok
+test pool_gates::a_repeat_warm_hit_performs_no_reference_bit_store ... ok
+test a_warm_write_slot_submit_and_poll_drain_allocate_nothing ... ok
+test an_idle_poll_allocates_nothing ... ok
+test pool_gates::a_busy_backpressure_get_allocates_nothing_and_disturbs_no_pinned_frame ... ok
+test pool_gates::a_pool_poll_drain_allocates_nothing ... ok
+test pool_gates::a_warm_pool_hit_allocates_nothing ... ok
+test pool_gates::last_lease_drop_and_retirement_progress_allocate_nothing ... ok
+test pool_gates::a_cold_pool_miss_submits_within_the_preallocated_budget_without_allocating ... ok
+test pool_gates::a_stale_hint_ordinary_fallback_allocates_nothing ... ok
+test pool_gates::lease_acquire_and_drop_allocate_nothing ... ok
+test pool_gates::a_warm_pool_hinted_hit_allocates_nothing ... ok
+test pool_gates::retained_promote_final_drop_and_release_drain_allocate_nothing ... ok
+test pool_gates::warm_pool_write_fsync_and_overflow_drain_allocate_nothing ... ok
+test real_pool_lease_acquire_and_drop_allocate_nothing ... ok
+test real_pool_last_lease_drop_and_retirement_progress_allocate_nothing ... ok
+test real_pool_warm_get_hit_allocates_nothing ... ok
+test real_pool_translation_hit_and_bound_refusal_allocate_nothing ... ok
+test real_pool_stale_hint_ordinary_fallback_allocates_nothing ... ok
+test shipping_pool_retained_release_cycle_allocates_nothing ... ok
+     Running tests/zero_alloc.rs (target/debug/deps/zero_alloc-0cb4cdec58691041)
+test real_pool_warm_hinted_hit_allocates_nothing ... ok
+test a_warm_fsync_submit_and_poll_drain_allocate_nothing ... ok
+test a_warmed_real_pool_write_fsync_and_bounded_report_drain_allocate_nothing ... ok
+test shipping_prefetch_and_automatic_recycling_allocate_nothing ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.59s
+
+   Doc-tests dios
+
+running 3 tests
+test src/pool/epoch.rs - pool::epoch::FrameGuard (line 451) - compile ... ok
+test src/pool/epoch.rs - pool::epoch::FrameGuard (line 465) - compile ... ok
+test src/pool/epoch.rs - pool::epoch::FrameGuard (line 485) - compile ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 6 tests
+test src/pool/epoch.rs - pool::epoch::FrameGuard (line 419) - compile fail ... ok
+test src/pool/epoch.rs - pool::epoch::FrameGuard (line 435) - compile fail ... ok
+test src/pool/epoch.rs - pool::epoch::FrameGuard (line 473) - compile fail ... ok
+test src/driver.rs - driver (line 17) - compile fail ... ok
+test src/pool/mod.rs - pool::Pool (line 1124) - compile fail ... ok
+test src/pool/epoch.rs - pool::epoch::FrameGuard (line 481) - compile fail ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+all doctests ran in 0.25s; merged doctests compilation took 0.17s
+exit=0

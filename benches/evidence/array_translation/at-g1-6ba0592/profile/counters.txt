@@ -1,0 +1,22 @@
+new-16-session             cyc/read 27.86 ins/read 78.49 br/read 15.38 miss/1k-reads 97.81
+new-16-mmap                cyc/read 22.18 ins/read 63.22 br/read 12.20 miss/1k-reads 75.49
+new-32-session             cyc/read 26.34 ins/read 78.50 br/read 15.38 miss/1k-reads 89.60
+new-32-mmap                cyc/read 17.56 ins/read 63.21 br/read 12.20 miss/1k-reads 75.03
+new-64-session             cyc/read 27.30 ins/read 78.48 br/read 15.38 miss/1k-reads 97.11
+new-64-mmap                cyc/read 17.54 ins/read 63.21 br/read 12.20 miss/1k-reads 75.02
+fdada37-16-session         cyc/read 28.27 ins/read 84.10 br/read 16.44 miss/1k-reads 98.50
+377a0ad-16-session         cyc/read 26.64 ins/read 84.09 br/read 16.43 miss/1k-reads 81.48
+fdada37-32-session         cyc/read 28.05 ins/read 84.07 br/read 16.43 miss/1k-reads 100.90
+377a0ad-32-session         cyc/read 26.53 ins/read 83.98 br/read 16.42 miss/1k-reads 81.06
+fdada37-64-session         cyc/read 27.86 ins/read 84.05 br/read 16.43 miss/1k-reads 98.13
+377a0ad-64-session         cyc/read 26.54 ins/read 84.06 br/read 16.43 miss/1k-reads 81.54
+== mispredicts by instruction (new layout-64, session arm)
+    42.00%  [.] mmap_workloads::mmap_workloads::catalog::consume                                              
+    39.02%  [.] mmap_workloads::mmap_workloads::fair::dios_session_loop                                       
+     0.14%  [.] mmap_workloads::mmap_workloads::fixture::prepare                                              
+     0.12%  [.] _ZN4dios6driver19DriverCore$LT$E$GT$9reap_ring17hff554f3c6fa0be05E.llvm.8990526891606114514   
+     0.10%  [.] dios::pool::prefetch::notifications::DirtyFrames::drain                                       
+ 55.4 | af031:  cmp    $0x40,%r14                            || prev: af02c:  add    0x18(%rsp),%r15
+  7.7 | af00e:  test   %al,%al                               || prev: af00a:  movzbl (%rax,%rdx,1),%eax
+  6.4 | af059:  test   %eax,%eax                             || prev: af055:  mov    0x0(%rbp,%rsi,4),%eax
+OUT=/home/srnnkls/build/dios/target/array-translation/at-g1-bm-6ba0592-1795122458

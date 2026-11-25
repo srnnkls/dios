@@ -1,0 +1,42 @@
+[remote] $ ~/projects/dios/.mise/tasks/remote flock /tmp/dios-bench.lock env MISE_EXE=/home/srnnkls/build/dios-gates/tools/mise-v2026.8.0-linux-x64 /home/srnnkls/build/dios-gates/tools/mise-v2026.8.0-linux-x64 run bench-scan-geometry /dev/shm/dios-at-g7-rc-g1-c89d43a --input target/array-translation/at-g4/input --experiment coalescing --mode run --cases cold-mmap,pressure-mmap --frozen-binary /home/srnnkls/build/dios-readv-budget-20260914/target/budget-archives/mmap_workloads
+wake-nix: waking via alpine, waiting for nixos.tailb7c9ac.ts.net
+wake-nix: down — sending WoL to 00:D8:61:D5:5F:61...
+wake-nix: polling nixos.tailb7c9ac.ts.net:22 (timeout 150s)...
+wake-nix: nixos.tailb7c9ac.ts.net:22 up after 50s.
+wake-nix: up via ts
+[bench-host-guard] $ if [ ! -e /etc/NIXOS ]; then
+bench_profile=active
+thp=always madvise [never]
+governors=performance
+mise WARN  mise version 2026.11.10 available
+mise WARN  To update, run mise self-update
+[bench-scan-geometry] $ ~/build/dios/.mise/tasks/bench-scan-geometry /dev/shm/d…
+cold-mmap: 0/30 pairs
+cold-mmap: 10/30 pairs
+cold-mmap: 20/30 pairs
+cold-mmap: 30/30 pairs
+cold-mmap: 0.8319704474640793
+pressure-mmap: 0/30 pairs
+pressure-mmap: 10/30 pairs
+pressure-mmap: 20/30 pairs
+Traceback (most recent call last):
+  File "/home/srnnkls/build/dios/benches/mmap_workloads/scan_collect.py", line 293, in <module>
+    collect(arguments())
+  File "/home/srnnkls/build/dios/benches/mmap_workloads/scan_collect.py", line 251, in collect
+    result = comparison(options, binary, fixture, case, identities)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/srnnkls/build/dios/benches/mmap_workloads/scan_collect.py", line 178, in comparison
+    row = sample(executable, fixture, config, mode, target, credits)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/srnnkls/build/dios/benches/mmap_workloads/scan_collect.py", line 148, in sample
+    validate_scan(row)
+  File "/home/srnnkls/build/dios/benches/mmap_workloads/scan_collect.py", line 60, in validate_scan
+    validate_scan_witness(row)
+  File "/home/srnnkls/build/dios/benches/mmap_workloads/coalescing.py", line 78, in validate_scan_witness
+    validate_interval(interval, row["pages"] // passes)
+  File "/home/srnnkls/build/dios/benches/mmap_workloads/coalescing.py", line 43, in validate_interval
+    raise ValueError("steady interval exceeds 33 READ/READV SQEs")
+ValueError: steady interval exceeds 33 READ/READV SQEs
+Finished in 41.66s
+[bench-scan-geometry] ERROR task failed
+[remote] ERROR task failed

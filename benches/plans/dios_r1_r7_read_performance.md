@@ -200,3 +200,27 @@ longer-region or physical-core protocol amendment into the warm-path scope's
 bench plan as an owner decision before any new binding campaign: placement
 variation can fail a subsequent tie by chance. The adopted RC6 campaign remains
 closed, and the original failed 30-pair campaign remains separate.
+
+## Owner amendment 2026-09-14: DRP-G4 eight-thread protocol
+
+Recorded by Sören after the readahead-coalescing RC6 campaign. Evidence:
+the frozen eight-thread lane times about 3 ms per process on CPUs
+`0-3,32-35`, and every retained campaign (mmap-era, prefetch-era, RC6) shows
+two per-process modes with a paired log-ratio standard deviation of
+0.23-0.25, a one-sided 95% half-width of about 7% at 30 pairs. A candidate
+that merely ties the base fails the 1.00 bound about half the time. The
+RC6 400-pair confirmation was a one-off permission.
+
+Amendment for every binding DRP-G4 campaign after this date:
+
+- The eight-thread lane pins to physical CPUs `0-7` with their SMT siblings
+  `32-39` idle; the one-thread reference stays on CPU 0.
+- The per-process timed region rises to about 200 ms: `BINDING_ITERATIONS`
+  becomes 2,097,152 for the eight-thread and scaling lanes, with the same
+  schedule, page set and full-granule fold.
+- Bounds are unchanged: ordinary 8-thread `<=1.00`, scaling `<=0.50`.
+- A fresh base baseline is collected under this protocol before the first
+  candidate campaign uses it; the retained base samples under the old
+  protocol are historical and are not paired with new candidates.
+- Retained results under the old protocol keep their standing; nothing is
+  re-litigated.

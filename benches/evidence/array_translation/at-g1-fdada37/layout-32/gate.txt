@@ -1,0 +1,9 @@
+[gate] $ cargo bench --features bench --bench compare -- benches/evidence/array_translation/at-g1/layout-32/paired.csv 1.50
+    Finished `bench` profile [optimized + debuginfo] target(s) in 0.05s
+     Running benches/compare.rs (target/release/deps/compare-58da936688e8c316)
+gate paired: pairs 30, ratio geomean 1.5487, ci95 upper 1.5541, threshold 1.5000 -> FAIL
+error: bench failed, to rerun pass `--bench compare`
+
+Caused by:
+  process didn't exit successfully: `/Users/srnnkls/projects/dios/target/release/deps/compare-58da936688e8c316 benches/evidence/array_translation/at-g1/layout-32/paired.csv 1.50 --bench` (exit status: 1)
+[gate] ERROR task failed

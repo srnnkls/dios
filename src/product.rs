@@ -141,10 +141,13 @@ impl PollReport {
 /// Typed state of a deferred product file retirement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RetireStatus {
-    /// Retirement was just accepted, or at least one admitted capability or
-    /// resource still drains.
+    /// Retirement was just accepted, at least one admitted capability or
+    /// resource still drains, or the slot's grace period of two epoch
+    /// advances has not yet passed.
     Retiring,
-    /// Every capability, frame, completion, and backend file is gone.
+    /// No reader can observe the file's bytes; every capability, frame,
+    /// completion and backend file is gone, and the slot can be registered
+    /// again.
     Retired,
 }
 

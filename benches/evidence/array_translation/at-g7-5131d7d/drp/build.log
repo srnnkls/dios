@@ -1,0 +1,10 @@
+[remote] $ ~/projects/dios/.mise/tasks/remote env MISE_EXE=/home/srnnkls/build/dios-gates/tools/mise-v2026.8.0-linux-x64 /home/srnnkls/build/dios-gates/tools/mise-v2026.8.0-linux-x64 exec -- bash benches/evidence/array_translation/at-g7/build_drp.sh 5131d7de2b3a1223a1875c91699667dec912b79a
+36d8f2227ceb4eb4f3cddf0677014b4e54c62c7a598daad997e46e5060d66d36  /home/srnnkls/build/dios-gates/targets/at-g2-base-5131d7d/release/read_path_product
+82a7ecc6e7fa7e9b613e152c381c6e880549cd85a48034f6b5915bc78bc66563  /home/srnnkls/build/dios-gates/targets/at-g4-base-5131d7d/release/read_path_product
+69b6d8a5f1483ac4e4e0922b498f414c13f87a1bcc8ff7c3d413a4ef39960eb9  /home/srnnkls/build/dios-gates/targets/at-candidate-5131d7d/release/read_path_product
+9ebcaee45e0453b05d63c8e4f1d7b1a9ce44127048c04937443f806642c82db6  /home/srnnkls/build/dios-gates/targets/at-control-5131d7d/debug/drp_gate_artifacts
+f2391d5c8e69146aeaaf77e8d112f0b42115dc2c926dd8dd9b452ea8727a76b1  /home/srnnkls/build/dios-gates/worktrees/at-candidate/benches/read_path_product.rs
+da29d3b493f6440a8a86dd3a695260f9e714d12a7d820c6dc2194ba0b1e088a7  /home/srnnkls/build/dios-gates/worktrees/at-candidate/build.rs
+377fb6f2f5efc2de19b611440e54936e8356a37391d0d1bcc741d742ac2cf1ce  /home/srnnkls/build/dios-gates/worktrees/at-candidate/src/bin/drp_gate_artifacts.rs
+915341006e824c0212e82abc923d5999e34ede24e102ebd821dcc3d4494af37a  /home/srnnkls/build/dios-gates/artifacts/drp_binding_input.bin
+short=5131d7d

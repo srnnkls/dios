@@ -9,7 +9,7 @@ from pathlib import Path
 import shutil
 import tarfile
 
-from collect import RUNNER_SOURCES, archive_sources, digest, execute, source_hashes
+from collect import RUNNER_SOURCES_FROZEN, archive_sources, digest, execute, source_hashes
 
 
 def archived_sources(path: Path) -> dict[str, bytes]:
@@ -30,8 +30,6 @@ def archived_sources(path: Path) -> dict[str, bytes]:
                 raise ValueError("source archive is excessive or repeats a source")
             with archive.extractfile(member) as stream:
                 sources[name] = stream.read()
-    if set(RUNNER_SOURCES) - sources.keys():
-        raise ValueError("source archive lacks runner inputs")
     return sources
 
 
@@ -47,11 +45,13 @@ def retain_frozen(options, output: Path) -> dict:
         if digest(path) != preflight[key]:
             raise ValueError(f"frozen pre-dispatch identity differs: {path}")
     sources, before = archived_sources(source), archived_sources(starting)
+    if set(RUNNER_SOURCES_FROZEN) - sources.keys() or set(RUNNER_SOURCES_FROZEN) - before.keys():
+        raise ValueError("source archive lacks runner inputs")
     product = {name for name in sources if name.startswith("src/")} | {"Cargo.toml", "Cargo.lock", "build.rs"}
     if any(sources[name] != before.get(name) for name in product):
         raise ValueError("frozen executable source differs from approved starting product")
     compiled = json.loads(execute([str(binary), "identity"]))
-    runner = hashlib.sha256(b"".join(sources[name] for name in RUNNER_SOURCES)).hexdigest()
+    runner = hashlib.sha256(b"".join(sources[name] for name in RUNNER_SOURCES_FROZEN)).hexdigest()
     if compiled["runner_sha256"] != runner or compiled["debug_assertions"]:
         raise ValueError("frozen executable differs from retained release runner source")
     destination = output / "frozen"

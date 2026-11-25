@@ -1,0 +1,270 @@
+    1.28 :   9d920:  push   %rbp
+    0.00 :   9d921:  push   %r15
+    0.00 :   9d923:  push   %r14
+    0.00 :   9d925:  push   %r13
+    1.19 :   9d927:  push   %r12
+    0.00 :   9d929:  push   %rbx
+    0.00 :   9d92a:  sub    $0xb8,%rsp
+    1.35 :   9d931:  mov    (%rdx),%rax
+    0.00 :   9d934:  cmp    0x240(%rsi),%rax
+    0.33 :   9d93b:  jne    9dd13 <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x3f3>
+    0.00 :   9d941:  mov    %rsi,%r13
+    0.00 :   9d944:  mov    (%rcx),%rax
+    1.25 :   9d947:  cmp    0x7d8(%rsi),%rax
+    0.01 :   9d94e:  jne    9dd2c <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x40c>
+    0.00 :   9d954:  mov    0xf0(%rsp),%r15
+    0.00 :   9d95c:  mov    0x7e0(%r13),%eax
+    1.23 :   9d963:  mov    %eax,0x14(%rsp)
+    0.00 :   9d967:  mov    %r8d,0x18(%rsp)
+    0.00 :   9d96c:  test   %r15,%r15
+    0.01 :   9d96f:  je     9dd45 <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x425>
+    0.00 :   9d975:  mov    %r15,%rsi
+    0.00 :   9d978:  shr    $0x20,%rsi
+    1.19 :   9d97c:  jne    9ddc2 <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x4a2>
+    0.01 :   9d982:  mov    %rdi,%r14
+    0.00 :   9d985:  mov    %r15d,0x1c(%rsp)
+    1.22 :   9d98a:  mov    %r8d,%edi
+    0.00 :   9d98d:  add    %r15d,%edi
+    0.00 :   9d990:  jb     9dcc6 <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x3a6>
+    0.03 :   9d996:  cmp    %eax,%edi
+    0.00 :   9d998:  ja     9dcc6 <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x3a6>
+    0.00 :   9d99e:  mov    0x238(%r13),%rax
+    1.25 :   9d9a5:  mov    0x260(%r13),%rsi
+    0.01 :   9d9ac:  mov    %rsi,0xb0(%rsp)
+    0.00 :   9d9b4:  mov    0x268(%r13),%rbp
+    1.25 :   9d9bb:  mov    0x8(%rcx),%r10d
+    0.00 :   9d9bf:  mov    0xc(%rcx),%r12d
+    0.00 :   9d9c3:  mov    0x10(%rcx),%esi
+    0.00 :   9d9c6:  mov    0x8c(%rax),%ebx
+    0.01 :   9d9cc:  mov    %ebx,0x14(%rsp)
+    1.19 :   9d9d0:  mov    %r8d,0x18(%rsp)
+    0.01 :   9d9d5:  mov    %r15d,0x1c(%rsp)
+    0.00 :   9d9da:  cmp    %ebx,%edi
+    1.23 :   9d9dc:  ja     9dcc6 <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x3a6>
+    0.00 :   9d9e2:  cmp    0x378(%r13),%r10d
+    0.01 :   9d9e9:  jae    9dd5e <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x43e>
+    0.00 :   9d9ef:  mov    %r12,0xa8(%rsp)
+    0.00 :   9d9f7:  mov    %rdx,0x68(%rsp)
+    0.00 :   9d9fc:  mov    %rcx,0x70(%rsp)
+    0.01 :   9da01:  mov    0x37c(%r13),%ecx
+    1.41 :   9da08:  mov    %esi,%edx
+    0.00 :   9da0a:  shr    %cl,%edx
+    0.00 :   9da0c:  test   %edx,%edx
+    1.23 :   9da0e:  jne    9dcab <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x38b>
+    0.00 :   9da14:  mov    %r10,%rdx
+    0.00 :   9da17:  shl    %cl,%rdx
+    0.00 :   9da1a:  or     %rsi,%rdx
+    0.00 :   9da1d:  cmp    0x370(%r13),%rdx
+    0.02 :   9da24:  jae    9dd77 <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x457>
+    0.00 :   9da2a:  mov    0x350(%r13),%rsi
+    1.37 :   9da31:  test   %rsi,%rsi
+    0.01 :   9da34:  mov    $0x4,%ecx
+    0.00 :   9da39:  cmovne %rsi,%rcx
+    1.28 :   9da3d:  mov    (%rcx,%rdx,4),%esi
+    0.13 :   9da40:  test   %esi,%esi
+    0.00 :   9da42:  je     9dcab <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x38b>
+    0.00 :   9da48:  lea    -0x1(%rsi),%r11d
+    0.00 :   9da4c:  cmp    %r11,0x58(%rax)
+    0.04 :   9da50:  jbe    9dd90 <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x470>
+    0.00 :   9da56:  mov    0x38(%rax),%rdi
+    1.21 :   9da5a:  test   %rdi,%rdi
+    0.00 :   9da5d:  mov    $0x8,%r12d
+    0.00 :   9da63:  cmovne %rdi,%r12
+    1.19 :   9da67:  mov    %r11,0x30(%rsp)
+    0.00 :   9da6c:  mov    (%r12,%r11,8),%rdi
+    0.52 :   9da70:  mov    %rdi,0xa0(%rsp)
+    0.00 :   9da78:  and    $0x3,%edi
+    0.01 :   9da7b:  cmp    $0x2,%edi
+    1.26 :   9da7e:  jne    9dcab <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x38b>
+    0.00 :   9da84:  mov    (%rcx,%rdx,4),%ecx
+    0.00 :   9da87:  cmp    %esi,%ecx
+    0.00 :   9da89:  jne    9dcab <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x38b>
+    0.00 :   9da8f:  mov    0x10(%rax),%r11
+    1.14 :   9da93:  imul   0x30(%rsp),%rbx
+    0.00 :   9da99:  lea    (%r11,%rbx,1),%rcx
+    0.00 :   9da9d:  test   $0x7,%cl
+    0.00 :   9daa0:  jne    9dda9 <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x489>
+    0.00 :   9daa6:  mov    %r13,0x28(%rsp)
+    0.00 :   9daab:  mov    %rbp,0x80(%rsp)
+    1.18 :   9dab3:  mov    %r10,0x88(%rsp)
+    0.00 :   9dabb:  mov    %r14,0x98(%rsp)
+    0.00 :   9dac3:  mov    %r8d,%ebp
+    1.20 :   9dac6:  shr    $0x3,%ebp
+    0.00 :   9dac9:  mov    %r8d,0x24(%rsp)
+    0.00 :   9dace:  mov    %r8d,%eax
+    0.00 :   9dad1:  and    $0x7,%eax
+    0.00 :   9dad4:  mov    %r9,0x90(%rsp)
+    1.26 :   9dadc:  mov    %rcx,0x78(%rsp)
+    0.00 :   9dae1:  je     9db2a <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x20a>
+    0.00 :   9dae3:  mov    $0x8,%edx
+    0.00 :   9dae8:  sub    %rax,%rdx
+    0.00 :   9daeb:  cmp    %rdx,%r15
+    0.00 :   9daee:  cmovb  %r15,%rdx
+    0.00 :   9daf2:  mov    (%rcx,%rbp,8),%rcx
+    0.00 :   9daf6:  mov    %rcx,0x38(%rsp)
+    0.00 :   9dafb:  sub    %rdx,%r15
+    0.00 :   9dafe:  lea    (%r9,%rdx,1),%r14
+    0.00 :   9db02:  lea    (%rsp,%rax,1),%rsi
+    0.00 :   9db06:  add    $0x38,%rsi
+    0.00 :   9db0a:  mov    %r9,%rdi
+    0.00 :   9db0d:  mov    %rbx,%r13
+    0.00 :   9db10:  mov    %r12,%rbx
+    0.00 :   9db13:  mov    %r11,%r12
+    0.00 :   9db16:  call   *0xe157c(%rip)        # 17f098 <memcpy@GLIBC_2.14>
+    0.00 :   9db1c:  mov    %r12,%r11
+    0.00 :   9db1f:  mov    %rbx,%r12
+    0.00 :   9db22:  mov    %r13,%rbx
+    0.00 :   9db25:  inc    %rbp
+    0.00 :   9db28:  jmp    9db2d <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x20d>
+    0.00 :   9db2a:  mov    %r9,%r14
+    1.18 :   9db2d:  movabs $0x7ffffffffffffff8,%rax
+    0.00 :   9db37:  and    %r15,%rax
+    0.00 :   9db3a:  mov    %r15d,%edx
+    0.00 :   9db3d:  and    $0x7,%edx
+    0.00 :   9db40:  test   %rax,%rax
+    1.20 :   9db43:  je     9db69 <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x249>
+    0.00 :   9db45:  add    $0xfffffffffffffff8,%r15
+    0.00 :   9db49:  mov    %r15d,%ecx
+    0.00 :   9db4c:  not    %ecx
+    1.22 :   9db4e:  test   $0x18,%cl
+    0.00 :   9db51:  mov    0x28(%rsp),%r13
+    0.00 :   9db56:  jne    9db73 <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x253>
+    0.00 :   9db58:  mov    %rax,%rsi
+    0.00 :   9db5b:  mov    %r14,%rcx
+    1.18 :   9db5e:  cmp    $0x18,%r15
+    0.00 :   9db62:  jae    9dbb6 <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x296>
+    0.00 :   9db64:  jmp    9dc03 <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x2e3>
+    0.00 :   9db69:  mov    0x28(%rsp),%r13
+    0.00 :   9db6e:  jmp    9dc03 <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x2e3>
+    0.00 :   9db73:  mov    %r15d,%esi
+    0.00 :   9db76:  shr    $0x3,%esi
+    0.00 :   9db79:  inc    %esi
+    0.00 :   9db7b:  and    $0x3,%esi
+    0.00 :   9db7e:  lea    (%rbx,%rbp,8),%rdi
+    0.00 :   9db82:  add    %r11,%rdi
+    0.00 :   9db85:  neg    %rsi
+    0.00 :   9db88:  xor    %ecx,%ecx
+    0.00 :   9db8a:  xor    %r8d,%r8d
+    0.00 :   9db8d:  nopl   (%rax)
+    0.00 :   9db90:  mov    (%rdi,%rcx,1),%r9
+    0.00 :   9db94:  mov    %r9,(%r14,%rcx,1)
+    0.00 :   9db98:  dec    %r8
+    0.00 :   9db9b:  add    $0x8,%rcx
+    0.00 :   9db9f:  cmp    %r8,%rsi
+    0.00 :   9dba2:  jne    9db90 <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x270>
+    0.00 :   9dba4:  sub    %r8,%rbp
+    0.00 :   9dba7:  mov    %rax,%rsi
+    0.00 :   9dbaa:  sub    %rcx,%rsi
+    0.00 :   9dbad:  add    %r14,%rcx
+    0.00 :   9dbb0:  cmp    $0x18,%r15
+    0.00 :   9dbb4:  jb     9dc03 <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x2e3>
+    0.00 :   9dbb6:  lea    (%rbx,%r11,1),%rdi
+    0.00 :   9dbba:  add    $0x18,%rdi
+    1.40 :   9dbbe:  xor    %r8d,%r8d
+    0.00 :   9dbc1:  data16 data16 data16 data16 data16 cs nopw 0x0(%rax,%rax,1)
+    0.00 :   9dbd0:  mov    -0x18(%rdi,%rbp,8),%r9
+   46.90 :   9dbd5:  mov    %r9,(%rcx,%r8,1)
+    0.32 :   9dbd9:  mov    -0x10(%rdi,%rbp,8),%r9
+    2.51 :   9dbde:  mov    %r9,0x8(%rcx,%r8,1)
+    0.76 :   9dbe3:  mov    -0x8(%rdi,%rbp,8),%r9
+    3.02 :   9dbe8:  mov    %r9,0x10(%rcx,%r8,1)
+    0.65 :   9dbed:  mov    (%rdi,%rbp,8),%r9
+    1.73 :   9dbf1:  mov    %r9,0x18(%rcx,%r8,1)
+    0.80 :   9dbf6:  add    $0x4,%rbp
+    0.02 :   9dbfa:  add    $0x20,%r8
+    0.04 :   9dbfe:  cmp    %r8,%rsi
+    0.19 :   9dc01:  jne    9dbd0 <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x2b0>
+    0.00 :   9dc03:  test   %rdx,%rdx
+    0.13 :   9dc06:  mov    0xf0(%rsp),%r15
+    0.61 :   9dc0e:  je     9dc2f <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x30f>
+    0.00 :   9dc10:  add    %rax,%r14
+    0.00 :   9dc13:  mov    0x78(%rsp),%rax
+    0.00 :   9dc18:  mov    (%rax,%rbp,8),%rax
+    0.00 :   9dc1c:  mov    %rax,0x38(%rsp)
+    0.00 :   9dc21:  lea    0x38(%rsp),%rsi
+    0.00 :   9dc26:  mov    %r14,%rdi
+    0.00 :   9dc29:  call   *0xe1469(%rip)        # 17f098 <memcpy@GLIBC_2.14>
+    0.18 :   9dc2f:  mov    0x30(%rsp),%rax
+    0.75 :   9dc34:  mov    (%r12,%rax,8),%rax
+    0.53 :   9dc38:  cmp    0xa0(%rsp),%rax
+    0.01 :   9dc40:  mov    0x98(%rsp),%r14
+    0.05 :   9dc48:  mov    0x90(%rsp),%r9
+    0.16 :   9dc50:  mov    0x24(%rsp),%r8d
+    0.13 :   9dc55:  mov    0x88(%rsp),%rdi
+    0.62 :   9dc5d:  mov    0xb0(%rsp),%rcx
+    0.21 :   9dc65:  mov    0x80(%rsp),%rsi
+    0.76 :   9dc6d:  jne    9dcab <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x38b>
+    0.47 :   9dc6f:  cmp    %rdi,%rsi
+    0.03 :   9dc72:  jbe    9dde7 <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x4c7>
+    0.00 :   9dc78:  mov    0xa8(%rsp),%rax
+    0.03 :   9dc80:  lea    0x1(,%rax,2),%rax
+    0.18 :   9dc88:  mov    (%rcx,%rdi,8),%rcx
+    0.18 :   9dc8c:  cmp    %rax,%rcx
+    0.64 :   9dc8f:  jne    9dcab <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x38b>
+    0.00 :   9dc91:  movb   $0x2,0x34(%r14)
+    0.22 :   9dc96:  mov    %r14,%rax
+    0.83 :   9dc99:  add    $0xb8,%rsp
+    0.46 :   9dca0:  pop    %rbx
+    0.02 :   9dca1:  pop    %r12
+    0.05 :   9dca3:  pop    %r13
+    0.15 :   9dca5:  pop    %r14
+    0.15 :   9dca7:  pop    %r15
+    0.57 :   9dca9:  pop    %rbp
+    0.20 :   9dcaa:  ret
+    0.00 :   9dcab:  mov    %r15,(%rsp)
+    0.00 :   9dcaf:  mov    %r14,%rdi
+    0.00 :   9dcb2:  mov    %r13,%rsi
+    0.00 :   9dcb5:  mov    0x68(%rsp),%rdx
+    0.00 :   9dcba:  mov    0x70(%rsp),%rcx
+    0.00 :   9dcbf:  call   9d560 <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy_fallback>
+    0.00 :   9dcc4:  jmp    9dc96 <dios::pool::read_copy::<impl dios::pool::Pool<D>>::read_copy+0x376>
+    0.00 :   9dcc6:  lea    0x18(%rsp),%rax
+    0.00 :   9dccb:  mov    %rax,0x38(%rsp)
+    0.00 :   9dcd0:  mov    0xe1489(%rip),%rax        # 17f160 <_DYNAMIC+0x378>
+    0.00 :   9dcd7:  mov    %rax,0x40(%rsp)
+    0.00 :   9dcdc:  lea    0x1c(%rsp),%rcx
+    0.00 :   9dce1:  mov    %rcx,0x48(%rsp)
+    0.00 :   9dce6:  mov    %rax,0x50(%rsp)
+    0.00 :   9dceb:  lea    0x14(%rsp),%rcx
+    0.00 :   9dcf0:  mov    %rcx,0x58(%rsp)
+    0.00 :   9dcf5:  mov    %rax,0x60(%rsp)
+    0.00 :   9dcfa:  lea    -0x517bc(%rip),%rdi        # 4c545 <anon.f4ff31398c4fe9d1576fc301d3089a87.100.llvm.7218542801918888792+0x49e>
+    0.00 :   9dd01:  lea    0xd7950(%rip),%rdx        # 175658 <anon.f4ff31398c4fe9d1576fc301d3089a87.113.llvm.7218542801918888792+0x3f0>
+    0.00 :   9dd08:  lea    0x38(%rsp),%rsi
+    0.00 :   9dd0d:  call   *0xe13d5(%rip)        # 17f0e8 <_DYNAMIC+0x300>
+    0.00 :   9dd13:  lea    -0x51f9c(%rip),%rdi        # 4bd7e <anon.f4ff31398c4fe9d1576fc301d3089a87.45.llvm.7218542801918888792+0xc7>
+    0.00 :   9dd1a:  lea    0xd71ff(%rip),%rdx        # 174f20 <anon.f4ff31398c4fe9d1576fc301d3089a87.46.llvm.7218542801918888792+0x78>
+    0.00 :   9dd21:  mov    $0x5d,%esi
+    0.00 :   9dd26:  call   *0xe13bc(%rip)        # 17f0e8 <_DYNAMIC+0x300>
+    0.00 :   9dd2c:  lea    -0x52164(%rip),%rdi        # 4bbcf <anon.f4ff31398c4fe9d1576fc301d3089a87.24.llvm.7218542801918888792>
+    0.00 :   9dd33:  lea    0xd794e(%rip),%rdx        # 175688 <anon.f4ff31398c4fe9d1576fc301d3089a87.113.llvm.7218542801918888792+0x420>
+    0.00 :   9dd3a:  mov    $0x4d,%esi
+    0.00 :   9dd3f:  call   *0xe13a3(%rip)        # 17f0e8 <_DYNAMIC+0x300>
+    0.00 :   9dd45:  lea    -0x517c7(%rip),%rdi        # 4c585 <anon.f4ff31398c4fe9d1576fc301d3089a87.100.llvm.7218542801918888792+0x4de>
+    0.00 :   9dd4c:  lea    0xd78d5(%rip),%rdx        # 175628 <anon.f4ff31398c4fe9d1576fc301d3089a87.113.llvm.7218542801918888792+0x3c0>
+    0.00 :   9dd53:  mov    $0x3d,%esi
+    0.00 :   9dd58:  call   *0xe138a(%rip)        # 17f0e8 <_DYNAMIC+0x300>
+    0.00 :   9dd5e:  lea    -0x521f5(%rip),%rdi        # 4bb70 <anon.f4ff31398c4fe9d1576fc301d3089a87.19.llvm.7218542801918888792>
+    0.00 :   9dd65:  lea    0xd6fd4(%rip),%rdx        # 174d40 <anon.f4ff31398c4fe9d1576fc301d3089a87.21.llvm.7218542801918888792>
+    0.00 :   9dd6c:  mov    $0x5d,%esi
+    0.00 :   9dd71:  call   *0xe1371(%rip)        # 17f0e8 <_DYNAMIC+0x300>
+    0.00 :   9dd77:  lea    -0x4dbe5(%rip),%rdi        # 50199 <anon.4fe71252ba17cfd4665f2bbcf265c34e.86.llvm.14041931339814228965>
+    0.00 :   9dd7e:  lea    0xd9f63(%rip),%rdx        # 177ce8 <anon.4fe71252ba17cfd4665f2bbcf265c34e.88.llvm.14041931339814228965>
+    0.00 :   9dd85:  mov    $0x4d,%esi
+    0.00 :   9dd8a:  call   *0xe1358(%rip)        # 17f0e8 <_DYNAMIC+0x300>
+    0.00 :   9dd90:  lea    -0x51cf0(%rip),%rdi        # 4c0a7 <anon.f4ff31398c4fe9d1576fc301d3089a87.100.llvm.7218542801918888792>
+    0.00 :   9dd97:  lea    0xd74ca(%rip),%rdx        # 175268 <anon.f4ff31398c4fe9d1576fc301d3089a87.113.llvm.7218542801918888792>
+    0.00 :   9dd9e:  mov    $0x31,%esi
+    0.00 :   9dda3:  call   *0xe133f(%rip)        # 17f0e8 <_DYNAMIC+0x300>
+    0.00 :   9dda9:  lea    -0x51c3c(%rip),%rdi        # 4c174 <anon.f4ff31398c4fe9d1576fc301d3089a87.100.llvm.7218542801918888792+0xcd>
+    0.00 :   9ddb0:  lea    0xd74c9(%rip),%rdx        # 175280 <anon.f4ff31398c4fe9d1576fc301d3089a87.113.llvm.7218542801918888792+0x18>
+    0.00 :   9ddb7:  mov    $0x4b,%esi
+    0.00 :   9ddbc:  call   *0xe1326(%rip)        # 17f0e8 <_DYNAMIC+0x300>
+    0.00 :   9ddc2:  lea    -0x51826(%rip),%rdi        # 4c5a3 <anon.f4ff31398c4fe9d1576fc301d3089a87.100.llvm.7218542801918888792+0x4fc>
+    0.00 :   9ddc9:  lea    0xd6e90(%rip),%rcx        # 174c60 <anon.f4ff31398c4fe9d1576fc301d3089a87.2.llvm.7218542801918888792>
+    0.00 :   9ddd0:  lea    0xd7869(%rip),%r8        # 175640 <anon.f4ff31398c4fe9d1576fc301d3089a87.113.llvm.7218542801918888792+0x3d8>
+    0.00 :   9ddd7:  lea    0x23(%rsp),%rdx
+    0.00 :   9dddc:  mov    $0x18,%esi
+    0.00 :   9dde1:  call   *0xe1309(%rip)        # 17f0f0 <_DYNAMIC+0x308>
+    0.00 :   9dde7:  lea    0xd7822(%rip),%rdx        # 175610 <anon.f4ff31398c4fe9d1576fc301d3089a87.113.llvm.7218542801918888792+0x3a8>
+    0.00 :   9ddee:  call   *0xe144c(%rip)        # 17f240 <_DYNAMIC+0x458>

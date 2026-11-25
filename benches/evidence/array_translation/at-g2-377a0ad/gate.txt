@@ -1,0 +1,77 @@
+[gate] $ cargo bench --features bench --bench compare -- benches/evidence/array_translation/at-g2/paired.csv 1.10
+   Compiling version_check v0.9.5
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.46
+   Compiling unicode-ident v1.0.24
+   Compiling serde_core v1.0.228
+   Compiling typenum v1.20.1
+   Compiling libc v0.2.186
+   Compiling cfg-if v1.0.4
+   Compiling generic-array v0.14.7
+   Compiling zmij v1.0.21
+   Compiling crossbeam-utils v0.8.22
+   Compiling serde_json v1.0.150
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling digest v0.10.7
+   Compiling cpufeatures v0.2.17
+   Compiling zerocopy v0.8.54
+   Compiling itoa v1.0.18
+   Compiling crossbeam-epoch v0.9.20
+   Compiling memchr v2.8.3
+   Compiling sha2 v0.10.9
+   Compiling autocfg v1.5.1
+   Compiling crossbeam-deque v0.8.7
+   Compiling find-msvc-tools v0.1.9
+   Compiling syn v2.0.118
+   Compiling shlex v2.0.1
+   Compiling serde v1.0.228
+   Compiling cc v1.2.66
+   Compiling num-traits v0.2.19
+   Compiling dios v0.1.0 (/Users/srnnkls/projects/dios)
+   Compiling either v1.16.0
+   Compiling rayon-core v1.13.0
+   Compiling alloca v0.4.0
+   Compiling zerocopy-derive v0.8.54
+   Compiling serde_derive v1.0.228
+   Compiling regex-syntax v0.8.11
+   Compiling ciborium-io v0.2.2
+   Compiling plotters-backend v0.3.7
+   Compiling clap_lex v1.1.0
+   Compiling anstyle v1.0.14
+   Compiling clap_builder v4.6.0
+   Compiling regex-automata v0.4.15
+   Compiling plotters-svg v0.3.7
+   Compiling itertools v0.13.0
+   Compiling cast v0.3.0
+   Compiling same-file v1.0.6
+   Compiling walkdir v2.5.0
+   Compiling regex v1.13.0
+   Compiling tinytemplate v1.2.1
+   Compiling half v2.7.1
+   Compiling criterion-plot v0.8.2
+   Compiling ciborium-ll v0.2.2
+   Compiling ciborium v0.2.2
+   Compiling clap v4.6.1
+   Compiling plotters v0.3.7
+   Compiling rayon v1.12.0
+   Compiling page_size v0.6.0
+   Compiling anes v0.1.6
+   Compiling oorandom v11.1.5
+   Compiling criterion v0.8.2
+    Finished `bench` profile [optimized + debuginfo] target(s) in 21.61s
+     Running benches/compare.rs (target/release/deps/compare-58da936688e8c316)
+gate paired: pairs 30, ratio geomean 1.0236, ci95 upper 1.0301, threshold 1.1000 -> PASS
+mbx[cache]: 0 hits, 106 misses, 1 not looked up, 1 incremental, 5 bypassed; 0 B downloaded, 0 B uploaded, 225.7 MiB stored locally
+mbx[gc]: 15.6 GiB free on the disk holding /Users/srnnkls/Library/Caches/mbx, under the 20.0 GiB minimum; collecting private state and managed targets past their budgets, then shared cache objects if the cache disk is short
+mbx[gc]: removed 1 target directories (1.2 GiB logical, 0 abandoned and 1 live); 0 B logical remain
+mbx[gc]: evicted 0 objects and 0 action results (16.2 KiB logical); 151.6 MiB logical remain
+mbx[gc]: evicted 835 shared cache objects and 154 action results below gc.max_size because the disk was under gc.min_free_size (151.6 MiB logical freed)
+mbx[gc]: kept 1 target directories in use by running commands
+mbx[gc]: evicted 0 objects and 0 action results (1.9 KiB logical); 9.1 MiB logical remain
+mbx[gc]: kept 1 target directories in use by running commands
+mbx[gc]: evicted 71 shared cache objects and 11 action results below gc.max_size because the disk was under gc.min_free_size (9.6 MiB logical freed)
+mbx[gc]: evicted 7 shared cache objects and 1 action results below gc.max_size because the disk was under gc.min_free_size (5.3 MiB logical freed)
+mbx[gc]: evicted 5 shared cache objects and 2 action results below gc.max_size because the disk was under gc.min_free_size (4.4 KiB logical freed)
+mbx[gc]: evicted 60 shared cache objects and 11 action results below gc.max_size because the disk was under gc.min_free_size (8.9 MiB logical freed)
+mbx[savings]: 202.1 GiB of outputs exist once and appear everywhere. do not tell the checkouts.

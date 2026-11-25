@@ -73,7 +73,13 @@ impl Clock {
         frame: ReadFrameIdx,
         reader: &super::epoch::ReaderSlot,
     ) -> bool {
-        self.reference_observed(frame, || reader.index())
+        let bit = &self.reference_bits[self.checked_index(frame)];
+        if bit.load(Ordering::Relaxed) {
+            false
+        } else {
+            self.reference_first(bit, frame, reader);
+            true
+        }
     }
 
     #[inline]
@@ -86,11 +92,59 @@ impl Clock {
         if bit.load(Ordering::Relaxed) {
             false
         } else {
-            self.consume_speculation(frame, reader);
-            bit.store(true, Ordering::Relaxed);
-            self.reference_stores.increment();
+            self.reference_set(bit, frame, reader);
             true
         }
+    }
+
+    /// The per-frame reference bits, for a session to index once per read.
+    #[inline]
+    pub(super) fn session_reference_bits(&self) -> &[AtomicBool] {
+        &self.reference_bits
+    }
+
+    /// Records a session touch of `frame` through its `bit` from
+    /// [`Self::session_reference_bits`]; a repeat touch stores nothing.
+    #[inline]
+    pub(super) fn reference_session(
+        &self,
+        bit: &AtomicBool,
+        frame: ReadFrameIdx,
+        reader: &super::epoch::ReaderSlot,
+    ) {
+        debug_assert!(
+            std::ptr::eq(
+                bit,
+                &raw const self.reference_bits[self.checked_index(frame)]
+            ),
+            "a session reference bit is the frame's own bit"
+        );
+        if !bit.load(Ordering::Relaxed) {
+            self.reference_first(bit, frame, reader);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn reference_first(
+        &self,
+        bit: &AtomicBool,
+        frame: ReadFrameIdx,
+        reader: &super::epoch::ReaderSlot,
+    ) {
+        self.reference_set(bit, frame, || reader.index());
+    }
+
+    #[inline]
+    fn reference_set(
+        &self,
+        bit: &AtomicBool,
+        frame: ReadFrameIdx,
+        reader: impl FnOnce() -> Option<u32>,
+    ) {
+        self.consume_speculation(frame, reader);
+        bit.store(true, Ordering::Relaxed);
+        self.reference_stores.increment();
     }
 
     fn consume_speculation(&self, frame: ReadFrameIdx, reader: impl FnOnce() -> Option<u32>) {
@@ -194,6 +248,7 @@ impl Clock {
         self.consumed.metadata_bytes() + self.completed.metadata_bytes()
     }
 
+    #[inline]
     fn checked_index(&self, frame: ReadFrameIdx) -> usize {
         let index = frame.get() as usize;
         assert!(

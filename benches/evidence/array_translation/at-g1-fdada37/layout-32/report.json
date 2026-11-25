@@ -1,0 +1,70 @@
+{
+  "comparisons": [
+    {
+      "name": "resident_access_session_projection",
+      "arms": [
+        "mmap_random",
+        "dios_session"
+      ],
+      "ns_per_read": {
+        "base": {
+          "arm": "mmap_random",
+          "ns_per_read": 3.946810368448496
+        },
+        "candidate": {
+          "arm": "dios_session",
+          "ns_per_read": 6.112475076814492
+        }
+      },
+      "difference_ns_per_read": {
+        "estimate": 2.1656647083659966,
+        "ci95_lower": 2.145202742020289,
+        "ci95_upper": 2.190798287341992
+      }
+    },
+    {
+      "name": "resident_access_session_projection-plain_array",
+      "arms": [
+        "plain_array",
+        "dios_session"
+      ],
+      "ns_per_read": {
+        "base": {
+          "arm": "plain_array",
+          "ns_per_read": 3.959801787386338
+        },
+        "candidate": {
+          "arm": "dios_session",
+          "ns_per_read": 6.177719959368308
+        }
+      },
+      "difference_ns_per_read": {
+        "estimate": 2.2179181719819705,
+        "ci95_lower": 2.1329604124029475,
+        "ci95_upper": 2.3286083695789177
+      }
+    },
+    {
+      "name": "resident_access_session_projection-mmap_random_flat",
+      "arms": [
+        "mmap_random_flat",
+        "dios_session"
+      ],
+      "ns_per_read": {
+        "base": {
+          "arm": "mmap_random_flat",
+          "ns_per_read": 3.7056352210541568
+        },
+        "candidate": {
+          "arm": "dios_session",
+          "ns_per_read": 6.142241960763931
+        }
+      },
+      "difference_ns_per_read": {
+        "estimate": 2.4366067397097746,
+        "ci95_lower": 2.3608291914065678,
+        "ci95_upper": 2.5362646453082562
+      }
+    }
+  ]
+}

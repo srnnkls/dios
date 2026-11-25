@@ -66,6 +66,17 @@ impl Mapping {
         unsafe { std::slice::from_raw_parts(pointer, GRANULE as usize) }
     }
 
+    /// The whole mapped file as one byte slice.
+    pub(super) fn bytes(&self) -> &[u8] {
+        assert_eq!(self.length, (PAGES as usize + 1) * GRANULE as usize);
+        // SAFETY: the sealed file initializes the whole live immutable mapping
+        // of `self.length` bytes; self owns the mapping for the slice's lifetime.
+        let bytes =
+            unsafe { std::slice::from_raw_parts(self.pointer.cast::<u8>().as_ptr(), self.length) };
+        assert_eq!(bytes.len(), self.length);
+        bytes
+    }
+
     pub(super) fn advice(&self, arm: Arm) -> io::Result<()> {
         let advice = match arm {
             Arm::MmapNormal => libc::MADV_NORMAL,

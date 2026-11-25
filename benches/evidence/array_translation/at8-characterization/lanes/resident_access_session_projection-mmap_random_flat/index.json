@@ -1,0 +1,55 @@
+{
+  "lane": {
+    "arms": [
+      "mmap_random",
+      "dios_session"
+    ],
+    "cache": "resident",
+    "flat_arm": "mmap_random_flat",
+    "floor_arm": "plain_array",
+    "frames": 2048,
+    "name": "resident_access_session_projection",
+    "operations": 134217728,
+    "useful_bytes_per_read": 64,
+    "workers": 1
+  },
+  "name": "resident_access_session_projection-mmap_random_flat",
+  "arms": [
+    "mmap_random_flat",
+    "dios_session"
+  ],
+  "modes": [
+    "plain",
+    "plain"
+  ],
+  "rows": [
+    {
+      "raw": "/home/srnnkls/build/dios/target/array-translation/at8-characterization-20261125T144457/lanes/resident_access_session_projection-mmap_random_flat/0000-0.json",
+      "sha256": "c941dc0019d971efb765981043230b20c584fbc28a94f8223c376fc3102a3580",
+      "arm": "mmap_random_flat",
+      "seed": 0,
+      "tracing": "plain",
+      "mode": "smoke",
+      "started_ns": 1795614318619702481,
+      "finished_ns": 1795614319162959717,
+      "elapsed_ns": 497265871,
+      "pair": 0,
+      "position": 0,
+      "executable_sha256": "ebeb49fccf2cf7fe7f7c280524ec452bfb9908539ee189875a22f102d7c3e15b"
+    },
+    {
+      "raw": "/home/srnnkls/build/dios/target/array-translation/at8-characterization-20261125T144457/lanes/resident_access_session_projection-mmap_random_flat/0000-1.json",
+      "sha256": "f694fe043dd5333abbe18deaf997cd987ec6329a924b2fdc5f5ae0dcdaf7d70f",
+      "arm": "dios_session",
+      "seed": 0,
+      "tracing": "plain",
+      "mode": "smoke",
+      "started_ns": 1795614319163149392,
+      "finished_ns": 1795614320023741193,
+      "elapsed_ns": 780710042,
+      "pair": 0,
+      "position": 1,
+      "executable_sha256": "ebeb49fccf2cf7fe7f7c280524ec452bfb9908539ee189875a22f102d7c3e15b"
+    }
+  ]
+}

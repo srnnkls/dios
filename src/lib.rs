@@ -273,6 +273,8 @@ pub mod testing {
         ) -> Option<crate::pool::FrameGuard<'ctx>>;
         fn insert_resident_frame(&self, page: PageId, fill: u8) -> ReadFrameIdx;
         fn evict_frame(&self, page: PageId) -> ReadFrameIdx;
+        /// Reads the translation entry of `page`.
+        fn translation_lookup(&self, page: PageId) -> Option<ReadFrameIdx>;
         fn clock_reference_stores(&self) -> u64;
         #[cfg(feature = "bench")]
         fn global_epoch_observed(&self) -> u64;
@@ -316,6 +318,10 @@ pub mod testing {
 
                 fn evict_frame(&self, page: PageId) -> ReadFrameIdx {
                     self.evict_frame_internal(page)
+                }
+
+                fn translation_lookup(&self, page: PageId) -> Option<ReadFrameIdx> {
+                    self.translation_lookup_internal(page)
                 }
 
                 fn clock_reference_stores(&self) -> u64 {
@@ -367,6 +373,16 @@ pub mod testing {
         ) -> MockResidentLeaseCountObservation;
         #[cfg(not(loom))]
         fn pause_next_cold_get(&self) -> ColdGetPauseObservation;
+        #[cfg(not(loom))]
+        fn pause_next_get_between_pin_and_entry(&self) -> PinEntryPauseObservation;
+        /// Arms the forced failure of every optimistic copy attempt until
+        /// [`OptimisticCopyObservation::release`].
+        #[cfg(not(loom))]
+        fn force_optimistic_copy_failures(&self) -> OptimisticCopyObservation;
+        /// Loads every payload word of `frame` with a relaxed atomic load,
+        /// taking no lock; `words` holds one entry per payload word.
+        #[cfg(not(loom))]
+        fn load_payload_words_atomic(&self, frame: ReadFrameIdx, words: &mut [u64]);
     }
 
     #[cfg(feature = "mock")]
@@ -403,6 +419,53 @@ pub mod testing {
                 state: self.pause_next_cold_get_internal(),
             }
         }
+
+        #[cfg(not(loom))]
+        fn pause_next_get_between_pin_and_entry(&self) -> PinEntryPauseObservation {
+            PinEntryPauseObservation {
+                state: self.pause_next_get_between_pin_and_entry_internal(),
+            }
+        }
+
+        #[cfg(not(loom))]
+        fn force_optimistic_copy_failures(&self) -> OptimisticCopyObservation {
+            OptimisticCopyObservation {
+                state: self.force_optimistic_copy_failures_internal(),
+            }
+        }
+
+        #[cfg(not(loom))]
+        fn load_payload_words_atomic(&self, frame: ReadFrameIdx, words: &mut [u64]) {
+            self.load_payload_words_atomic_internal(frame, words);
+        }
+    }
+
+    /// Mock-only control of the forced optimistic copy failure, with the
+    /// attempt and fallback counts since it was armed.
+    #[cfg(all(feature = "mock", not(loom)))]
+    #[derive(Debug, Clone)]
+    pub struct OptimisticCopyObservation {
+        state: Arc<crate::pool::OptimisticCopyFailures>,
+    }
+
+    #[cfg(all(feature = "mock", not(loom)))]
+    impl OptimisticCopyObservation {
+        /// Optimistic attempts since the hook was armed.
+        #[must_use]
+        pub fn optimistic_attempts(&self) -> u64 {
+            self.state.attempts()
+        }
+
+        /// Entries into the ordinary `get` path since the hook was armed.
+        #[must_use]
+        pub fn fallback_gets(&self) -> u64 {
+            self.state.fallback_gets()
+        }
+
+        /// Disarms the forced failure; the counts keep running.
+        pub fn release(&self) {
+            self.state.release();
+        }
     }
 
     /// Arc-backed observation of one exact preallocated file-slot lease count.
@@ -437,6 +500,29 @@ pub mod testing {
         }
 
         /// Releases the paused get to continue into cold admission.
+        pub fn release(&self) {
+            self.state.release();
+        }
+    }
+
+    /// One-shot mock-only control for a get paused after its epoch pin and
+    /// before its translation entry load.
+    #[cfg(all(feature = "mock", not(loom)))]
+    #[derive(Debug, Clone)]
+    pub struct PinEntryPauseObservation {
+        state: Arc<crate::pool::ColdGetPauseState>,
+    }
+
+    #[cfg(all(feature = "mock", not(loom)))]
+    impl PinEntryPauseObservation {
+        /// Waits until the get holds its epoch pin and is paused before
+        /// loading its translation entry.
+        #[must_use]
+        pub fn wait_until_parked(&self, timeout: std::time::Duration) -> bool {
+            self.state.wait_until_parked(timeout)
+        }
+
+        /// Releases the paused get to load its translation entry.
         pub fn release(&self) {
             self.state.release();
         }
@@ -621,19 +707,8 @@ pub mod testing {
         DirectIoSupport, Injected, MockDriver, MockDriverBuilder, MockIoEvent, MockRingDriver,
         MockRingDriverBuilder, MockRingObservation, MockWriteArena, ReadAttempt, WriteAttempt,
     };
-    #[cfg(feature = "bench")]
-    pub use crate::pool::ControlTables;
     #[cfg(any(feature = "mock", feature = "bench"))]
-    pub use crate::pool::{Clock, FrameState, PageTable, ReaderCounters};
-
-    /// Calls the shipping four-round page hash for bench evidence generation.
-    #[cfg(feature = "bench")]
-    #[must_use]
-    pub fn current_page_hash(driver: u64, slot: u32, generation: u32, granule: u32) -> u64 {
-        let file = crate::FileId::new(driver, slot, generation);
-        let page = PageId::new(file, granule);
-        crate::pool::page_hash(page)
-    }
+    pub use crate::pool::{Clock, FrameState, ReaderCounters, Translation};
 }
 
 #[cfg(feature = "bench")]
@@ -643,10 +718,11 @@ pub use driver::{FileId, IoMode, RegistrationPolicy, RegistrationPosture, SyncMo
 pub use error::{FileRegistrationError, IoError};
 pub use open::DirectIo;
 pub use pool::{
-    FrameGuard, GRANULE_DEFAULT, Get, GetError, PageId, PendingToken, Pool, PoolBuildError,
-    PoolBuilder, PoolConfigError, PrefetchReport, PrefetchStats, Readahead, ReaderCtx, ReadyResult,
-    RegisterError, ResidentFileLease, ResidentHint, ResidentLeaseError, RetainRefused,
-    RetainRefusedReason, RetainedFrame, RetentionStats,
+    FileSession, FrameGuard, GRANULE_DEFAULT, Get, GetError, PageId, PendingToken, Pool,
+    PoolBuildError, PoolBuilder, PoolConfigError, PrefetchReport, PrefetchStats, ReadCopy,
+    ReadSession, Readahead, ReaderCtx, ReadyResult, RegisterError, ResidentFileLease, ResidentHint,
+    ResidentLeaseError, RetainRefused, RetainRefusedReason, RetainedFrame, RetentionStats,
+    SessionFile, SessionRead,
 };
 pub use product::{
     PollReport, PoolCompletion, PoolCompletionBatch, PoolSubmitError, PoolToken, PoolWakeHandle,

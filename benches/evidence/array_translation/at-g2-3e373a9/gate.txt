@@ -1,0 +1,7 @@
+[gate] $ cargo bench --features bench --bench compare -- benches/evidence/array_translation/at-g2/paired.csv 1.10
+   Compiling dios v0.1.0 (/Users/srnnkls/projects/dios)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 3.89s
+     Running benches/compare.rs (target/release/deps/compare-58da936688e8c316)
+gate paired: pairs 30, ratio geomean 1.0479, ci95 upper 1.0507, threshold 1.1000 -> PASS
+mbx[cache]: 0 hits, 4 misses, 1 bypassed; 0 B downloaded, 0 B uploaded, 11.4 MiB stored locally
+mbx[savings]: swept up 664.5 GiB logical so far. the broom is content-addressed.

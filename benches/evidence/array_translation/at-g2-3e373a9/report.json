@@ -1,0 +1,48 @@
+{
+  "comparisons": [
+    {
+      "name": "resident_access_session_fold",
+      "arms": [
+        "mmap_random",
+        "dios_session"
+      ],
+      "ns_per_read": {
+        "base": {
+          "arm": "mmap_random",
+          "ns_per_read": 52.79102017482122
+        },
+        "candidate": {
+          "arm": "dios_session",
+          "ns_per_read": 55.323107318083444
+        }
+      },
+      "difference_ns_per_read": {
+        "estimate": 2.532087143262227,
+        "ci95_lower": 2.3654840926329297,
+        "ci95_upper": 2.7049171487490336
+      }
+    },
+    {
+      "name": "resident_access_session_fold-plain_array",
+      "arms": [
+        "plain_array",
+        "dios_session"
+      ],
+      "ns_per_read": {
+        "base": {
+          "arm": "plain_array",
+          "ns_per_read": 52.31982822616895
+        },
+        "candidate": {
+          "arm": "dios_session",
+          "ns_per_read": 55.320277514060336
+        }
+      },
+      "difference_ns_per_read": {
+        "estimate": 3.0004492878913878,
+        "ci95_lower": 2.8040857394536336,
+        "ci95_upper": 3.217302906513214
+      }
+    }
+  ]
+}

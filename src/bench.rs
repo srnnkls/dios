@@ -9,6 +9,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use crate::Pool;
 use crate::driver::RegistrationPolicy;
 
 pub const REGISTRATION_POLICY_ENV: &str = "DIOS_REGISTRATION_POLICY";
@@ -51,6 +52,13 @@ pub struct PairedSamples {
 pub struct RatioGate {
     pub ratio_geomean: f64,
     pub ratio_ci95_upper: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PairedDifference {
+    pub difference_ns_mean: f64,
+    pub difference_ns_ci95_lower: f64,
+    pub difference_ns_ci95_upper: f64,
 }
 
 /// Captures `reps` paired timings of `base` and `candidate`. The two
@@ -242,27 +250,84 @@ pub fn ratio_gate(samples: &PairedSamples, resamples: u32) -> RatioGate {
         })
         .collect();
     let mean = log_ratios.iter().sum::<f64>() / pair_count as f64;
+    let means = bootstrap_means(&log_ratios, resamples);
+    RatioGate {
+        ratio_geomean: mean.exp(),
+        ratio_ci95_upper: means[bootstrap_rank(resamples, 950)].exp(),
+    }
+}
 
-    let pair_count_u64 = u64::try_from(pair_count).expect("pair count fits u64");
+/// Computes the mean paired difference candidate minus base in nanoseconds
+/// and its two-sided 95% percentile-bootstrap interval, drawing the same
+/// fixed-seed resamples as [`ratio_gate`].
+///
+/// # Panics
+///
+/// Panics on fewer than 30 pairs, a length mismatch, or fewer than 1,000
+/// resamples.
+#[must_use]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "durations and counts stay far below 2^53"
+)]
+pub fn paired_difference(samples: &PairedSamples, resamples: u32) -> PairedDifference {
+    let pair_count = samples.base_ns.len();
+    assert!(
+        pair_count >= REPS_MIN,
+        "gate protocol requires >= {REPS_MIN} pairs"
+    );
+    assert_eq!(pair_count, samples.candidate_ns.len());
+    assert!(
+        resamples >= RESAMPLES_MIN,
+        "bootstrap needs >= {RESAMPLES_MIN} resamples"
+    );
+
+    let differences: Vec<f64> = samples
+        .base_ns
+        .iter()
+        .zip(&samples.candidate_ns)
+        .map(|(&base, &candidate)| candidate as f64 - base as f64)
+        .collect();
+    let mean = differences.iter().sum::<f64>() / pair_count as f64;
+    let means = bootstrap_means(&differences, resamples);
+    let difference = PairedDifference {
+        difference_ns_mean: mean,
+        difference_ns_ci95_lower: means[bootstrap_rank(resamples, 25)],
+        difference_ns_ci95_upper: means[bootstrap_rank(resamples, 975)],
+    };
+    assert!(difference.difference_ns_ci95_lower <= difference.difference_ns_ci95_upper);
+    difference
+}
+
+/// The sorted means of `resamples` fixed-seed bootstrap resamples of `values`.
+#[expect(clippy::cast_precision_loss, reason = "counts stay far below 2^53")]
+fn bootstrap_means(values: &[f64], resamples: u32) -> Vec<f64> {
+    assert!(!values.is_empty(), "bootstrap needs values");
+    let value_count = u64::try_from(values.len()).expect("value count fits u64");
     let mut rng_state = BOOTSTRAP_SEED;
     let mut means = Vec::with_capacity(usize::try_from(resamples).expect("resamples fits usize"));
     for _ in 0..resamples {
         let mut sum = 0.0_f64;
-        for _ in 0..pair_count {
+        for _ in 0..values.len() {
             let draw = splitmix64(&mut rng_state);
-            let idx = usize::try_from(draw % pair_count_u64).expect("index fits usize");
-            sum += log_ratios[idx];
+            let idx = usize::try_from(draw % value_count).expect("index fits usize");
+            sum += values[idx];
         }
-        means.push(sum / pair_count as f64);
+        means.push(sum / values.len() as f64);
     }
     means.sort_by(f64::total_cmp);
+    assert_eq!(
+        means.len(),
+        usize::try_from(resamples).expect("resamples fits usize")
+    );
+    means
+}
 
-    let upper_rank = usize::try_from(resamples).expect("resamples fits usize") * 95;
-    let upper_idx = upper_rank.div_ceil(100) - 1;
-    RatioGate {
-        ratio_geomean: mean.exp(),
-        ratio_ci95_upper: means[upper_idx].exp(),
-    }
+/// The index of the `per_mille` percentile among `resamples` sorted means.
+fn bootstrap_rank(resamples: u32, per_mille: usize) -> usize {
+    assert!(0 < per_mille && per_mille < 1_000);
+    let rank = usize::try_from(resamples).expect("resamples fits usize") * per_mille;
+    rank.div_ceil(1_000) - 1
 }
 
 fn splitmix64(state: &mut u64) -> u64 {
@@ -271,6 +336,24 @@ fn splitmix64(state: &mut u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^ (z >> 31)
+}
+
+/// The `(mapping_bytes, resident_bytes)` of `pool`'s translation, which the
+/// characterization rows report beside the arena size.
+///
+/// # Panics
+///
+/// Panics when the resident bytes exceed the mapping bytes.
+#[must_use]
+pub fn pool_translation(pool: &Pool) -> (u64, u64) {
+    let translation = pool.translation_internal();
+    let mapping_bytes = translation.entry_count() * size_of::<u32>() as u64;
+    let resident_bytes = translation.resident_bytes();
+    assert!(
+        resident_bytes <= mapping_bytes,
+        "residency lies within the mapping"
+    );
+    (mapping_bytes, resident_bytes)
 }
 
 #[cfg(test)]
@@ -324,6 +407,49 @@ mod tests {
 
         assert!(gate.ratio_ci95_upper > gate.ratio_geomean);
         assert!((gate.ratio_geomean - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn paired_difference_of_a_constant_offset_has_a_zero_width_interval() {
+        let base_ns: Vec<u64> = (0..32_u64).map(|pair| 1_000_000 + pair * 1_000).collect();
+        let samples = PairedSamples {
+            name: "exact".to_owned(),
+            candidate_ns: base_ns.iter().map(|&ns| ns + 500).collect(),
+            base_ns,
+        };
+
+        let difference = paired_difference(&samples, 10_000);
+
+        assert!((difference.difference_ns_mean - 500.0).abs() < 1e-9);
+        assert!((difference.difference_ns_ci95_lower - 500.0).abs() < 1e-9);
+        assert!((difference.difference_ns_ci95_upper - 500.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn paired_difference_interval_brackets_the_mean_from_the_ratio_gate_resamples() {
+        let base_ns: Vec<u64> = vec![1_000_000; 32];
+        let candidate_ns: Vec<u64> = (0..32_u64)
+            .map(|pair| if pair % 2 == 0 { 1_000_400 } else { 1_000_600 })
+            .collect();
+        let samples = PairedSamples {
+            name: "noisy".to_owned(),
+            base_ns,
+            candidate_ns,
+        };
+
+        let difference = paired_difference(&samples, 10_000);
+
+        assert!((difference.difference_ns_mean - 500.0).abs() < 1e-9);
+        assert!(difference.difference_ns_ci95_lower < difference.difference_ns_mean);
+        assert!(difference.difference_ns_mean < difference.difference_ns_ci95_upper);
+        assert!(difference.difference_ns_ci95_lower >= 400.0);
+        assert!(difference.difference_ns_ci95_upper <= 600.0);
+        let rerun = paired_difference(&samples, 10_000);
+        assert_eq!(
+            rerun.difference_ns_ci95_lower.to_bits(),
+            difference.difference_ns_ci95_lower.to_bits(),
+            "the fixed-seed bootstrap reproduces exactly"
+        );
     }
 
     #[test]

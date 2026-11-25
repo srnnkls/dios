@@ -10,9 +10,9 @@ use std::mem::MaybeUninit;
 use std::num::NonZeroU32;
 use std::ptr::NonNull;
 
-use crate::pool::epoch::{FrameGuard, PinBegun, PinCommit};
+use crate::pool::epoch::{FrameGuard, PinBegun, PinCommit, SessionPin};
 use crate::pool::{Control, PageId, SECTOR_BYTES};
-use crate::sync::{AtomicU64, Ordering, UnsafeCell};
+use crate::sync::{AtomicBool, AtomicU64, Ordering, UnsafeCell};
 
 #[cfg(all(test, target_os = "linux", not(miri)))]
 const SECTOR: usize = SECTOR_BYTES as usize;
@@ -23,6 +23,61 @@ const FRAME_STATE_MASK: u64 = (1 << FRAME_STATE_BITS) - 1;
 const FRAME_GENERATION_MAX: u64 = u64::MAX >> FRAME_STATE_BITS;
 const FRAME_STATE_TAG_MAX: u64 = 3;
 const _: () = assert!(FRAME_STATE_TAG_MAX <= FRAME_STATE_MASK);
+
+/// The loop-invariant geometry of a [`Frames`] arena for a session's reads,
+/// with the CLOCK reference bits whose length is the frame count.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SessionArena<'pool> {
+    /// One granule below the arena base, so the granule a translation entry
+    /// names is `base_biased + (entry << granule_shift)`: the entry word, not
+    /// the decremented frame index, feeds the address.
+    base_biased: *const u8,
+    granule_shift: u32,
+    reference_bits: &'pool [AtomicBool],
+    frames: &'pool Frames,
+}
+
+impl<'pool> SessionArena<'pool> {
+    /// The reference bit and the granule backing `frame`, which a set
+    /// translation entry named after `pin` published the reader's epoch.
+    ///
+    /// # Panics
+    ///
+    /// If `frame` is out of range for the configured count.
+    #[must_use]
+    #[inline]
+    pub(crate) fn frame<'session>(
+        &self,
+        _pin: &'session SessionPin<'_>,
+        frame: ReadFrameIdx,
+    ) -> (&'pool AtomicBool, &'session [u8])
+    where
+        'pool: 'session,
+    {
+        let index = frame.get() as usize;
+        let Some(reference_bit) = self.reference_bits.get(index) else {
+            panic!("frame index out of range");
+        };
+        debug_assert!(
+            matches!(
+                self.frames.state(frame),
+                FrameState::Resident | FrameState::Evicting
+            ),
+            "a session frame is Resident or Evicting while its bytes are borrowed"
+        );
+        let offset = (index + 1) << self.granule_shift;
+        let start = self.base_biased.wrapping_add(offset);
+        // SAFETY: `index` addresses a reference bit and there is one bit per
+        // frame, so `index < count`: `start` is the arena base plus `index`
+        // granules, inside the arena for `'pool`, and initialized. The
+        // entry naming `frame` was set while the frame was Resident (INV-2)
+        // and loaded after the pin published and fenced the reader's epoch,
+        // so EBR frees the frame only after the pin drops (INV-3): no token
+        // writes it while the borrow lives.
+        let bytes = unsafe { std::slice::from_raw_parts(start, 1usize << self.granule_shift) };
+        (reference_bit, bytes)
+    }
+}
 
 /// One preallocated full-page identity per frame, written under the frame's
 /// [`InFlightFrame`] token and read under one of three witnesses: a validated
@@ -193,6 +248,7 @@ impl FrameState {
         }
     }
 
+    #[inline]
     fn from_tag(tag: u8) -> FrameState {
         match tag {
             0 => FrameState::Free,
@@ -203,6 +259,7 @@ impl FrameState {
         }
     }
 
+    #[inline]
     fn from_word(word: u64) -> FrameState {
         Self::from_tag((word & FRAME_STATE_MASK) as u8)
     }
@@ -224,7 +281,17 @@ pub(crate) struct Frames {
     count: u32,
     granule: u32,
     id: ArenaId,
+    /// The Loom model's labeled payload: the first words of each frame as
+    /// Loom atomics, because Loom schedules only at its own synchronization
+    /// and never between the arena's byte writes.
+    #[cfg(loom)]
+    model_payload: Box<[[AtomicU64; MODEL_PAYLOAD_WORDS]]>,
 }
+
+/// Payload words per frame the Loom model labels: the copied range of its
+/// copy-out cases, two words so a copy can tear between them.
+#[cfg(loom)]
+pub(crate) const MODEL_PAYLOAD_WORDS: usize = 2;
 
 // SAFETY: `base` addresses a heap allocation owned solely by this `Frames`. A
 // byte write needs `&mut InFlightFrame`, which exists only while the frame is
@@ -250,6 +317,10 @@ impl Frames {
         let pages = ExactPageCells::try_preallocated(count)?;
         let arena = crate::allocation::MappedArena::try_map(span, arena_alignment(span, granule))?;
         advise_hugepage(arena.base(), span);
+        #[cfg(loom)]
+        let model_payload = crate::allocation::try_boxed_slice_with(count, || {
+            std::array::from_fn(|_| AtomicU64::new(0))
+        })?;
         Some(Self {
             base: arena.base(),
             arena,
@@ -258,6 +329,8 @@ impl Frames {
             count,
             granule,
             id: ArenaId::next(),
+            #[cfg(loom)]
+            model_payload,
         })
     }
 
@@ -362,7 +435,93 @@ impl Frames {
     /// Fills the token's whole granule with `byte`, standing in for a read
     /// completion writing the frame's contents.
     pub(crate) fn fill(&self, token: &mut InFlightFrame, byte: u8) {
-        self.transfer_mut(token, 0, self.granule).fill(byte);
+        let destination = self.transfer_ptr(token, 0, self.granule);
+        // SAFETY: `transfer_ptr` keeps the granule inside the arena and
+        // `token` is its frame's unique write authority for this call.
+        unsafe { Self::store_payload_bytes(destination, self.granule as usize, byte) };
+    }
+
+    /// Stores `byte` over the payload range `[destination, destination +
+    /// len)` as same-width relaxed atomic word stores behind one `Release`
+    /// fence (FR-11), so an optimistic copy that observes a store observes
+    /// the claim before it. A word the range covers in part is loaded,
+    /// merged and stored whole.
+    ///
+    /// # Safety
+    ///
+    /// The range lies inside this arena's frames, and the caller holds the
+    /// write token of every frame it touches for the whole call.
+    #[cfg(not(loom))]
+    pub(crate) unsafe fn store_payload_bytes(destination: *mut u8, len: usize, byte: u8) {
+        const WORD_BYTES: usize = size_of::<u64>();
+        let pattern = u64::from_ne_bytes([byte; WORD_BYTES]);
+        let mut skip = destination.addr() % WORD_BYTES;
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "rounding down to a word boundary aligns the pointer"
+        )]
+        let mut word = destination.wrapping_sub(skip).cast::<u64>();
+        let mut remaining = len;
+        crate::sync::fence(Ordering::Release);
+        while remaining > 0 {
+            let count = (WORD_BYTES - skip).min(remaining);
+            // SAFETY: frame bases are word-aligned, so the aligned word
+            // covering a byte of the range lies in that byte's frame, whose
+            // token the caller holds; every other access to it is atomic.
+            let cell = unsafe { AtomicU64::from_ptr(word) };
+            let value = if count == WORD_BYTES {
+                pattern
+            } else {
+                let mut bytes = cell.load(Ordering::Relaxed).to_ne_bytes();
+                bytes[skip..skip + count].fill(byte);
+                u64::from_ne_bytes(bytes)
+            };
+            cell.store(value, Ordering::Relaxed);
+            remaining -= count;
+            skip = 0;
+            word = word.wrapping_add(1);
+        }
+    }
+
+    /// Loom does not model the arena's bytes; the labeled payload of
+    /// [`Frames::fill_model_payload`] carries the writer's ordering.
+    ///
+    /// # Safety
+    ///
+    /// The range lies inside this arena's frames, and the caller holds the
+    /// write token of every frame it touches for the whole call.
+    #[cfg(loom)]
+    pub(crate) unsafe fn store_payload_bytes(destination: *mut u8, len: usize, byte: u8) {
+        // SAFETY: the caller's token excludes every other access to the range.
+        unsafe { std::ptr::write_bytes(destination, byte, len) };
+    }
+
+    /// Fills the Loom model's labeled payload of the token's frame with
+    /// `byte`: one `Release` fence after the claim, then each word as its own
+    /// relaxed store (FR-11).
+    #[cfg(loom)]
+    pub(crate) fn fill_model_payload(&self, token: &mut InFlightFrame, byte: u8) {
+        let index = self.owned_index(token);
+        let word = u64::from_ne_bytes([byte; size_of::<u64>()]);
+        crate::sync::fence(Ordering::Release);
+        for cell in &self.model_payload[index] {
+            cell.store(word, Ordering::Relaxed);
+        }
+    }
+
+    /// Word `word_index` of the Loom model's labeled payload of `frame`.
+    ///
+    /// # Panics
+    ///
+    /// If `frame` or `word_index` is out of range.
+    #[cfg(loom)]
+    pub(crate) fn model_payload_word(&self, frame: ReadFrameIdx, word_index: u32) -> u64 {
+        let index = self.checked_index(frame);
+        assert!(
+            (word_index as usize) < MODEL_PAYLOAD_WORDS,
+            "the word lies in the labeled payload"
+        );
+        self.model_payload[index][word_index as usize].load(Ordering::Relaxed)
     }
 
     /// The exclusive destination range `[offset, offset + len)` of the token's
@@ -371,6 +530,7 @@ impl Frames {
     /// # Panics
     ///
     /// If the range leaves the frame.
+    #[cfg(any(not(target_os = "linux"), test))]
     pub(crate) fn transfer_mut<'token>(
         &'token self,
         token: &'token mut InFlightFrame,
@@ -461,6 +621,7 @@ impl Frames {
     ///
     /// If the pinned frame is out of range for the configured count.
     #[must_use]
+    #[inline]
     pub(crate) fn frame_bytes(&self, pin: &PinCommit) -> &[u8] {
         let index = self.checked_index(pin.frame());
         debug_assert!(
@@ -473,6 +634,35 @@ impl Frames {
         // SAFETY: the committed pin proves a validated Resident/Evicting frame
         // whose reuse EBR defers past this borrow, so no token writes it.
         unsafe { self.granule_slice(index) }
+    }
+
+    /// The arena's base and granule with the clock's per-frame
+    /// `reference_bits`, copied once so a session's reads load none of them
+    /// from the pool and bound a frame by one check.
+    ///
+    /// # Panics
+    ///
+    /// If `reference_bits` does not hold one bit per frame.
+    #[must_use]
+    #[inline]
+    pub(crate) fn session_arena<'pool>(
+        &'pool self,
+        reference_bits: &'pool [AtomicBool],
+    ) -> SessionArena<'pool> {
+        assert!(
+            reference_bits.len() == self.count as usize,
+            "a session arena holds one reference bit per frame"
+        );
+        SessionArena {
+            base_biased: self
+                .base
+                .as_ptr()
+                .cast_const()
+                .wrapping_sub(self.granule as usize),
+            granule_shift: self.granule.trailing_zeros(),
+            reference_bits,
+            frames: self,
+        }
     }
 
     /// The `granule`-byte region backing `frame` under exclusive arena
@@ -505,6 +695,33 @@ impl Frames {
         copied
     }
 
+    /// The first payload word of `frame`, the one source of the copy-out
+    /// read's volatile word loads; aligned because the arena base is
+    /// page-aligned and the granule a sector multiple.
+    ///
+    /// # Panics
+    ///
+    /// If `frame` is out of range for the configured count.
+    #[cfg_attr(
+        loom,
+        expect(
+            dead_code,
+            reason = "the Loom build copies the labeled model payload instead"
+        )
+    )]
+    #[must_use]
+    #[inline]
+    pub(crate) fn optimistic_payload_ptr(&self, frame: ReadFrameIdx) -> *const u64 {
+        let index = self.checked_index(frame);
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "the arena base is page-aligned and the granule a sector multiple, as asserted"
+        )]
+        let first = self.granule_ptr(index).cast_const().cast::<u64>();
+        assert!(first.is_aligned(), "a frame's payload starts word-aligned");
+        first
+    }
+
     /// The residency state of `frame`.
     ///
     /// # Panics
@@ -516,10 +733,12 @@ impl Frames {
     }
 
     #[must_use]
+    #[inline]
     pub(crate) fn state_word(&self, frame: ReadFrameIdx) -> u64 {
         self.states[self.checked_index(frame)].load(Ordering::Acquire)
     }
 
+    #[inline]
     pub(crate) fn word_is_resident(word: u64) -> bool {
         FrameState::from_word(word) == FrameState::Resident
     }
@@ -637,6 +856,7 @@ impl Frames {
         }
     }
 
+    #[inline]
     fn granule_ptr(&self, index: usize) -> *mut u8 {
         debug_assert!(index < self.count as usize, "granule index in range");
         // SAFETY: `index * granule + granule <= span` because `index < count`.
@@ -648,6 +868,7 @@ impl Frames {
     /// No token may write frame `index` while the returned borrow lives: the
     /// caller holds a committed pin, the exclusive arena, or the not-`InFlight`
     /// observation under the driver lock.
+    #[inline]
     unsafe fn granule_slice(&self, index: usize) -> &[u8] {
         // SAFETY: the pointer lies within the arena and the mapping is zeroed
         // at construction, so every byte is initialized; the caller contract
@@ -655,6 +876,7 @@ impl Frames {
         unsafe { std::slice::from_raw_parts(self.granule_ptr(index), self.granule as usize) }
     }
 
+    #[inline]
     fn checked_index(&self, frame: ReadFrameIdx) -> usize {
         let index = frame.get() as usize;
         assert!(index < self.states.len(), "frame index out of range");

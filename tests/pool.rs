@@ -1,4 +1,4 @@
-//! T006 frame-pool core pins: frame state machine, open-addressed `PageTable`,
+//! T006 frame-pool core pins: frame state machine,
 //! CLOCK reference bit and second-chance eviction, watermark/config open-fail
 //! (INV-9), the GRANULE default contract (AD-6), the relocated `WriteArena`, and
 //! per-reader hit/eviction counters. Epoch guards (T007) and the miss path (T008)
@@ -11,11 +11,6 @@
 //!   `FrameState` (Copy+Eq+Debug) with `advance(self, FrameState) -> FrameState`
 //!     (panics on an illegal edge);
 //!   `Frames::preallocated(count, granule)` -> `count()`/`frame_bytes(idx)`/`state(idx)`;
-//!   `PageTable::with_frame_count(frames)` -> `capacity()`/`len()`/`insert`/`lookup`/`remove`
-//!     keyed by `PageId` valued by `ReadFrameIdx`, plus a test-visible
-//!     `home_slot(&self, PageId) -> u32` (linear-probe home slot) so a deterministic
-//!     collision chain can be constructed; `insert` accepts at least `frames`
-//!     distinct keys and asserts (no rehash/growth) before exceeding `capacity()`;
 //!   `Clock::with_frame_count(n)` -> `reference(idx) -> bool` (true iff it set a
 //!     clear bit), `is_referenced(idx)`, `evict_victim() -> ReadFrameIdx`;
 //!   `Pool::builder()` with `frame_count`/`granule`/`max_concurrent_readers`/
@@ -27,61 +22,13 @@
 //!   `WriteSlot: DerefMut<Target = [u8]>`; `ReaderCounters::new()` with
 //!     `record_hit(&self)`/`record_eviction(&self)`/`hits()`/`evictions()`.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::collections::HashSet;
 
 use dios::driver::Driver;
-use dios::testing::{
-    Clock, FrameState, PageTable, ReadFrameIdx, ReaderCounters, TestFrames as Frames,
-};
-use dios::{DirectIo, FileId, GRANULE_DEFAULT, PageId, Pool, PoolConfigError};
+use dios::testing::{Clock, FrameState, ReadFrameIdx, ReaderCounters, TestFrames as Frames};
+use dios::{GRANULE_DEFAULT, Pool, PoolConfigError};
 
 const SECTOR: usize = 4096;
-
-static FILE_SEQ: AtomicU32 = AtomicU32::new(0);
-
-/// The `FileId` is a pure hashable key here, so the opening handle and driver may
-/// drop at once without invalidating it.
-fn a_file_id() -> FileId {
-    let n = FILE_SEQ.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!("dios_pool_t006_{}_{n}.bin", std::process::id()));
-    std::fs::write(&path, [0u8; 64]).expect("temp file writable");
-    let driver = Driver::builder().build();
-    let driver = driver.expect("the test driver initializes");
-    driver
-        .open(&path, DirectIo::Disabled)
-        .expect("open temp file")
-        .file_id()
-}
-
-fn page(file: FileId, idx: u32) -> PageId {
-    PageId::new(file, idx)
-}
-
-/// The first `len` pages (by granule index) that share one linear-probe home
-/// slot — a provable collision chain, independent of the hash function.
-fn colliding_pages(table: &PageTable, file: FileId, len: usize) -> Vec<PageId> {
-    let mut buckets: HashMap<u32, Vec<PageId>> = HashMap::new();
-    for idx in 0..1_000_000u32 {
-        let p = page(file, idx);
-        let bucket = buckets.entry(table.home_slot(p)).or_default();
-        bucket.push(p);
-        if bucket.len() == len {
-            return bucket.clone();
-        }
-    }
-    panic!("no collision chain of length {len} found");
-}
-
-fn a_page_with_home(table: &PageTable, file: FileId, home: u32, exclude: &[PageId]) -> PageId {
-    for idx in 0..1_000_000u32 {
-        let p = page(file, idx);
-        if table.home_slot(p) == home && !exclude.contains(&p) {
-            return p;
-        }
-    }
-    panic!("no additional page hashing to home slot {home}");
-}
 
 fn try_pool(
     frame_count: u32,
@@ -158,172 +105,6 @@ fn frames_are_preallocated_sector_aligned_and_non_moving() {
         bases.insert(base);
     }
     assert_eq!(bases.len(), 4, "distinct frames occupy distinct addresses");
-}
-
-#[test]
-fn page_table_capacity_is_two_times_frames_rounded_up_to_a_power_of_two() {
-    for (frames, expected) in [(1u32, 2u32), (3, 8), (5, 16), (6, 16), (8, 16), (100, 256)] {
-        assert_eq!(
-            PageTable::with_frame_count(frames).capacity(),
-            expected,
-            "capacity for {frames} frames"
-        );
-    }
-}
-
-#[test]
-fn page_table_insert_lookup_remove_roundtrip() {
-    let file = a_file_id();
-    let mut table = PageTable::with_frame_count(8);
-    let key = page(file, 42);
-    let frame = ReadFrameIdx::new(3);
-
-    assert_eq!(table.lookup(key), None, "absent key resolves to None");
-    table.insert(key, frame);
-    assert_eq!(table.lookup(key), Some(frame), "inserted key resolves");
-    assert_eq!(table.remove(key), Some(frame), "remove returns the mapping");
-    assert_eq!(table.lookup(key), None, "removed key no longer resolves");
-}
-
-#[test]
-fn page_table_insert_updates_an_existing_page_in_place() {
-    let file = a_file_id();
-    let mut table = PageTable::with_frame_count(8);
-    let key = page(file, 7);
-
-    table.insert(key, ReadFrameIdx::new(1));
-    table.insert(key, ReadFrameIdx::new(2));
-    assert_eq!(
-        table.lookup(key),
-        Some(ReadFrameIdx::new(2)),
-        "re-inserting a page updates its frame without a duplicate entry"
-    );
-}
-
-#[test]
-fn page_table_updates_an_existing_key_at_full_occupancy_without_growing() {
-    let file = a_file_id();
-    let frames = 8u32;
-    let mut table = PageTable::with_frame_count(frames);
-    for i in 0..frames {
-        table.insert(page(file, i), ReadFrameIdx::new(i));
-    }
-    assert_eq!(
-        table.len(),
-        frames,
-        "the table is at its documented occupancy bound"
-    );
-
-    table.insert(page(file, 3), ReadFrameIdx::new(99));
-    assert_eq!(
-        table.len(),
-        frames,
-        "an in-place update at full occupancy adds no entry"
-    );
-    assert_eq!(
-        table.lookup(page(file, 3)),
-        Some(ReadFrameIdx::new(99)),
-        "the existing key resolves to its new frame after a full-occupancy update"
-    );
-}
-
-#[test]
-fn page_table_backward_shift_delete_keeps_the_chain_tail_resolvable() {
-    let file = a_file_id();
-    let mut table = PageTable::with_frame_count(8);
-    let chain = colliding_pages(&table, file, 3);
-    let (head, middle, tail) = (chain[0], chain[1], chain[2]);
-    table.insert(head, ReadFrameIdx::new(0));
-    table.insert(middle, ReadFrameIdx::new(1));
-    table.insert(tail, ReadFrameIdx::new(2));
-
-    assert_eq!(table.remove(middle), Some(ReadFrameIdx::new(1)));
-    assert_eq!(
-        table.lookup(head),
-        Some(ReadFrameIdx::new(0)),
-        "chain head resolves"
-    );
-    assert_eq!(
-        table.lookup(tail),
-        Some(ReadFrameIdx::new(2)),
-        "chain tail still resolves after a mid-chain delete"
-    );
-    assert_eq!(table.lookup(middle), None, "the removed middle key is gone");
-}
-
-#[test]
-fn page_table_negative_probe_terminates_at_the_end_of_a_collision_chain() {
-    let file = a_file_id();
-    let mut table = PageTable::with_frame_count(8);
-    let chain = colliding_pages(&table, file, 3);
-    for (i, key) in chain.iter().enumerate() {
-        table.insert(*key, ReadFrameIdx::new(u32::try_from(i).unwrap()));
-    }
-    let home = table.home_slot(chain[0]);
-    let absent = a_page_with_home(&table, file, home, &chain);
-    assert_eq!(
-        table.lookup(absent),
-        None,
-        "a negative probe walks the full chain and terminates at the trailing empty slot"
-    );
-}
-
-#[test]
-fn page_table_backward_shift_respects_home_slots_across_the_wrap() {
-    let file = a_file_id();
-    let table = PageTable::with_frame_count(8);
-    let last = table.capacity() - 1;
-
-    let wrap_head = a_page_with_home(&table, file, last, &[]);
-    let wrap_tail = a_page_with_home(&table, file, last, &[wrap_head]);
-    let barrier = a_page_with_home(&table, file, 1, &[wrap_head, wrap_tail]);
-
-    let mut table = table;
-    table.insert(wrap_head, ReadFrameIdx::new(0));
-    table.insert(wrap_tail, ReadFrameIdx::new(1));
-    table.insert(barrier, ReadFrameIdx::new(2));
-
-    assert_eq!(table.remove(wrap_head), Some(ReadFrameIdx::new(0)));
-
-    assert_eq!(
-        table.lookup(wrap_tail),
-        Some(ReadFrameIdx::new(1)),
-        "the wrapped entry shifts back to its home at the last slot and stays findable"
-    );
-    assert_eq!(
-        table.lookup(barrier),
-        Some(ReadFrameIdx::new(2)),
-        "a naive shift-everything delete pulls the barrier from slot 1 across its own home into slot 0, stranding it; backward-shift must stop at its home slot"
-    );
-    assert_eq!(table.lookup(wrap_head), None, "the removed head is gone");
-}
-
-#[test]
-fn page_table_refuses_growth_beyond_capacity_no_rehash() {
-    let file = a_file_id();
-    let frames = 8u32;
-    let mut table = PageTable::with_frame_count(frames);
-    let capacity = table.capacity();
-
-    let mut inserted = 0u32;
-    for i in 0..=capacity {
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            table.insert(page(file, i), ReadFrameIdx::new(0));
-        }));
-        if outcome.is_err() {
-            break;
-        }
-        inserted += 1;
-    }
-
-    assert!(
-        inserted >= frames,
-        "the table must accept at least frame_count ({frames}) live entries, accepted {inserted}"
-    );
-    assert!(
-        inserted <= capacity,
-        "the table asserts before exceeding fixed capacity ({capacity}) — no rehash/growth, accepted {inserted}"
-    );
 }
 
 #[test]
@@ -485,6 +266,66 @@ fn pool_accepts_a_valid_granule() {
     assert!(
         pool.is_ok(),
         "a power-of-two granule at/above the floor is accepted"
+    );
+}
+
+fn translation_pool(
+    frame_count: u32,
+    registered_file_capacity: u32,
+    file_granules_max: u32,
+) -> Result<Pool, dios::PoolBuildError> {
+    Pool::builder()
+        .frame_count(frame_count)
+        .granule(4096)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .registered_file_capacity(registered_file_capacity)
+        .file_granules_max(file_granules_max)
+        .build()
+}
+
+fn configuration_error(result: Result<Pool, dios::PoolBuildError>) -> PoolConfigError {
+    match result {
+        Err(dios::PoolBuildError::Configuration(error)) => error,
+        Err(other) => panic!("expected a configuration error, got {other:?}"),
+        Ok(_) => panic!("expected a configuration error, the pool built"),
+    }
+}
+
+#[test]
+fn translation_geometry_is_validated_before_any_reservation() {
+    for requested in [0u32, 3, 6, (1 << 22) + 1, u32::MAX] {
+        assert_eq!(
+            configuration_error(translation_pool(64, 4, requested)),
+            PoolConfigError::FileGranulesMaxNotPowerOfTwo { requested },
+            "file_granules_max {requested}"
+        );
+    }
+
+    let limit = 1u32 << 30;
+    assert_eq!(
+        configuration_error(translation_pool(limit + 1, 4, 16)),
+        PoolConfigError::FrameCountAboveTranslationLimit {
+            requested: limit + 1,
+            limit,
+        },
+        "a frame index must leave the zero entry free in 32 bits"
+    );
+
+    assert_eq!(
+        configuration_error(translation_pool(64, 1 << 31, 1 << 31)),
+        PoolConfigError::TranslationUnrepresentable {
+            registered_file_capacity: 1 << 31,
+            file_granules_max: 1 << 31,
+        },
+        "2^62 four-byte entries overflow a u64 byte length"
+    );
+
+    assert!(
+        translation_pool(64, 4, 16).is_ok(),
+        "a power-of-two bound with a representable reservation builds"
     );
 }
 

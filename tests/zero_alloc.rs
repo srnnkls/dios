@@ -30,7 +30,7 @@ use dios::driver::{CompletionBatch, Driver, FileHandle};
 use dios::testing::{DriverReadTestingExt, PoolTestingExt, ReadFrameIdx};
 use dios::{
     DirectIo, FrameGuard, Get, PageId, Pool, PoolCompletion, PoolCompletionBatch, PoolToken,
-    PoolWriteArena, ReaderCtx, ReadyResult, RetireStatus, SyncMode,
+    PoolWriteArena, ReadCopy, ReaderCtx, ReadyResult, RetireStatus, SessionRead, SyncMode,
 };
 
 const FRAME_BYTES: u32 = 4096;
@@ -444,6 +444,157 @@ fn real_pool_warm_get_hit_allocates_nothing() {
     assert_eq!(
         allocations, 0,
         "a warmed shipping-backend Pool::get hit reuses fixed residency state"
+    );
+}
+
+#[test]
+fn real_pool_translation_hit_and_bound_refusal_allocate_nothing() {
+    const GRANULES_MAX: u32 = 4;
+    let path = temp_frames("real-pool-translation-hit", GRANULES_MAX, 0xD7);
+    let pool = Pool::builder()
+        .frame_count(4)
+        .granule(FRAME_BYTES)
+        .max_concurrent_readers(1)
+        .peak_guards_per_reader(1)
+        .max_inflight_reads(1)
+        .miss_headroom(3)
+        .file_granules_max(GRANULES_MAX)
+        .build()
+        .expect("the cfg-selected shipping pool initializes with a translation bound");
+    let file = pool
+        .open(&path, DirectIo::Disabled)
+        .expect("the real product pool opens the fixture");
+    let reader = pool
+        .register_reader()
+        .expect("the product pool has one reader slot");
+    let last = PageId::new(file, GRANULES_MAX - 1);
+    let beyond = PageId::new(file, GRANULES_MAX);
+    drop(resolve_product_page(&pool, &reader, last));
+
+    let (allocations, (hit, refusal)) = armed_allocations_result(|| {
+        let hit = match pool
+            .get(&reader, last)
+            .expect("the product file remains live")
+        {
+            Get::Hit(guard) => Some(guard[0]),
+            Get::Pending(_) | Get::Busy => None,
+        };
+        (hit, pool.get(&reader, beyond).err())
+    });
+    assert_eq!(hit, Some(0xD7), "the warmed last granule hits");
+    assert_eq!(
+        refusal,
+        Some(dios::GetError::BeyondFileBound { page: beyond }),
+        "a granule at the bound is refused as a value"
+    );
+    assert_eq!(
+        allocations, 0,
+        "a translation hit and an out-of-bound refusal allocate nothing"
+    );
+}
+
+#[test]
+fn real_pool_warm_session_reads_allocate_nothing() {
+    const SESSION_READS: u32 = 16;
+    let path = temp_frames("real-pool-session", 1, 0xE3);
+    let pool = product_pool();
+    let file = pool
+        .open(&path, DirectIo::Disabled)
+        .expect("the real product pool opens the fixture");
+    let reader = pool
+        .register_reader()
+        .expect("the product pool has one reader slot");
+    drop(resolve_product_page(&pool, &reader, PageId::new(file, 0)));
+
+    let (allocations, (hits, folded)) = armed_allocations_result(|| {
+        let session = pool.session(&reader);
+        let view = session.file(file).expect("the product file remains live");
+        let mut hits = 0u32;
+        let mut folded = 0u64;
+        for _ in 0..SESSION_READS {
+            if let Ok(SessionRead::Hit(bytes)) = view.page(0) {
+                hits += 1;
+                folded += u64::from(bytes[0]);
+            }
+        }
+        (hits, folded)
+    });
+    assert_eq!(hits, SESSION_READS, "every warmed session read hits");
+    assert_eq!(folded, u64::from(SESSION_READS) * 0xE3);
+    assert_eq!(
+        allocations, 0,
+        "a session over warmed pages, its file view and its reads allocate nothing"
+    );
+}
+
+#[test]
+fn real_pool_warm_file_session_reads_allocate_nothing() {
+    const SESSION_READS: u32 = 16;
+    let path = temp_frames("real-pool-file-session", 1, 0xE5);
+    let pool = product_pool();
+    let file = pool
+        .open(&path, DirectIo::Disabled)
+        .expect("the real product pool opens the fixture");
+    let reader = pool
+        .register_reader()
+        .expect("the product pool has one reader slot");
+    drop(resolve_product_page(&pool, &reader, PageId::new(file, 0)));
+
+    let (allocations, (hits, folded)) = armed_allocations_result(|| {
+        let view = pool
+            .session_file(&reader, file)
+            .expect("the product file remains live");
+        let mut hits = 0u32;
+        let mut folded = 0u64;
+        for _ in 0..SESSION_READS {
+            if let Ok(SessionRead::Hit(bytes)) = view.page(0) {
+                hits += 1;
+                folded += u64::from(bytes[0]);
+            }
+        }
+        (hits, folded)
+    });
+    assert_eq!(hits, SESSION_READS, "every warmed FileSession read hits");
+    assert_eq!(folded, u64::from(SESSION_READS) * 0xE5);
+    assert_eq!(
+        allocations, 0,
+        "a FileSession over warmed pages and its reads allocate nothing"
+    );
+}
+
+#[test]
+fn real_pool_warm_copies_allocate_nothing() {
+    const COPIES: u32 = 16;
+    const COPY_BYTES: usize = 64;
+    let path = temp_frames("real-pool-copy", 1, 0xE7);
+    let pool = product_pool();
+    let file = pool
+        .open(&path, DirectIo::Disabled)
+        .expect("the real product pool opens the fixture");
+    let reader = pool
+        .register_reader()
+        .expect("the product pool has one reader slot");
+    let page = PageId::new(file, 0);
+    drop(resolve_product_page(&pool, &reader, page));
+    let mut output = [0u8; COPY_BYTES];
+
+    let (allocations, (copied, folded)) = armed_allocations_result(|| {
+        let mut copied = 0u32;
+        let mut folded = 0u64;
+        for _ in 0..COPIES {
+            output.fill(0);
+            if let Ok(ReadCopy::Copied) = pool.read_copy(&reader, page, 64, &mut output) {
+                copied += 1;
+                folded += output.iter().map(|&byte| u64::from(byte)).sum::<u64>();
+            }
+        }
+        (copied, folded)
+    });
+    assert_eq!(copied, COPIES, "every warmed copy succeeds");
+    assert_eq!(folded, u64::from(COPIES) * COPY_BYTES as u64 * 0xE7);
+    assert_eq!(
+        allocations, 0,
+        "a successful copy of a warmed page allocates nothing"
     );
 }
 

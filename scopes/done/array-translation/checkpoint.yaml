@@ -1,0 +1,39 @@
+checkpoint:
+  scope_name: array-translation
+  scope_path: scopes/done/array-translation
+  branch: feat/array-translation
+  last_commit: 915c643
+  updated_at: '2026-11-22T00:00:00Z'
+
+  batch:
+    number: 10
+    tasks: [AT8]
+    phase: integration_review
+    status: complete
+    waiting_on: "Scope done (2026-11-25). Push, merge and the sira rev bump stay with the owner."
+
+  in_flight_mutations: []
+
+  routing_snapshot:
+    epoch_id: 20261115T161731Z-fba2be
+    tester: {agent: claude-opus, effort: inherit, class: native}
+    implementer: {agent: claude-opus, effort: inherit, class: native}
+    reviewer:
+      agents:
+        - {agent: peer-gpt6-astra, effort: inherit, class: peer}
+        - {agent: claude-opus, effort: inherit, class: native}
+
+  reports:
+    tester: {AT5_liveness: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-tester-AT5-liveness}
+    implementer: {AT5_liveness: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-implementer-AT5-liveness}
+    green_gate: {AT5_liveness: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-implementer-AT5-liveness/green-gate}
+    review:
+      AT5_liveness:
+        requirements: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-review
+        general: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-review-general
+        architecture: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-review-architecture
+        compliance: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-review-compliance
+        abstractions: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-liveness-review-abstractions
+        pool_layouts: {requirements: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-review, general: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-review-general, architecture: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-review-architecture, compliance: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-review-compliance, abstractions: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-review-abstractions, fix1_tester: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-fix1-tester, fix1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-fix1, rereview1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-pool-rereview1}
+      AT6: {requirements: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-review, general: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-review-general, architecture: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-review-architecture, compliance: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-review-compliance, abstractions: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-review-abstractions, fix1_tester: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-fix1-tester, fix1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-fix1, rereview1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-rereview1, fix2: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-fix2}
+      AT7: {requirements: .tropos/peer/array-translation/20261115T161731Z-fba2be/b8-review, general: .tropos/peer/array-translation/20261115T161731Z-fba2be/b8-review-general, architecture: .tropos/peer/array-translation/20261115T161731Z-fba2be/b8-review-architecture, compliance: .tropos/peer/array-translation/20261115T161731Z-fba2be/b8-review-compliance, abstractions: .tropos/peer/array-translation/20261115T161731Z-fba2be/b8-review-abstractions, fix1: .tropos/peer/array-translation/20261115T161731Z-fba2be/b8-fix1}

@@ -1,0 +1,22 @@
+[gate] $ cargo bench --features bench --bench compare -- benches/evidence/array_translation/at-g1/layout-16/resident_access_session_projection-mmap_random_flat-paired.csv 1.50
+   Compiling serde_core v1.0.228
+   Compiling serde_json v1.0.150
+   Compiling serde v1.0.228
+   Compiling ciborium v0.2.2
+   Compiling dios v0.1.0 (/Users/srnnkls/projects/dios)
+   Compiling tinytemplate v1.2.1
+   Compiling criterion v0.8.2
+    Finished `bench` profile [optimized + debuginfo] target(s) in 7.86s
+     Running benches/compare.rs (target/release/deps/compare-58da936688e8c316)
+gate resident_access_session_projection-mmap_random_flat-paired: pairs 30, ratio geomean 1.4397, ci95 upper 1.4485, threshold 1.5000 -> PASS
+mbx[cache]: 6 hits, 3 misses, 1 bypassed; 0 B downloaded, 0 B uploaded, 26.9 MiB stored locally
+mbx[gc]: 18.7 GiB free on the disk holding /Users/srnnkls/Library/Caches/mbx, under the 20.0 GiB minimum; collecting private state and managed targets past their budgets, then shared cache objects if the cache disk is short
+mbx[gc]: kept 1 target directories in use by running commands
+mbx[gc]: evicted 0 objects and 0 action results (4.7 MiB logical); 498.2 MiB logical remain
+mbx[gc]: removed 0 learned incremental units and 0 checkout directories (0 B logical); 55 units (35.3 MiB logical) remain
+mbx[gc]: kept 55 learned incremental units used by active builds (1 active checkouts)
+mbx[gc]: removed 2 generated source trees (232 B logical); 0 B logical remain
+mbx[gc]: kept 1 target directories in use by running commands
+mbx[gc]: evicted 2024 shared cache objects and 322 action results below gc.max_size because the disk was under gc.min_free_size (498.2 MiB logical freed)
+mbx[gc]: evicted 2 shared cache objects and 2 action results below gc.max_size because the disk was under gc.min_free_size (7.7 KiB logical freed)
+mbx[savings]: 882.9 GiB logical of old files removed while you were busy compiling other things.

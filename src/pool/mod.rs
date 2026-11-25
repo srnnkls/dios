@@ -3,8 +3,8 @@
 //! the `Pool` that composes a driver behind `&self` entry points.
 //!
 //! The pool owns the driver it composes ([`PoolBackend`]) and unifies the read
-//! target with its own frames. The warm-hit `pin` probes the lock-free
-//! packed-atomic [`PageTable`]; every mutation — miss admission, completion
+//! target with its own frames. The warm-hit `pin` loads one entry of the
+//! per-file array [`Translation`]; every mutation — miss admission, completion
 //! routing, eviction, epoch advance/reclaim — runs under the AD-4 control-plane
 //! [`Mutex`]. The miss singleflight and the backend seam live in [`miss`].
 
@@ -41,12 +41,14 @@ mod frames;
 pub mod loom_model;
 mod miss;
 mod prefetch;
+mod read_copy;
 mod read_spans;
 mod retention;
-mod table;
+mod session;
+mod translation;
 pub(crate) mod write_arena;
 
-use epoch::{EvictQueue, FrameOutcome, PinCommit, ReaderRegistry, advance_epoch};
+use epoch::{EvictQueue, FrameOutcome, PinCommit, ReaderRegistry, advance_epoch, epoch_matured};
 use miss::{MissEntry, MissInterests, MissOutcome, MissSlot, MissTable};
 use retention::Retention;
 
@@ -58,57 +60,12 @@ pub(crate) use frames::{Frames, InFlightFrame};
 pub(crate) use miss::PoolBackend;
 pub(crate) use miss::sealed::Sealed as PoolBackendSealed;
 pub use prefetch::{PrefetchReport, PrefetchStats, Readahead};
+#[cfg(all(feature = "mock", not(loom)))]
+pub(crate) use read_copy::OptimisticCopyFailures;
+pub use read_copy::ReadCopy;
 pub use retention::{RetainRefused, RetainRefusedReason, RetainedFrame, RetentionStats};
-pub use table::PageTable;
-#[cfg(feature = "bench")]
-pub(crate) use table::page_hash;
-
-/// The frame-scaled control tables a build maps: the page table, the miss
-/// table and the frame page index. The population bench constructs them and
-/// measures touching every slot against constructing them alone.
-#[cfg(feature = "bench")]
-#[derive(Debug)]
-pub struct ControlTables {
-    table: PageTable,
-    miss: MissTable,
-    frame_pages: FramePages,
-}
-
-#[cfg(feature = "bench")]
-impl ControlTables {
-    /// Maps the tables of a `frame_count`-frame pool.
-    ///
-    /// # Panics
-    ///
-    /// If any table allocation fails.
-    #[must_use]
-    pub fn with_frame_count(frame_count: u32) -> Self {
-        Self {
-            table: PageTable::with_frame_count(frame_count),
-            miss: MissTable::try_with_capacity(
-                frame_count,
-                1,
-                crate::driver::DEFAULT_REGISTERED_FILE_CAPACITY,
-            )
-            .unwrap_or_else(|| panic!("miss table allocation failed for {frame_count} frames")),
-            frame_pages: FramePages::try_new(
-                frame_count,
-                crate::driver::DEFAULT_REGISTERED_FILE_CAPACITY,
-            )
-            .unwrap_or_else(|| {
-                panic!("frame page index allocation failed for {frame_count} frames")
-            }),
-        }
-    }
-
-    /// Writes every slot of every table once, the fault per page the eager
-    /// constructor loops used to pay.
-    pub fn populate(&mut self) {
-        self.table.populate();
-        self.miss.populate();
-        self.frame_pages.populate();
-    }
-}
+pub use session::{FileSession, ReadSession, SessionFile, SessionRead};
+pub use translation::Translation;
 
 /// Default frame granule, fixed per store at open and never below the `O_DIRECT`
 /// sector floor. AD-6 bounds the encoded BLOCK size (keys plus headers), not raw
@@ -117,6 +74,8 @@ impl ControlTables {
 /// block-size target justify 4096 as the default. T011/T014 re-validate this
 /// against real encoded segments, and a per-store override remains available.
 pub const GRANULE_DEFAULT: u32 = 4096;
+
+pub(crate) const FILE_GRANULES_MAX_DEFAULT: u32 = 1 << 22;
 
 /// The `O_DIRECT` sector floor: every frame and staging slot is aligned to this,
 /// and no granule may fall below it.
@@ -203,6 +162,21 @@ impl ColdGetPauseState {
     }
 }
 
+/// Why one lock-free `get` resolution minted no pin.
+#[derive(Debug, Clone, Copy)]
+enum PinMiss {
+    Absent,
+    StaleFile,
+}
+
+/// Why `get` left its lock-free hit path; an absent page carries its entry.
+#[derive(Debug, Clone, Copy)]
+enum GetMiss<'pool> {
+    BeyondFileBound,
+    StaleFile,
+    Absent(&'pool AtomicU32),
+}
+
 /// Stable address of an aligned file extent: a generational file id and the
 /// granule index within that file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -248,12 +222,17 @@ pub enum Get<'pool> {
 pub enum GetError {
     /// The file generation is retired or has been replaced.
     StaleFile { page: PageId },
+    /// The granule index is at or above the pool's `file_granules_max`.
+    BeyondFileBound { page: PageId },
 }
 
 impl std::fmt::Display for GetError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::StaleFile { page } => write!(f, "stale file for page {page:?}"),
+            Self::BeyondFileBound { page } => {
+                write!(f, "page {page:?} lies at or above the file granule bound")
+            }
         }
     }
 }
@@ -517,6 +496,25 @@ pub enum PoolConfigError {
         /// Granule the backend's arena carries.
         backend_granule: u32,
     },
+    /// `file_granules_max` is zero or not a power of two.
+    FileGranulesMaxNotPowerOfTwo {
+        /// Rejected per-file granule bound.
+        requested: u32,
+    },
+    /// `frame_count` exceeds what a translation entry can name.
+    FrameCountAboveTranslationLimit {
+        /// Configured frame count.
+        requested: u32,
+        /// Largest frame count a translation entry represents.
+        limit: u32,
+    },
+    /// The translation entry count overflows a `u64` byte length.
+    TranslationUnrepresentable {
+        /// Configured registered file slots.
+        registered_file_capacity: u32,
+        /// Configured per-file granule bound.
+        file_granules_max: u32,
+    },
 }
 
 impl std::fmt::Display for PoolConfigError {
@@ -585,6 +583,20 @@ impl std::fmt::Display for PoolConfigError {
             } => write!(
                 f,
                 "backend arena of {backend_frame_count} × {backend_granule} bytes does not match the configured {frame_count} × {granule} bytes"
+            ),
+            Self::FileGranulesMaxNotPowerOfTwo { requested } => {
+                write!(f, "file granule bound {requested} is not a power of two")
+            }
+            Self::FrameCountAboveTranslationLimit { requested, limit } => write!(
+                f,
+                "frame count {requested} exceeds the translation limit {limit}"
+            ),
+            Self::TranslationUnrepresentable {
+                registered_file_capacity,
+                file_granules_max,
+            } => write!(
+                f,
+                "{registered_file_capacity} file slots of {file_granules_max} granules overflow the translation mapping"
             ),
         }
     }
@@ -698,6 +710,7 @@ pub struct PoolBuilder {
     write_slots: u32,
     max_inflight_product_ops: u32,
     registered_file_capacity: u32,
+    file_granules_max: u32,
     registration_policy: RegistrationPolicy,
     arena_lock: ArenaLockPolicy,
     prefetch_headroom: Option<u32>,
@@ -719,6 +732,7 @@ impl Default for PoolBuilder {
             write_slots: 0,
             max_inflight_product_ops: 0,
             registered_file_capacity: crate::driver::DEFAULT_REGISTERED_FILE_CAPACITY,
+            file_granules_max: FILE_GRANULES_MAX_DEFAULT,
             registration_policy: RegistrationPolicy::Auto,
             arena_lock: ArenaLockPolicy::BestEffort,
             prefetch_headroom: None,
@@ -807,6 +821,13 @@ impl PoolBuilder {
         self
     }
 
+    /// Sets the per-file granule bound shared by every file slot.
+    #[must_use]
+    pub fn file_granules_max(mut self, file_granules_max: u32) -> Self {
+        self.file_granules_max = file_granules_max;
+        self
+    }
+
     /// Sets the buffer-registration posture; the default `Auto` probes and
     /// degrades, an explicit posture is honoured or refused typed.
     #[must_use]
@@ -871,6 +892,28 @@ impl PoolBuilder {
             });
         }
         self.prefetch_capacity()?;
+        self.validate_translation()
+    }
+
+    fn validate_translation(&self) -> Result<(), PoolConfigError> {
+        if !self.file_granules_max.is_power_of_two() {
+            return Err(PoolConfigError::FileGranulesMaxNotPowerOfTwo {
+                requested: self.file_granules_max,
+            });
+        }
+        if self.frame_count > translation::FRAME_COUNT_MAX {
+            return Err(PoolConfigError::FrameCountAboveTranslationLimit {
+                requested: self.frame_count,
+                limit: translation::FRAME_COUNT_MAX,
+            });
+        }
+        if translation::entry_bytes(self.registered_file_capacity, self.file_granules_max).is_none()
+        {
+            return Err(PoolConfigError::TranslationUnrepresentable {
+                registered_file_capacity: self.registered_file_capacity,
+                file_granules_max: self.file_granules_max,
+            });
+        }
         Ok(())
     }
 
@@ -1029,8 +1072,21 @@ struct Control {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PoolFileState {
     Live,
-    Retiring,
+    /// Retirement began when the global epoch was `epoch`; the handle and the
+    /// slot stay held until the epoch has advanced twice past it.
+    Retiring {
+        epoch: u64,
+    },
     Retired,
+}
+
+/// Whether a retiring file's slot may be closed and released now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetirementGrace {
+    /// After two epoch advances past the retirement record.
+    Epochs,
+    /// At pool teardown, where no session or guard can outlive the pool.
+    Teardown,
 }
 
 #[derive(Debug)]
@@ -1083,7 +1139,7 @@ impl ProductOp {
 }
 
 /// The userspace frame pool: preallocated frames shared with the composed driver,
-/// the lock-free packed page table, CLOCK eviction, epoch reclamation, and
+/// the lock-free per-file translation array, CLOCK eviction, epoch reclamation, and
 /// per-`PageId` singleflight, with reader registration capped at
 /// `max_concurrent_readers`. The CLOCK reference bits sit outside the control
 /// mutex so a warm hit sets them lock-free; the sweep hand advances only under
@@ -1104,7 +1160,7 @@ impl ProductOp {
 #[derive(Debug)]
 pub struct Pool<D = Driver> {
     frames: Arc<Frames>,
-    table: PageTable,
+    table: Translation,
     clock: Clock,
     global_epoch: AtomicU64,
     readers: Arc<ReaderRegistry>,
@@ -1120,6 +1176,7 @@ pub struct Pool<D = Driver> {
     control_acquisitions: diagnostics::DiagnosticCounter,
     driver: D,
     granule: u32,
+    file_granules_max: u32,
     frame_count: u32,
     max_concurrent_readers: u32,
     max_inflight_reads: u32,
@@ -1127,6 +1184,12 @@ pub struct Pool<D = Driver> {
     identity: u64,
     #[cfg(all(feature = "mock", not(loom)))]
     cold_get_pause: Mutex<Option<Arc<ColdGetPauseState>>>,
+    #[cfg(all(feature = "mock", not(loom)))]
+    pin_entry_pause: Mutex<Option<Arc<ColdGetPauseState>>>,
+    #[cfg(all(feature = "mock", not(loom)))]
+    pin_entry_pause_armed: crate::sync::AtomicBool,
+    #[cfg(all(feature = "mock", not(loom)))]
+    optimistic_copy_failures: Arc<OptimisticCopyFailures>,
     drop_hook: fn(&mut Pool<D>),
 }
 
@@ -1286,8 +1349,9 @@ impl<D: PoolBackend> Pool<D> {
         let backend_capacity = driver.operation_capacity();
         assert!(backend_capacity > 0, "the backend has operation slots");
         let control = Self::try_preallocated_control(&config, backend_capacity)?;
-        let table = PageTable::try_with_frame_count(config.frame_count)
-            .ok_or(PoolBuildError::Allocation)?;
+        let table =
+            Translation::try_reserve(config.registered_file_capacity, config.file_granules_max)
+                .ok_or(PoolBuildError::Allocation)?;
         let clock =
             Clock::try_with_frame_count(config.frame_count).ok_or(PoolBuildError::Allocation)?;
         #[cfg(feature = "bench")]
@@ -1324,6 +1388,7 @@ impl<D: PoolBackend> Pool<D> {
             control_acquisitions: diagnostics::DiagnosticCounter::new(),
             driver,
             granule: config.granule,
+            file_granules_max: config.file_granules_max,
             frame_count: config.frame_count,
             max_concurrent_readers: config.max_concurrent_readers,
             max_inflight_reads: config.max_inflight_reads,
@@ -1331,6 +1396,12 @@ impl<D: PoolBackend> Pool<D> {
             identity: pool_identity,
             #[cfg(all(feature = "mock", not(loom)))]
             cold_get_pause: Mutex::new(None),
+            #[cfg(all(feature = "mock", not(loom)))]
+            pin_entry_pause: Mutex::new(None),
+            #[cfg(all(feature = "mock", not(loom)))]
+            pin_entry_pause_armed: crate::sync::AtomicBool::new(false),
+            #[cfg(all(feature = "mock", not(loom)))]
+            optimistic_copy_failures: Arc::default(),
             drop_hook: Self::shutdown_for_drop,
         })
     }
@@ -1369,7 +1440,7 @@ impl<D: PoolBackend> Pool<D> {
     fn shutdown_for_drop(pool: &mut Pool<D>) {
         if !pool.retention.is_disabled() {
             let mut control = pool.control();
-            pool.progress_retirements(&mut control);
+            pool.progress_retirements(&mut control, RetirementGrace::Teardown);
         }
         pool.shutdown_internal();
     }
@@ -1536,6 +1607,51 @@ impl<D: PoolBackend> Pool<D> {
         pause
     }
 
+    /// Arms a one-shot pause for the next get after its epoch pin and before
+    /// its translation entry load.
+    #[cfg(all(feature = "mock", not(loom)))]
+    pub(crate) fn pause_next_get_between_pin_and_entry_internal(&self) -> Arc<ColdGetPauseState> {
+        let pause = Arc::new(ColdGetPauseState::armed());
+        let replaced = self
+            .pin_entry_pause
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(Arc::clone(&pause));
+        assert!(
+            replaced.is_none(),
+            "only one pin-to-entry pause may be armed"
+        );
+        self.pin_entry_pause_armed.store(true, Ordering::Release);
+        pause
+    }
+
+    pub(crate) fn translation_lookup_internal(&self, page: PageId) -> Option<ReadFrameIdx> {
+        self.table.lookup(page)
+    }
+
+    #[cfg(feature = "bench")]
+    pub(crate) fn translation_internal(&self) -> &Translation {
+        &self.table
+    }
+
+    #[cfg(all(feature = "mock", not(loom)))]
+    fn pause_get_between_pin_and_entry_if_armed(&self) {
+        if !self.pin_entry_pause_armed.load(Ordering::Relaxed) {
+            return;
+        }
+        if !self.pin_entry_pause_armed.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        let pause = self
+            .pin_entry_pause
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(pause) = pause {
+            pause.pause();
+        }
+    }
+
     #[cfg(loom)]
     fn wait_batch(&self) -> MutexGuard<'_, CompletionBatch> {
         self.wait_batch
@@ -1564,9 +1680,7 @@ impl<D: PoolBackend> Pool<D> {
         let id = fd.file_id();
         let mut control = self.control();
         assert!(
-            control.files[slot]
-                .as_ref()
-                .is_none_or(|entry| entry.state == PoolFileState::Retired),
+            file_slot_is_vacant(&control.files, id),
             "a file slot is absent or retired before registration"
         );
         self.retention.clear_file_retiring(id.slot());
@@ -1640,7 +1754,10 @@ impl<D: PoolBackend> Pool<D> {
             .as_ref()
             .filter(|entry| {
                 entry.id == file
-                    && matches!(entry.state, PoolFileState::Live | PoolFileState::Retiring)
+                    && matches!(
+                        entry.state,
+                        PoolFileState::Live | PoolFileState::Retiring { .. }
+                    )
             })
             .map(|entry| {
                 entry
@@ -1657,32 +1774,57 @@ impl<D: PoolBackend> Pool<D> {
     ///
     /// # Errors
     ///
-    /// Returns [`GetError::StaleFile`] for a retired or reused file generation.
+    /// Returns [`GetError::StaleFile`] for a retired or reused file generation
+    /// and [`GetError::BeyondFileBound`] for a granule at or above
+    /// `file_granules_max`.
     ///
     /// # Panics
     ///
     /// If `reader` or the page's file identity belongs to another pool.
+    #[inline(always)]
+    #[expect(
+        clippy::inline_always,
+        reason = "a hit reaches a caller in another crate without a call only when get is inlined there"
+    )]
     pub fn get<'pool>(
         &'pool self,
         reader: &'pool ReaderCtx,
         page: PageId,
     ) -> Result<Get<'pool>, GetError> {
+        #[cfg(all(feature = "mock", not(loom)))]
+        self.optimistic_copy_failures.count_get();
         self.assert_reader_owner(reader);
         let reader_slot = reader.slot();
-        assert_eq!(
-            page.file().driver(),
-            self.identity,
+        assert!(
+            page.file().driver() == self.identity,
             "file identity used with a foreign pool"
         );
-        if !file_generation_is_live(
-            &self.file_live_generations[page.file().slot() as usize],
-            page.file(),
-        ) {
-            return Err(GetError::StaleFile { page });
-        }
-        if let Some(guard) = self.pin_internal_borrowed(reader_slot, &page) {
-            return Ok(Get::Hit(guard));
-        }
+        let miss = match self.table.bounded_entry(page) {
+            Some(entry) => match self.pin_live(reader_slot, page, entry) {
+                Ok(pin) => return Ok(Get::Hit(self.pinned_guard(pin, reader_slot, page))),
+                Err(PinMiss::Absent) => GetMiss::Absent(entry),
+                Err(PinMiss::StaleFile) => GetMiss::StaleFile,
+            },
+            None => GetMiss::BeyondFileBound,
+        };
+        self.get_missed(reader, page, miss)
+    }
+
+    /// The one out-of-line exit of `get` for every outcome but a lock-free hit.
+    #[cold]
+    #[inline(never)]
+    fn get_missed<'pool>(
+        &'pool self,
+        reader: &'pool ReaderCtx,
+        page: PageId,
+        miss: GetMiss<'pool>,
+    ) -> Result<Get<'pool>, GetError> {
+        let entry = match miss {
+            GetMiss::BeyondFileBound => return Err(GetError::BeyondFileBound { page }),
+            GetMiss::StaleFile => return Err(GetError::StaleFile { page }),
+            GetMiss::Absent(entry) => entry,
+        };
+        let reader_slot = reader.slot();
         #[cfg(all(feature = "mock", not(loom)))]
         self.pause_cold_get_if_armed();
         let mut control = self.control();
@@ -1695,10 +1837,11 @@ impl<D: PoolBackend> Pool<D> {
             .is_some_and(|frame| self.frames.state(frame) == FrameState::Resident)
         {
             drop(control);
-            return Ok(match self.pin_internal_borrowed(reader_slot, &page) {
-                Some(guard) => Get::Hit(guard),
-                None => Get::Busy,
-            });
+            return match self.pin_live(reader_slot, page, entry) {
+                Ok(pin) => Ok(Get::Hit(self.pinned_guard(pin, reader_slot, page))),
+                Err(PinMiss::StaleFile) => Err(GetError::StaleFile { page }),
+                Err(PinMiss::Absent) => Ok(Get::Busy),
+            };
         }
         control.prefetch.reconcile(&self.clock);
         let result = self.get_cold(page, reader.index(), &mut control);
@@ -1797,6 +1940,9 @@ impl<D: PoolBackend> Pool<D> {
     #[must_use]
     pub fn resident_hint(&self, lease: &ResidentFileLease, page: PageId) -> Option<ResidentHint> {
         self.assert_lease_owner(lease, page);
+        if page.granule_idx() >= self.file_granules_max {
+            return None;
+        }
         let frame = self.table.lookup(page)?;
         let stamp = self.frames.state_word(frame);
         if !Frames::word_is_resident(stamp) {
@@ -1872,6 +2018,9 @@ impl<D: PoolBackend> Pool<D> {
     ) -> Result<Get<'pool>, GetError> {
         self.assert_reader_owner(reader);
         self.assert_lease_owner(lease, page);
+        if page.granule_idx() >= self.file_granules_max {
+            return Err(GetError::BeyondFileBound { page });
+        }
         if !file_generation_is_live(
             &self.file_live_generations[page.file().slot() as usize],
             page.file(),
@@ -1946,11 +2095,9 @@ impl<D: PoolBackend> Pool<D> {
                 );
                 let slot = reader.slot();
                 let page = entry.page();
-                let (bytes, frame) = self
+                let guard = self
                     .pin_owned(&page, slot)
                     .expect("the protected successful frame remains pinnable");
-                let guard =
-                    FrameGuard::new(bytes, slot, frame, page.file().slot(), &self.retention);
                 let slot = token.slot;
                 let generation = token.generation;
                 let _ = token.consume();
@@ -2115,7 +2262,7 @@ impl<D: PoolBackend> Pool<D> {
         let backend = self.drain_completions(&mut control);
         let reclaimed = self.advance_and_reclaim(&mut control);
         Self::deliver_product_completions(&mut control, out);
-        self.progress_retirements(&mut control);
+        self.progress_retirements(&mut control, RetirementGrace::Epochs);
         self.progress_prefetch(&mut control);
         if backend > 0 || reclaimed > 0 || out.iter().next().is_some() {
             self.wake.consume_current();
@@ -2150,7 +2297,7 @@ impl<D: PoolBackend> Pool<D> {
         self.route_completion_batch(&mut control);
         let reclaimed = self.advance_and_reclaim(&mut control);
         Self::deliver_product_completions(&mut control, out);
-        self.progress_retirements(&mut control);
+        self.progress_retirements(&mut control, RetirementGrace::Epochs);
         self.progress_prefetch(&mut control);
         if backend.backend_completions > 0 || reclaimed > 0 || out.iter().next().is_some() {
             self.wake.consume_current();
@@ -2169,12 +2316,25 @@ impl<D: PoolBackend> Pool<D> {
         }
     }
 
-    /// Starts or advances typed file retirement.
+    /// Starts or advances retirement of `file`. From the first call on, `get`,
+    /// `read_copy`, `lease_file`, submissions, [`ReadSession::file`] and
+    /// [`Pool::session_file`] report `file` as stale, and its resident
+    /// granules are unmapped. A [`SessionFile`] or [`FileSession`] obtained
+    /// before the first call keeps returning `file`'s resident granules or
+    /// `Absent` until its session drops.
     ///
-    /// The first call reports [`RetireStatus::Retiring`] for the accepted
-    /// `Live -> Retiring` transition even when its in-memory progress pass can
-    /// close the file immediately. A subsequent call observes
-    /// [`RetireStatus::Retired`].
+    /// The first call reports [`RetireStatus::Retiring`]. A later call returns
+    /// [`RetireStatus::Retired`] once no reader can observe `file`'s bytes, no
+    /// I/O on it is in flight, its handle is closed and its slot can be
+    /// registered again. That requires every session and guard opened before
+    /// the first call to drop, followed by two advancing polls; until then a
+    /// registration that finds no other free slot returns
+    /// [`FileRegistrationError::AtCapacity`]. A thread waiting for `Retired`
+    /// while it holds such a session never sees it.
+    ///
+    /// The pool does not observe changes to the underlying file. To keep every
+    /// reader from seeing bytes from before an in-place change, retire the file
+    /// and wait for `Retired` before changing it.
     ///
     /// # Panics
     ///
@@ -2197,8 +2357,13 @@ impl<D: PoolBackend> Pool<D> {
             return RetireStatus::Retired;
         }
         self.retention.mark_file_retiring(file.slot());
-        let started = begin_file_retirement(entry, &self.file_live_generations[index], file);
-        self.progress_retirements(&mut control);
+        let started = begin_file_retirement(
+            entry,
+            &self.file_live_generations[index],
+            file,
+            self.global_epoch.load(Ordering::Acquire),
+        );
+        self.progress_retirements(&mut control, RetirementGrace::Epochs);
         if started {
             RetireStatus::Retiring
         } else if control.files[index]
@@ -2226,12 +2391,18 @@ impl<D: PoolBackend> Pool<D> {
         }
     }
 
-    fn progress_retirements(&self, control: &mut Control) {
+    fn progress_retirements(&self, control: &mut Control, grace: RetirementGrace) {
+        let global_epoch = self.global_epoch.load(Ordering::Acquire);
         for index in 0..control.files.len() {
-            let Some(file) = control.files[index]
+            let Some((file, grace_elapsed)) = control.files[index]
                 .as_ref()
-                .filter(|entry| entry.state == PoolFileState::Retiring)
-                .map(|entry| entry.id)
+                .filter(|entry| matches!(entry.state, PoolFileState::Retiring { .. }))
+                .map(|entry| {
+                    (
+                        entry.id,
+                        retirement_grace_elapsed(entry, grace, global_epoch),
+                    )
+                })
             else {
                 continue;
             };
@@ -2260,7 +2431,7 @@ impl<D: PoolBackend> Pool<D> {
                     .as_ref()
                     .is_some_and(|operation| operation.file() == file)
             });
-            if !miss_live && !frames_live && !product_live {
+            if grace_elapsed && !miss_live && !frames_live && !product_live {
                 let entry = control.files[index]
                     .as_mut()
                     .expect("the retiring file remains registered");
@@ -2268,6 +2439,7 @@ impl<D: PoolBackend> Pool<D> {
                     self.driver.close(handle);
                 }
                 if self.driver.is_closed(file) {
+                    self.table.release_slot(file);
                     entry.state = PoolFileState::Retired;
                 }
             }
@@ -2292,7 +2464,11 @@ impl<D: PoolBackend> Pool<D> {
             if !control.miss.prepare_eviction(frame, &self.miss_interests) {
                 continue;
             }
-            let _ = self.table.remove_shared(page);
+            assert_eq!(
+                self.table.clear(page),
+                frame,
+                "a resident frame's page names it in the translation"
+            );
             control
                 .prefetch
                 .finish(&self.clock, frame, prefetch::state::Terminal::Evicted);
@@ -2309,7 +2485,7 @@ impl<D: PoolBackend> Pool<D> {
         let mut control = self.control();
         let _ = self.drain_completions(&mut control);
         let reclaimed = self.advance_and_reclaim(&mut control);
-        self.progress_retirements(&mut control);
+        self.progress_retirements(&mut control, RetirementGrace::Epochs);
         self.progress_prefetch(&mut control);
         debug_assert!(
             reclaimed <= self.frame_count as usize,
@@ -2362,33 +2538,105 @@ impl<D: PoolBackend> Pool<D> {
         slot: &'ctx epoch::ReaderSlot,
         page: &PageId,
     ) -> Option<FrameGuard<'ctx>> {
-        let (bytes, frame) = self.pin_owned(page, slot)?;
-        Some(FrameGuard::new(
-            bytes,
-            slot,
-            frame,
-            page.file().slot(),
-            &self.retention,
-        ))
+        self.pin_owned(page, slot)
     }
 
     #[inline(never)]
     fn pin_owned<'pool>(
         &'pool self,
         page: &PageId,
+        slot: &'pool epoch::ReaderSlot,
+    ) -> Option<FrameGuard<'pool>> {
+        let begun = self.pin_begin(slot);
+        let (begun, frame) = self.pin_entry(begun, slot, *page)?;
+        let pin = self.pin_commit(begun, frame, slot);
+        Some(self.pinned_guard(pin, slot, *page))
+    }
+
+    /// The epoch publication every lock-free resolution starts with: `get`,
+    /// the owned pin and the session read.
+    #[inline]
+    fn pin_begin(&self, slot: &epoch::ReaderSlot) -> epoch::PinBegun {
+        slot.begin_pin(self.global_epoch.load(Ordering::Acquire))
+    }
+
+    /// Loads `page`'s entry under the begun pin, aborting the pin when the
+    /// entry is absent.
+    #[inline]
+    fn pin_entry(
+        &self,
+        begun: epoch::PinBegun,
         slot: &epoch::ReaderSlot,
-    ) -> Option<(&'pool [u8], ReadFrameIdx)> {
-        let begun = slot.begin_pin(self.global_epoch.load(Ordering::Acquire));
-        let mapped = self.table.lookup(*page);
-        let Some(frame) = mapped else {
+        page: PageId,
+    ) -> Option<(epoch::PinBegun, ReadFrameIdx)> {
+        let Some(frame) = self.table.lookup(page) else {
             slot.abort_pin(begun);
             return None;
         };
-        let _ = self.clock.reference_from(frame, slot);
-        let pin = slot.commit_pin(begun, frame);
-        Some((self.frames.frame_bytes(&pin), pin.frame()))
+        Some((begun, frame))
     }
 
+    #[inline]
+    fn pin_commit(
+        &self,
+        begun: epoch::PinBegun,
+        frame: ReadFrameIdx,
+        slot: &epoch::ReaderSlot,
+    ) -> PinCommit {
+        let _ = self.clock.reference_from(frame, slot);
+        slot.commit_pin(begun, frame)
+    }
+
+    /// The guard over the frame `pin` holds on `slot`, built in the frame of
+    /// `get`'s caller from the register-sized pin.
+    #[inline]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the commit is linear: the guard it becomes consumes it"
+    )]
+    fn pinned_guard<'pool>(
+        &'pool self,
+        pin: PinCommit,
+        slot: &'pool epoch::ReaderSlot,
+        page: PageId,
+    ) -> FrameGuard<'pool> {
+        FrameGuard::new(
+            self.frames.frame_bytes(&pin),
+            slot,
+            pin.frame(),
+            page.file().slot(),
+            &self.retention,
+        )
+    }
+
+    /// The lock-free resolution of `get`: pins the epoch, loads the entry and
+    /// only then the file-generation mirror (INV-7), so an entry a reused slot's
+    /// successor published is never admitted under the retired identity.
+    #[inline]
+    fn pin_live(
+        &self,
+        slot: &epoch::ReaderSlot,
+        page: PageId,
+        entry: &AtomicU32,
+    ) -> Result<PinCommit, PinMiss> {
+        let begun = self.pin_begin(slot);
+        #[cfg(all(feature = "mock", not(loom)))]
+        self.pause_get_between_pin_and_entry_if_armed();
+        let Some(frame) = translation::entry_frame(entry) else {
+            slot.abort_pin(begun);
+            return Err(PinMiss::Absent);
+        };
+        if !file_generation_is_live(
+            &self.file_live_generations[page.file().slot() as usize],
+            page.file(),
+        ) {
+            slot.abort_pin(begun);
+            return Err(PinMiss::StaleFile);
+        }
+        Ok(self.pin_commit(begun, frame, slot))
+    }
+
+    #[inline]
     fn assert_reader_owner(&self, reader: &ReaderCtx) {
         assert!(
             reader.belongs_to(&self.readers),
@@ -2441,7 +2689,7 @@ impl<D: PoolBackend> Pool<D> {
             .expect("the free stack holds only Free frames");
         self.frames.fill(&mut write, fill);
         self.frames.publish(write);
-        self.table.insert_shared(page, frame);
+        self.table.publish(page, frame);
         control
             .frame_pages
             .insert(frame.get() as usize, FrameFileSlot::for_page(page));
@@ -2467,8 +2715,8 @@ impl<D: PoolBackend> Pool<D> {
             "a testing eviction cannot bypass live pending-token protection"
         );
         assert_eq!(
-            self.table.remove_shared(page),
-            Some(frame),
+            self.table.clear(page),
+            frame,
             "the control lock keeps the eviction mapping stable"
         );
         control
@@ -2792,7 +3040,7 @@ impl<D: PoolBackend> Pool<D> {
             observation.terminal(entry.frame(), entry.page(), Ok(()));
         }
         self.frames.publish(write);
-        self.table.insert_shared(entry.page(), entry.frame());
+        self.table.publish(entry.page(), entry.frame());
         frame_pages.insert(
             entry.frame().get() as usize,
             FrameFileSlot::for_page(entry.page()),
@@ -3016,6 +3264,7 @@ pub(crate) fn acquire_resident_file_lease(
     ResidentLeaseState::acquire(state, file)
 }
 
+#[inline]
 fn file_live_word(file: FileId) -> u64 {
     (u64::from(file.generation()) << 1) | 1
 }
@@ -3038,21 +3287,66 @@ fn publish_live_file(
     live_generation.store(file_live_word(id), Ordering::Release);
 }
 
+#[inline]
 fn file_generation_is_live(live_generation: &AtomicU64, file: FileId) -> bool {
-    live_generation.load(Ordering::Acquire) == file_live_word(file)
+    live_word_is_live(live_generation, file_live_word(file))
 }
 
-fn begin_file_retirement(entry: &mut PoolFile, live_generation: &AtomicU64, file: FileId) -> bool {
+/// The one file-liveness rule: the slot's mirror holds the file's live word.
+#[inline]
+fn live_word_is_live(live_generation: &AtomicU64, live_word: u64) -> bool {
+    live_generation.load(Ordering::Acquire) == live_word
+}
+
+/// Clears the slot's mirror and records `global_epoch` on the transition from
+/// live to retiring; a repeated call leaves the record unchanged. Returns
+/// whether this call began retirement.
+fn begin_file_retirement(
+    entry: &mut PoolFile,
+    live_generation: &AtomicU64,
+    file: FileId,
+    global_epoch: u64,
+) -> bool {
     assert_eq!(entry.id, file, "retirement names the exact generation");
-    assert_ne!(
-        entry.state,
-        PoolFileState::Retired,
-        "a retired file cannot begin retirement"
-    );
-    let started = entry.state == PoolFileState::Live;
-    entry.state = PoolFileState::Retiring;
-    live_generation.store(0, Ordering::Release);
-    started
+    match entry.state {
+        PoolFileState::Live => {
+            live_generation.store(0, Ordering::Release);
+            entry.state = PoolFileState::Retiring {
+                epoch: global_epoch,
+            };
+            true
+        }
+        PoolFileState::Retiring { .. } => {
+            assert_eq!(
+                live_generation.load(Ordering::Relaxed),
+                0,
+                "a retiring file's mirror stays cleared"
+            );
+            false
+        }
+        PoolFileState::Retired => panic!("a retired file cannot begin retirement"),
+    }
+}
+
+/// Whether the retiring `entry` may close its handle and release its slot:
+/// at teardown, or once the global epoch has advanced twice past its
+/// retirement record, so no session that validated it before the mirror
+/// cleared still holds its view (INV-3).
+fn retirement_grace_elapsed(entry: &PoolFile, grace: RetirementGrace, global_epoch: u64) -> bool {
+    let PoolFileState::Retiring { epoch } = entry.state else {
+        panic!("only a retiring file has a retirement grace");
+    };
+    match grace {
+        RetirementGrace::Epochs => epoch_matured(epoch, global_epoch),
+        RetirementGrace::Teardown => true,
+    }
+}
+
+/// Whether `file`'s slot can register a file: absent, or its last file retired.
+fn file_slot_is_vacant(files: &[Option<PoolFile>], file: FileId) -> bool {
+    files[file.slot() as usize]
+        .as_ref()
+        .is_none_or(|entry| entry.state == PoolFileState::Retired)
 }
 
 fn live_file_handle(

@@ -1024,23 +1024,28 @@ impl MockExecutor {
         let state = self.lock();
         let file = context.fd;
         let file_offset = context.file_offset;
-        let transfer = |offset: u32, destination: &mut [u8]| {
-            fill_seeded_prefix(
-                &state.seeds,
-                file,
-                self.frame_bytes,
-                file_offset + u64::from(offset),
-                destination,
-            );
+        let transfer = |offset: u32, destination: *mut u8, len: u32| {
+            // SAFETY: the op owns the write token of every frame the range
+            // lies in until it completes.
+            unsafe {
+                fill_seeded_prefix(
+                    &state.seeds,
+                    file,
+                    self.frame_bytes,
+                    file_offset + u64::from(offset),
+                    destination,
+                    len,
+                );
+            }
         };
         match context.frame.as_mut().expect("read destination owner") {
             ReadDestination::Point(token) => {
                 let destination = self
                     .arena
-                    .transfer_mut(token, context.destination_offset, bytes);
-                transfer(0, destination);
+                    .transfer_ptr(token, context.destination_offset, bytes);
+                transfer(0, destination, bytes);
             }
-            ReadDestination::Vector(vector) => vector.transfer_prefix(bytes, transfer),
+            ReadDestination::Vector(vector) => vector.transfer_prefix_raw(bytes, transfer),
         }
     }
 
@@ -1832,19 +1837,23 @@ impl RingExecutor for MockRingExecutor {
                     .expect("located retained vector transfer");
                 if raw >= 0 {
                     let bytes = u32::try_from(raw).expect("nonnegative CQE");
-                    // SAFETY: the shared core retains this slot's descriptor
-                    // storage and every frame token until the sink reaps it.
-                    unsafe {
-                        descriptors.transfer_prefix(bytes, |advance, destination| {
+                    let transfer = |advance: u32, destination: *mut u8, len: u32| {
+                        // SAFETY: the shared core retains every frame token
+                        // of the transfer until the sink reaps it.
+                        unsafe {
                             fill_seeded_prefix(
                                 &state.seeds,
                                 file,
                                 self.frame_bytes,
                                 offset + u64::from(advance),
                                 destination,
+                                len,
                             );
-                        });
+                        }
                     };
+                    // SAFETY: the shared core retains this slot's descriptor
+                    // storage and every frame token until the sink reaps it.
+                    unsafe { descriptors.transfer_prefix_raw(bytes, transfer) };
                 }
             }
             let keep_reaping = sink(user_data, raw);
@@ -1870,24 +1879,39 @@ impl RingExecutor for MockRingExecutor {
     }
 }
 
-fn fill_seeded_prefix(
+/// Writes each seeded granule's byte over its part of the read-frame payload
+/// range `[destination, destination + len)` through the atomic payload stores
+/// (FR-11).
+///
+/// # Safety
+///
+/// The range lies inside the pool's frames, and the caller holds the write
+/// token of every frame it touches for the whole call.
+unsafe fn fill_seeded_prefix(
     seeds: &HashMap<(FileId, u32), u8>,
     file: FileId,
     granule: u32,
     file_offset: u64,
-    destination: &mut [u8],
+    destination: *mut u8,
+    len: u32,
 ) {
-    let mut transferred = 0usize;
-    while transferred < destination.len() {
-        let offset = file_offset + u64::try_from(transferred).expect("vector prefix fits u64");
+    let mut transferred = 0u32;
+    while transferred < len {
+        let offset = file_offset + u64::from(transferred);
         let Ok(page) = u32::try_from(offset / u64::from(granule)) else {
             break;
         };
         let within = u32::try_from(offset % u64::from(granule)).expect("within granule");
-        let count = (granule - within) as usize;
-        let count = count.min(destination.len() - transferred);
+        let count = (granule - within).min(len - transferred);
         if let Some(&fill) = seeds.get(&(file, page)) {
-            destination[transferred..transferred + count].fill(fill);
+            // SAFETY: a subrange of the caller's range, under its tokens.
+            unsafe {
+                Frames::store_payload_bytes(
+                    destination.wrapping_add(transferred as usize),
+                    count as usize,
+                    fill,
+                );
+            }
         }
         transferred += count;
     }

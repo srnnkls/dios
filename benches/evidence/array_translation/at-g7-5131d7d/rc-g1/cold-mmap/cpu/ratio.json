@@ -1,0 +1,8 @@
+{
+  "adopted_bound": null,
+  "ci95_upper": 0.9508761248544116,
+  "kind": "characterization",
+  "pairs": 30,
+  "ratio_geomean": 0.9480402919780335,
+  "ratio_orientation": "candidate/base"
+}

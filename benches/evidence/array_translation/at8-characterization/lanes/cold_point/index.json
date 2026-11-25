@@ -1,0 +1,53 @@
+{
+  "lane": {
+    "arms": [
+      "mmap_random",
+      "dios_serial"
+    ],
+    "cache": "cold",
+    "frames": 1024,
+    "name": "cold_point",
+    "operations": 1024,
+    "useful_bytes_per_read": 64,
+    "workers": 1
+  },
+  "name": "cold_point",
+  "arms": [
+    "mmap_random",
+    "dios_serial"
+  ],
+  "modes": [
+    "plain",
+    "plain"
+  ],
+  "rows": [
+    {
+      "raw": "/home/srnnkls/build/dios/target/array-translation/at8-characterization-20261125T144457/lanes/cold_point/0000-0.json",
+      "sha256": "cd7e8841e28c36970640aefef1ccf93daaa092c86645a93c70d67699d98bc96c",
+      "arm": "mmap_random",
+      "seed": 0,
+      "tracing": "plain",
+      "mode": "smoke",
+      "started_ns": 1795614307903118216,
+      "finished_ns": 1795614307986467783,
+      "elapsed_ns": 67398914,
+      "pair": 0,
+      "position": 0,
+      "executable_sha256": "ebeb49fccf2cf7fe7f7c280524ec452bfb9908539ee189875a22f102d7c3e15b"
+    },
+    {
+      "raw": "/home/srnnkls/build/dios/target/array-translation/at8-characterization-20261125T144457/lanes/cold_point/0000-1.json",
+      "sha256": "9df36d23cb5b5a7a0562770d2f8e1d01b632cf7811827ffe86e6e23de263212e",
+      "arm": "dios_serial",
+      "seed": 0,
+      "tracing": "plain",
+      "mode": "smoke",
+      "started_ns": 1795614307986723270,
+      "finished_ns": 1795614308069326617,
+      "elapsed_ns": 67180468,
+      "pair": 0,
+      "position": 1,
+      "executable_sha256": "ebeb49fccf2cf7fe7f7c280524ec452bfb9908539ee189875a22f102d7c3e15b"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+[gate] $ cargo bench --features bench --bench compare -- benches/evidence/array_translation/at-g7-1dfecfd/drp/drp_g4_ordinary_base_8t/paired.csv 1.00
+    Finished `bench` profile [optimized + debuginfo] target(s) in 0.05s
+     Running benches/compare.rs (target/release/deps/compare-58da936688e8c316)
+gate paired: pairs 30, ratio geomean 0.2929, ci95 upper 0.3104, threshold 1.0000 -> PASS

@@ -1,0 +1,387 @@
+---
+scope: array-translation
+code: AT
+next_id: 10
+meta:
+  created: '2026-11-15'
+  last_updated: '2026-11-17'
+  progress: 5/9
+phases:
+- name: Contracts
+  tasks: [AT1]
+- name: Translation swap
+  tasks: [AT2, AT3]
+- name: Session read
+  tasks: [AT4, AT5]
+- name: Copy-out
+  tasks: [AT6, AT7]
+- name: Get hit path
+  tasks: [AT9]
+- name: Campaign
+  tasks: [AT8]
+tasks:
+- id: AT1
+  title: Freeze the capture contracts and audits before code
+  status: done
+  completed_at: '2026-11-15T16:39:37Z'
+  evidence:
+    tester: .tropos/peer/array-translation/20261115T161731Z-fba2be/b1-tester-AT1/native.yaml
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b1-implementer-AT1/native.yaml
+    fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b1-fix1/native.yaml
+    review: scopes/active/array-translation/review.yaml#implementation_batches
+  domain: bench
+  depends_on: []
+  files:
+  - scopes/active/array-translation/
+  - scopes/draft/warm-read-copy-out/scope.md
+  - benches/plans/array_translation.md
+  - benches/evidence/array_translation/README.md
+  - tests/array_translation_plan.rs
+  acceptance: Per-gate manifests, capture commands and the hugepage witness are pinned.
+    The inventory of in-process read-frame payload writers, the target and compiler
+    ordering audit for the stamp, entry and volatile loads, and the Miri model limits
+    are recorded. The DRP frozen-runner revision and fresh-base prerequisite is named
+    with its owner. warm-read-copy-out carries a pointer to this scope as its
+    successor. No product source changes.
+- id: AT2
+  title: Pin translation behavior with failing tests
+  status: done
+  completed_at: '2026-11-15T17:29:42Z'
+  evidence:
+    tester: .tropos/peer/array-translation/20261115T161731Z-fba2be/b2-tester-AT2/native.yaml
+    tester_attempt2: .tropos/peer/array-translation/20261115T161731Z-fba2be/b2-tester-AT2-attempt2/native.yaml
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b2-implementer-AT2/native.yaml
+    fix: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b2-fix1-rust/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b2-fix1-python/native.yaml]
+    gate: .tropos/peer/array-translation/20261115T161731Z-fba2be/b2-fix1-rust/gate-after-fix.txt
+    review: scopes/active/array-translation/review.yaml#implementation_batches
+  domain: pool
+  depends_on:
+  - AT1
+  files:
+  - tests/translation.rs
+  - src/pool/translation.rs
+  - src/pool/mod.rs
+  - src/lib.rs
+  - tests/pool.rs
+  - tests/miss.rs
+  - tests/pool_retire.rs
+  - tests/pool_allocation_failure.rs
+  - tests/public_api.rs
+  - tests/zero_alloc.rs
+  - tests/loom_pool.rs
+  - src/pool/loom_model.rs
+  - tests/prefetch.rs
+  - tests/mmap_workload_validation.py
+  - benches/mmap_workloads/collect.py
+  - benches/mmap_workloads/validate.py
+  acceptance: RED for AC-1 to AC-5, the get half of AC-9, AC-15 for get hits and the
+    get half of AC-17.
+    Map, unmap and lookup of one entry, the bound and power-of-two config errors, a
+    refused reservation, a build whose reservation exceeds the host's RAM plus swap, the
+    out-of-bound error on get, the explicit prefetch rejected before any lookup for a middle slot and the last slot, the readahead window
+    ending below the bound, retirement leaving a slot absent and released while a
+    neighboring slot in the same OS page stays resident, the paused empty-file
+    retire-and-reuse falsifier for get, and the Loom publish, evict and lookup cases
+    run against a scaffolded Translation and fail for the right reason. Existing table tests move to the new
+    structure without losing a case. The AT-G4 capture is pinned as well (AT-D5), where the
+    collector's base-build option writes one uniquely named row per process in AB/BA
+    order, and the warm-prepare validator rejects mixed identity, unequal work,
+    incomplete pairs and manifest drift across the base and candidate builds. Source
+    edits are scaffolds and test hooks only.
+- id: AT3
+  title: Replace the hash page table with array translation
+  status: done
+  evidence:
+    tester: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b3-tester-AT3/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-tester-AT3-attempt2/native.yaml]
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-implementer-AT3-resume/native.yaml
+    implementer_failed_wave: .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-implementer-AT3/
+    fix: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix1-rust/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix1-python/native.yaml]
+    gate_local: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix1-rust/gate-after-fix.txt, .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix1-rust/gate-miri.txt, .tropos/peer/array-translation/20261115T161731Z-fba2be/b3-fix1-rust/gate-asan.txt]
+    review: scopes/active/array-translation/review.yaml#implementation_batches
+  domain: pool
+  depends_on:
+  - AT2
+  files:
+  - src/pool/translation.rs
+  - src/pool/table.rs
+  - src/pool/mod.rs
+  - src/pool/prefetch.rs
+  - src/pool/miss.rs
+  - src/pool/loom_model.rs
+  - src/allocation.rs
+  - src/lib.rs
+  - src/bin/drp_g1_probes.rs
+  - benches/table_population.rs
+  - benches/plans/table_population.md
+  - benches/mmap_workloads/collect.py
+  - benches/mmap_workloads/validate.py
+  - benches/mmap_workloads/analyze.py
+  - benches/mmap_workloads/frozen.py
+  - tests/translation.rs
+  - tests/mmap_workload_validation.py
+  - tests/pool.rs
+  - tests/loom_pool.rs
+  - tests/public_api.rs
+  - tests/drp005_probe_gate.rs
+  - src/sync.rs
+  - src/pool/file_slots.rs
+  - mise.toml
+  - Cargo.toml
+  acceptance: AT2 is GREEN. Every verb resolves residency through Translation under
+    INV-1 and INV-2; PageTable, page_hash, the DRP-G1 probe binary and the
+    table_population bench are gone with their evidence untouched. The collector's
+    base-build option and the warm-prepare validator capture AT-G4 as rich rows
+    (AT-D5). Both reuse the existing owners, with the pairing and CSV header of
+    analyze.read_comparison shared with warm-prepare and one AB/BA schedule iterated by
+    collect_comparison and the base-build capture. AT-G4 and AT-G7 pass on nix. Lint, Loom, Miri and ASAN are clean.
+- id: AT4
+  title: Pin the session read with failing tests and bench arms
+  status: done
+  completed_at: '2026-11-17T18:30:00Z'
+  evidence:
+    first_wave: {commit: 7d59f2b, tester: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-tester-AT4/native.yaml, implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-implementer-AT4/native.yaml, fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-fix1/native.yaml}
+    fair_wave: {tester: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b4-tester-AT4-fair/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-tester-AT4-fair-attempt2/native.yaml], implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-implementer-AT4-fair/native.yaml, fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b4-fix2/native.yaml}
+    review: scopes/active/array-translation/review.yaml#implementation_batches
+  domain: pool
+  depends_on:
+  - AT3
+  files:
+  - tests/read_session.rs
+  - tests/guard_compile_fail.rs
+  - tests/epoch_guards.rs
+  - tests/loom_pool.rs
+  - src/pool/loom_model.rs
+  - src/pool/session.rs
+  - tests/public_api.rs
+  - tests/zero_alloc.rs
+  - benches/mmap_workloads/resident.rs
+  - benches/mmap_workloads/catalog.rs
+  - benches/mmap_workloads/mod.rs
+  - benches/mmap_workloads/collect.py
+  - benches/mmap_workloads/validate.py
+  - tests/mmap_workload_validation.py
+  - tests/mmap_workload_contract.rs
+  - benches/mmap_tlb_pressure.rs
+  - benches/mmap_workloads/fair.rs
+  - benches/mmap_workloads/engine.rs
+  - benches/mmap_workloads/analyze.py
+  - benches/mmap_workloads/fixture.rs
+  - build.rs
+  - benches/plans/array_translation.md
+  acceptance: RED for AC-6 to AC-10 and the session half of AC-15 and AC-17. The
+    session arms for AT-G1, AT-G2 and AT-G3 exist with equal bytes and checksums
+    across arms, the warm-prepare validator rejects mixed identity, unequal work and
+    incomplete pairs, and no performance pass is claimed. Source edits are scaffolds
+    and test hooks only.
+    Amended 2026-11-17 (AT-D9 to AT-D13), the session lanes, a fair get lane
+    resident_access_fair_get and the plain_array floor arm run in the fair-lane module
+    under rules F1 to F11 of the bench plan, with the warm pass, the timed region of
+    at least 100 ms, the page-size witness and ns per read in the gate output; the
+    collector gains the layout builds of F12 and the shared-runner base build of F10,
+    and warm-prepare rejects what AC-18 lists. The legacy resident lanes and the
+    characterization mode of mmap_tlb_pressure keep the loop code of 604410a (AC-19).
+    AT-G3 is the fair lane resident_access_session_fold_256m on the shipping backend
+    with the page-size witness in its rows; the session mode of mmap_tlb_pressure is
+    removed. The 64-byte fair lanes repeat the sequence 2,048 times and arms that call
+    an API a base tree lacks are cfg-gated from build.rs (F10).
+- id: AT5
+  title: Implement the session read
+  status: done
+  gates: "AT-G1 passed pooled at 6ba0592 (AT-D24, 90 pairs, ci95 upper 1.4830; builds reported 1.4000, 1.4909, 1.5537); AT-G2 passed at 6ba0592 (1.0250); AT-G3 passed on 2026-11-22 at the 6ba0592 runner under bench-thp-madvise (0.9124, arena fully hugepage-backed), equal-reach row reported at 1.1330. Earlier: AT-G1 passed on three layout builds and AT-G2 passed at 377a0ad on 2026-11-17 (3e373a9, 74099d6, 377a0ad)."
+  evidence:
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-implementer-AT5/native.yaml
+    lever: .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-at-g1-lever/native.yaml
+    harness: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b5-tester-chunks/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b5-implementer-chunks/native.yaml]
+    gates: benches/evidence/array_translation/README.md
+    review: scopes/active/array-translation/review.yaml#implementation_batches
+  domain: pool
+  depends_on:
+  - AT4
+  files:
+  - build.rs
+  - benches/plans/array_translation.md
+  - benches/mmap_workloads/fair.rs
+  - benches/mmap_workloads/validate.py
+  - tests/mmap_workload_validation.py
+  - tests/guard_compile_fail.rs
+  - tests/public_api.rs
+  - tests/read_session.rs
+  - tests/loom_pool.rs
+  - tests/pool_retire.rs
+  - src/driver.rs
+  - src/product.rs
+  - src/pool/loom_model.rs
+  - src/pool/session.rs
+  - src/pool/epoch.rs
+  - src/pool/clock.rs
+  - src/pool/mod.rs
+  - src/lib.rs
+  acceptance: AT4 is GREEN. Pool::session, ReadSession::file and SessionFile::page
+    meet FR-6 to FR-8 and TR-3, TR-4. AT-G1, AT-G2 and AT-G3 pass on nix with the
+    hugepage witness recorded, or the failing gate's lever is raised with the profile.
+    Amended 2026-11-17, the read is inlinable into its caller and SessionFile holds the
+    loop-invariant values (arena base, granule shift, entry base of the file slot,
+    bound) so a read loads none of them; ReadSession::read_page returns a
+    session-scoped lifetime; AT-G1 passes on the three layout builds (AC-21) and every
+    gate reports ns per read with the floor arm. The pin head of pin_live and pin_owned
+    is unified here (AT-D6).
+    Amended 2026-11-19 (AT-D18 to AT-D22), the session validates liveness once per view
+    after its pin and reads entries alone; retirement defers close, slot release and
+    Retired by two epoch advances (FR-5, INV-3, INV-7, AD-9); Pool::session_file and
+    FileSession open a one-file session in one call (AD-18) and the session arm of the
+    fair lanes uses it; AC-22 to AC-24 hold; the documentation of ReadSession::file,
+    SessionFile::page, Pool::retire_file and RetireStatus::Retired states the semantics
+    and the caller protocol of AT-D21; AT-G1 passes on three layout builds. The
+    session-arm tests of AT4 that expect StaleFile from a read through an open view are
+    superseded by AC-7 as amended, and the deterministic test of a get paused between
+    pin and entry load while its slot is reused is replaced by the AC-9 form; the Loom model's empty-file retirement runs through
+    the production retirement record and grace period; build.rs detects the fused open
+    in a product tree so the shared runner still builds against trees without it; the
+    bench plan's session arm opens its view with Pool::session_file.
+- id: AT6
+  title: Pin the copy-out read with failing tests and bench arms
+  status: done
+  evidence:
+    tester: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-tester-AT6/native.yaml
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b7-implementer-AT6/native.yaml
+    review: scopes/active/array-translation/review.yaml#implementation_batches
+  domain: pool
+  depends_on:
+  - AT3
+  - AT5
+  files:
+  - tests/read_copy.rs
+  - tests/arch3_sync_alias.rs
+  - tests/loom_pool.rs
+  - src/pool/loom_model.rs
+  - src/pool/read_copy.rs
+  - src/pool/frames.rs
+  - src/mock.rs
+  - tests/public_api.rs
+  - tests/zero_alloc.rs
+  - benches/mmap_workloads/fair.rs
+  - benches/mmap_workloads/validate.py
+  - build.rs
+  - benches/mmap_workloads/catalog.rs
+  - benches/mmap_workloads/mod.rs
+  - tests/mmap_workload_validation.py
+  acceptance: RED for AC-11 to AC-14 and the copy half of AC-15 and AC-17. Stable
+    copy, eviction, reuse for another page, reuse for the same page, retirement,
+    range and tail, and fallback falsifiers exist; the confinement rule rejects an
+    off-module volatile read and seam use in a pool file and in src/mock.rs; the
+    copy, floor and mmap-copy arms share bytes and checksum. Model limits stay
+    visible. Source edits are scaffolds, test and mock hooks only.
+    Amended 2026-11-17, the copy, optimistic-floor and mmap-copy arms run in the
+    fair-lane module under F1 to F11 with the plain_array floor comparison, and
+    warm-prepare covers them (AC-18, AC-19).
+- id: AT7
+  title: Implement the copy-out read
+  status: done
+  outcome: "Not adopted on performance (AT-D29): AT-G5 and AT-G6 fail on all three layout builds at e534f2a (CI95 upper 2.36 to 2.52 against 1.50; 2.23 to 2.33 against 1.20); read_copy stays in the tree, correct under Loom, Miri and ASAN. Earlier records at d1a6f9d and a1a253b retained."
+  evidence:
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b8-implementer-AT7/native.yaml
+    review: scopes/active/array-translation/review.yaml#implementation_batches
+  domain: pool
+  depends_on:
+  - AT6
+  files:
+  - src/pool/read_copy.rs
+  - src/pool/frames.rs
+  - src/pool/mod.rs
+  - src/mock.rs
+  - src/lib.rs
+  acceptance: AT6 is GREEN. Pool::read_copy meets FR-9 to FR-11 and TR-6 under the
+    AD-7 order. AT-G5 and AT-G6 pass on nix, or the result is retained with the
+    exact-arm profile and returned to the owner.
+    Amended 2026-11-17, AT-G5 and AT-G6 pass on the three layout builds (AC-21) with
+    ns per read and the floor reported.
+- id: AT10
+  title: Slim the copy-out read's accepted path
+  status: done
+  outcome: "Accepted copy inlined with one cold exit (FR-13 structure); 2.38x mmap_copy, landed by owner decision AT-D29; AT-G5 and AT-G6 recaptured at e534f2a and fail."
+  evidence:
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b9-implementer-AT10/native.yaml
+    gates: benches/evidence/array_translation/README.md
+    review: scopes/active/array-translation/review.yaml#implementation_batches
+  domain: pool
+  depends_on:
+  - AT7
+  files:
+  - src/pool/read_copy.rs
+  - src/pool/mod.rs
+  - src/pool/translation.rs
+  - src/pool/frames.rs
+  - tests/read_copy.rs
+  - tests/public_api.rs
+  - tests/zero_alloc.rs
+  - tests/loom_pool.rs
+  - benches/evidence/array_translation/manifests/at-g5-layout-16.json
+  - benches/evidence/array_translation/manifests/at-g5-layout-32.json
+  - benches/evidence/array_translation/manifests/at-g5-layout-64.json
+  - benches/evidence/array_translation/manifests/at-g6-layout-16.json
+  - benches/evidence/array_translation/manifests/at-g6-layout-32.json
+  - benches/evidence/array_translation/manifests/at-g6-layout-64.json
+  acceptance: FR-13 and AC-25 (AT-D28). An accepted optimistic copy reaches its caller
+    without an out-of-line call into the crate and without an outcome returned through
+    memory; the get fallback, Pending, Busy and error outcomes leave through one
+    out-of-line path; each copy-path assertion of 36f9909 is made once; the AD-7 order,
+    fences and word-load contract (WRC-D1) are unchanged; the public API snapshot is
+    unchanged; the retained disassembly of the dios_copy loop shows no call into dios on
+    an accepted copy. AT-G5 and AT-G6 pass on nix on all three layout builds. Lint, Loom,
+    Miri and ASAN are clean.
+- id: AT8
+  title: Run the binding campaign and record the evidence
+  status: done
+  outcome: "All gates recorded under frozen manifests (README, AT8 binding campaign): AT-G1 1.4259 pooled, AT-G2 1.0127, AT-G3 0.9192, AT-G4 0.6500 (d36cd36), AT-G7 all lanes (RC-G1 and RC-G4 dependent on authorized reruns, AT-D30), AT-G8 0.4918 pass; AT-G5 and AT-G6 recorded failed, copy-out read not adopted (AT-D29). Characterization recorded: translation memory, session-length sweep, liveness pricing, AT-G1 profile; the pressure copy counts dropped (AT-D32). sira handoff note committed (sira-handoff.md); delivery at merge (owner, 2026-11-25)."
+  evidence:
+    gates: benches/evidence/array_translation/README.md
+    characterization: [benches/evidence/array_translation/at8-characterization/, benches/evidence/array_translation/liveness-pricing.md, benches/evidence/array_translation/at-g1/profile/]
+    handoff: benches/evidence/array_translation/sira-handoff.md
+    harness: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b10-implementer-at-g4-runner/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b10-implementer-characterization3/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b10-char-fix1/native.yaml]
+    review: scopes/active/array-translation/review.yaml#implementation_batches
+  domain: bench
+  depends_on:
+  - AT5
+  - AT7
+  - AT10
+  - AT9
+  files:
+  - benches/evidence/array_translation/
+  - benches/plans/array_translation.md
+  - scopes/active/array-translation/validation.yaml
+  acceptance: AC-16 (amended by AT-D29). All eight gates run under the frozen manifests on nix; AT-G5 and AT-G6 carry their recorded failure; AT-G4 as
+    the shared-runner recapture at-g4-campaign, with
+    every pair retained. The translation-memory report, session length sweep,
+    liveness pricing, pressure fast and fallback counts and the AT-G1 profile are
+    recorded. sira receives the landed API for its SAB006 gate.
+- id: AT9
+  title: Slim the get hit path
+  status: done
+  completed_at: '2026-11-19T18:00:00Z'
+  evidence:
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-implementer-AT9/native.yaml
+    disassembly: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b6-implementer-AT9/dios_get_loop.before.s, .tropos/peer/array-translation/20261115T161731Z-fba2be/b6-implementer-AT9/dios_get_loop.after.s]
+    gates: benches/evidence/array_translation/README.md
+    review: scopes/active/array-translation/review.yaml#implementation_batches
+  domain: pool
+  depends_on:
+  - AT5
+  files:
+  - src/pool/mod.rs
+  - src/pool/epoch.rs
+  - src/pool/translation.rs
+  - src/pool/frames.rs
+  - src/pool/clock.rs
+  - tests/pool.rs
+  - tests/public_api.rs
+  - tests/zero_alloc.rs
+  - tests/loom_pool.rs
+  - benches/evidence/array_translation/manifests/at-g8.json
+  acceptance: FR-12 and AC-20. A get hit reaches its caller without an out-of-line call
+    into the crate and without a result returned through memory; miss, busy and error
+    outcomes leave through an out-of-line path; each hit-path assertion of 604410a is
+    made once; the public API snapshot is unchanged; the retained disassembly of the
+    fair get loop shows no call into dios on a hit whose CLOCK reference is set, one cold
+    first-reference target and one out-of-line slow target. AT-G8 passes on nix at 0.85 with
+    one runner source built against the tree AT5 leaves and the changed tree, and the
+    AT-G7 lanes still pass. Lint, Loom, Miri and ASAN are clean.

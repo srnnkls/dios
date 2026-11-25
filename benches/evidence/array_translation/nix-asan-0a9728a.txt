@@ -1,0 +1,543 @@
+[remote] $ ~/projects/dios/.mise/tasks/remote mise run asan
+[asan] $ toolchain=${DIOS_NIGHTLY:-nightly}
+   Compiling dios v0.1.0 (/home/srnnkls/build/dios)
+warning: use of deprecated method `std::sync::atomic::Atomic::<u32>::fetch_update`: renamed to `try_update` for consistency
+   --> src/pool/miss.rs:241:14
+    |
+241 |             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |waiters| {
+    |              ^^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+    |
+241 -             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |waiters| {
+241 +             .try_update(Ordering::AcqRel, Ordering::Acquire, |waiters| {
+    |
+
+warning: use of deprecated method `std::sync::atomic::Atomic::<u32>::fetch_update`: renamed to `try_update` for consistency
+   --> src/pool/miss.rs:256:14
+    |
+256 |             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |waiters| {
+    |              ^^^^^^^^^^^^
+    |
+help: replace the use of the deprecated method
+    |
+256 -             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |waiters| {
+256 +             .try_update(Ordering::AcqRel, Ordering::Acquire, |waiters| {
+    |
+
+warning: `dios` (lib) generated 2 warnings (run `cargo fix --lib -p dios` to apply 2 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.64s
+
+running 3 tests
+     Running tests/arch3_sync_alias.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/1a91822faa9842e5/out/arch3_sync_alias-1a91822faa9842e5)
+test the_guard_catches_a_rustfmt_wrapped_use_group ... ok
+test the_guard_catches_a_brace_group_bypass_and_spares_prose ... ok
+test pool_concurrency_primitives_route_through_the_sync_alias ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+
+running 3 tests
+test every_gate_pins_a_manifest_and_capture_command_and_the_evidence_records_the_hugepage_witness ... ok
+test drp_prerequisite_names_its_owner_and_warm_read_copy_out_points_to_its_successor ... ok
+test scope_records_the_writer_inventory_ordering_audit_and_miri_model_limits ... ok
+     Running tests/array_translation_plan.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/15ee54cf84b19c64/out/array_translation_plan-15ee54cf84b19c64)
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 29 tests
+test a_dropped_unsubmitted_write_slot_is_freed_immediately ... ok
+test a_consumed_write_slot_is_freed_only_at_completion_drain ... ok
+test a_short_read_is_surfaced_not_resubmitted_by_the_driver ... ok
+test a_reclaimed_slot_issues_a_fresh_non_aliasing_token ... ok
+test blocking_metadata_wrappers_complete_and_surface_io_errors ... ok
+test closed_generation_remains_closed_after_its_slot_is_reopened ... ok
+test a_foreign_driver_write_slot_panics_before_consumption ... ok
+test a_stale_handle_hands_the_write_slot_back_unchanged ... ok
+test a_positive_short_write_resubmits_the_exact_unwritten_tail ... ok
+test close_is_deferred_until_the_fds_in_flight_ops_drain ... ok
+test a_full_queue_hands_the_write_slot_back_in_the_error_arm ... ok
+test a_zero_progress_write_stops_at_the_retry_bound ... ok
+test eagain_is_resubmitted_on_reads ... ok
+test eintr_beyond_the_retry_bound_surfaces_the_eintr_error ... ok
+test eagain_surfaces_as_an_error_on_writes_without_retry ... ok
+test eintr_is_resubmitted_internally_on_reads ... ok
+test eintr_is_resubmitted_internally_on_fsync ... ok
+test eintr_is_resubmitted_inside_the_blocking_wrappers ... ok
+test eintr_is_resubmitted_internally_on_writes ... ok
+test open_yields_a_live_generational_file_handle ... ok
+     Running tests/driver.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/7d5a693070195879/out/driver-7d5a693070195879)
+test queue_full_is_typed_backpressure_that_recovers_after_a_poll ... ok
+test seeded_completions_drain_out_of_submission_order ... ok
+test different_seeds_produce_different_schedules ... ok
+test submit_on_a_stale_handle_is_rejected_while_the_reused_slot_still_works ... ok
+test submit_read_token_is_echoed_in_the_drained_completion ... ok
+test write_and_fsync_completions_carry_their_op_kinds ... ok
+test the_same_seed_reproduces_the_same_schedule ... ok
+test submit_does_not_wait_on_a_poller_parked_in_poll_wait ... ok
+test poll_is_non_blocking_and_poll_wait_bounds_its_idle_wait ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+
+running 3 tests
+test ring_teardown_finishes_vector_retries_before_retiring_its_file ... ok
+test refusal_returns_every_frame_and_partial_completion_holds_slot_and_file_until_drop ... ok
+test vector_destinations_preserve_slice_order_and_exact_short_prefix_after_slot_reuse ... ok
+
+test result: ok     Running tests/driver_vector_reads.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/dbaf67f00c36557c/out/driver_vector_reads-dbaf67f00c36557c)
+. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/eager.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/ec3b43d719847f43/out/eager-ec3b43d719847f43)
+
+running 1 test
+test direct_open_probe_encodes_alignment_or_falls_back_buffered ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 3 tests
+     Running tests/embedded_owner.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/0df74e77fd4b1785/out/embedded_owner-0df74e77fd4b1785)
+test an_embedding_owner_can_own_pool_reader_and_pending_token ... ok
+test dropping_an_owner_releases_live_capabilities_and_quiesces_once ... ok
+test a_pending_token_moves_to_another_thread_and_readies_with_a_fresh_reader ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/epoch_guards.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/ca383ce899cf8e53/out/epoch_guards-ca383ce899cf8e53)
+
+running 10 tests
+test pin_of_a_resident_frame_borrows_the_whole_granule_of_its_content ... ok
+test a_nested_pin_taken_at_an_advanced_epoch_does_not_republish_the_readers_local_epoch ... ok
+test an_evicted_page_never_mints_a_guard_over_its_reclaimable_bytes ... ok
+test first_guard_panics_when_declared_reader_peak_is_zero_in_release ... ok
+test a_stalled_reader_blocks_reclamation_of_its_epochs_frames_until_it_drops ... ok
+test the_global_epoch_advances_at_poll_boundaries_not_per_pin ... ok
+test reclamation_needs_two_epoch_advances_after_the_last_guard_drop ... ok
+test a_held_guard_keeps_its_frame_unreclaimed_and_its_bytes_stable_across_polls ... ok
+test nested_guards_share_one_epoch_and_release_only_on_the_last_drop ... ok
+test taking_guard_above_declared_reader_peak_panics_in_release ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 18 tests
+     Running tests/faults.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/2e84135f5c4e6ed4/out/faults-2e84135f5c4e6ed4)
+test a_short_cqe_surfaces_its_partial_byte_count_without_reslicing ... ok
+test an_eintr_cqe_is_resubmitted_on_the_ring_and_completes_with_the_success ... ok
+test an_eagain_read_cqe_is_resubmitted_on_the_ring_and_completes_with_the_success ... ok
+test a_short_write_cqe_retains_the_slot_and_resubmits_the_exact_tail ... ok
+test a_bounded_reap_leaves_the_rest_for_the_next_poll ... ok
+test an_error_cqe_routes_to_a_typed_io_error_on_its_echoed_token ... ok
+test an_error_cqe_frees_its_slab_slot_for_reuse ... ok
+test a_seeded_reorder_keeps_each_faults_result_bound_to_its_own_op_token ... ok
+test close_retires_exactly_once_only_after_the_final_in_flight_cqe_reaps ... ok
+test fd_table_exhaustion_surfaces_emfile_and_recovers_after_a_close ... ok
+test ring_retries_exhaust_the_init_time_bound_and_surface_the_typed_error ... ok
+test ring_retries_at_exactly_the_bound_still_complete_with_the_success ... ok
+test different_seeds_produce_different_reap_schedules ... ok
+test seeded_ring_completions_reap_out_of_submission_order_by_echoed_user_data ... ok
+test a_ghost_handle_stays_stale_through_a_concurrent_reopen_race ... ok
+test dropping_the_driver_with_ops_in_flight_quiesces_to_zero ... ok
+test zero_progress_write_cqes_stop_at_the_ring_retry_bound ... ok
+test the_same_seed_reproduces_the_same_reap_schedule ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s     Running tests/loom_pool.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/a81dac6fca2eb395/out/loom_pool-a81dac6fca2eb395)
+
+
+     Running tests/miss.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/5672bed89f14c108/out/miss-5672bed89f14c108)
+
+running 18 tests
+test a_foreign_page_file_identity_panics_before_admission_or_frame_mutation ... ok
+test a_cold_get_misses_then_readies_its_seeded_content_and_a_warm_re_get_hits ... ok
+test a_faulted_miss_fans_the_error_to_all_waiters_then_a_fresh_read_of_the_same_page_succeeds ... ok
+test a_short_read_at_eof_is_terminal_and_fans_err_to_all_waiters_and_frees_the_frame ... ok
+test a_cross_pool_reader_panics_before_get_touches_the_target_pool ... ok
+test an_early_retry_cannot_steal_the_terminal_error_from_old_waiters ... ok
+test a_short_read_with_remaining_extent_resubmits_the_remainder_as_a_distinct_read ... ok
+test dropping_a_pending_token_cancels_interest_only_and_the_read_still_completes ... ok
+test a_cross_pool_token_panics_before_the_target_pool_observes_its_page ... ok
+test dropping_one_failed_waiter_preserves_the_other_waiters_error ... ok
+test a_stale_page_file_generation_returns_the_exact_error_before_reusing_its_live_slot ... ok
+test n_gets_for_one_missing_page_issue_exactly_one_read_under_a_single_slot_queue ... ok
+test retained_failures_saturate_the_fixed_miss_table_then_recover_after_interest_drops ... ok
+test a_granule_at_file_granules_max_is_refused_before_lookup_or_admission ... ok
+test repeated_not_yet_checks_preserve_exactly_one_waiter_interest ... ok
+test a_successful_unconsumed_token_protects_its_exact_frame_until_drop ... ok
+test a_cross_pool_reader_panics_before_ready_pins_the_target_frame ... ok
+test completions_route_each_pages_bytes_into_its_own_frame_across_offsets_and_files ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 4 tests
+test retained_frame_budget_augments_the_frame_watermark ... ok
+test rejects_unrepresentable_retained_frame_budget ... ok
+     Running tests/pinned_frame_retention_config.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/8b5ea6f0dd155c38/out/pinned_frame_retention_config-8b5ea6f0dd155c38)
+test max_reader_retry_bound_has_constraint_neutral_display ... ok
+test default_zero_retained_frame_budget_preserves_the_existing_watermark ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 3 tests
+     Running tests/pinned_frame_retention_promotion.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/3d03029432fa0da0/out/pinned_frame_retention_promotion-3d03029432fa0da0)
+test nonzero_budget_promotes_live_guard_with_its_bytes ... ok
+test distinct_second_frame_refusal_returns_the_same_live_guard ... ok
+test same_frame_promotions_are_independent_and_budget_recovers_after_both_drop ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 4 tests
+     Running tests/pinned_frame_retention_reclaim.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/17f8e28d6dd9ea4f/out/pinned_frame_retention_reclaim-17f8e28d6dd9ea4f)
+test plain_matured_eviction_still_reclaims_exactly_once ... ok
+test matured_eviction_stays_held_until_retained_handle_drops ... ok
+test retention_stats_attribute_budget_retirement_and_held_eviction ... ok
+test matured_eviction_waits_for_last_of_two_retained_handles ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 19 tests
+test clock_only_unreferenced_frame_is_the_victim ... ok
+test clock_reference_reports_first_set_and_is_idempotent_on_repeat ... ok
+test clock_gives_a_referenced_frame_a_second_chance ... ok
+test clock_eviction_order_is_deterministic_for_a_constructed_state ... ok
+test granule_default_is_a_power_of_two_at_least_one_sector ... ok
+test pool_miss_headroom_below_three_times_inflight_is_rejected ... ok
+test pool_below_watermark_fails_open_with_a_typed_config_error ... ok
+test frames_are_preallocated_sector_aligned_and_non_moving ... ok
+test pool_rejects_a_non_power_of_two_granule ... ok
+test pool_rejects_a_granule_below_the_sector_floor ... ok
+test reader_counters_count_hits_and_evictions_locally ... ok
+test frame_state_transition_matrix_permits_exactly_the_legal_edges ... ok
+test reader_counters_are_independent_across_readers ... ok
+     Running tests/pool.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/cc4a3facdc21fd16/out/pool-cc4a3facdc21fd16)
+test a_watermark_sized_pool_registers_a_reader ... ok
+test translation_geometry_is_validated_before_any_reservation ... ok
+test pool_accepts_a_valid_granule ... ok
+test write_arena_allocs_to_capacity_then_exhausts_then_frees_on_drop ... ok
+test write_slot_is_sector_aligned_granule_sized_and_deref_mut_roundtrips ... ok
+test watermark_is_readers_times_peak_plus_configured_headroom ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 4 tests
+     Running tests/pool_allocation_failure.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/e4b81099f430ba85/out/pool_allocation_failure-e4b81099f430ba85)
+test explicitly_sized_pool_allocation_failure_is_typed ... ok
+test file_table_allocation_failure_is_typed ... ok
+test translation_reservation_above_ram_plus_swap_builds ... ok
+test translation_reservation_is_refused_only_beyond_the_address_space ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+running 16 tests
+test composing_a_pool_over_a_differently_shaped_backend_is_a_configuration_error ... ok
+     Running tests/pool_progress.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/efe1accb9547f3c2/out/pool_progress-efe1accb9547f3c2)
+test a_raw_read_past_the_u32_granule_range_submits_instead_of_panicking ... ok
+test poll_report_counts_retryable_eagain_read_cqe_without_releasing_its_credit ... ok
+test matured_eviction_reports_reclamation_without_a_backend_completion ... ok
+test a_raw_driver_read_completes_without_being_routed_as_a_pool_miss ... ok
+test poll_report_counts_retry_cqes_before_the_terminal_product_result ... ok
+test a_bounded_pool_completion_batch_retains_the_remainder ... ok
+test poll_report_separates_backend_completions_from_reclaimed_frames ... ok
+test read_credit_saturation_preserves_product_reservations_and_singleflight_joins ... ok
+test caller_completion_saturation_never_starves_an_internal_read ... ok
+test an_external_wake_before_poll_wait_is_not_lost ... ok
+test an_external_wake_interrupts_a_parked_poll_wait_without_backend_io ... ok
+test completion_driven_poll_wait_does_not_hold_the_pool_control_lock ... ok
+test retained_caller_completions_do_not_block_eviction_reclamation ... ok
+test retry_cqe_early_return_is_progress_not_a_platform_wait_timeout ... ok
+test idle_product_poll_wait_tracks_distinct_deadlines_and_timeout_exits ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.02s
+
+
+running 9 tests
+     Running tests/pool_retire.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/2f957384b4d49863/out/pool_retire-2f957384b4d49863)
+test an_already_resident_unpinned_page_retires_without_backend_progress ... ok
+test a_pending_token_admitted_before_retirement_readies_before_physical_close ... ok
+test a_waiter_dropped_before_retirement_leaves_dma_to_drain_before_close ... ok
+test retirement_clears_its_slot_and_keeps_a_page_sharing_neighbor_resident ... ok
+test a_cold_get_rechecks_the_exact_generation_after_concurrent_retirement ... ok
+test a_get_paused_between_pin_and_entry_load_rejects_a_reused_empty_slot ... ok
+test a_live_frame_guard_delays_reclamation_and_file_close ... ok
+test a_completed_unconsumed_token_finishes_after_retirement ... ok
+test retirement_drains_preaccepted_writes_rejects_new_io_and_preserves_generation_staleness ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 9 tests
+test product_writes_are_disabled_by_default_even_if_the_backend_has_staging ... ok
+     Running tests/pool_write.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/64ba610727d6e6c8/out/pool_write-64ba610727d6e6c8)
+test an_injected_write_failure_keeps_the_following_fsync_result_separate ... ok
+test dropping_pool_drains_a_write_and_its_held_fsync_before_close ... ok
+test full_returns_the_unchanged_write_slot_and_retry_persists_its_payload ... ok
+test an_injected_fsync_failure_does_not_poison_the_preceding_write ... ok
+test foreign_slot_identity_precedes_file_identity_and_product_capacity_checks ... ok
+test held_data_sync_preserves_its_mode_after_prior_write_completion ... ok
+test foreign_file_ids_panic_before_submit_admission_and_raii_reclaims_write_staging ... ok
+test writes_precede_their_fsync_barrier_under_adversarial_mock_schedules ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 21 tests
+     Running tests/prefetch.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/bf22d9f295c2ffb7/out/prefetch-bf22d9f295c2ffb7)
+test explicit_prefetch_at_the_bound_is_rejected_for_every_slot_before_any_lookup ... ok
+test a_joined_speculative_failure_reaches_demand_and_releases_resources_once ... ok
+test reader_registration_and_file_changes_reset_training ... ok
+test explicit_prefetch_is_queued_and_coalesces_with_demand ... ok
+test retirement_drains_speculation_and_rejects_further_hints ... ok
+test resident_hints_do_not_displace_existing_speculation ... ok
+test a_failed_speculative_read_returns_its_credit_and_can_be_retried ... ok
+test speculative_credits_bound_windows_and_recover_after_abandonment ... ok
+test a_full_demand_queue_defers_speculation_without_consuming_credits ... ok
+test another_reader_promotes_a_credit_without_advancing_the_originating_stream ... ok
+test speculative_short_reads_complete_through_the_existing_reslice_path ... ok
+test zero_credits_disable_explicit_and_automatic_admission ... ok
+test obsolete_automatic_reads_complete_before_their_credits_are_recovered ... ok
+test an_automatic_readahead_window_ends_below_the_bound ... ok
+test skipping_ahead_in_a_resident_window_resets_automatic_training ... ok
+test an_abandoned_automatic_window_returns_credits_without_demand_pressure ... ok
+test non_sequential_demand_does_not_train_a_sequential_stream ... ok
+test automatic_readahead_is_default_and_can_be_disabled ... ok
+test abandoned_wrong_hints_preserve_a_hot_set_that_leaves_the_credit_budget_free ... ok
+test sequential_feedback_survives_batched_consumption_and_recycled_metadata_slots ... ok
+test extending_a_partially_consumed_window_preserves_useful_lookahead_when_recycling ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/read_protocol_atomic.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/3ce9880cbfc416be/out/read_protocol_atomic-3ce9880cbfc416be)
+
+running 1 test
+test a_warm_get_does_not_enter_the_control_plane ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/readahead_coalescing.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/647a06eb2c1c17af/out/readahead_coalescing-647a06eb2c1c17af)
+
+running 3 tests
+test mid_iovec_short_publishes_only_whole_pages_and_preserves_exact_suffix_bytes ... ok
+test original_slot_survives_full_backend_slab_and_retirement_across_later_shorts ... ok
+test eof_and_permanent_tail_error_preserve_prefix_and_return_each_page_credit ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 3 tests
+test dropping_a_reader_context_reopens_its_registration_slot ... ok
+test registration_beyond_capacity_returns_the_typed_at_capacity_error ... ok
+test register_drop_reregister_cycles_to_capacity_without_leaking_slots ...      Running tests/reader_registration.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/59025c3fb60b097b/out/reader_registration-59025c3fb60b097b)
+ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/real_pool.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/f5da3fc43762a454/out/real_pool-f5da3fc43762a454)
+
+running 5 tests
+test portable_read_ranges::short_read_resubmits_the_exact_tail_at_the_filled_destination_offset ... ok
+test portable_read_ranges::direct_io_unaligned_positive_short_read_is_terminal_without_remainder_submission ... ok
+test shipping_pool_external_wake_interrupts_the_actual_backend_park ... ok
+test real_pool_miss_borrows_the_exact_file_extent ... ok
+test shipping_pool_reserves_the_checked_sum_for_reads_and_product_writes ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 12 tests
+test at_capacity_precedes_mock_driver_policy_inspection ... ok
+test at_capacity_precedes_mock_ring_path_inspection ... ok
+test configured_capacity_above_64_reaches_mock_driver ... ok
+test operating_emfile_with_a_logical_slot_free_is_io ... ok
+test configured_capacity_above_64_reaches_mock_ring_driver ... ok
+     Running tests/registered_file_lifecycle.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/f1aa639ac8ddd136/out/registered_file_lifecycle-f1aa639ac8ddd136)
+test zero_capacity_builds_and_refuses_before_pathname_mutation ... ok
+test at_capacity_create_precedes_all_pathname_mutation ... ok
+test create_new_failure_preserves_content_and_releases_its_reservation ... ok
+test negotiated_io_mode_tracks_exact_pool_file_generation ... ok
+test retiring_retained_file_owns_capacity_until_close_then_reuses_a_fresh_generation ... ok
+test configured_capacity_above_64_accepts_exactly_that_many_live_files ... ok
+test default_registered_file_capacity_is_64 ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+running 13 tests
+     Running tests/resident_hint.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/20ccd693d1f4c945/out/resident_hint-20ccd693d1f4c945)
+test a_valid_hint_cannot_bypass_retirement_while_its_lease_keeps_the_frame_resident ... ok
+test a_wrong_granule_hint_falls_back_without_releasing_an_outer_guard ... ok
+test a_live_file_lease_is_owned_and_safe_to_drop_after_the_pool ... ok
+test guard_observation_tracks_the_guard_and_changes_after_reload ... ok
+test an_opaque_resident_hint_is_niche_sized_and_mints_a_normal_guard ... ok
+test guard_observation_rejects_a_different_page_in_the_same_pool - should panic ... ok
+test stale_and_missing_hints_fall_back_then_a_refreshed_hint_hits ... ok
+test lease_count_exhaustion_is_typed_and_does_not_mutate_the_count ... ok
+test packed_frame_word_changes_generation_only_when_residency_is_published ... ok
+test a_same_granule_hint_from_another_pool_falls_back_before_frame_indexing ... ok
+test a_same_granule_hint_from_another_file_falls_back_to_that_files_bytes ... ok
+test a_lease_serializes_retirement_and_same_slot_reopen ... ok
+test guard_observation_rejects_a_foreign_guard_before_indexing - should panic ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/retention_acceptance.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/ed7aca38636aba4c/out/retention_acceptance-ed7aca38636aba4c)
+
+running 2 tests
+test zero_budget_matured_eviction_frees_without_held_attribution ... ok
+test budget_recovers_after_held_release_while_unrelated_eviction_reclaims ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 2 tests
+     Running tests/retention_retirement.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/392b23d9f3284c50/out/retention_retirement-392b23d9f3284c50)
+test retiring_refuses_the_same_live_guard_then_slot_reuse_allows_fresh_promotion ... ok
+test held_retained_frame_delays_retirement_until_release_progress_frees_it ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/retention_wake_teardown.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/4a38aeb49c1b9c99/out/retention_wake_teardown-4a38aeb49c1b9c99)
+
+running 6 tests
+test forgotten_retained_handle_panics_before_retiring_file_is_closed ... ok
+test held_release_published_before_mock_poll_wait_reclaims_without_parking ... ok
+test pool_teardown_drains_a_held_final_drop ... ok
+test pool_teardown_drains_a_held_release_before_product_shutdown_progress ... ok
+test held_release_wakes_parked_mock_poll_wait_and_reclaims ... ok
+test linux_shipping::held_release_wakes_shipping_platform_wait_and_reclaims ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+     Running tests/ring_close.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/7d0eff21a458f441/out/ring_close-7d0eff21a458f441)
+test deferred_close_through_the_ring_flips_is_closed_only_after_the_in_flight_read_drains ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/scaffold.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/421163660d8ebf36/out/scaffold-421163660d8ebf36)
+
+running 7 tests
+test alignment_check_accepts_multiples_of_the_alignment ... ok
+test alignment_check_rejects_unaligned_offsets_with_a_typed_error ... ok
+test alignment_parses_powers_of_two ... ok
+test alignment_rejects_zero_and_non_powers_of_two ... ok
+test linux_selects_the_uring_backend ... ok
+test submit_error_full_is_a_backpressure_variant ... ok
+test io_error_carries_the_operating_failure ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/translation.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/2723e3f5f0a33f78/out/translation-2723e3f5f0a33f78)
+
+running 4 tests
+test one_entry_publishes_resolves_and_clears_without_touching_its_neighbors ... ok
+test releasing_a_slot_leaves_it_absent_and_keeps_page_sharing_neighbors ... ok
+test writers_assert_an_absent_entry_before_publish_and_a_set_entry_before_clear ... ok
+test the_reservation_spans_every_slot_and_asserts_past_its_bounds ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/uring.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/afd4695ce99162b3/out/uring-afd4695ce99162b3)
+
+running 9 tests
+test open_of_a_missing_path_surfaces_enoent ... ok
+test a_short_read_at_eof_reports_the_partial_count_through_the_ring ... ok
+test a_full_queue_backpressures_without_blocking_then_recovers_after_a_poll ... ok
+test a_misaligned_read_on_a_direct_handle_panics_before_an_op_issues - should panic ... ok
+test an_async_write_uses_the_registered_write_arena ... ok
+test batched_submits_before_any_poll_all_reap_out_of_order_tolerated ... ok
+test a_direct_read_lands_the_file_bytes_through_the_ring ... ok
+test an_async_fsync_completes_with_a_zero_byte_transfer ... ok
+test a_blocking_write_then_ring_read_round_trips ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+
+running 3 tests
+test poll_wait_reaps_a_ready_completion_without_burning_the_full_timeout ... ok
+     Running tests/uring_wait.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/c48e62e42fe670ac/out/uring_wait-c48e62e42fe670ac)
+test poll_wait_returns_zero_without_events_after_its_timeout_expires ... ok
+test a_submit_from_another_thread_completes_while_a_poller_is_parked_in_poll_wait ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.00s
+
+
+running 25 tests
+     Running tests/zero_alloc.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/9226ee078ea87a6b/out/zero_alloc-9226ee078ea87a6b)
+test an_idle_poll_allocates_nothing ... ok
+test a_warm_read_submit_and_poll_drain_allocate_nothing ... ok
+test a_warm_write_slot_submit_and_poll_drain_allocate_nothing ... ok
+test pool_gates::a_cold_pool_miss_submits_within_the_preallocated_budget_without_allocating ... ok
+test pool_gates::a_repeat_warm_hit_performs_no_reference_bit_store ... ok
+test pool_gates::a_pool_poll_drain_allocates_nothing ... ok
+test pool_gates::a_busy_backpressure_get_allocates_nothing_and_disturbs_no_pinned_frame ... ok
+test pool_gates::a_warm_pool_hit_allocates_nothing ... ok
+test pool_gates::lease_acquire_and_drop_allocate_nothing ... ok
+test pool_gates::a_warm_pool_hinted_hit_allocates_nothing ... ok
+test pool_gates::a_stale_hint_ordinary_fallback_allocates_nothing ... ok
+test pool_gates::warm_pool_write_fsync_and_overflow_drain_allocate_nothing ... ok
+test pool_gates::last_lease_drop_and_retirement_progress_allocate_nothing ... ok
+test pool_gates::retained_promote_final_drop_and_release_drain_allocate_nothing ... ok
+test a_deferred_close_retiring_during_a_poll_drain_allocates_nothing ... ok
+test real_pool_lease_acquire_and_drop_allocate_nothing ... ok
+test real_pool_warm_hinted_hit_allocates_nothing ... ok
+test real_pool_translation_hit_and_bound_refusal_allocate_nothing ... ok
+test real_pool_last_lease_drop_and_retirement_progress_allocate_nothing ... ok
+test real_pool_stale_hint_ordinary_fallback_allocates_nothing ... ok
+test real_pool_warm_get_hit_allocates_nothing ... ok
+test shipping_pool_retained_release_cycle_allocates_nothing ... ok
+test a_warm_fsync_submit_and_poll_drain_allocate_nothing ... ok
+test a_warmed_real_pool_write_fsync_and_bounded_report_drain_allocate_nothing ... ok
+test shipping_prefetch_and_automatic_recycling_allocate_nothing ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.12s
+
+warning: use of deprecated method `std::sync::atomic::Atomic::<u32>::fetch_update`: renamed to `try_update` for consistency
+   --> src/pool/miss.rs:241:14
+    |
+241 |             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |waiters| {
+    |              ^^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+    |
+241 -             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |waiters| {
+241 +             .try_update(Ordering::AcqRel, Ordering::Acquire, |waiters| {
+    |
+
+warning: use of deprecated method `std::sync::atomic::Atomic::<u32>::fetch_update`: renamed to `try_update` for consistency
+   --> src/pool/miss.rs:256:14
+    |
+256 |             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |waiters| {
+    |              ^^^^^^^^^^^^
+    |
+help: replace the use of the deprecated method
+    |
+256 -             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |waiters| {
+256 +             .try_update(Ordering::AcqRel, Ordering::Acquire, |waiters| {
+    |
+
+warning: `dios` (lib) generated 2 warnings (run `cargo fix --lib -p dios` to apply 2 suggestions)
+   Compiling dios v0.1.0 (/home/srnnkls/build/dios)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+
+running 1 test
+     Running tests/ring_teardown_budget.rs (target/x86_64-unknown-linux-gnu/debug/build/dios/f1bed75add21d5aa/out/ring_teardown_budget-f1bed75add21d5aa)
+test ring_drop_with_a_never_completing_read_blocks_for_the_init_budget_then_returns_without_panicking ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+
+exit=0

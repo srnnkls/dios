@@ -1,0 +1,28 @@
+{
+  "comparisons": [
+    {
+      "name": "resident_access_fair_get",
+      "arms": [
+        "dios_get",
+        "dios_get"
+      ],
+      "ns_per_read": {
+        "base": {
+          "arm": "dios_get",
+          "build": "base",
+          "ns_per_read": 24.058690828333297
+        },
+        "candidate": {
+          "arm": "dios_get",
+          "build": "candidate",
+          "ns_per_read": 11.319784113019704
+        }
+      },
+      "difference_ns_per_read": {
+        "estimate": -12.738906715313593,
+        "ci95_lower": -13.663155889511108,
+        "ci95_upper": -11.772797302901745
+      }
+    }
+  ]
+}

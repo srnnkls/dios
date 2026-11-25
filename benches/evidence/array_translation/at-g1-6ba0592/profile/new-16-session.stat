@@ -1,0 +1,6 @@
+# started on Thu Nov 19 22:07:38 2026
+
+3741467691,,cycles,871281125,100.00,,
+10540485582,,instructions,871281125,100.00,2.82,insn per cycle
+2064964353,,branches,871281125,100.00,,
+13134527,,branch-misses,871281125,100.00,0.64,of all branches

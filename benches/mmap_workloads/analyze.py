@@ -78,14 +78,17 @@ def verify_csv(directory: Path, comparison: dict, pairs: list) -> None:
     csv = (directory / "paired.csv").read_bytes()
     if hashlib.sha256(csv).hexdigest() != comparison["csv_sha256"]:
         raise ValueError("paired CSV hash differs")
-    lines = csv.decode().splitlines()
-    expected = [
-        f"{base['elapsed_ns']},{candidate['elapsed_ns']}" for base, candidate in pairs
-    ]
-    if lines[0] != "base_ns,candidate_ns" or lines[1:] != expected:
+    if csv.decode().splitlines() != paired_csv(pairs).splitlines():
         raise ValueError("paired CSV does not reflect validated raw samples")
     if len(pairs) < 30 or comparison["summary"]["pairs"] != len(pairs):
         raise ValueError("insufficient comparison pairs")
+
+
+def paired_csv(pairs: list[tuple[dict, dict]]) -> str:
+    lines = ["base_ns,candidate_ns"] + [
+        f"{base['elapsed_ns']},{candidate['elapsed_ns']}" for base, candidate in pairs
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def resource_delta(row: dict, section: str, counter: str) -> int | None:
