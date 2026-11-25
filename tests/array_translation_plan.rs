@@ -3,7 +3,7 @@ use std::path::Path;
 
 const PLAN_PATH: &str = "benches/plans/array_translation.md";
 const EVIDENCE_README_PATH: &str = "benches/evidence/array_translation/README.md";
-const SCOPE_DIRECTORY: &str = "scopes/active/array-translation";
+const SCOPE_DIRECTORY: &str = "scopes/done/array-translation";
 const WARM_READ_COPY_OUT_SCOPE_PATH: &str = "scopes/draft/warm-read-copy-out/scope.md";
 
 fn read_lowercase(relative_path: &str) -> String {

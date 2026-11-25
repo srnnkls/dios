@@ -1,6 +1,6 @@
 # Bench Plan: array_translation
 
-Plan for [scopes/active/array-translation](../../scopes/active/array-translation/scope.md).
+Plan for [scopes/done/array-translation](../../scopes/done/array-translation/scope.md).
 Product baseline is `main` at `ade5310`. AT-G4 and AT-G7 ran on `nix` on 2026-11-17 and
 their results are in the [evidence README](../evidence/array_translation/README.md);
 the numbers below are advisory spike results from an M1 Pro.
