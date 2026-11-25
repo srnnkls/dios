@@ -52,7 +52,7 @@ fn compile_api_probe_with_features(name: &str, features: &[&str], source: &str) 
 
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     Command::new(cargo)
-        .args(["check", "--offline", "--quiet"])
+        .args(["check", "--offline", "--quiet", "--color", "never"])
         .current_dir(&probe)
         .env(
             "CARGO_TARGET_DIR",
