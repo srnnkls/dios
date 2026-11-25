@@ -331,7 +331,14 @@ tasks:
     Miri and ASAN are clean.
 - id: AT8
   title: Run the binding campaign and record the evidence
-  status: pending
+  status: done
+  outcome: "All gates recorded under frozen manifests (README, AT8 binding campaign): AT-G1 1.4259 pooled, AT-G2 1.0127, AT-G3 0.9192, AT-G4 0.6500 (d36cd36), AT-G7 all lanes (RC-G1 and RC-G4 dependent on authorized reruns, AT-D30), AT-G8 0.4918 pass; AT-G5 and AT-G6 recorded failed, copy-out read not adopted (AT-D29). Characterization recorded: translation memory, session-length sweep, liveness pricing, AT-G1 profile; the pressure copy counts dropped (AT-D32). sira handoff note committed (sira-handoff.md); delivery at merge (owner, 2026-11-25)."
+  evidence:
+    gates: benches/evidence/array_translation/README.md
+    characterization: [benches/evidence/array_translation/at8-characterization/, benches/evidence/array_translation/liveness-pricing.md, benches/evidence/array_translation/at-g1/profile/]
+    handoff: benches/evidence/array_translation/sira-handoff.md
+    harness: [.tropos/peer/array-translation/20261115T161731Z-fba2be/b10-implementer-at-g4-runner/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b10-implementer-characterization3/native.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/b10-char-fix1/native.yaml]
+    review: scopes/active/array-translation/review.yaml#implementation_batches
   domain: bench
   depends_on:
   - AT5

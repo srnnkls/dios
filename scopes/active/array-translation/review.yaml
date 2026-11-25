@@ -555,3 +555,21 @@ implementation_batches:
   local_gates: "mise run lint clean on macOS, x86_64-linux --lib and nix; cargo test --features bench,mock all green; Loom 26/26; Miri read_copy 3 passed, 1 ignored; implementer: mise run miri, mise run asan 290."
   measured: "nix, layout-32 smoke runners, one process per arm: dios_copy 68.40/251.67 cycles/instructions per copy at aa3c316, 51.48/186.60 after; mmap_copy 21.61/69.63; optimistic_floor 22.83/77.67"
   gates: "AT-G5 and AT-G6 at e534f2a fail on all three layout builds (CI95 upper 2.5245, 2.4028, 2.3551 against 1.50; 2.3313, 2.2738, 2.2265 against 1.20); copy-out read not adopted on performance (AT-D29)."
+- batch: 10
+  tasks: [AT8]
+  reviewed_at: '2026-11-25T00:00:00Z'
+  status: passed
+  reports: .tropos/peer/array-translation/20261115T161731Z-fba2be/
+  waves:
+  - subject: AT-G4 campaign runner builds against ade5310 (cfg dios_paired_difference, F10)
+    implementer: .tropos/peer/array-translation/20261115T161731Z-fba2be/b10-implementer-at-g4-runner/native.yaml
+    rereview: "orchestrator: diff read in full; shared-runner build on nix verified by the implementer's build-only check through the collector; the campaign capture then built and passed"
+    persists: []
+  - subject: characterization harness (translation memory, session-length sweep; pressure copy counts built and dropped by AT-D32)
+    reviewers: "general by claude-opus (targeted); peer-gpt6-astra unavailable"
+    admitted: [F1 translation_memory required on every dios row aborted base-build captures]
+    fix: .tropos/peer/array-translation/20261115T161731Z-fba2be/b10-char-fix1/native.yaml
+    rereview: "orchestrator: one-guard fix read in full; Python 35 OK, lint clean, full suite green"
+    persists: []
+  gates: "AT8 binding campaign recorded in benches/evidence/array_translation/README.md: every gate passes except AT-G5 and AT-G6 (not adopted, AT-D29)."
+
