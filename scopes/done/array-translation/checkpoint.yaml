@@ -1,6 +1,6 @@
 checkpoint:
   scope_name: array-translation
-  scope_path: scopes/active/array-translation
+  scope_path: scopes/done/array-translation
   branch: feat/array-translation
   last_commit: 915c643
   updated_at: '2026-11-22T00:00:00Z'
@@ -10,7 +10,7 @@ checkpoint:
     tasks: [AT8]
     phase: integration_review
     status: complete
-    waiting_on: "Integration review completed (I1, I2 resolved). Next: completion verification, scope done."
+    waiting_on: "Scope done (2026-11-25). Push, merge and the sira rev bump stay with the owner."
 
   in_flight_mutations: []
 
