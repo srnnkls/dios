@@ -22,6 +22,8 @@ FLAT_ARM = "mmap_random_flat"
 TIMED_REGION_NS_MIN = 100_000_000
 POOLED_LAYOUTS = (16, 32, 64)
 PAIRED_HEADER = "base_ns,candidate_ns"
+GATED_SESSION_REQUESTS = 16
+TRANSLATION_MEMORY_FIELDS = ("mapping_bytes", "resident_bytes", "arena_bytes")
 PAGE_SIZE_FIELDS = (
     "anonhugepages_kib",
     "filepmdmapped_kib",
@@ -191,7 +193,21 @@ def validate_dios(row: dict, totals: dict) -> None:
         raise ValueError("resident pool incurred misses")
     if row["cache"] in ("cold", "pressure") and totals["pending"] == 0:
         raise ValueError("cold pool had no misses")
+    validate_translation_memory(row)
     validate_pressure(row)
+
+
+def validate_translation_memory(row: dict) -> None:
+    if "translation_memory" not in row:
+        return
+    memory = row["translation_memory"]
+    if not isinstance(memory, dict):
+        raise ValueError("Dios row translation memory is not a record")
+    missing = [field for field in TRANSLATION_MEMORY_FIELDS if field not in memory]
+    if missing:
+        raise ValueError(f"translation memory lacks {missing}")
+    if memory["resident_bytes"] > memory["mapping_bytes"]:
+        raise ValueError("translation resident bytes exceed the translation mapping")
 
 
 def validate_pressure(row: dict) -> None:
@@ -326,10 +342,20 @@ def warm_prepare_pairs(capture: Path, comparison: dict, expected: dict) -> list:
         if reference["executable_sha256"] != expected["executables"][reference["position"]]:
             raise ValueError("row executable identity differs from its build")
     pairs = read_comparison(capture, comparison)
+    flat_arm = comparison["lane"].get("flat_arm")
     for pair in pairs:
         for row in pair:
             if row["fixture"]["sha256"] != expected["fixture_sha256"]:
                 raise ValueError("row fixture differs from the frozen fixture")
+            if "characterization" in row:
+                raise ValueError("a characterization session row is not a gated row")
+            if flat_arm is None or row["arm"] == flat_arm:
+                continue
+            if row.get("session_requests") != GATED_SESSION_REQUESTS:
+                raise ValueError(
+                    f"{row['arm']} row runs sessions of {row.get('session_requests')} requests,"
+                    f" not the gated {GATED_SESSION_REQUESTS}"
+                )
     return pairs
 
 

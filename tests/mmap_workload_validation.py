@@ -34,6 +34,7 @@ CANDIDATE_EXECUTABLE = "c" * 64
 FIXTURE_SHA256 = "f" * 64
 QUALIFICATION_PAIRS = 2
 MEASURED_PAIRS = 30
+TRANSLATION_MEMORY = dict(mapping_bytes=1 << 20, resident_bytes=8192, arena_bytes=2048 * 4096)
 
 
 def sample() -> dict:
@@ -73,7 +74,12 @@ def sample() -> dict:
 
 def prefetch_sample() -> dict:
     row = sample()
-    row.update(arm="dios_automatic", io_mode="Direct", registration="Unregistered")
+    row.update(
+        arm="dios_automatic",
+        io_mode="Direct",
+        registration="Unregistered",
+        translation_memory=dict(TRANSLATION_MEMORY),
+    )
     row["workers"][0].update(pending=1024, completed_pending=1024)
     row["prefetch"] = dict(
         reads_in_flight=0,
@@ -102,6 +108,7 @@ def resident_row(seed: int, elapsed_ns: int) -> dict:
         trace=False,
         debug_assertions=False,
         elapsed_ns=elapsed_ns,
+        translation_memory=dict(TRANSLATION_MEMORY),
     )
     row["cache_before"].update(hot_expected=1024, hot_resident=1024, cold_expected=0)
     row["workers"][0].update(major_faults=0, hits=1024, elapsed_ns=elapsed_ns)
@@ -346,7 +353,10 @@ def shape_fair_row(row: dict, lane: dict, elapsed_ns: int) -> None:
     if not row["arm"].startswith("dios_"):
         row.update(io_mode="mmap" if row["arm"].startswith("mmap_") else "none")
         row.update(registration="none")
+        row.pop("translation_memory")
         row["workers"][0]["hits"] = 0
+    if "flat_arm" in lane and row["arm"] != lane["flat_arm"]:
+        row["session_requests"] = 16
     row["page_size"] = page_size_witness(row, lane)
 
 
@@ -741,7 +751,12 @@ class MmapEvidenceContract(unittest.TestCase):
             with self.assertRaises(ValueError):
                 MODULE.validate_row(row)
         row = sample()
-        row.update(arm="dios_serial", io_mode="Direct", registration="Unregistered")
+        row.update(
+            arm="dios_serial",
+            io_mode="Direct",
+            registration="Unregistered",
+            translation_memory=dict(TRANSLATION_MEMORY),
+        )
         row["workers"][0].update(pending=1024, completed_pending=1023)
         with self.assertRaisesRegex(ValueError, "pending"):
             MODULE.validate_row(row)
@@ -1808,6 +1823,71 @@ class MmapEvidenceContract(unittest.TestCase):
                     [f"layout-{layout}" for layout in AT_G1_LAYOUTS],
                     f"{failure}: neither paired.csv, the previous one, nor a staged file remains",
                 )
+
+    def test_dios_rows_bound_optional_translation_memory_by_the_mapping(self) -> None:
+        conforming = (
+            ("resident_access_ordinary", lambda: resident_row(seed=0, elapsed_ns=100_000)),
+            ("dios_automatic", prefetch_sample),
+            (
+                "resident_access_session_projection",
+                lambda: fair_row(
+                    FAIR_LANES["resident_access_session_projection"],
+                    "dios_session",
+                    seed=0,
+                    elapsed_ns=PRODUCT_ELAPSED_NS,
+                ),
+            ),
+        )
+        for name, build in conforming:
+            self.accepts_row(build())
+            full = build()
+            full["translation_memory"]["resident_bytes"] = full["translation_memory"]["mapping_bytes"]
+            self.accepts_row(full)
+            base_build = build()
+            del base_build["translation_memory"]
+            with self.subTest(row=name, absent="translation_memory"):
+                self.accepts_row(base_build)
+            for field in ("mapping_bytes", "resident_bytes", "arena_bytes"):
+                row = build()
+                del row["translation_memory"][field]
+                with self.subTest(row=name, missing=field):
+                    with self.assertRaisesRegex(ValueError, "translation"):
+                        MODULE.validate_row(row)
+            row = build()
+            memory = row["translation_memory"]
+            memory["resident_bytes"] = memory["mapping_bytes"] + 4096
+            with self.subTest(row=name, resident="beyond the mapping"):
+                with self.assertRaisesRegex(ValueError, "translation"):
+                    MODULE.validate_row(row)
+
+    def test_warm_prepare_rejects_session_rows_other_than_sixteen_requests(self) -> None:
+        lane = FAIR_LANES["resident_access_session_projection"]
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            unittest.mock.patch.object(subprocess, "run", fake_summarize),
+        ):
+            control = Path(temporary) / "gated"
+            write_fair_capture(control, lane)
+            self.accepts_capture(control)
+            for arm, length in itertools.product(lane["arms"], (1, 4, 64, None)):
+                with self.subTest(arm=arm, session_requests=length):
+                    root = Path(temporary) / f"{arm}-{length}"
+                    manifest = write_fair_capture(root, lane)
+
+                    def sweep(row: dict) -> None:
+                        if row["arm"] != arm:
+                            return
+                        if length is None:
+                            row.pop("session_requests")
+                        else:
+                            row["session_requests"] = length
+
+                    rewrite_capture_rows(root, manifest, sweep)
+                    with self.assertRaisesRegex(ValueError, "session"):
+                        MODULE.warm_prepare(
+                            root / "capture", root / "frozen.json", root / "paired.csv"
+                        )
+                    self.assertFalse((root / "paired.csv").exists())
 
 
 if __name__ == "__main__":

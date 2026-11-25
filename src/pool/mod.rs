@@ -1629,6 +1629,11 @@ impl<D: PoolBackend> Pool<D> {
         self.table.lookup(page)
     }
 
+    #[cfg(feature = "bench")]
+    pub(crate) fn translation_internal(&self) -> &Translation {
+        &self.table
+    }
+
     #[cfg(all(feature = "mock", not(loom)))]
     fn pause_get_between_pin_and_entry_if_armed(&self) {
         if !self.pin_entry_pause_armed.swap(false, Ordering::AcqRel) {

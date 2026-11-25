@@ -1,7 +1,53 @@
 #![cfg(target_os = "linux")]
 
+use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex, PoisonError};
+
 #[path = "../benches/mmap_workloads/mod.rs"]
 mod mmap_workloads;
+
+/// The fixture every sampling test reads. Its lock serializes those tests,
+/// since each sample discards and rewarms the fixture's page cache.
+static FIXTURE: LazyLock<Mutex<PathBuf>> = LazyLock::new(|| {
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("mmap-workload-contract-fixture");
+    if directory.exists() {
+        std::fs::remove_dir_all(&directory).expect("the previous run's fixture is removed");
+    }
+    mmap_workloads::run(&["create".to_owned(), directory.display().to_string()])
+        .expect("the fixture is created");
+    Mutex::new(directory)
+});
+
+/// Runs one runner command over the fixture and returns the row it wrote;
+/// `arguments` follow the input directory and precede the output path.
+fn sample_row(fixture: &Path, command: &str, arguments: &[&str], name: &str) -> serde_json::Value {
+    let rows = Path::new(env!("CARGO_TARGET_TMPDIR")).join("mmap-workload-contract-rows");
+    std::fs::create_dir_all(&rows).expect("the row directory exists");
+    let output = rows.join(format!("{name}.json"));
+    if output.exists() {
+        std::fs::remove_file(&output).expect("the previous run's row is removed");
+    }
+    let mut command_line = vec![command.to_owned(), fixture.display().to_string()];
+    command_line.extend(arguments.iter().map(|&argument| argument.to_owned()));
+    command_line.push(output.display().to_string());
+    mmap_workloads::run(&command_line)
+        .unwrap_or_else(|failure| panic!("{command} {arguments:?} writes its row: {failure}"));
+    serde_json::from_slice(&std::fs::read(&output).expect("the row is readable"))
+        .expect("the row is JSON")
+}
+
+fn row_checksum(row: &serde_json::Value) -> u64 {
+    row["workers"]
+        .as_array()
+        .expect("the row lists its workers")
+        .iter()
+        .map(|worker| {
+            worker["checksum"]
+                .as_u64()
+                .expect("each worker reports its checksum")
+        })
+        .fold(0, u64::wrapping_add)
+}
 
 #[test]
 fn mmap_workload_cli_rejects_missing_and_unknown_arguments() {
@@ -37,7 +83,7 @@ const FAIR_LANES: [(&str, &str, u64, u64); 4] = [
     ("resident_access_fair_get", "dios_get", 64, 2_048),
 ];
 
-fn absent_fixture(purpose: &str) -> std::path::PathBuf {
+fn absent_fixture(purpose: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "dios-{purpose}-fixture-absent-{}",
         std::process::id()
@@ -193,6 +239,92 @@ fn copy_lanes_pair_their_base_arm_with_dios_copy_and_carry_the_plain_array_floor
             assert!(
                 error.contains("trace"),
                 "{name} refuses trace mode on {arm} before the fixture is read: {error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn dios_rows_record_translation_memory_beside_the_arena_size() {
+    let fixture = FIXTURE.lock().unwrap_or_else(PoisonError::into_inner);
+    let row = sample_row(
+        &fixture,
+        "sample",
+        &["resident_access_ordinary", "dios_serial", "0", "plain"],
+        "translation-memory",
+    );
+    let memory = &row["translation_memory"];
+    let field = |name: &str| {
+        memory[name]
+            .as_u64()
+            .unwrap_or_else(|| panic!("a dios_serial row records translation_memory.{name}: {row}"))
+    };
+    let mapping_bytes = field("mapping_bytes");
+    let resident_bytes = field("resident_bytes");
+    let arena_bytes = field("arena_bytes");
+    assert!(
+        resident_bytes > 0,
+        "65,536 reads through the pool leave translation pages resident"
+    );
+    assert!(
+        resident_bytes <= mapping_bytes,
+        "resident bytes {resident_bytes} lie within the translation mapping of {mapping_bytes} bytes"
+    );
+    assert_eq!(
+        resident_bytes % 4096,
+        0,
+        "residency is counted in whole 4 KiB pages of the reservation"
+    );
+    assert_eq!(
+        arena_bytes,
+        row["frames"].as_u64().expect("the row records its frames") * 4096,
+        "the arena holds one 4 KiB granule per frame"
+    );
+}
+
+const AT_G1_LANE: &str = "resident_access_session_projection";
+const SESSION_LENGTHS: [u64; 4] = [1, 4, 16, 64];
+
+#[test]
+fn session_length_sweep_rows_carry_their_length_and_the_work_of_the_gated_sixteen() {
+    let fixture = FIXTURE.lock().unwrap_or_else(PoisonError::into_inner);
+    for arm in ["dios_session", "mmap_random"] {
+        let gated = sample_row(
+            &fixture,
+            "sample",
+            &[AT_G1_LANE, arm, "0", "plain"],
+            &format!("gated-{arm}"),
+        );
+        assert_eq!(
+            gated["session_requests"], 16,
+            "the gated {arm} row of the AT-G1 lane runs sessions of exactly 16 and says so"
+        );
+        for length in SESSION_LENGTHS {
+            let swept = sample_row(
+                &fixture,
+                "session-sample",
+                &[AT_G1_LANE, arm, "0", &length.to_string()],
+                &format!("sweep-{arm}-{length}"),
+            );
+            assert_eq!(
+                swept["session_requests"], length,
+                "the {arm} sweep row records its session length {length}"
+            );
+            assert_eq!(
+                (&swept["lane"], &swept["arm"]),
+                (&gated["lane"], &gated["arm"]),
+                "the sweep samples the AT-G1 lane's {arm} arm"
+            );
+            for field in ["operations", "useful_bytes", "expected_checksum"] {
+                assert_eq!(
+                    swept[field], gated[field],
+                    "the {arm} sweep row at length {length} keeps the gated row's {field}"
+                );
+            }
+            assert_eq!(
+                row_checksum(&swept),
+                row_checksum(&gated),
+                "the {arm} sweep row at length {length} folds the gated row's bytes"
             );
         }
     }

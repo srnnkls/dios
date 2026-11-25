@@ -23,6 +23,26 @@ use super::os::{self, Mapping};
 /// chunks (AT-D16).
 const SESSION_REQUESTS: usize = 16;
 
+/// The session lengths of the reported, never gated session-length sweep.
+pub(super) const SWEPT_SESSION_LENGTHS: [usize; 4] = [1, 4, 16, 64];
+
+/// The session length a session lane's chunked arms iterate: the gated
+/// loops' sixteen, or one length of the sweep run by its own loops.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SessionLength {
+    Gated,
+    Swept(usize),
+}
+
+impl SessionLength {
+    pub(super) fn requests(self) -> usize {
+        match self {
+            Self::Gated => SESSION_REQUESTS,
+            Self::Swept(length) => length,
+        }
+    }
+}
+
 /// Bytes every arm of a copy lane copies into its caller buffer per request.
 const COPY_BYTES: usize = 64;
 
@@ -37,9 +57,10 @@ pub(super) struct Measured {
     pub(super) page_size: Value,
 }
 
-pub(super) fn measure(work: Work<'_>) -> Result<Measured, String> {
+pub(super) fn measure(work: Work<'_>, sessions: SessionLength) -> Result<Measured, String> {
     os::pin(0).map_err(error)?;
     assert!(work.lane.fair(), "the fair-lane module serves fair lanes");
+    assert!(sessions == SessionLength::Gated || work.lane.session());
     assert_eq!(work.lane.workers(), 1);
     let requests: Vec<u32> = (0..work.lane.operations())
         .map(|index| work.lane.page(work.seed, index).0)
@@ -99,20 +120,26 @@ pub(super) fn measure(work: Work<'_>) -> Result<Measured, String> {
         ),
         (Source::Mmap(_), arm) => Err(format!("{arm:?} does not read the file mapping")),
     };
-    let warm_checksum = read(1)?;
-    if warm_checksum != fixture::expected(work.lane, work.seed) {
-        return Err("warm pass checksum differs".to_owned());
+    match sessions {
+        SessionLength::Gated => measure_timed(work, address, setup_ns, read),
+        SessionLength::Swept(length) => measure_timed(work, address, setup_ns, |repetitions| {
+            read_swept(work, reader.as_ref(), bytes, &requests, repetitions, length)
+        }),
     }
-    measure_timed(work, address, setup_ns, read)
 }
 
-/// The timed region over the warmed `read`, bracketed by the page-size witness.
+/// The untimed warm pass and the timed region over `read`, bracketed by the
+/// page-size witness.
 fn measure_timed(
     work: Work<'_>,
     address: usize,
     setup_ns: u64,
     read: impl Fn(u32) -> Result<u64, String>,
 ) -> Result<Measured, String> {
+    let warm_checksum = read(1)?;
+    if warm_checksum != fixture::expected(work.lane, work.seed) {
+        return Err("warm pass checksum differs".to_owned());
+    }
     let before = page_size(address)?;
     let usage_before = os::usage().map_err(error)?;
     let cpu_before = os::cpu_ns().map_err(error)?;
@@ -298,6 +325,71 @@ fn chunked_loop(bytes: &[u8], requests: &[u32], repetitions: u32, useful_bytes: 
     checksum
 }
 
+/// One sweep read of a session lane's mmap or session arm at `length`
+/// requests per session.
+#[cfg_attr(
+    not(dios_read_session),
+    expect(
+        unused_variables,
+        reason = "only the session arm reads through the pool"
+    )
+)]
+fn read_swept(
+    work: Work<'_>,
+    reader: Option<&ReaderCtx>,
+    bytes: &[u8],
+    requests: &[u32],
+    repetitions: u32,
+    length: usize,
+) -> Result<u64, String> {
+    assert!(SWEPT_SESSION_LENGTHS.contains(&length));
+    assert!(requests.len().is_multiple_of(length));
+    let useful_bytes = work.lane.useful_bytes() as usize;
+    match (work.source, work.arm) {
+        (Source::Mmap(_), Arm::MmapRandom) => Ok(chunked_loop_swept(
+            bytes,
+            requests,
+            repetitions,
+            useful_bytes,
+            length,
+        )),
+        #[cfg(dios_read_session)]
+        (Source::Dios(pool, file), Arm::DiosSession) => Ok(dios_session_loop_swept(
+            pool,
+            reader.expect("Dios reader"),
+            file,
+            requests,
+            repetitions,
+            useful_bytes,
+            length,
+        )),
+        (_, arm) => Err(format!("{arm:?} has no session-length sweep in this tree")),
+    }
+}
+
+/// The session-chunked loop of a sweep's mmap arm at `length` requests per session.
+#[inline(never)]
+fn chunked_loop_swept(
+    bytes: &[u8],
+    requests: &[u32],
+    repetitions: u32,
+    useful_bytes: usize,
+    length: usize,
+) -> u64 {
+    let mut checksum = 0_u64;
+    for _ in 0..repetitions {
+        for chunk in requests.chunks_exact(length) {
+            for &page in chunk {
+                let page = black_box(page);
+                let start = page as usize * GRANULE as usize;
+                checksum =
+                    checksum.wrapping_add(black_box(consume(&bytes[start..start + useful_bytes])));
+            }
+        }
+    }
+    checksum
+}
+
 /// The copy loop of the mmap-copy arm and of a copy lane's floor arm, over
 /// the file mapping or the floor array: each request copies its bytes into
 /// the caller buffer and folds that buffer.
@@ -426,6 +518,48 @@ fn dios_session_loop(
     let mut checksum = 0_u64;
     for _ in 0..repetitions {
         for chunk in requests.chunks_exact(SESSION_REQUESTS) {
+            #[cfg(dios_session_file)]
+            let view = match pool.session_file(reader, file) {
+                Ok(view) => view,
+                Err(failure) => dios_session_loop_stale(&failure),
+            };
+            #[cfg(not(dios_session_file))]
+            let session = pool.session(reader);
+            #[cfg(not(dios_session_file))]
+            let view = match session.file(file) {
+                Ok(view) => view,
+                Err(failure) => dios_session_loop_stale(&failure),
+            };
+            for &page in chunk {
+                let page = black_box(page);
+                match view.page(page) {
+                    Ok(dios::SessionRead::Hit(bytes)) => {
+                        checksum =
+                            checksum.wrapping_add(black_box(consume(&bytes[..useful_bytes])));
+                    }
+                    outcome => dios_session_loop_missed(&outcome),
+                }
+            }
+        }
+    }
+    checksum
+}
+
+/// The session loop of a sweep's session arm at `length` requests per session.
+#[cfg(dios_read_session)]
+#[inline(never)]
+fn dios_session_loop_swept(
+    pool: &Pool,
+    reader: &ReaderCtx,
+    file: FileId,
+    requests: &[u32],
+    repetitions: u32,
+    useful_bytes: usize,
+    length: usize,
+) -> u64 {
+    let mut checksum = 0_u64;
+    for _ in 0..repetitions {
+        for chunk in requests.chunks_exact(length) {
             #[cfg(dios_session_file)]
             let view = match pool.session_file(reader, file) {
                 Ok(view) => view,

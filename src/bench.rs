@@ -9,7 +9,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use crate::Pool;
 use crate::driver::RegistrationPolicy;
+use crate::pool::Translation;
 
 pub const REGISTRATION_POLICY_ENV: &str = "DIOS_REGISTRATION_POLICY";
 
@@ -335,6 +337,13 @@ fn splitmix64(state: &mut u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^ (z >> 31)
+}
+
+/// The translation of `pool`, whose mapping and resident bytes the
+/// characterization rows report beside the arena size.
+#[must_use]
+pub fn pool_translation(pool: &Pool) -> &Translation {
+    pool.translation_internal()
 }
 
 #[cfg(test)]

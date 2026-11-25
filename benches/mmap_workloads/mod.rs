@@ -17,6 +17,7 @@ use serde_json::json;
 
 use catalog::{Arm, Cache, Lane};
 use engine::{Source, Work};
+use fair::{SWEPT_SESSION_LENGTHS, SessionLength};
 use fixture::error;
 use scan_config::CreditSelection;
 
@@ -52,13 +53,17 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
             if tracing == "trace" && lane.repetitions() > 1 {
                 return Err("trace mode is refused for a repeated sequence".to_owned());
             }
+            let sessions = SessionLength::Gated;
             match tracing.as_str() {
-                "plain" => sample::<false>(Path::new(directory), lane, arm, seed, Path::new(output)),
-                "trace" => sample::<true>(Path::new(directory), lane, arm, seed, Path::new(output)),
+                "plain" => sample::<false>(Path::new(directory), lane, arm, seed, sessions, Path::new(output)),
+                "trace" => sample::<true>(Path::new(directory), lane, arm, seed, sessions, Path::new(output)),
                 _ => Err("mode must be plain or trace".to_owned()),
             }
         }
-        _ => Err("usage: list | create NEW_DIR | summarize CSV | sample INPUT LANE ARM SEED plain|trace NEW_JSON".to_owned()),
+        [command, directory, lane, arm, seed, length, output] if command == "session-sample" => {
+            session_sample(Path::new(directory), lane, arm, seed, length, Path::new(output))
+        }
+        _ => Err("usage: list | create NEW_DIR | summarize CSV | sample INPUT LANE ARM SEED plain|trace NEW_JSON | session-sample INPUT LANE ARM SEED LENGTH NEW_JSON".to_owned()),
     }
 }
 
@@ -136,11 +141,49 @@ fn run_probe(arguments: &[String]) -> Result<(), String> {
     }
 }
 
+/// One reported, never gated sample of a session lane's mmap or session arm
+/// at one sweep length of requests per session.
+fn session_sample(
+    directory: &Path,
+    lane: &str,
+    arm: &str,
+    seed: &str,
+    length: &str,
+    output: &Path,
+) -> Result<(), String> {
+    let lane = Lane::parse(lane)?;
+    let arm = Arm::parse(arm)?;
+    if !lane.session() || !lane.arms().contains(&arm) {
+        return Err(
+            "the session-length sweep samples a session lane's mmap or session arm".to_owned(),
+        );
+    }
+    let seed: u32 = seed.parse().map_err(error)?;
+    if seed > 1_000_000 {
+        return Err("seed exceeds fixed bound".to_owned());
+    }
+    let length: usize = length.parse().map_err(error)?;
+    if !SWEPT_SESSION_LENGTHS.contains(&length) {
+        return Err(format!(
+            "session length must be one of {SWEPT_SESSION_LENGTHS:?}"
+        ));
+    }
+    sample::<false>(
+        directory,
+        lane,
+        arm,
+        seed,
+        SessionLength::Swept(length),
+        output,
+    )
+}
+
 fn sample<const TRACE: bool>(
     directory: &Path,
     lane: Lane,
     arm: Arm,
     seed: u32,
+    sessions: SessionLength,
     output: &Path,
 ) -> Result<(), String> {
     os::pin(0).map_err(error)?;
@@ -169,7 +212,7 @@ fn sample<const TRACE: bool>(
         arm,
         seed,
     };
-    let (workers, witnesses) = sample_measure::<TRACE>(work)?;
+    let (workers, witnesses) = sample_measure::<TRACE>(work, sessions)?;
     let after = snapshot();
     let elapsed_ns = workers
         .iter()
@@ -193,6 +236,10 @@ fn sample<const TRACE: bool>(
         "debug_assertions": cfg!(debug_assertions),
         "prefetch": sample_prefetch(pool.as_ref()),
     });
+    #[cfg(dios_translation_memory)]
+    if let Some((pool, _)) = pool.as_ref() {
+        row["translation_memory"] = sample_translation_memory(pool, lane);
+    }
     let serde_json::Value::Object(witnesses) = witnesses else {
         unreachable!("sample witnesses are an object")
     };
@@ -203,15 +250,23 @@ fn sample<const TRACE: bool>(
 }
 
 /// The timed workers of one sample and an object of the row fields of its
-/// fair-lane witnesses: the warm pass and the page size, empty for other lanes.
+/// fair-lane witnesses: the warm pass, the page size and, for a session lane's
+/// chunked arms, the requests per session; empty for other lanes.
 fn sample_measure<const TRACE: bool>(
     work: Work<'_>,
+    sessions: SessionLength,
 ) -> Result<(Vec<engine::WorkerResult>, serde_json::Value), String> {
     if work.lane.fair() {
         assert!(!TRACE, "fair lanes refuse trace mode");
-        let measured = fair::measure(work)?;
-        let witnesses = json!({"warm_pass": {"operations": measured.warm_pass_operations},
+        let measured = fair::measure(work, sessions)?;
+        let mut witnesses = json!({"warm_pass": {"operations": measured.warm_pass_operations},
             "page_size": measured.page_size});
+        if work.lane.session() && work.lane.flat_arm() != Some(work.arm) {
+            witnesses["session_requests"] = json!(sessions.requests());
+        }
+        if sessions != SessionLength::Gated {
+            witnesses["characterization"] = json!("session_length_sweep");
+        }
         Ok((vec![measured.worker], witnesses))
     } else {
         Ok((engine::measure::<TRACE>(work)?, json!({})))
@@ -263,6 +318,7 @@ fn profile(
             lane,
             arm,
             seed,
+            SessionLength::Gated,
             &output.join(format!("{seed:04}.json")),
         )?;
     }
@@ -332,6 +388,21 @@ fn sample_posture(pool: Option<&(dios::Pool, dios::FileId)>) -> (String, String)
             format!("{:?}", pool.registration_posture()),
         )
     })
+}
+
+/// The translation mapping's size and resident bytes after the timed loop,
+/// beside the arena of one granule per frame.
+#[cfg(dios_translation_memory)]
+fn sample_translation_memory(pool: &dios::Pool, lane: Lane) -> serde_json::Value {
+    let translation = dios::bench::pool_translation(pool);
+    let mapping_bytes = translation.entry_count() * size_of::<u32>() as u64;
+    let resident_bytes = translation.resident_bytes();
+    assert!(
+        resident_bytes <= mapping_bytes,
+        "residency lies within the mapping"
+    );
+    json!({"mapping_bytes": mapping_bytes, "resident_bytes": resident_bytes,
+        "arena_bytes": u64::from(lane.frames()) * u64::from(catalog::GRANULE)})
 }
 
 fn sample_prefetch(pool: Option<&(dios::Pool, dios::FileId)>) -> serde_json::Value {

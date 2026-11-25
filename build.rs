@@ -21,6 +21,7 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(dios_session_file)");
     println!("cargo::rustc-check-cfg=cfg(dios_read_copy)");
     println!("cargo::rustc-check-cfg=cfg(dios_paired_difference)");
+    println!("cargo::rustc-check-cfg=cfg(dios_translation_memory)");
     println!("cargo::rustc-check-cfg=cfg(pfr_product_retention)");
     println!("cargo::rerun-if-env-changed=CARGO_FEATURE_BENCH");
     if env::var_os("CARGO_FEATURE_BENCH").is_some() {
@@ -95,11 +96,12 @@ fn main() {
     }
     let bench_path = product.join("src/bench.rs");
     println!("cargo::rerun-if-changed={}", bench_path.display());
-    if fs::read_to_string(bench_path)
-        .unwrap_or_default()
-        .contains("pub fn paired_difference")
-    {
+    let bench = fs::read_to_string(bench_path).unwrap_or_default();
+    if bench.contains("pub fn paired_difference") {
         println!("cargo::rustc-cfg=dios_paired_difference");
+    }
+    if bench.contains("pub fn pool_translation") {
+        println!("cargo::rustc-cfg=dios_translation_memory");
     }
 }
 

@@ -2,17 +2,23 @@ checkpoint:
   scope_name: array-translation
   scope_path: scopes/active/array-translation
   branch: feat/array-translation
-  last_commit: b283244
+  last_commit: 43b34c9
   updated_at: '2026-11-22T00:00:00Z'
 
   batch:
-    number: 9
-    tasks: [AT10]
+    number: 10
+    tasks: [AT8]
     phase: bench
-    status: complete
-    waiting_on: "AT7 and AT10 closed (copy-out read not adopted on performance, AT-D29). Next batch: AT8 binding campaign."
+    status: in_progress
+    waiting_on: "AT8 gates all recorded (941a9c3); AT-G1 profile 43b34c9. Characterization harness RED wave (owner: build all); then liveness pricing scratch campaign, sira handoff."
 
-  in_flight_mutations: []
+  in_flight_mutations:
+    - task: AT8
+      phase: characterization_green
+      agent: {role: implementer, agent: claude-opus, class: native}
+      report_dir: .tropos/peer/array-translation/20261115T161731Z-fba2be/b10-implementer-characterization3
+      status: running
+      evidence: {before: .tropos/peer/array-translation/20261115T161731Z-fba2be/b10-implementer-characterization3/baseline.git-status.txt, red: .tropos/peer/array-translation/20261115T161731Z-fba2be/b10-tester-characterization/red-gate-orchestrator.txt}
 
   routing_snapshot:
     epoch_id: 20261115T161731Z-fba2be
