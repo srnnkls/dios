@@ -8,9 +8,9 @@ checkpoint:
   batch:
     number: 10
     tasks: [AT8]
-    phase: done
+    phase: integration_review
     status: complete
-    waiting_on: "All tasks done (AT1 to AT10). Next: final verification and scope done."
+    waiting_on: "Integration review completed (I1, I2 resolved). Next: completion verification, scope done."
 
   in_flight_mutations: []
 

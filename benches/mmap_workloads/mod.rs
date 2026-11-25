@@ -394,13 +394,7 @@ fn sample_posture(pool: Option<&(dios::Pool, dios::FileId)>) -> (String, String)
 /// beside the arena of one granule per frame.
 #[cfg(dios_translation_memory)]
 fn sample_translation_memory(pool: &dios::Pool, lane: Lane) -> serde_json::Value {
-    let translation = dios::bench::pool_translation(pool);
-    let mapping_bytes = translation.entry_count() * size_of::<u32>() as u64;
-    let resident_bytes = translation.resident_bytes();
-    assert!(
-        resident_bytes <= mapping_bytes,
-        "residency lies within the mapping"
-    );
+    let (mapping_bytes, resident_bytes) = dios::bench::pool_translation(pool);
     json!({"mapping_bytes": mapping_bytes, "resident_bytes": resident_bytes,
         "arena_bytes": u64::from(lane.frames()) * u64::from(catalog::GRANULE)})
 }

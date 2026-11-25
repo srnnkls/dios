@@ -572,4 +572,30 @@ implementation_batches:
     rereview: "orchestrator: one-guard fix read in full; Python 35 OK, lint clean, full suite green"
     persists: []
   gates: "AT8 binding campaign recorded in benches/evidence/array_translation/README.md: every gate passes except AT-G5 and AT-G6 (not adopted, AT-D29)."
+integration_review:
+  required: true
+  status: completed
+  reviewers: [general-claude-opus, architecture-claude-opus]
+  execution: "claude-opus native; peer-gpt6-astra unavailable (peer needs bash 4+, only /bin/bash 3.2 on PATH)"
+  base: ade5310
+  head_reviewed: b5cda14
+  reports: [.tropos/peer/array-translation/20261115T161731Z-fba2be/integration-review-general/claude-opus.yaml, .tropos/peer/array-translation/20261115T161731Z-fba2be/integration-review-architecture/claude-opus.yaml]
+  acceptance_criteria_met: true
+  acceptance_note: "AC-16, AC-21 and AC-25 carry the recorded AT-G5 and AT-G6 failure (owner decision AT-D29); every other criterion has an implementation and a pinning test or recorded gate."
+  cross_batch_validation: pass
+  issues:
+    - id: I1
+      finding: "bench::pool_translation handed bench-feature code &Translation of a live pool; its public publish, clear and release_slot then wrote translation state without the control lock (INV-1, INV-2)"
+      found_by: [architecture-claude-opus]
+      severity: medium
+      status: resolved
+      resolution: "pool_translation returns (mapping_bytes, resident_bytes); fix .tropos/peer/array-translation/20261115T161731Z-fba2be/integration-fix1/native.yaml"
+    - id: I2
+      finding: "the mock pin-to-entry pause hook did an unconditional AcqRel swap on every get hit of mock builds (batch 7 F5 class, from AT3)"
+      found_by: [general-claude-opus]
+      severity: medium
+      status: resolved
+      resolution: "relaxed load and early return before the swap; fix .tropos/peer/array-translation/20261115T161731Z-fba2be/integration-fix1/native.yaml"
+  fix_verification: "orchestrator: diff read in full; mise run lint clean; cargo test --features bench,mock green; fixer: x86_64-linux bench+mock clippy clean, Loom 26/26, translation-memory contract test green on nix"
+  recommendation: ready_to_merge
 

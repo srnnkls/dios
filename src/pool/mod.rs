@@ -1636,6 +1636,9 @@ impl<D: PoolBackend> Pool<D> {
 
     #[cfg(all(feature = "mock", not(loom)))]
     fn pause_get_between_pin_and_entry_if_armed(&self) {
+        if !self.pin_entry_pause_armed.load(Ordering::Relaxed) {
+            return;
+        }
         if !self.pin_entry_pause_armed.swap(false, Ordering::AcqRel) {
             return;
         }

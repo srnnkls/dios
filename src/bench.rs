@@ -11,7 +11,6 @@ use std::time::Instant;
 
 use crate::Pool;
 use crate::driver::RegistrationPolicy;
-use crate::pool::Translation;
 
 pub const REGISTRATION_POLICY_ENV: &str = "DIOS_REGISTRATION_POLICY";
 
@@ -339,11 +338,22 @@ fn splitmix64(state: &mut u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// The translation of `pool`, whose mapping and resident bytes the
+/// The `(mapping_bytes, resident_bytes)` of `pool`'s translation, which the
 /// characterization rows report beside the arena size.
+///
+/// # Panics
+///
+/// Panics when the resident bytes exceed the mapping bytes.
 #[must_use]
-pub fn pool_translation(pool: &Pool) -> &Translation {
-    pool.translation_internal()
+pub fn pool_translation(pool: &Pool) -> (u64, u64) {
+    let translation = pool.translation_internal();
+    let mapping_bytes = translation.entry_count() * size_of::<u32>() as u64;
+    let resident_bytes = translation.resident_bytes();
+    assert!(
+        resident_bytes <= mapping_bytes,
+        "residency lies within the mapping"
+    );
+    (mapping_bytes, resident_bytes)
 }
 
 #[cfg(test)]
