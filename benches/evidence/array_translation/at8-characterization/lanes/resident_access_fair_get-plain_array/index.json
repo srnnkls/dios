@@ -1,0 +1,54 @@
+{
+  "lane": {
+    "arms": [
+      "mmap_random",
+      "dios_get"
+    ],
+    "cache": "resident",
+    "floor_arm": "plain_array",
+    "frames": 2048,
+    "name": "resident_access_fair_get",
+    "operations": 134217728,
+    "useful_bytes_per_read": 64,
+    "workers": 1
+  },
+  "name": "resident_access_fair_get-plain_array",
+  "arms": [
+    "plain_array",
+    "dios_get"
+  ],
+  "modes": [
+    "plain",
+    "plain"
+  ],
+  "rows": [
+    {
+      "raw": "/home/srnnkls/build/dios/target/array-translation/at8-characterization-20261125T144457/lanes/resident_access_fair_get-plain_array/0000-0.json",
+      "sha256": "1ad8e3d86e3529be1ac31d495d4060c12a6f5669fbfedf73f5c22f6bcbd62335",
+      "arm": "plain_array",
+      "seed": 0,
+      "tracing": "plain",
+      "mode": "smoke",
+      "started_ns": 1795614349949917544,
+      "finished_ns": 1795614350495140681,
+      "elapsed_ns": 496836408,
+      "pair": 0,
+      "position": 0,
+      "executable_sha256": "ebeb49fccf2cf7fe7f7c280524ec452bfb9908539ee189875a22f102d7c3e15b"
+    },
+    {
+      "raw": "/home/srnnkls/build/dios/target/array-translation/at8-characterization-20261125T144457/lanes/resident_access_fair_get-plain_array/0000-1.json",
+      "sha256": "b0046acb451207ecd8e3ad880249d16bf7b03439acbea0094c4d6d94b5b0e493",
+      "arm": "dios_get",
+      "seed": 0,
+      "tracing": "plain",
+      "mode": "smoke",
+      "started_ns": 1795614350495309305,
+      "finished_ns": 1795614352096869224,
+      "elapsed_ns": 1533207836,
+      "pair": 0,
+      "position": 1,
+      "executable_sha256": "ebeb49fccf2cf7fe7f7c280524ec452bfb9908539ee189875a22f102d7c3e15b"
+    }
+  ]
+}

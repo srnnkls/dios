@@ -1,0 +1,53 @@
+{
+  "lane": {
+    "arms": [
+      "mmap_normal",
+      "dios_batch"
+    ],
+    "cache": "cold",
+    "frames": 1024,
+    "name": "cold_gather_normal",
+    "operations": 1024,
+    "useful_bytes_per_read": 4096,
+    "workers": 1
+  },
+  "name": "cold_gather_normal",
+  "arms": [
+    "mmap_normal",
+    "dios_batch"
+  ],
+  "modes": [
+    "plain",
+    "plain"
+  ],
+  "rows": [
+    {
+      "raw": "/home/srnnkls/build/dios/target/array-translation/at8-characterization-20261125T144457/lanes/cold_gather_normal/0000-0.json",
+      "sha256": "9ae99c07ffca49a658245ce61be5b1c0c6ba493fb634ae698758d8f33abb294c",
+      "arm": "mmap_normal",
+      "seed": 0,
+      "tracing": "plain",
+      "mode": "smoke",
+      "started_ns": 1795614308225816119,
+      "finished_ns": 1795614308326470223,
+      "elapsed_ns": 85341829,
+      "pair": 0,
+      "position": 0,
+      "executable_sha256": "ebeb49fccf2cf7fe7f7c280524ec452bfb9908539ee189875a22f102d7c3e15b"
+    },
+    {
+      "raw": "/home/srnnkls/build/dios/target/array-translation/at8-characterization-20261125T144457/lanes/cold_gather_normal/0000-1.json",
+      "sha256": "ac19238c9abcd99febe532aa51ef6e2224a7c6d1b3ff0415b33e610e7daa2830",
+      "arm": "dios_batch",
+      "seed": 0,
+      "tracing": "plain",
+      "mode": "smoke",
+      "started_ns": 1795614308326598926,
+      "finished_ns": 1795614308357581866,
+      "elapsed_ns": 6106592,
+      "pair": 0,
+      "position": 1,
+      "executable_sha256": "ebeb49fccf2cf7fe7f7c280524ec452bfb9908539ee189875a22f102d7c3e15b"
+    }
+  ]
+}

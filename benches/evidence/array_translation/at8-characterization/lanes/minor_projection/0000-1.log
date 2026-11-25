@@ -1,0 +1,1 @@
+dios: arena lock refused (errno 12: 20975616 bytes against RLIMIT_MEMLOCK 8388608); continuing unlocked — grant CAP_IPC_LOCK, raise the limit, or call require_locked() for a typed refusal

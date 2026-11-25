@@ -311,3 +311,31 @@ manifest.
 - AT-G3 ns per fold, mmap / session: 403.9 / 370.5; the dios arena was fully
   hugepage-backed in every gated row (warm-prepare's posture check).
 
+## AT8 characterization (2026-11-25, reported, not gated)
+
+Harness of 99300e8 (translation-memory row field, `session-sample`), host `nix`, THP
+`never`, runner of a smoke build over every lane (`at8-characterization/lanes/`).
+
+Session-length sweep, AT-G1 lane, 64-byte reads, median of 6 fresh processes per cell
+on CPU 0 (`at8-characterization/sweep/`):
+
+| Requests per session | `mmap_random` ns/read | `dios_session` ns/read | dios / mmap |
+|---:|---:|---:|---:|
+| 1 | 4.410 | 16.298 | 3.70 |
+| 4 | 3.955 | 7.884 | 1.99 |
+| 16 (the gated length) | 3.977 | 5.969 | 1.50 |
+| 64 | 3.749 | 5.259 | 1.40 |
+
+- Opening a session and its file view costs about 11 ns, spread over the session's reads.
+
+Translation memory after each lane's smoke run (`translation_memory` of every dios row):
+the reservation is 16 MiB per pool (`2^22` entries of 4 bytes for one file slot); resident
+bytes follow the pages the lane touched, 4 bytes per resident page, from 4 KiB to 260 KiB;
+the 256 MiB arena of `resident_access_session_fold_256m` holds 256 KiB of resident
+translation (1/1024 of the arena).
+
+Liveness pricing: `liveness-pricing.md`. AT-G1 profile at the campaign tree:
+`at-g1/profile/`. The `read_copy` counts under pressure were dropped (AT-D32); their smoke
+showed no first-attempt copy under memory pressure (about 20 % Pending, 80 % Busy;
+`.tropos/.../b10-implementer-characterization3/pressure_random-dios_copy-smoke-row.json`).
+

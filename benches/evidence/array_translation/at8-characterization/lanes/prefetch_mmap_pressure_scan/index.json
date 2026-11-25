@@ -1,0 +1,53 @@
+{
+  "lane": {
+    "arms": [
+      "mmap_sequential",
+      "dios_prefetch"
+    ],
+    "cache": "pressure",
+    "frames": 16384,
+    "name": "prefetch_mmap_pressure_scan",
+    "operations": 196608,
+    "useful_bytes_per_read": 4096,
+    "workers": 1
+  },
+  "name": "prefetch_mmap_pressure_scan",
+  "arms": [
+    "mmap_sequential",
+    "dios_prefetch"
+  ],
+  "modes": [
+    "plain",
+    "plain"
+  ],
+  "rows": [
+    {
+      "raw": "/home/srnnkls/build/dios/target/array-translation/at8-characterization-20261125T144457/lanes/prefetch_mmap_pressure_scan/0000-0.json",
+      "sha256": "19351e1aa2cfd23c0b6551c3be258bca5e7f916253f290d502ea0a53513b2e43",
+      "arm": "mmap_sequential",
+      "seed": 0,
+      "tracing": "plain",
+      "mode": "smoke",
+      "started_ns": 1795614370815206439,
+      "finished_ns": 1795614371382872160,
+      "elapsed_ns": 512064568,
+      "pair": 0,
+      "position": 0,
+      "executable_sha256": "ebeb49fccf2cf7fe7f7c280524ec452bfb9908539ee189875a22f102d7c3e15b"
+    },
+    {
+      "raw": "/home/srnnkls/build/dios/target/array-translation/at8-characterization-20261125T144457/lanes/prefetch_mmap_pressure_scan/0000-1.json",
+      "sha256": "063cfd2c7c92e6ec8c2cccaee09db2e888d1360f32ff6bd4aa86d545770ff646",
+      "arm": "dios_prefetch",
+      "seed": 0,
+      "tracing": "plain",
+      "mode": "smoke",
+      "started_ns": 1795614371382988913,
+      "finished_ns": 1795614372254983405,
+      "elapsed_ns": 793321919,
+      "pair": 0,
+      "position": 1,
+      "executable_sha256": "ebeb49fccf2cf7fe7f7c280524ec452bfb9908539ee189875a22f102d7c3e15b"
+    }
+  ]
+}
